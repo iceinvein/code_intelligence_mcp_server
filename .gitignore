@@ -10,5 +10,5 @@
 target
 .cargo
 
-# Python test files
-test_*.py
+# Test workspace
+test_workspace

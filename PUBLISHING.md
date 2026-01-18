@@ -56,7 +56,7 @@ Once published, users can use your MCP server without installing anything manual
   "mcp": {
     "code-intelligence": {
       "type": "local",
-      "command": ["npx", "-y", "code-intelligence-mcp"],
+      "command": ["npx", "-y", "@iceinvein/code-intelligence-mcp"],
       "env": {}
     }
   }

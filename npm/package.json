@@ -1,9 +1,9 @@
 {
-  "name": "code-intelligence-mcp",
-  "version": "0.1.0",
+  "name": "@iceinvein/code-intelligence-mcp",
+  "version": "0.1.2",
   "description": "Code Intelligence MCP Server - Smart context for your LLM coding agent",
   "bin": {
-    "code-intelligence-mcp": "./bin/run.js"
+    "code-intelligence-mcp": "bin/run.js"
   },
   "scripts": {
     "postinstall": "node install.js"

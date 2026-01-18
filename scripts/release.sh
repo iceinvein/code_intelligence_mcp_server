@@ -26,6 +26,10 @@ else
 fi
 echo "Updated Cargo.toml"
 
+# Update Cargo.lock to reflect the new version
+cargo check > /dev/null 2>&1 || true
+echo "Updated Cargo.lock"
+
 # 2. Update npm/package.json (Node)
 cd npm
 npm pkg set version=$VERSION
@@ -34,7 +38,7 @@ echo "Updated npm/package.json"
 
 # 3. Commit and Tag
 echo "Creating git commit and tag..."
-git add Cargo.toml npm/package.json
+git add Cargo.toml Cargo.lock npm/package.json
 git commit -m "chore: release v$VERSION"
 git tag "v$VERSION"
 

@@ -1,7 +1,5 @@
-pub mod candle;
+pub mod fastembed;
 pub mod hash;
-#[cfg(feature = "model-download")]
-pub mod model_download;
 
 use anyhow::Result;
 

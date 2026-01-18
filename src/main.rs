@@ -16,9 +16,7 @@ use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 use code_intelligence_mcp_server::config::{Config, EmbeddingsBackend};
-use code_intelligence_mcp_server::embeddings::{
-    candle::CandleEmbedder, hash::HashEmbedder, Embedder,
-};
+use code_intelligence_mcp_server::embeddings::{hash::HashEmbedder, Embedder};
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::retrieval::Retriever;
 use code_intelligence_mcp_server::storage::sqlite::{SqliteStore, SymbolRow};
@@ -54,19 +52,12 @@ fn print_help() {
     println!("  BASE_DIR=/absolute/path/to/repo");
     println!();
     println!("Common env (defaults shown):");
-    println!("  EMBEDDINGS_MODEL_DIR=/path/to/model   (if set, implies candle when backend unset)");
-    println!(
-        "  EMBEDDINGS_BACKEND=hash|candle        (default: hash, unless a model dir is detected)"
-    );
-    println!("  EMBEDDINGS_AUTO_DOWNLOAD=true|false  (default: false; candle may auto-download when built with --features model-download)");
-    println!("  EMBEDDINGS_MODEL_URL=https://...     (optional; tar.gz/tgz archive URL)");
-    println!("  EMBEDDINGS_MODEL_SHA256=...          (optional; hex sha256 of the archive)");
-    println!(
-        "  EMBEDDINGS_MODEL_REPO=org/repo       (default: sentence-transformers/all-MiniLM-L6-v2)"
-    );
-    println!("  EMBEDDINGS_MODEL_REVISION=main       (default: main)");
-    println!("  EMBEDDINGS_MODEL_HF_TOKEN=...        (optional; for gated models)");
-    println!("  EMBEDDINGS_DEVICE=cpu|metal          (default: cpu; metal requires build --features metal)");
+    println!("  EMBEDDINGS_MODEL_DIR=/path/to/cache   (default: ./.cimcp/embeddings-cache)");
+    println!("  EMBEDDINGS_BACKEND=fastembed|hash     (default: fastembed)");
+    println!("  EMBEDDINGS_MODEL_REPO=org/repo       (default: BAAI/bge-base-en-v1.5)");
+    println!("                                       (supported: BAAI/bge-base-en-v1.5, BAAI/bge-small-en-v1.5,");
+    println!("                                        sentence-transformers/all-MiniLM-L6-v2, jinaai/jina-embeddings-v2-base-en)");
+    println!("  EMBEDDINGS_DEVICE=cpu|metal          (default: cpu; fastembed handles acceleration automatically)");
     println!("  EMBEDDING_BATCH_SIZE=32");
     println!("  DB_PATH=./.cimcp/code-intelligence.db       (resolved under BASE_DIR if relative)");
     println!("  VECTOR_DB_PATH=./.cimcp/vectors             (resolved under BASE_DIR if relative)");
@@ -75,14 +66,9 @@ fn print_help() {
     println!("  WATCH_MODE=true|false                (default: false)");
     println!("  REPO_ROOTS=/path/a,/path/b           (default: BASE_DIR only)");
     println!();
-    println!("Embeddings auto-detection (when EMBEDDINGS_BACKEND is not set):");
-    println!("  - If EMBEDDINGS_MODEL_DIR is set => candle");
-    println!("  - Else if one exists under BASE_DIR:");
-    println!("      ./embeddings-model");
-    println!("      ./.embeddings");
-    println!("      ./.cimcp/embeddings-model");
-    println!("    => candle");
-    println!("  - Else => hash");
+    println!("Embeddings auto-detection:");
+    println!("  - Defaults to fastembed (using BGE Base v1.5).");
+    println!("  - Set EMBEDDINGS_BACKEND=hash to use deterministic hashing (no model).");
     println!();
     println!("Tools:");
     println!("  search_code, refresh_index, get_definition, find_references, get_file_symbols,");
@@ -1296,79 +1282,26 @@ async fn run() -> SdkResult<()> {
     })?;
 
     let embedder: Box<dyn Embedder + Send> = match config.embeddings_backend {
-        EmbeddingsBackend::Candle => {
-            let dir = config
-                .embeddings_model_dir
-                .clone()
-                .ok_or_else(|| McpSdkError::Internal {
-                    description: "Missing EMBEDDINGS_MODEL_DIR for EMBEDDINGS_BACKEND=candle"
-                        .to_string(),
-                })?;
+        EmbeddingsBackend::FastEmbed => {
+            let model_repo = config
+                .embeddings_model_repo
+                .as_deref()
+                .unwrap_or("BAAI/bge-base-en-v1.5");
+            let cache_dir = config.embeddings_model_dir.as_deref();
 
-            if config.embeddings_auto_download {
-                #[cfg(not(feature = "model-download"))]
-                {
-                    return Err(McpSdkError::Internal {
-                        description:
-                            "embeddings auto-download requested, but binary was built without --features model-download"
-                                .to_string(),
-                    });
-                }
+            info!(
+                "Initializing FastEmbed with model: {} (cache: {:?})",
+                model_repo, cache_dir
+            );
 
-                #[cfg(feature = "model-download")]
-                {
-                    if let Some(url) = config.embeddings_model_url.clone() {
-                        info!(
-                            model_dir = %dir.display(),
-                            url = %url,
-                            "Starting embeddings model download (archive)"
-                        );
-                        let downloaded = code_intelligence_mcp_server::embeddings::model_download::ensure_candle_model(
-                            &dir,
-                            &url,
-                            config.embeddings_model_sha256.as_deref(),
-                        )
-                        .await
-                        .map_err(|err| McpSdkError::Internal {
-                            description: err.to_string(),
-                        })?;
-                        info!(downloaded, model_dir = %dir.display(), "Embeddings model ready");
-                    } else {
-                        let repo = config.embeddings_model_repo.as_deref().ok_or_else(|| {
-                            McpSdkError::Internal {
-                                description: "Missing EMBEDDINGS_MODEL_REPO (expected default)"
-                                    .to_string(),
-                            }
-                        })?;
-                        let revision = config
-                            .embeddings_model_revision
-                            .as_deref()
-                            .unwrap_or("main");
-
-                        info!(
-                            model_dir = %dir.display(),
-                            repo = %repo,
-                            revision = %revision,
-                            "Starting embeddings model download (huggingface)"
-                        );
-                        let downloaded = code_intelligence_mcp_server::embeddings::model_download::ensure_candle_model_from_huggingface(
-                            &dir,
-                            repo,
-                            revision,
-                            config.embeddings_model_hf_token.as_deref(),
-                        )
-                        .await
-                        .map_err(|err| McpSdkError::Internal {
-                            description: err.to_string(),
-                        })?;
-                        info!(downloaded, model_dir = %dir.display(), "Embeddings model ready");
-                    }
-                }
-            }
             Box::new(
-                CandleEmbedder::load(&dir, config.embeddings_device, config.embedding_batch_size)
-                    .map_err(|err| McpSdkError::Internal {
-                    description: err.to_string(),
+                code_intelligence_mcp_server::embeddings::fastembed::FastEmbedder::new(
+                    model_repo,
+                    cache_dir,
+                    config.embeddings_device,
+                )
+                .map_err(|err| McpSdkError::Internal {
+                    description: format!("Failed to initialize FastEmbed: {}", err),
                 })?,
             )
         }

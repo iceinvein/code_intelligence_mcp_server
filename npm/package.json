@@ -1,0 +1,30 @@
+{
+  "name": "code-intelligence-mcp",
+  "version": "0.1.0",
+  "description": "Code Intelligence MCP Server - Smart context for your LLM coding agent",
+  "bin": {
+    "code-intelligence-mcp": "./bin/run.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iceinvein/code_intelligence_mcp_server.git"
+  },
+  "author": "iceinvein",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "tar": "^7.5.3"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

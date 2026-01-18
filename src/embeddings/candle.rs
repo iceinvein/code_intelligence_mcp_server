@@ -265,6 +265,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "metal"))]
     fn metal_device_errors_without_feature() {
         let err = match metal_device() {
             Ok(_) => panic!("expected error"),

@@ -6,8 +6,8 @@ This server provides advanced context to LLM agents (like OpenCode, Trae, Cursor
 
 ## Features
 
-* **Hybrid Search**: Combines keyword search (Tantivy) with semantic vector search (LanceDB + Candle).
-* **Smart Embeddings**: Uses `jinaai/jina-embeddings-v2-base-code` (8k context) by default for high-quality semantic understanding.
+* **Hybrid Search**: Combines keyword search (Tantivy) with semantic vector search (LanceDB + FastEmbed).
+* **Smart Embeddings**: Uses `BAAI/bge-base-en-v1.5` by default for high-quality semantic understanding.
 * **Local & Fast**: Everything runs locally. Indexes are stored inside your project (`.cimcp/`).
 * **Zero Config**: Works out of the box with `npx`. No Rust toolchain required for users.
 * **Metal Acceleration**: Automatically uses Metal GPU acceleration on macOS for fast indexing.
@@ -29,7 +29,7 @@ Add this to your project's `opencode.json` (or global config):
 }
 ```
 
-That's it! OpenCode will download the package, fetch the AI model (approx 1.5GB, once), index your code, and enable smart tools.
+That's it! OpenCode will download the package, fetch the AI model (approx 300MB, once), index your code, and enable smart tools.
 
 ## Tools Provided
 
@@ -38,6 +38,9 @@ That's it! OpenCode will download the package, fetch the AI model (approx 1.5GB,
 * `find_references`: Find all usages of a symbol.
 * `get_call_hierarchy`: See who calls a function or what it calls.
 * `get_type_graph`: Explore type inheritance and implementation.
+* `get_file_symbols`: List all symbols defined in a file.
+* `get_usage_examples`: Get code examples of how a symbol is used.
+* `get_index_stats`: View stats about the indexed codebase.
 * `refresh_index`: Manually trigger a re-index (happens automatically on startup).
 
 ## Configuration (Optional)
@@ -46,8 +49,8 @@ You typically **do not** need to configure anything. The default wrapper script 
 
 * `BASE_DIR`: Current working directory.
 * `DB_PATH`, `VECTOR_DB_PATH`: Stored in `./.cimcp/`.
-* `EMBEDDINGS_BACKEND`: `candle` (Local AI).
-* `EMBEDDINGS_MODEL_REPO`: `jinaai/jina-embeddings-v2-base-code`.
+* `EMBEDDINGS_BACKEND`: `fastembed` (Local AI).
+* `EMBEDDINGS_MODEL_REPO`: `BAAI/bge-base-en-v1.5`.
 
 If you need to customize behavior, you can set environment variables in your MCP config:
 

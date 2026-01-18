@@ -24,7 +24,7 @@ if (!env.BASE_DIR) {
 
 // 2. Default to Candle backend (local AI)
 if (!env.EMBEDDINGS_BACKEND) {
-    env.EMBEDDINGS_BACKEND = 'candle';
+    env.EMBEDDINGS_BACKEND = 'fastembed';
 }
 
 // 3. Enable Auto Download
@@ -34,7 +34,7 @@ if (!env.EMBEDDINGS_AUTO_DOWNLOAD) {
 
 // 4. Set Better Default Model (Jina V2 Base Code)
 if (!env.EMBEDDINGS_MODEL_REPO) {
-    env.EMBEDDINGS_MODEL_REPO = 'jinaai/jina-embeddings-v2-base-code';
+    env.EMBEDDINGS_MODEL_REPO = 'BAAI/bge-base-en-v1.5';
 }
 
 // 5. Metal Acceleration for macOS

@@ -19,7 +19,6 @@ jobs:
           # macOS Silicon (Metal support)
           - os: macos-latest
             target: aarch64-apple-darwin
-            features: model-download,metal
             binary_name: code-intelligence-mcp-server
 
     steps:
@@ -39,7 +38,7 @@ jobs:
         run: brew install protobuf
 
       - name: Build Binary
-        run: cargo build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Archive Binary
         shell: bash

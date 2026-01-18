@@ -25,4 +25,4 @@ jobs:
 
       - name: Run Tests
         # Run tests with the same features enabled to ensure everything compiles
-        run: cargo test --features model-download,metal
+        run: cargo test

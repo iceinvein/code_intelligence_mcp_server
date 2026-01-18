@@ -86,7 +86,7 @@ If you want to contribute to the Rust server source code:
 
 ```bash
 # Build with all features
-cargo build --release --features model-download,metal
+cargo build --release
 ```
 
 ### Release Process

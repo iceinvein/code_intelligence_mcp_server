@@ -11,11 +11,7 @@ BINARY="$REPO_ROOT/target/release/code-intelligence-mcp-server"
 if [ ! -f "$BINARY" ]; then
     echo "Binary not found, building..." >&2
     cd "$REPO_ROOT"
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        cargo build --release --features model-download,metal
-    else
-        cargo build --release --features model-download
-    fi
+    cargo build --release
 fi
 
 # Environment Configuration

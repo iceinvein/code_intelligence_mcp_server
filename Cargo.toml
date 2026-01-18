@@ -26,17 +26,11 @@ fastembed = "4"
 
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
-flate2 = { version = "1", optional = true }
-tar = { version = "0.4", optional = true }
-sha2 = { version = "0.10", optional = true }
-hex = { version = "0.4", optional = true }
 
 [features]
 default = []
 
 web-ui = ["axum", "tower-http"]
-model-download = ["reqwest", "flate2", "tar", "sha2", "hex"]
 
 [dev-dependencies]
 bytes = "1"

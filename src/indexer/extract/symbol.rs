@@ -35,3 +35,17 @@ pub struct ExtractedSymbol {
     pub bytes: ByteSpan,
     pub lines: LineSpan,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Import {
+    pub name: String,
+    pub source: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtractedFile {
+    pub symbols: Vec<ExtractedSymbol>,
+    pub imports: Vec<Import>,
+    pub type_edges: Vec<(String, String)>, // (parent_symbol_name, type_name)
+}

@@ -2,55 +2,60 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
-use super::symbol::{ByteSpan, ExtractedSymbol, LineSpan, SymbolKind};
+use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, LineSpan, SymbolKind};
 
-pub fn extract_rust_symbols(source: &str) -> Result<Vec<ExtractedSymbol>> {
+pub fn extract_rust_symbols(source: &str) -> Result<ExtractedFile> {
     let mut parser = parser_for_id(LanguageId::Rust)?;
     extract_symbols_with_parser(&mut parser, source)
 }
 
-fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Vec<ExtractedSymbol>> {
+fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<ExtractedFile> {
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| anyhow!("Failed to parse source"))?;
     let root = tree.root_node();
 
     let cursor = root.walk();
-    let mut out = Vec::new();
+    let mut symbols = Vec::new();
+    let mut type_edges = Vec::new();
+
     walk(cursor, &mut |node| match node.kind() {
         "function_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
-                out.push(symbol_from_node(
-                    name,
+                symbols.push(symbol_from_node(
+                    name.clone(),
                     SymbolKind::Function,
                     is_public(node, source),
                     node,
                 ));
+                extract_function_signature_types(node, source, &name, &mut type_edges);
             }
         }
         "struct_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
-                out.push(symbol_from_node(
-                    name,
+                symbols.push(symbol_from_node(
+                    name.clone(),
                     SymbolKind::Struct,
                     is_public(node, source),
                     node,
                 ));
+                extract_struct_fields(node, source, &name, &mut type_edges);
             }
         }
         "enum_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
-                out.push(symbol_from_node(
+                symbols.push(symbol_from_node(
                     name,
                     SymbolKind::Enum,
                     is_public(node, source),
                     node,
                 ));
+                // TODO: extract enum variants fields?
             }
         }
         "trait_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
-                out.push(symbol_from_node(
+                symbols.push(symbol_from_node(
                     name,
                     SymbolKind::Trait,
                     is_public(node, source),
@@ -60,7 +65,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Vec<
         }
         "impl_item" => {
             let name = impl_display_name(node, source);
-            out.push(symbol_from_node(
+            symbols.push(symbol_from_node(
                 name,
                 SymbolKind::Impl,
                 is_public(node, source),
@@ -69,7 +74,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Vec<
         }
         "mod_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
-                out.push(symbol_from_node(
+                symbols.push(symbol_from_node(
                     name,
                     SymbolKind::Module,
                     is_public(node, source),
@@ -80,8 +85,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Vec<
         _ => {}
     });
 
-    out.sort_by_key(|s| s.bytes.start);
-    Ok(out)
+    symbols.sort_by_key(|s| s.bytes.start);
+    Ok(ExtractedFile {
+        symbols,
+        imports: Vec::new(),
+        type_edges,
+    })
 }
 
 fn walk(mut cursor: TreeCursor<'_>, f: &mut impl FnMut(Node<'_>)) {
@@ -102,6 +111,132 @@ fn walk(mut cursor: TreeCursor<'_>, f: &mut impl FnMut(Node<'_>)) {
             }
         }
     }
+}
+
+fn extract_function_signature_types(
+    node: Node<'_>,
+    source: &str,
+    parent_name: &str,
+    out: &mut Vec<(String, String)>,
+) {
+    if let Some(params) = node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.children(&mut cursor) {
+            if param.kind() == "parameter" {
+                if let Some(type_node) = param.child_by_field_name("type") {
+                    extract_type_ref(type_node, source, parent_name, out);
+                }
+            }
+        }
+    }
+
+    if let Some(ret) = node.child_by_field_name("return_type") {
+        extract_type_ref(ret, source, parent_name, out);
+    }
+}
+
+fn extract_struct_fields(
+    node: Node<'_>,
+    source: &str,
+    parent_name: &str,
+    out: &mut Vec<(String, String)>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "field_declaration_list" {
+            let mut f_cursor = child.walk();
+            for field in child.children(&mut f_cursor) {
+                if field.kind() == "field_declaration" {
+                    if let Some(type_node) = field.child_by_field_name("type") {
+                        extract_type_ref(type_node, source, parent_name, out);
+                    }
+                }
+            }
+        } else if child.kind() == "ordered_field_declaration_list" {
+            let mut f_cursor = child.walk();
+            for field in child.children(&mut f_cursor) {
+                if field.kind() == "field_declaration" {
+                    if let Some(type_node) = field.child_by_field_name("type") {
+                        extract_type_ref(type_node, source, parent_name, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn extract_type_ref(
+    node: Node<'_>,
+    source: &str,
+    parent_name: &str,
+    out: &mut Vec<(String, String)>,
+) {
+    let kind = node.kind();
+
+    if kind == "type_identifier" || kind == "primitive_type" {
+        out.push((parent_name.to_string(), text_for_node(node, source)));
+    } else if kind == "generic_type" {
+        // generic_type -> type (name), type_arguments
+        if let Some(name) = node.child_by_field_name("type") {
+            extract_type_ref(name, source, parent_name, out);
+        }
+
+        let mut found_args = false;
+        if let Some(args) = node.child_by_field_name("type_arguments") {
+            found_args = true;
+            let mut cursor = args.walk();
+            for arg in args.children(&mut cursor) {
+                extract_type_ref(arg, source, parent_name, out);
+            }
+        }
+        if !found_args {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_arguments" {
+                    let mut a_cursor = child.walk();
+                    for arg in child.children(&mut a_cursor) {
+                        extract_type_ref(arg, source, parent_name, out);
+                    }
+                }
+            }
+        }
+    } else if kind == "type_arguments" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            extract_type_ref(child, source, parent_name, out);
+        }
+    } else if kind == "reference_type" || kind == "pointer_type" || kind == "array_type" {
+        if let Some(_inner) = node.child_by_field_name("type") {
+            // reference_type has 'type' field? Not always in grammar
+            // Let's iterate children to be safe, skipping & or *
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let k = child.kind();
+                if k != "&" && k != "*" && k != "mut" && k != "[" && k != "]" && k != ";" {
+                    extract_type_ref(child, source, parent_name, out);
+                }
+            }
+        } else {
+            // If child_by_field_name fails, try children loop
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let k = child.kind();
+                if k != "&" && k != "*" && k != "mut" && k != "[" && k != "]" && k != ";" {
+                    extract_type_ref(child, source, parent_name, out);
+                }
+            }
+        }
+    } else if kind == "tuple_type" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() != "(" && child.kind() != ")" && child.kind() != "," {
+                extract_type_ref(child, source, parent_name, out);
+            }
+        }
+    }
+    // Handle plain type_arguments if passed directly?
+    // recursion usually handles it via children loop above?
+    // But generic_type handler manually walks type_arguments.
 }
 
 fn symbol_from_node(
@@ -203,26 +338,56 @@ mod inner {
 
         let syms = extract_rust_symbols(source).unwrap();
         assert!(syms
+            .symbols
             .iter()
             .any(|s| s.kind == SymbolKind::Struct && s.name == "Foo"));
         assert!(syms
+            .symbols
             .iter()
             .any(|s| s.kind == SymbolKind::Enum && s.name == "E"));
         assert!(syms
+            .symbols
             .iter()
             .any(|s| s.kind == SymbolKind::Trait && s.name == "T"));
         assert!(syms
+            .symbols
             .iter()
             .any(|s| s.kind == SymbolKind::Function && s.name == "top"));
         assert!(syms
+            .symbols
             .iter()
             .any(|s| s.kind == SymbolKind::Module && s.name == "inner"));
         assert!(syms
+            .symbols
             .iter()
             .any(|s| s.kind == SymbolKind::Impl && s.name.contains("impl Foo")));
 
-        let foo = syms.iter().find(|s| s.name == "Foo").unwrap();
+        let foo = syms.symbols.iter().find(|s| s.name == "Foo").unwrap();
         assert!(snippet(source, foo).contains("pub struct Foo"));
         assert!(foo.exported);
+    }
+
+    #[test]
+    fn extracts_rust_type_edges() {
+        let source = r#"
+        struct User { name: String }
+        fn process(u: User) -> Result<(), Error> {}
+        impl User {
+            fn new(name: String) -> Self { Self { name } }
+        }
+        "#;
+
+        let extracted = extract_rust_symbols(source).unwrap();
+        let edges = extracted.type_edges;
+
+        let has_edge =
+            |parent: &str, ty: &str| edges.contains(&(parent.to_string(), ty.to_string()));
+
+        assert!(has_edge("User", "String"));
+        assert!(has_edge("process", "User"));
+        assert!(has_edge("process", "Result"));
+        assert!(has_edge("process", "Error"));
+        assert!(has_edge("new", "String"));
+        assert!(has_edge("new", "Self"));
     }
 }

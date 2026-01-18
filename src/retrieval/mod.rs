@@ -1,18 +1,19 @@
+pub mod assembler;
+
 use crate::{
     config::Config,
     embeddings::Embedder,
+    retrieval::assembler::ContextAssembler,
     storage::{
         sqlite::{SqliteStore, SymbolRow},
         tantivy::{SearchHit as KeywordHit, TantivyIndex},
         vector::{LanceVectorTable, VectorHit},
     },
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
-    fs,
-    path::Path,
     sync::Arc,
     time::Instant,
 };
@@ -71,6 +72,81 @@ impl Retriever {
         let started_at_unix_s = unix_now_s();
         let started = Instant::now();
 
+        let sqlite = SqliteStore::open(&self.db_path)?;
+        sqlite.init()?;
+
+        // 0. Intent Detection (Graph Intent)
+        if let Some(intent) = detect_intent(query) {
+            match intent {
+                Intent::Callers(name) => {
+                    let targets = sqlite.search_symbols_by_exact_name(&name, None, 5)?;
+                    if let Some(target) = targets.first() {
+                        // Found the symbol, now find who calls/references it
+                        let edges = sqlite.list_edges_to(&target.id, limit * 2)?;
+                        let mut hits = Vec::new();
+                        let mut seen_hits = HashSet::new();
+
+                        for e in edges {
+                            if e.edge_type == "call" || e.edge_type == "reference" {
+                                if seen_hits.contains(&e.from_symbol_id) {
+                                    continue;
+                                }
+                                if let Some(row) = sqlite.get_symbol_by_id(&e.from_symbol_id)? {
+                                    if exported_only && !row.exported {
+                                        continue;
+                                    }
+                                    seen_hits.insert(row.id.clone());
+                                    hits.push(RankedHit {
+                                        id: row.id,
+                                        score: 1.0, // High confidence
+                                        name: row.name,
+                                        kind: row.kind,
+                                        file_path: row.file_path,
+                                        exported: row.exported,
+                                        language: row.language,
+                                    });
+                                }
+                            }
+                        }
+
+                        // If we found hits via graph, return them directly
+                        if !hits.is_empty() {
+                            hits.truncate(limit);
+                            let rows = hits
+                                .iter()
+                                .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
+                                .collect::<Vec<_>>();
+
+                            let assembler = ContextAssembler::new(self.config.clone());
+                            let context = assembler.assemble_context(&sqlite, &rows)?;
+
+                            let duration_ms =
+                                started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                            let run = crate::storage::sqlite::SearchRunRow {
+                                started_at_unix_s,
+                                duration_ms,
+                                keyword_ms: 0,
+                                vector_ms: 0,
+                                merge_ms: 0,
+                                query: trim_query(query, 200),
+                                query_limit: limit as u64,
+                                exported_only,
+                                result_count: hits.len() as u64,
+                            };
+                            let _ = sqlite.insert_search_run(&run);
+
+                            return Ok(SearchResponse {
+                                query: query.to_string(),
+                                limit,
+                                hits,
+                                context,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         let k = self.config.vector_search_limit.max(limit).max(5);
         let keyword_t = Instant::now();
         let keyword_hits = self.tantivy.search(query, k)?;
@@ -102,22 +178,18 @@ impl Retriever {
             uniq
         };
 
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
-
+        // sqlite already opened above
         let mut hits = apply_popularity_boost(&sqlite, hits, &self.config)?;
         hits = diversify_by_cluster(&sqlite, hits, limit);
         hits.truncate(limit);
 
-        let mut rows = hits
+        let rows = hits
             .iter()
             .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
             .collect::<Vec<_>>();
 
-        let expanded = expand_with_edges(&sqlite, &rows, 50)?;
-        rows.extend(expanded);
-
-        let context = assemble_context(&self.config, &rows)?;
+        let assembler = ContextAssembler::new(self.config.clone());
+        let context = assembler.assemble_context(&sqlite, &rows)?;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -144,7 +216,8 @@ impl Retriever {
     }
 
     pub fn assemble_definitions(&self, symbols: &[SymbolRow]) -> Result<String> {
-        assemble_context(&self.config, symbols)
+        let assembler = ContextAssembler::new(self.config.clone());
+        assembler.format_context(symbols, &[])
     }
 
     pub fn load_symbol_rows_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {
@@ -158,44 +231,6 @@ impl Retriever {
         }
         Ok(out)
     }
-}
-
-fn expand_with_edges(
-    sqlite: &SqliteStore,
-    roots: &[SymbolRow],
-    max_additional: usize,
-) -> Result<Vec<SymbolRow>> {
-    let mut out = Vec::new();
-    let mut seen: HashSet<String> = roots.iter().map(|r| r.id.clone()).collect();
-
-    let mut frontier: Vec<String> = roots.iter().map(|r| r.id.clone()).collect();
-    let mut steps = 0usize;
-
-    while !frontier.is_empty() && out.len() < max_additional && steps < 3 {
-        steps += 1;
-        let mut next = Vec::new();
-        for from_id in frontier {
-            if out.len() >= max_additional {
-                break;
-            }
-            let edges = sqlite.list_edges_from(&from_id, 50)?;
-            for e in edges {
-                if out.len() >= max_additional {
-                    break;
-                }
-                if !seen.insert(e.to_symbol_id.clone()) {
-                    continue;
-                }
-                if let Some(row) = sqlite.get_symbol_by_id(&e.to_symbol_id)? {
-                    next.push(row.id.clone());
-                    out.push(row);
-                }
-            }
-        }
-        frontier = next;
-    }
-
-    Ok(out)
 }
 
 fn rank_hits(
@@ -398,67 +433,6 @@ fn diversify_by_cluster(
     out
 }
 
-fn assemble_context(config: &Config, symbols: &[SymbolRow]) -> Result<String> {
-    let mut out = String::new();
-    let mut used = 0usize;
-    let mut seen = HashSet::<&str>::new();
-
-    for sym in symbols {
-        if !seen.insert(&sym.id) {
-            continue;
-        }
-        let header = format!(
-            "=== {}:{}-{} ({} {}) ===\n",
-            sym.file_path, sym.start_line, sym.end_line, sym.kind, sym.name
-        );
-        let header_len = header.len();
-        if used + header_len >= config.max_context_bytes {
-            break;
-        }
-
-        let snippet =
-            read_symbol_snippet(&config.base_dir, sym).unwrap_or_else(|_| sym.text.clone());
-
-        let mut block = header;
-        block.push_str(&snippet);
-        if !block.ends_with('\n') {
-            block.push('\n');
-        }
-        block.push('\n');
-
-        if used + block.len() > config.max_context_bytes {
-            let remaining = config.max_context_bytes.saturating_sub(used);
-            let bytes = block.as_bytes();
-            let mut cut = remaining.min(bytes.len());
-            while cut > 0 && !block.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            out.push_str(&block[..cut]);
-            break;
-        }
-
-        out.push_str(&block);
-        used += block.len();
-    }
-
-    Ok(out)
-}
-
-fn read_symbol_snippet(base_dir: &Path, sym: &SymbolRow) -> Result<String> {
-    let abs = base_dir.join(&sym.file_path);
-    let bytes = fs::read(&abs).with_context(|| format!("Failed to read {}", abs.display()))?;
-
-    let start = sym.start_byte as usize;
-    let end = sym.end_byte as usize;
-    if start >= bytes.len() || end > bytes.len() || start >= end {
-        return Err(anyhow!("Invalid byte span for {}", sym.id));
-    }
-
-    let slice = &bytes[start..end];
-    let s = std::str::from_utf8(slice).unwrap_or("").to_string();
-    Ok(s)
-}
-
 fn unix_now_s() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -473,6 +447,32 @@ fn trim_query(s: &str, max_len: usize) -> String {
         out.truncate(max_len);
     }
     out
+}
+
+enum Intent {
+    Callers(String),
+}
+
+fn detect_intent(query: &str) -> Option<Intent> {
+    let q = query.trim().to_lowercase();
+    if let Some(s) = q.strip_prefix("who calls ") {
+        return Some(Intent::Callers(s.trim().to_string()));
+    }
+    if let Some(s) = q.strip_prefix("callers of ") {
+        return Some(Intent::Callers(s.trim().to_string()));
+    }
+    if let Some(s) = q.strip_prefix("references to ") {
+        return Some(Intent::Callers(s.trim().to_string()));
+    }
+    if let Some(s) = q.strip_prefix("usages of ") {
+        return Some(Intent::Callers(s.trim().to_string()));
+    }
+    if let Some(s) = q.strip_prefix("where is ") {
+        if let Some(rest) = s.strip_suffix(" used") {
+            return Some(Intent::Callers(rest.trim().to_string()));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn assemble_context_enforces_max_bytes_with_utf8() {
-        let config = cfg_with_max(60);
+        let config = Arc::new(cfg_with_max(60));
         let sym = SymbolRow {
             id: "id1".to_string(),
             file_path: "a.ts".to_string(),
@@ -531,7 +531,8 @@ mod tests {
             end_line: 1,
             text: "export function alpha() { return \"你好\" }".to_string(),
         };
-        let out = assemble_context(&config, &[sym]).unwrap();
+        let assembler = ContextAssembler::new(config.clone());
+        let out = assembler.format_context(&[sym], &[]).unwrap();
         assert!(out.len() <= config.max_context_bytes);
         assert!(std::str::from_utf8(out.as_bytes()).is_ok());
     }

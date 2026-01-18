@@ -1,3 +1,4 @@
+use crate::indexer::extract::symbol::Import;
 use crate::{
     config::Config,
     embeddings::Embedder,
@@ -355,7 +356,7 @@ impl IndexPipeline {
             }
 
             let mut symbol_rows = Vec::new();
-            for sym in extracted {
+            for sym in extracted.symbols {
                 let text = source
                     .get(sym.bytes.start..sym.bytes.end)
                     .unwrap_or("")
@@ -365,7 +366,12 @@ impl IndexPipeline {
                     continue;
                 }
 
-                let id = stable_symbol_id(&rel, &sym.name, sym.bytes.start as u32);
+                let start_byte_for_id = if sym.exported {
+                    0
+                } else {
+                    sym.bytes.start as u32
+                };
+                let id = stable_symbol_id(&rel, &sym.name, start_byte_for_id);
                 symbol_rows.push(SymbolRow {
                     id,
                     file_path: rel.clone(),
@@ -374,6 +380,7 @@ impl IndexPipeline {
                     name: sym.name,
                     exported: sym.exported,
                     start_byte: sym.bytes.start as u32,
+
                     end_byte: sym.bytes.end as u32,
                     start_line: sym.lines.start,
                     end_line: sym.lines.end,
@@ -394,8 +401,6 @@ impl IndexPipeline {
                     upsert_name_mapping(&mut name_to_id, row);
                 }
 
-                let import_names = extract_import_names(language_id, &source);
-
                 {
                     let sqlite = SqliteStore::open(&self.db_path)?;
                     sqlite.init()?;
@@ -403,7 +408,12 @@ impl IndexPipeline {
                         sqlite.upsert_symbol(row)?;
                     }
                     for row in &symbol_rows {
-                        let edges = extract_edges_for_symbol(row, &name_to_id, &import_names);
+                        let edges = extract_edges_for_symbol(
+                            row,
+                            &name_to_id,
+                            &extracted.imports,
+                            &extracted.type_edges,
+                        );
                         for edge in edges {
                             let _ = sqlite.upsert_edge(&edge);
                         }
@@ -413,9 +423,10 @@ impl IndexPipeline {
                         &rel,
                         &source,
                         &name_to_id,
-                        &import_names,
+                        &extracted.imports,
                         &symbol_rows,
                     );
+
                     for ex in examples {
                         let _ = sqlite.upsert_usage_example(&ex);
                     }
@@ -576,102 +587,134 @@ fn upsert_name_mapping(name_to_id: &mut HashMap<String, String>, row: &SymbolRow
 fn extract_edges_for_symbol(
     row: &SymbolRow,
     name_to_id: &HashMap<String, String>,
-    import_names: &[String],
+    imports: &[Import],
+    type_edges: &[(String, String)],
 ) -> Vec<EdgeRow> {
     let mut out = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
 
+    // Map import alias/name to Import struct for fast lookup
+    let mut import_map: HashMap<&str, &Import> = HashMap::new();
+    for imp in imports {
+        if let Some(alias) = &imp.alias {
+            import_map.insert(alias, imp);
+        } else {
+            import_map.insert(&imp.name, imp);
+        }
+    }
+
     for callee in extract_callee_names(&row.text) {
-        let Some(to_id) = name_to_id.get(&callee) else {
+        let to_id = if let Some(local_id) = name_to_id.get(&callee) {
+            if local_id == &row.id {
+                continue;
+            }
+            Some(local_id.clone())
+        } else if let Some(imp) = import_map.get(callee.as_str()) {
+            // Resolve import
+            resolve_imported_symbol_id(&row.file_path, imp)
+        } else {
+            None
+        };
+
+        let Some(to_id) = to_id else {
             continue;
         };
-        if to_id == &row.id {
-            continue;
-        }
+
         if !used_edges.insert(("call".to_string(), to_id.clone())) {
             continue;
         }
         out.push(EdgeRow {
             from_symbol_id: row.id.clone(),
-            to_symbol_id: to_id.clone(),
+            to_symbol_id: to_id,
             edge_type: "call".to_string(),
             at_file: Some(row.file_path.clone()),
             at_line: Some(row.start_line),
         });
     }
 
+    // Handle extends/implements
     if row.kind == "class" || row.kind == "interface" || row.kind == "type_alias" {
         let (extends, implements, aliases) = parse_type_relations(&row.text);
-        for name in extends {
-            if let Some(to_id) = name_to_id.get(&name) {
-                if to_id != &row.id {
-                    if !used_edges.insert(("extends".to_string(), to_id.clone())) {
-                        continue;
-                    }
+
+        let mut handle_relation = |name: String, rel_type: &str| {
+            let to_id = if let Some(local_id) = name_to_id.get(&name) {
+                if local_id == &row.id {
+                    return;
+                }
+                Some(local_id.clone())
+            } else if let Some(imp) = import_map.get(name.as_str()) {
+                resolve_imported_symbol_id(&row.file_path, imp)
+            } else {
+                None
+            };
+
+            if let Some(id) = to_id {
+                if used_edges.insert((rel_type.to_string(), id.clone())) {
                     out.push(EdgeRow {
                         from_symbol_id: row.id.clone(),
-                        to_symbol_id: to_id.clone(),
-                        edge_type: "extends".to_string(),
+                        to_symbol_id: id,
+                        edge_type: rel_type.to_string(),
                         at_file: Some(row.file_path.clone()),
                         at_line: Some(row.start_line),
                     });
                 }
             }
+        };
+
+        for name in extends {
+            handle_relation(name, "extends");
         }
         for name in implements {
-            if let Some(to_id) = name_to_id.get(&name) {
-                if to_id != &row.id {
-                    if !used_edges.insert(("implements".to_string(), to_id.clone())) {
-                        continue;
-                    }
-                    out.push(EdgeRow {
-                        from_symbol_id: row.id.clone(),
-                        to_symbol_id: to_id.clone(),
-                        edge_type: "implements".to_string(),
-                        at_file: Some(row.file_path.clone()),
-                        at_line: Some(row.start_line),
-                    });
-                }
-            }
+            handle_relation(name, "implements");
         }
-
         for name in aliases {
-            if let Some(to_id) = name_to_id.get(&name) {
-                if to_id != &row.id {
-                    if !used_edges.insert(("alias".to_string(), to_id.clone())) {
-                        continue;
-                    }
-                    out.push(EdgeRow {
-                        from_symbol_id: row.id.clone(),
-                        to_symbol_id: to_id.clone(),
-                        edge_type: "alias".to_string(),
-                        at_file: Some(row.file_path.clone()),
-                        at_line: Some(row.start_line),
-                    });
-                }
-            }
+            handle_relation(name, "alias");
         }
     }
 
+    // Create "import" edges for all imports used?
+    // Actually we should create edges for *all* imports present in the file that are *used*?
+    // Or just all imports? The Graph usually has "import" edges for explicit imports.
+    // The previous implementation added edges for all `import_names` found in the file.
+    // But `import_names` was just a list of names.
+    // Now we have `imports`.
+    // Let's verify: `extract_edges_for_symbol` is called for EACH symbol.
+    // Should each symbol have an "import" edge?
+    // NO. The FILE imports the symbol. Or the symbol USES the import.
+    // The previous code: `for name in import_names ... out.push(EdgeRow { ... edge_type: "import" })`.
+    // It checked if `import_names` contained something that resolved to a `to_id`.
+    // If it did, it added an edge from `row.id` to `to_id` with type "import".
+    // This implies "Symbol A depends on Import B".
+    // This is valid if Symbol A *uses* B.
+    // But the previous code iterated ALL imports for EVERY symbol. That seems wrong?
+    // Ah, `import_names` was passed in.
+    // If `import_names` is global for the file, then EVERY symbol in the file gets an edge to EVERY import?
+    // That seems like noise.
+    // But let's look at the old code:
+    /*
     for name in import_names {
-        let Some(to_id) = name_to_id.get(name) else {
-            continue;
-        };
-        if to_id == &row.id {
-            continue;
-        }
-        if !used_edges.insert(("import".to_string(), to_id.clone())) {
-            continue;
-        }
-        out.push(EdgeRow {
-            from_symbol_id: row.id.clone(),
-            to_symbol_id: to_id.clone(),
-            edge_type: "import".to_string(),
-            at_file: Some(row.file_path.clone()),
-            at_line: Some(row.start_line),
-        });
+        let Some(to_id) = name_to_id.get(name) else { continue };
+        ...
+        out.push(... edge_type: "import" ...);
     }
+    */
+    // `name_to_id` contains LOCAL symbols.
+    // So if I `import { A }`, `A` is in `name_to_id`?
+    // Only if `A` is defined in the file?
+    // Wait, the OLD code: `extract_ts_import_names` returned names.
+    // `upsert_name_mapping` ONLY inserted symbols defined in `symbol_rows`.
+    // So if `A` is imported, it is NOT in `symbol_rows`. So it is NOT in `name_to_id`.
+    // So the OLD code `name_to_id.get(name)` would FAIL for imports!
+    // UNLESS the import name collided with a local symbol.
+    // So the old "import" edge logic was effectively broken for cross-file imports too.
 
+    // I will drop the "import" edge type for now, or only add it if we detect usage.
+    // The "call" and "reference" edges cover usage.
+    // "import" edge might mean "file dependency".
+
+    // For now, I'll stick to calls/refs/types.
+
+    // References
     let mut refs_added = 0usize;
     for ident in extract_identifiers(&row.text) {
         if refs_added >= 20 {
@@ -680,46 +723,153 @@ fn extract_edges_for_symbol(
         if ident == row.name {
             continue;
         }
-        let Some(to_id) = name_to_id.get(&ident) else {
-            continue;
+
+        let to_id = if let Some(local_id) = name_to_id.get(&ident) {
+            if local_id == &row.id {
+                continue;
+            }
+            Some(local_id.clone())
+        } else if let Some(imp) = import_map.get(ident.as_str()) {
+            resolve_imported_symbol_id(&row.file_path, imp)
+        } else {
+            None
         };
-        if to_id == &row.id {
-            continue;
+
+        if let Some(id) = to_id {
+            if used_edges.insert(("reference".to_string(), id.clone())) {
+                out.push(EdgeRow {
+                    from_symbol_id: row.id.clone(),
+                    to_symbol_id: id,
+                    edge_type: "reference".to_string(),
+                    at_file: Some(row.file_path.clone()),
+                    at_line: Some(row.start_line),
+                });
+            }
         }
-        if !used_edges.insert(("reference".to_string(), to_id.clone())) {
-            continue;
-        }
-        out.push(EdgeRow {
-            from_symbol_id: row.id.clone(),
-            to_symbol_id: to_id.clone(),
-            edge_type: "reference".to_string(),
-            at_file: Some(row.file_path.clone()),
-            at_line: Some(row.start_line),
-        });
         refs_added += 1;
     }
 
+    // Add type edges
+    for (parent_name, type_name) in type_edges {
+        if parent_name == &row.name {
+            // Resolve type_name
+            let to_id = if let Some(local_id) = name_to_id.get(type_name) {
+                if local_id == &row.id {
+                    continue;
+                }
+                Some(local_id.clone())
+            } else if let Some(imp) = import_map.get(type_name.as_str()) {
+                resolve_imported_symbol_id(&row.file_path, imp)
+            } else {
+                None
+            };
+
+            if let Some(id) = to_id {
+                if used_edges.insert(("type".to_string(), id.clone())) {
+                    out.push(EdgeRow {
+                        from_symbol_id: row.id.clone(),
+                        to_symbol_id: id,
+                        edge_type: "type".to_string(),
+                        at_file: Some(row.file_path.clone()),
+                        at_line: Some(row.start_line),
+                    });
+                }
+            }
+        }
+    }
+
     out
+}
+
+fn resolve_imported_symbol_id(current_file_path: &str, imp: &Import) -> Option<String> {
+    // Basic resolution: assume TS relative path
+    // current: src/a.ts, source: ./b
+    // result: src/b.ts
+    // We assume the symbol name in the target file is `imp.name` (the remote name).
+    // The ID is stable_symbol_id(target_path, imp.name, 0).
+
+    let target_path = resolve_path(current_file_path, &imp.source)?;
+    Some(stable_symbol_id(&target_path, &imp.name, 0))
+}
+
+fn resolve_path(current: &str, source: &str) -> Option<String> {
+    if !source.starts_with('.') {
+        return None;
+    }
+
+    // Normalize slashes first
+    let current = current.replace('\\', "/");
+    let source = source.replace('\\', "/");
+
+    let current_path = PathBuf::from(&current);
+    let parent = current_path.parent()?;
+
+    // Manual join to avoid ./ weirdness if possible or clean it after
+    let joined = parent.join(&source);
+    let joined_str = joined.to_string_lossy().replace('\\', "/");
+
+    // Clean path (lexical normalization)
+    let parts: Vec<&str> = joined_str.split('/').collect();
+    let mut stack = Vec::new();
+
+    for part in parts {
+        if part == "." || part.is_empty() {
+            continue;
+        }
+        if part == ".." {
+            stack.pop();
+        } else {
+            stack.push(part);
+        }
+    }
+
+    let mut s = stack.join("/");
+
+    // Quick hack: just append .ts if missing extension
+    if !s.ends_with(".ts") && !s.ends_with(".tsx") && !s.ends_with(".rs") {
+        s.push_str(".ts"); // Bias towards TS
+    }
+
+    Some(s)
 }
 
 fn extract_usage_examples_for_file(
     file_path: &str,
     source: &str,
     name_to_id: &HashMap<String, String>,
-    import_names: &[String],
+    imports: &[Import],
     symbol_rows: &[SymbolRow],
 ) -> Vec<UsageExampleRow> {
     let mut out = Vec::new();
     let mut seen: HashSet<(String, String, String, Option<u32>, String)> = HashSet::new();
 
+    // Map import alias/name to Import struct
+    let mut import_map: HashMap<&str, &Import> = HashMap::new();
+    for imp in imports {
+        if let Some(alias) = &imp.alias {
+            import_map.insert(alias, imp);
+        } else {
+            import_map.insert(&imp.name, imp);
+        }
+    }
+
     for row in symbol_rows {
         for callee in extract_callee_names(&row.text) {
-            let Some(to_id) = name_to_id.get(&callee) else {
+            let to_id = if let Some(local_id) = name_to_id.get(&callee) {
+                if local_id == &row.id {
+                    continue;
+                }
+                Some(local_id.clone())
+            } else if let Some(imp) = import_map.get(callee.as_str()) {
+                resolve_imported_symbol_id(file_path, imp)
+            } else {
+                None
+            };
+
+            let Some(to_id) = to_id else {
                 continue;
             };
-            if to_id == &row.id {
-                continue;
-            }
+
             let snippet =
                 extract_usage_line(&row.text, &callee).unwrap_or_else(|| format!("{callee}("));
             let key = (
@@ -750,12 +900,21 @@ fn extract_usage_examples_for_file(
             if ident == row.name {
                 continue;
             }
-            let Some(to_id) = name_to_id.get(&ident) else {
+            let to_id = if let Some(local_id) = name_to_id.get(&ident) {
+                if local_id == &row.id {
+                    continue;
+                }
+                Some(local_id.clone())
+            } else if let Some(imp) = import_map.get(ident.as_str()) {
+                resolve_imported_symbol_id(file_path, imp)
+            } else {
+                None
+            };
+
+            let Some(to_id) = to_id else {
                 continue;
             };
-            if to_id == &row.id {
-                continue;
-            }
+
             let snippet =
                 extract_usage_line(&row.text, &ident).unwrap_or_else(|| ident.to_string());
             let key = (
@@ -780,18 +939,26 @@ fn extract_usage_examples_for_file(
         }
     }
 
+    // Import usage examples?
+    // We can iterate source lines and check if they contain imported names.
+    // Similar to before.
     for (idx, line) in source.lines().enumerate() {
         if !line.contains("import") {
             continue;
         }
         let line_no = u32::try_from(idx + 1).ok();
-        for name in import_names {
+
+        // This is expensive if imports is large, but usually small per file.
+        for imp in imports {
+            let name = imp.alias.as_ref().unwrap_or(&imp.name);
             if !line.contains(name) {
                 continue;
             }
-            let Some(to_id) = name_to_id.get(name) else {
+
+            let Some(to_id) = resolve_imported_symbol_id(file_path, imp) else {
                 continue;
             };
+
             let snippet = trim_snippet(line, 200);
             let key = (
                 to_id.clone(),
@@ -879,69 +1046,6 @@ fn extract_callee_names(text: &str) -> Vec<String> {
         }
         if j < bytes.len() && bytes[j] == b'(' && !stopwords.contains(ident) {
             out.push(ident.to_string());
-        }
-    }
-    out
-}
-
-fn extract_import_names(language_id: LanguageId, source: &str) -> Vec<String> {
-    match language_id {
-        LanguageId::Typescript | LanguageId::Tsx => extract_ts_import_names(source),
-        LanguageId::Rust => extract_rust_use_names(source),
-    }
-}
-
-fn extract_ts_import_names(source: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in source.lines() {
-        let l = line.trim();
-        if l.starts_with("import ") || l.starts_with("export ") {
-            for name in split_import_idents(l) {
-                out.push(name);
-            }
-        }
-    }
-    out
-}
-
-fn split_import_idents(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut s = line.to_string();
-    if let Some(pos) = s.find(" from ") {
-        s.truncate(pos);
-    }
-    s = s.replace(['{', '}', '*', ';', ','], " ");
-    for part in s.split_whitespace() {
-        if part == "import" || part == "export" || part == "default" || part == "as" {
-            continue;
-        }
-        if part.starts_with('"') || part.starts_with('\'') {
-            continue;
-        }
-        if part == "from" {
-            continue;
-        }
-        out.push(part.to_string());
-    }
-    out
-}
-
-fn extract_rust_use_names(source: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in source.lines() {
-        let l = line.trim();
-        if !l.starts_with("use ") {
-            continue;
-        }
-        let l = l.trim_end_matches(';');
-        let l = l.trim_start_matches("use ").trim();
-        let l = l.split(" as ").next().unwrap_or(l).trim();
-        let l = l.trim_end_matches("::*");
-        if let Some(last) = l.split("::").last() {
-            let last = last.trim_matches(['{', '}', ' ']);
-            if !last.is_empty() {
-                out.push(last.to_string());
-            }
         }
     }
     out
@@ -1101,24 +1205,41 @@ mod tests {
             "import { b } from './b';\nexport function a(){ b(); c(); }",
         );
         let mut name_to_id = HashMap::new();
-        name_to_id.insert("b".to_string(), "id_b".to_string());
+        // b is imported, so it might NOT be in local name_to_id if we rely on imports.
+        // But if it IS in name_to_id (e.g. from a previous pass or if we index dependencies first? No, name_to_id is local).
+        // So 'b' should NOT be in name_to_id in a real scenario.
+        // But for this test let's simulate 'c' being local.
         name_to_id.insert("c".to_string(), "id_c".to_string());
 
-        let import_names = extract_import_names(LanguageId::Typescript, &row.text);
-        let edges = extract_edges_for_symbol(&row, &name_to_id, &import_names);
+        let imports = vec![Import {
+            name: "b".to_string(),
+            source: "./b".to_string(),
+            alias: None,
+        }];
+        let type_edges = vec![];
+
+        let edges = extract_edges_for_symbol(&row, &name_to_id, &imports, &type_edges);
+
+        // 'b' is called. It is in imports.
+        // It resolves to src/b.ts (relative to src/a.ts).
+        // ID is stable_symbol_id("src/b.ts", "b", 0).
+        let expected_b_id = stable_symbol_id("src/b.ts", "b", 0);
 
         assert!(edges
             .iter()
-            .any(|e| e.edge_type == "call" && e.to_symbol_id == "id_b"));
+            .any(|e| e.edge_type == "call" && e.to_symbol_id == expected_b_id));
+
+        // 'c' is called. It is local.
         assert!(edges
             .iter()
             .any(|e| e.edge_type == "call" && e.to_symbol_id == "id_c"));
+
+        // 'b' is also referenced (identifiers)
         assert!(edges
             .iter()
-            .any(|e| e.edge_type == "import" && e.to_symbol_id == "id_b"));
-        assert!(edges
-            .iter()
-            .any(|e| e.edge_type == "reference" && e.to_symbol_id == "id_b"));
+            .any(|e| e.edge_type == "reference" && e.to_symbol_id == expected_b_id));
+
+        // "import" edges are removed for now.
     }
 
     #[test]

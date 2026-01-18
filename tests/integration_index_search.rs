@@ -331,3 +331,61 @@ export function extraRoot() { return 42 }
     let resp = retriever.search("extraRoot", 5, false).await.unwrap();
     assert!(resp.context.contains("export function extraRoot"));
 }
+
+#[tokio::test]
+async fn search_uses_graph_intent_for_callers() {
+    let dir = tmp_dir();
+
+    std::fs::write(
+        dir.join("logic.ts"),
+        r#"
+export function targetFunc() { return 1; }
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.join("app.ts"),
+        r#"
+import { targetFunc } from "./logic";
+export function callerOne() { targetFunc(); }
+"#,
+    )
+    .unwrap();
+
+    let config = Arc::new(test_config(&dir));
+    let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+    let embedder = Arc::new(Mutex::new(
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
+    ));
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vectors = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", config.hash_embedding_dim)
+            .await
+            .unwrap(),
+    );
+
+    let indexer = IndexPipeline::new(
+        config.clone(),
+        tantivy.clone(),
+        vectors.clone(),
+        embedder.clone(),
+    );
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder);
+
+    indexer.index_all().await.unwrap();
+
+    // Natural language query with intent
+    let resp = retriever
+        .search("who calls targetFunc", 5, false)
+        .await
+        .unwrap();
+
+    // Should find "callerOne" because it calls targetFunc
+    assert!(resp.context.contains("callerOne"));
+    assert!(resp.context.contains("targetFunc();"));
+
+    // The hits should include callerOne
+    assert!(resp.hits.iter().any(|h| h.name == "callerOne"));
+}

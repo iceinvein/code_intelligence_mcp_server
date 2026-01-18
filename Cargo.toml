@@ -1,0 +1,45 @@
+[package]
+name = "code-intelligence-mcp-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+rust-mcp-sdk = { version = "0.8.1", features = ["macros", "server", "stdio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2", features = ["serde"] }
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23.2"
+rusqlite = { version = "0.33", features = ["bundled"] }
+tantivy = "0.25.0"
+lancedb = "0.23.1"
+arrow-array = "56"
+arrow-schema = "56"
+futures = "0.3"
+candle-core = "0.9.1"
+candle-nn = "0.9.1"
+candle-transformers = "0.9.1"
+tokenizers = "0.21"
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+
+[features]
+default = []
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+web-ui = ["axum", "tower-http"]
+model-download = ["reqwest", "flate2", "tar", "sha2", "hex"]
+
+[dev-dependencies]
+bytes = "1"
+http-body-util = "0.1"

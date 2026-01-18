@@ -1,0 +1,6 @@
+target
+.cimcp/
+.DS_Store
+:memory:
+.plan
+.cargo

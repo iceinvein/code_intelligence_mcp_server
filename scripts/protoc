@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="${PROTOC_VERSION:-29.3}"
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+
+case "$ARCH" in
+  arm64|aarch64) ARCH="aarch_64" ;;
+  x86_64|amd64) ARCH="x86_64" ;;
+  *)
+    echo "unsupported architecture: $ARCH" 1>&2
+    exit 1
+    ;;
+esac
+
+case "$OS" in
+  darwin) PLATFORM="osx" ;;
+  linux) PLATFORM="linux" ;;
+  *)
+    echo "unsupported OS: $OS" 1>&2
+    exit 1
+    ;;
+esac
+
+CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}"
+CACHE_DIR="${CACHE_BASE}/code-intel-protoc/${VERSION}/${PLATFORM}-${ARCH}"
+BIN="${CACHE_DIR}/bin/protoc"
+
+if [ ! -x "$BIN" ]; then
+  rm -rf "$CACHE_DIR"
+  mkdir -p "$CACHE_DIR"
+
+  ZIP_NAME="protoc-${VERSION}-${PLATFORM}-${ARCH}.zip"
+  URL="https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/${ZIP_NAME}"
+
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+
+  curl -fsSL "$URL" -o "${TMP_DIR}/${ZIP_NAME}"
+  unzip -o -q "${TMP_DIR}/${ZIP_NAME}" -d "$CACHE_DIR"
+fi
+
+exec "$BIN" "$@"

@@ -32,7 +32,12 @@ if (!env.EMBEDDINGS_AUTO_DOWNLOAD) {
     env.EMBEDDINGS_AUTO_DOWNLOAD = 'true';
 }
 
-// 4. Metal Acceleration for macOS
+// 4. Set Better Default Model (Jina V2 Base Code)
+if (!env.EMBEDDINGS_MODEL_REPO) {
+    env.EMBEDDINGS_MODEL_REPO = 'jinaai/jina-embeddings-v2-base-code';
+}
+
+// 5. Metal Acceleration for macOS
 if (os.platform() === 'darwin' && !env.EMBEDDINGS_DEVICE) {
     env.EMBEDDINGS_DEVICE = 'metal';
 } else if (!env.EMBEDDINGS_DEVICE) {
@@ -42,11 +47,33 @@ if (os.platform() === 'darwin' && !env.EMBEDDINGS_DEVICE) {
 // 5. Set persistence paths to be inside the project (BASE_DIR/.cimcp) 
 // if not explicitly overridden. This keeps indexes local to the project.
 const cimcpDir = path.join(env.BASE_DIR, '.cimcp');
+
+// Ensure .cimcp directory exists
+if (!fs.existsSync(cimcpDir)) {
+    try {
+        fs.mkdirSync(cimcpDir, { recursive: true });
+    } catch (e) {
+        console.error(`Failed to create .cimcp directory at ${cimcpDir}:`, e.message);
+        // Continue, the server might handle it or fail later
+    }
+}
+
 if (!env.DB_PATH) env.DB_PATH = path.join(cimcpDir, 'code-intelligence.db');
 if (!env.VECTOR_DB_PATH) env.VECTOR_DB_PATH = path.join(cimcpDir, 'vectors');
 if (!env.TANTIVY_INDEX_PATH) env.TANTIVY_INDEX_PATH = path.join(cimcpDir, 'tantivy-index');
+
 // Also set model dir to local project cache if not set globally
-if (!env.EMBEDDINGS_MODEL_DIR) env.EMBEDDINGS_MODEL_DIR = path.join(cimcpDir, 'embeddings-model');
+if (!env.EMBEDDINGS_MODEL_DIR) {
+    env.EMBEDDINGS_MODEL_DIR = path.join(cimcpDir, 'embeddings-model');
+    // Ensure model dir exists, otherwise the Rust server might complain
+    if (!fs.existsSync(env.EMBEDDINGS_MODEL_DIR)) {
+        try {
+            fs.mkdirSync(env.EMBEDDINGS_MODEL_DIR, { recursive: true });
+        } catch (e) {
+             console.error(`Failed to create embeddings directory at ${env.EMBEDDINGS_MODEL_DIR}:`, e.message);
+        }
+    }
+}
 
 // Spawn the process
 const child = spawn(BINARY_PATH, process.argv.slice(2), {

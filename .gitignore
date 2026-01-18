@@ -1,6 +1,14 @@
-target
-.cimcp/
+# macOS
 .DS_Store
+
+# Agent related
+.cimcp/
 :memory:
 .plan
+
+# Rust build artifacts
+target
 .cargo
+
+# Python test files
+test_*.py

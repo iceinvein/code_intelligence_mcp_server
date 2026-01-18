@@ -3,7 +3,7 @@
   "mcp": {
     "code-intelligence": {
       "type": "local",
-      "command": ["./scripts/start_mcp.sh"],
+      "command": ["npx", "-y", "@iceinvein/code-intelligence-mcp"],
       "enabled": true
     }
   }

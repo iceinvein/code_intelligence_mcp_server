@@ -410,9 +410,17 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
             if path.contains("schema")
                 || path.contains("model")
                 || path.contains("entity")
+                || path.contains("entities")
                 || path.contains("db/")
+                || path.contains("database/")
+                || path.contains("migrations/")
+                || path.contains("sql/")
             {
-                50.0
+                if path.contains("db/") {
+                    75.0
+                } else {
+                    50.0
+                }
             } else {
                 0.5
             }
@@ -457,7 +465,17 @@ fn structural_adjustment(
 
     let path_parts: Vec<&str> = file_path.split('/').collect();
     for term in terms {
-        if path_parts.iter().any(|p| p.eq_ignore_ascii_case(term)) {
+        if path_parts.iter().any(|p| {
+            if p.eq_ignore_ascii_case(term) {
+                return true;
+            }
+            if let Some((stem, _)) = p.rsplit_once('.') {
+                if stem.eq_ignore_ascii_case(term) {
+                    return true;
+                }
+            }
+            false
+        }) {
             score += 2.0; // Significant boost for directory/file match
         }
     }
@@ -769,7 +787,14 @@ fn detect_intent(query: &str) -> Option<Intent> {
     }
 
     // Definition keywords
-    if q.contains("schema") || q.contains("model") || q.contains("db table") {
+    if q.contains("schema")
+        || q.contains("model")
+        || q.contains("db table")
+        || q.contains("database")
+        || q.contains("migration")
+        || q.contains("entity")
+        || q.split_whitespace().any(|w| w == "db")
+    {
         return Some(Intent::Schema);
     }
     if q.contains("class")
@@ -1164,7 +1189,7 @@ mod tests {
             other_hit.exported,
         );
 
-        assert_eq!(schema_boost, 50.0);
+        assert_eq!(schema_boost, 75.0); // db/ folder gets extra boost
         assert_eq!(other_boost, 0.5);
     }
 

@@ -31,6 +31,10 @@ cargo check > /dev/null 2>&1 || true
 echo "Updated Cargo.lock"
 
 # 2. Update npm/package.json (Node)
+# Copy README to npm package
+cp README.md npm/README.md
+echo "Copied README.md to npm/"
+
 cd npm
 npm pkg set version=$VERSION
 cd ..
@@ -38,7 +42,7 @@ echo "Updated npm/package.json"
 
 # 3. Commit and Tag
 echo "Creating git commit and tag..."
-git add Cargo.toml Cargo.lock npm/package.json
+git add Cargo.toml Cargo.lock npm/package.json npm/README.md
 git commit -m "chore: release v$VERSION"
 git tag "v$VERSION"
 

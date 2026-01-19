@@ -356,6 +356,24 @@ impl IndexPipeline {
             }
 
             let mut symbol_rows = Vec::new();
+
+            // 1. Add File-Level Symbol (Document Indexing)
+            // We index the file itself as a symbol to allow retrieval of the "whole file" concept.
+            let file_symbol_id = stable_symbol_id(&rel, "FILE_ROOT", 0);
+            symbol_rows.push(SymbolRow {
+                id: file_symbol_id,
+                file_path: rel.clone(),
+                language: language_string(language_id).to_string(),
+                kind: "file".to_string(),
+                name: rel.clone(), // Name is the relative path
+                exported: false,
+                start_byte: 0,
+                end_byte: source.len() as u32,
+                start_line: 1,
+                end_line: source.lines().count() as u32,
+                text: source.clone(),
+            });
+
             for sym in extracted.symbols {
                 let text = source
                     .get(sym.bytes.start..sym.bytes.end)

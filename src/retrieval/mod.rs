@@ -75,74 +75,71 @@ impl Retriever {
         let sqlite = SqliteStore::open(&self.db_path)?;
         sqlite.init()?;
 
-        // 0. Intent Detection (Graph Intent)
-        if let Some(intent) = detect_intent(query) {
-            match intent {
-                Intent::Callers(name) => {
-                    let targets = sqlite.search_symbols_by_exact_name(&name, None, 5)?;
-                    if let Some(target) = targets.first() {
-                        // Found the symbol, now find who calls/references it
-                        let edges = sqlite.list_edges_to(&target.id, limit * 2)?;
-                        let mut hits = Vec::new();
-                        let mut seen_hits = HashSet::new();
+        // 0. Intent Detection
+        let intent = detect_intent(query);
 
-                        for e in edges {
-                            if e.edge_type == "call" || e.edge_type == "reference" {
-                                if seen_hits.contains(&e.from_symbol_id) {
-                                    continue;
-                                }
-                                if let Some(row) = sqlite.get_symbol_by_id(&e.from_symbol_id)? {
-                                    if exported_only && !row.exported {
-                                        continue;
-                                    }
-                                    seen_hits.insert(row.id.clone());
-                                    hits.push(RankedHit {
-                                        id: row.id,
-                                        score: 1.0, // High confidence
-                                        name: row.name,
-                                        kind: row.kind,
-                                        file_path: row.file_path,
-                                        exported: row.exported,
-                                        language: row.language,
-                                    });
-                                }
-                            }
+        if let Some(Intent::Callers(name)) = &intent {
+            let targets = sqlite.search_symbols_by_exact_name(name, None, 5)?;
+            if let Some(target) = targets.first() {
+                // Found the symbol, now find who calls/references it
+                let edges = sqlite.list_edges_to(&target.id, limit * 2)?;
+                let mut hits = Vec::new();
+                let mut seen_hits = HashSet::new();
+
+                for e in edges {
+                    if e.edge_type == "call" || e.edge_type == "reference" {
+                        if seen_hits.contains(&e.from_symbol_id) {
+                            continue;
                         }
-
-                        // If we found hits via graph, return them directly
-                        if !hits.is_empty() {
-                            hits.truncate(limit);
-                            let rows = hits
-                                .iter()
-                                .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
-                                .collect::<Vec<_>>();
-
-                            let assembler = ContextAssembler::new(self.config.clone());
-                            let context = assembler.assemble_context(&sqlite, &rows, &[])?;
-
-                            let duration_ms =
-                                started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                            let run = crate::storage::sqlite::SearchRunRow {
-                                started_at_unix_s,
-                                duration_ms,
-                                keyword_ms: 0,
-                                vector_ms: 0,
-                                merge_ms: 0,
-                                query: trim_query(query, 200),
-                                query_limit: limit as u64,
-                                exported_only,
-                                result_count: hits.len() as u64,
-                            };
-                            let _ = sqlite.insert_search_run(&run);
-
-                            return Ok(SearchResponse {
-                                query: query.to_string(),
-                                limit,
-                                hits,
-                                context,
+                        if let Some(row) = sqlite.get_symbol_by_id(&e.from_symbol_id)? {
+                            if exported_only && !row.exported {
+                                continue;
+                            }
+                            seen_hits.insert(row.id.clone());
+                            hits.push(RankedHit {
+                                id: row.id,
+                                score: 1.0, // High confidence
+                                name: row.name,
+                                kind: row.kind,
+                                file_path: row.file_path,
+                                exported: row.exported,
+                                language: row.language,
                             });
                         }
                     }
+                }
+
+                // If we found hits via graph, return them directly
+                if !hits.is_empty() {
+                    hits.truncate(limit);
+                    let rows = hits
+                        .iter()
+                        .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
+                        .collect::<Vec<_>>();
+
+                    let assembler = ContextAssembler::new(self.config.clone());
+                    let context = assembler.assemble_context(&sqlite, &rows, &[])?;
+
+                    let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    let run = crate::storage::sqlite::SearchRunRow {
+                        started_at_unix_s,
+                        duration_ms,
+                        keyword_ms: 0,
+                        vector_ms: 0,
+                        merge_ms: 0,
+                        query: trim_query(query, 200),
+                        query_limit: limit as u64,
+                        exported_only,
+                        result_count: hits.len() as u64,
+                    };
+                    let _ = sqlite.insert_search_run(&run);
+
+                    return Ok(SearchResponse {
+                        query: query.to_string(),
+                        limit,
+                        hits,
+                        context,
+                    });
                 }
             }
         }
@@ -163,7 +160,7 @@ impl Retriever {
         let vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let merge_t = Instant::now();
-        let ranked = rank_hits(&keyword_hits, &vector_hits, &self.config);
+        let ranked = rank_hits(&keyword_hits, &vector_hits, &self.config, &intent);
         let mut uniq = Vec::new();
         let mut seen = HashSet::new();
         for hit in ranked {
@@ -248,6 +245,7 @@ fn rank_hits(
     keyword_hits: &[KeywordHit],
     vector_hits: &[VectorHit],
     config: &Config,
+    intent: &Option<Intent>,
 ) -> Vec<RankedHit> {
     let mut max_kw = 0.0f32;
     for h in keyword_hits {
@@ -284,6 +282,7 @@ fn rank_hits(
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
         let mut score = vector_w * v + keyword_w * kw;
         score += structural_adjustment(config, h.exported, &h.file_path);
+        score *= intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
 
         merged.insert(
             h.id.clone(),
@@ -305,6 +304,7 @@ fn rank_hits(
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let mut score = vector_w * v + keyword_w * kw;
         score += structural_adjustment(config, h.exported, &h.file_path);
+        score *= intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
 
         merged
             .entry(h.id.clone())
@@ -345,6 +345,38 @@ fn rank_hits(
             .then_with(|| a.id.cmp(&b.id))
     });
     out
+}
+
+fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool) -> f32 {
+    let Some(intent) = intent else {
+        return 1.0;
+    };
+    match intent {
+        Intent::Definition => {
+            let is_def = matches!(
+                kind,
+                "class" | "interface" | "type_alias" | "struct" | "enum" | "const"
+            );
+            if is_def && exported {
+                1.5
+            } else {
+                1.0
+            }
+        }
+        Intent::Schema => {
+            let path = file_path.to_lowercase();
+            if path.contains("schema")
+                || path.contains("model")
+                || path.contains("entity")
+                || path.contains("db/")
+            {
+                2.0
+            } else {
+                1.0
+            }
+        }
+        Intent::Callers(_) => 1.0, // Should be handled by graph search, but if fallback occurs
+    }
 }
 
 fn normalize_pair(a: f32, b: f32) -> (f32, f32) {
@@ -543,10 +575,26 @@ fn trim_query(s: &str, max_len: usize) -> String {
 
 enum Intent {
     Callers(String),
+    Definition,
+    Schema,
 }
 
 fn detect_intent(query: &str) -> Option<Intent> {
     let q = query.trim().to_lowercase();
+
+    // Definition keywords
+    if q.contains("schema") || q.contains("model") || q.contains("db table") {
+        return Some(Intent::Schema);
+    }
+    if q.contains("class")
+        || q.contains("interface")
+        || q.contains("struct")
+        || q.contains("type")
+        || q.contains("def")
+    {
+        return Some(Intent::Definition);
+    }
+
     if let Some(s) = q.strip_prefix("who calls ") {
         return Some(Intent::Callers(s.trim().to_string()));
     }

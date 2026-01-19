@@ -139,9 +139,7 @@ impl ContextAssembler {
             let is_root = root_ids.contains(&sym.id);
             let mut text = self.read_or_get_text(sym)?;
 
-            if !is_root {
-                text = self.simplify_code(&text, &sym.kind);
-            }
+            text = self.simplify_code(&text, &sym.kind, is_root);
 
             let header = format!(
                 "=== {}:{}-{} ({} {}) ===\n",
@@ -180,20 +178,43 @@ impl ContextAssembler {
         Ok(out)
     }
 
-    fn simplify_code(&self, text: &str, kind: &str) -> String {
-        // Basic skeleton generation
-        // If it's a function and > 5 lines, strip body
-        if (kind == "function" || kind == "method") && text.lines().count() > 5 {
-            if let Some(start) = text.find('{') {
-                if let Some(end) = text.rfind('}') {
-                    if start < end {
-                        let signature = &text[..start + 1];
-                        return format!("{} ... }}", signature);
-                    }
-                }
+    fn simplify_code(&self, text: &str, kind: &str, is_root: bool) -> String {
+        let lines: Vec<&str> = text.lines().collect();
+        // Spec: "If the body is >100 lines, provide the signature, the first 10 lines, ... and the last 5 lines."
+        // We apply this to both roots and extra symbols to keep context manageable while "hydrating" structure.
+
+        // Give roots more room. Files get generous room if they are roots.
+        let limit = if is_root {
+            if kind == "file" {
+                1000
+            } else {
+                500
             }
+        } else {
+            100
+        };
+
+        if lines.len() <= limit {
+            return text.to_string();
         }
-        text.to_string()
+
+        let head_count = if kind == "file" { 50 } else { 15 }; // Signature + start
+        let tail_count = 5;
+
+        if lines.len() <= head_count + tail_count {
+            return text.to_string();
+        }
+
+        let head = &lines[..head_count];
+        let tail = &lines[lines.len().saturating_sub(tail_count)..];
+
+        let mut out = head.join("\n");
+        out.push_str(&format!(
+            "\n    // ... ({} lines hidden) ...\n",
+            lines.len().saturating_sub(head_count + tail_count)
+        ));
+        out.push_str(&tail.join("\n"));
+        out
     }
 
     fn read_or_get_text(&self, sym: &SymbolRow) -> Result<String> {
@@ -261,74 +282,69 @@ mod tests {
     }
 
     #[test]
-    fn format_context_simplifies_extra_symbols() {
-        let config = make_config(1000);
+    fn format_context_hydrates_small_and_truncates_huge() {
+        let config = make_config(10000);
         let assembler = ContextAssembler::new(config);
 
-        let long_body = "{\n  line1;\n  line2;\n  line3;\n  line4;\n  line5;\n  line6;\n}";
-
-        let root = SymbolRow {
-            id: "root".to_string(),
-            file_path: "root.ts".to_string(),
+        // 1. Small function (should be hydrated/full)
+        let small_body = "{\n  line1;\n  line2;\n}";
+        let small = SymbolRow {
+            id: "small".to_string(),
+            file_path: "small.ts".to_string(),
             language: "typescript".to_string(),
             kind: "function".to_string(),
-            name: "rootFunc".to_string(),
+            name: "smallFunc".to_string(),
             exported: true,
             start_byte: 0,
             end_byte: 0,
             start_line: 1,
-            end_line: 10,
-            text: format!("function rootFunc() {}", long_body),
+            end_line: 4,
+            text: format!("function smallFunc() {}", small_body),
         };
 
-        let extra = SymbolRow {
-            id: "extra".to_string(),
-            file_path: "extra.ts".to_string(),
+        // 2. Huge function (should be truncated)
+        let mut lines = Vec::new();
+        for i in 0..200 {
+            lines.push(format!("  line{};", i));
+        }
+        let huge_body = lines.join("\n");
+        let huge = SymbolRow {
+            id: "huge".to_string(),
+            file_path: "huge.ts".to_string(),
             language: "typescript".to_string(),
             kind: "function".to_string(),
-            name: "extraFunc".to_string(),
+            name: "hugeFunc".to_string(),
             exported: true,
             start_byte: 0,
             end_byte: 0,
             start_line: 1,
-            end_line: 10,
-            text: format!("function extraFunc() {}", long_body),
+            end_line: 202,
+            text: format!("function hugeFunc() {{\n{}\n}}", huge_body),
         };
 
-        let output = assembler.format_context(&[root], &[extra], &[]).unwrap();
+        let output = assembler
+            .format_context(&[], &[small.clone(), huge.clone()], &[])
+            .unwrap();
 
-        // 1. Root should be full
+        // Check Small
+        assert!(output.contains("line1"), "Small symbol should contain body");
         assert!(
-            output.contains("line6"),
-            "Root symbol should contain full body"
+            output.contains("line2;"),
+            "Small symbol should contain end of body"
         );
 
-        // 2. Extra should be simplified (collapsed) because it has > 5 lines
-        // The simplify_code logic replaces "{ ... }" with "{ ... }" or similar signature retention
-        // Let's check that it DOES NOT contain the inner body lines
-        // Wait, simplify_code checks if lines().count() > 5.
-        // Our long_body has \n, so it has multiple lines.
-
-        // Split output into sections to be sure we are checking the right part
-        let parts: Vec<&str> = output.split("===").collect();
-
-        let header_idx = parts
-            .iter()
-            .position(|p| p.contains("extraFunc"))
-            .expect("Must contain extraFunc header");
-        let extra_body = parts
-            .get(header_idx + 1)
-            .expect("Must have body after header");
-
-        println!("DEBUG EXTRA BODY: '{}'", extra_body);
-
+        // Check Huge (in a separate call to avoid confusion or if concatenated)
+        // Actually output contains both.
+        // Let's check specific truncation markers.
         assert!(
-            !extra_body.contains("line3"),
-            "Extra symbol should be simplified/collapsed"
+            output.contains("lines hidden"),
+            "Huge symbol should be truncated"
         );
+        assert!(output.contains("line0;"), "Huge symbol should show head");
+        assert!(output.contains("line199;"), "Huge symbol should show tail");
         assert!(
-            extra_body.contains("... }"),
-            "Extra symbol should show collapsed signature"
+            !output.contains("line100;"),
+            "Huge symbol should hide middle"
         );
     }
 }

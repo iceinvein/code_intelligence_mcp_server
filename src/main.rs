@@ -172,6 +172,18 @@ pub struct GetUsageExamplesTool {
 pub struct GetIndexStatsTool {}
 
 #[macros::mcp_tool(
+    name = "explore_dependency_graph",
+    description = "Explore dependencies upstream/downstream/bidirectional from a symbol."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct ExploreDependencyGraphTool {
+    pub symbol_name: String,
+    pub direction: Option<String>,
+    pub depth: Option<u32>,
+    pub limit: Option<u32>,
+}
+
+#[macros::mcp_tool(
     name = "get_similarity_cluster",
     description = "Return symbols in the same similarity cluster as the given symbol."
 )]
@@ -221,6 +233,7 @@ impl ServerHandler for CodeIntelligenceHandler {
                 FindReferencesTool::tool(),
                 GetFileSymbolsTool::tool(),
                 GetCallHierarchyTool::tool(),
+                ExploreDependencyGraphTool::tool(),
                 GetTypeGraphTool::tool(),
                 GetUsageExamplesTool::tool(),
                 GetIndexStatsTool::tool(),
@@ -360,6 +373,44 @@ impl ServerHandler for CodeIntelligenceHandler {
                     }))
                     .unwrap_or_else(|_| "{\"ok\":true}".to_string())
                     .into(),
+                ]))
+            }
+            "explore_dependency_graph" => {
+                let tool: ExploreDependencyGraphTool = parse_tool_args(&params)?;
+                let depth = tool.depth.unwrap_or(2) as usize;
+                let limit = tool.limit.unwrap_or(200).max(1) as usize;
+                let direction = tool.direction.unwrap_or_else(|| "downstream".to_string());
+
+                let sqlite =
+                    SqliteStore::open(&self.state.config.db_path).map_err(tool_internal_error)?;
+                sqlite.init().map_err(tool_internal_error)?;
+
+                let roots = sqlite
+                    .search_symbols_by_exact_name(&tool.symbol_name, None, 10)
+                    .map_err(tool_internal_error)?;
+                let root = roots.first().cloned();
+
+                let Some(root) = root else {
+                    return Ok(CallToolResult::text_content(vec![
+                        serde_json::to_string_pretty(&json!({
+                            "symbol_name": tool.symbol_name,
+                            "direction": direction,
+                            "depth": depth,
+                            "nodes": [],
+                            "edges": [],
+                        }))
+                        .unwrap_or_else(|_| "{}".to_string())
+                        .into(),
+                    ]));
+                };
+
+                let graph = build_dependency_graph(&sqlite, &root, &direction, depth, limit)
+                    .map_err(tool_internal_error)?;
+
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&graph)
+                        .unwrap_or_else(|_| "{}".to_string())
+                        .into(),
                 ]))
             }
             "get_similarity_cluster" => {
@@ -648,6 +699,154 @@ fn extract_usage_line(text: &str, symbol_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn build_dependency_graph(
+    sqlite: &SqliteStore,
+    root: &SymbolRow,
+    direction: &str,
+    depth: usize,
+    limit: usize,
+) -> anyhow::Result<serde_json::Value> {
+    let mut nodes = std::collections::HashMap::<String, serde_json::Value>::new();
+    let mut edges = Vec::<serde_json::Value>::new();
+    let mut visited = std::collections::HashSet::<String>::new();
+
+    // Initial node
+    nodes.insert(
+        root.id.clone(),
+        json!({
+            "id": root.id,
+            "name": root.name,
+            "kind": root.kind,
+            "file_path": root.file_path,
+            "language": root.language,
+            "exported": root.exported,
+            "line_range": [root.start_line, root.end_line],
+        }),
+    );
+    visited.insert(root.id.clone());
+
+    let mut frontier = vec![root.id.clone()];
+
+    // Direction flags
+    let traverse_upstream = direction == "upstream" || direction == "bidirectional";
+    let traverse_downstream = direction == "downstream" || direction == "bidirectional";
+
+    for _ in 0..depth {
+        if edges.len() >= limit {
+            break;
+        }
+        let mut next = Vec::new();
+
+        for current_id in frontier {
+            if edges.len() >= limit {
+                break;
+            }
+
+            // Upstream: Who calls me? (Incoming edges)
+            if traverse_upstream {
+                let incoming = sqlite.list_edges_to(&current_id, limit)?;
+                for e in incoming {
+                    if edges.len() >= limit {
+                        break;
+                    }
+
+                    // Filter edge types? "call" is primary. "reference" maybe?
+                    if e.edge_type != "call" && e.edge_type != "reference" {
+                        continue;
+                    }
+
+                    let Some(caller) = sqlite.get_symbol_by_id(&e.from_symbol_id)? else {
+                        continue;
+                    };
+
+                    // Add node if new
+                    if !nodes.contains_key(&caller.id) {
+                        nodes.insert(
+                            caller.id.clone(),
+                            json!({
+                                "id": caller.id,
+                                "name": caller.name,
+                                "kind": caller.kind,
+                                "file_path": caller.file_path,
+                                "language": caller.language,
+                                "exported": caller.exported,
+                                "line_range": [caller.start_line, caller.end_line],
+                            }),
+                        );
+                    }
+
+                    // Add edge
+                    edges.push(json!({
+                        "from": e.from_symbol_id,
+                        "to": e.to_symbol_id,
+                        "edge_type": e.edge_type,
+                        "at_file": e.at_file,
+                        "at_line": e.at_line,
+                    }));
+
+                    if visited.insert(caller.id.clone()) {
+                        next.push(caller.id);
+                    }
+                }
+            }
+
+            // Downstream: Who do I call? (Outgoing edges)
+            if traverse_downstream {
+                let outgoing = sqlite.list_edges_from(&current_id, limit)?;
+                for e in outgoing {
+                    if edges.len() >= limit {
+                        break;
+                    }
+
+                    if e.edge_type != "call" && e.edge_type != "reference" {
+                        continue;
+                    }
+
+                    let Some(callee) = sqlite.get_symbol_by_id(&e.to_symbol_id)? else {
+                        continue;
+                    };
+
+                    if !nodes.contains_key(&callee.id) {
+                        nodes.insert(
+                            callee.id.clone(),
+                            json!({
+                                "id": callee.id,
+                                "name": callee.name,
+                                "kind": callee.kind,
+                                "file_path": callee.file_path,
+                                "language": callee.language,
+                                "exported": callee.exported,
+                                "line_range": [callee.start_line, callee.end_line],
+                            }),
+                        );
+                    }
+
+                    edges.push(json!({
+                        "from": e.from_symbol_id,
+                        "to": e.to_symbol_id,
+                        "edge_type": e.edge_type,
+                        "at_file": e.at_file,
+                        "at_line": e.at_line,
+                    }));
+
+                    if visited.insert(callee.id.clone()) {
+                        next.push(callee.id);
+                    }
+                }
+            }
+        }
+        frontier = next;
+    }
+
+    Ok(json!({
+        "symbol_name": root.name,
+        "direction": direction,
+        "depth": depth,
+        "nodes": nodes.into_values().collect::<Vec<_>>(),
+        "edges": edges,
+    }))
 }
 
 fn build_call_hierarchy(

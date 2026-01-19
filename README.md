@@ -1,21 +1,33 @@
 # Code Intelligence MCP Server
 
-A powerful **Model Context Protocol (MCP)** server for intelligent code navigation and search.
+> **Semantic search and code navigation for LLM agents.**
 
-This server provides advanced context to LLM agents (like OpenCode, Trae, Cursor, etc.) by indexing your codebase locally.
+[![NPM Version](https://img.shields.io/npm/v/@iceinvein/code-intelligence-mcp?style=flat-square&color=blue)](https://www.npmjs.com/package/@iceinvein/code-intelligence-mcp)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-Enabled-orange?style=flat-square)](https://modelcontextprotocol.io)
 
-## Features
+---
 
-* **Hybrid Search**: Combines keyword search (Tantivy) with semantic vector search (LanceDB + FastEmbed).
-* **Smart Embeddings**: Uses `BAAI/bge-base-en-v1.5` by default for high-quality semantic understanding.
-* **Local & Fast**: Everything runs locally. Indexes are stored inside your project (`.cimcp/`).
-* **Zero Config**: Works out of the box with `npx`. No Rust toolchain required for users.
-* **Metal Acceleration**: Automatically uses Metal GPU acceleration on macOS for fast indexing.
-* **Symbol Navigation**: Jump to definitions, find references, call hierarchies, and type graphs.
+This server indexes your codebase locally to provide **fast, semantic, and structure-aware** code navigation to tools like OpenCode, Trae, and Cursor.
 
-## Quick Start (OpenCode)
+## Why Use This Server?
 
-Add this to your project's `opencode.json` (or global config):
+Unlike basic text search, this server builds a local knowledge graph to understand your code.
+
+*   🔍 **Hybrid Search**: Combines **Tantivy** (keyword) + **LanceDB** (semantic vector) + **FastEmbed** (local embedding model).
+*   🚀 **Production First**: Ranking heuristics prioritize implementation code over tests and glue code (`index.ts`).
+*   🧠 **Developer Aware**: Handles common acronyms and casing (e.g., "db" matches "database" and "DBConnection").
+*   ⚡ **Fast & Local**: Written in **Rust**. Uses Metal GPU acceleration on macOS. Indexes are stored locally within your project.
+
+---
+
+## Quick Start
+
+Runs directly via `npx` without requiring a local Rust toolchain.
+
+### OpenCode / Trae
+
+Add to your `opencode.json` (or global config):
 
 ```json
 {
@@ -29,98 +41,94 @@ Add this to your project's `opencode.json` (or global config):
 }
 ```
 
-That's it! OpenCode will download the package, fetch the AI model (approx 300MB, once), index your code, and enable smart tools.
+*The server will automatically download the AI model (~300MB) and index your project in the background.*
 
-## Tools Provided
+---
 
-* `search_code`: Find code by semantic meaning or keywords.
-* `get_definition`: Jump to symbol definitions.
-* `find_references`: Find all usages of a symbol.
-* `get_call_hierarchy`: See who calls a function or what it calls.
-* `get_type_graph`: Explore type inheritance and implementation.
-* `get_file_symbols`: List all symbols defined in a file.
-* `get_usage_examples`: Get code examples of how a symbol is used.
-* `get_index_stats`: View stats about the indexed codebase.
-* `refresh_index`: Manually trigger a re-index (happens automatically on startup).
+## Capabilities
+
+Available tools for the agent:
+
+| Tool | Description |
+| :--- | :--- |
+| `search_code` | **Primary Search.** Finds code by meaning ("how does auth work?") or structure ("class User"). |
+| `get_definition` | Retrieves the definition of a specific symbol. |
+| `find_references` | Finds all usages of a function, class, or variable. |
+| `get_call_hierarchy` | specifices upstream callers and downstream callees. |
+| `get_type_graph` | Explores inheritance and interface implementations. |
+| `get_usage_examples` | Returns real-world examples of how a symbol is used in the codebase. |
+
+---
+
+## Smart Ranking
+
+The ranking engine optimizes results for relevance using several heuristics:
+
+1.  **Test Penalty**: Test files (`*.test.ts`, `__tests__`) are ranked lower by default, but are boosted if the query intent implies testing (e.g. "verify login").
+2.  **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
+3.  **Acronym Expansion**: Queries are normalized so "nav bar" matches `NavBar`, `Navigation`, and `NavigationBar`.
+4.  **Intent Detection**:
+    *   "struct User" → Boosts definitions.
+    *   "who calls login" → Triggers graph lookup.
+    *   "verify login" → Boosts test files.
+
+---
 
 ## Configuration (Optional)
 
-You typically **do not** need to configure anything. The default wrapper script handles:
-
-* `BASE_DIR`: Current working directory.
-* `DB_PATH`, `VECTOR_DB_PATH`: Stored in `./.cimcp/`.
-* `EMBEDDINGS_BACKEND`: `fastembed` (Local AI).
-* `EMBEDDINGS_MODEL_REPO`: `BAAI/bge-base-en-v1.5`.
-
-If you need to customize behavior, you can set environment variables in your MCP config:
+Works without configuration by default. You can customize behavior via environment variables:
 
 ```json
-{
-  "mcp": {
-    "code-intelligence": {
-      "type": "local",
-      "command": ["npx", "-y", "@iceinvein/code-intelligence-mcp"],
-      "env": {
-         "EMBEDDINGS_DEVICE": "cpu", 
-         "WATCH_MODE": "true"
-      }
-    }
-  }
+"env": {
+  "WATCH_MODE": "true",          // Watch for file changes? (Default: false)
+  "EMBEDDINGS_DEVICE": "cpu",    // Force CPU if Metal fails (Default: metal on mac)
+  "INDEX_PATTERNS": "**/*.go",   // Add custom file types
+  "MAX_CONTEXT_BYTES": "50000"   // Limit context window
 }
 ```
 
-| Variable            | Default                         | Description                                 |
-| :------------------ | :------------------------------ | :------------------------------------------ |
-| `WATCH_MODE`        | `false`                         | Enable file watcher for real-time indexing. |
-| `EMBEDDINGS_DEVICE` | `metal` (macOS), `cpu` (others) | Force CPU usage if needed.                  |
-| `INDEX_PATTERNS`    | `**/*.ts,**/*.tsx,**/*.rs`      | CSV of glob patterns to index.              |
-| `EXCLUDE_PATTERNS`  | `node_modules/**,...`           | CSV of glob patterns to ignore.             |
-
-## Development
-
-If you want to contribute to the Rust server source code:
-
-### Prerequisites
-
-* Rust (stable)
-* `protobuf` (`brew install protobuf` on macOS)
-
-### Build
-
-```bash
-# Build with all features
-cargo build --release
-```
-
-### Release Process
-
-1. Run `./scripts/release.sh <version>` (e.g. `0.1.4`)
-2. Push tags to GitHub (`git push origin main --tags`)
-3. Wait for GitHub Actions to build binaries.
-4. Publish to NPM (`cd npm && npm publish`).
+---
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  Client[MCP client<br/>IDE / agent] <-- stdio JSON-RPC --> Server[code-intelligence-mcp-server]
+  Client[MCP Client] <==> Tools
 
-  Server --> Tools[Tool router]
-  Tools --> Index[Indexer pipeline]
-  Tools --> Retrieve[Retriever]
+  subgraph Server [Code Intelligence Server]
+    direction TB
+    Tools[Tool Router]
+    
+    subgraph Indexer [Indexing Pipeline]
+      direction TB
+      Scan[File Scan] --> Parse[Tree-Sitter]
+      Parse --> Extract[Symbol Extraction]
+      Extract --> Embed[FastEmbed Model]
+    end
 
-  Index --> Scan[File scan]
-  Scan --> Parse[tree-sitter parse]
-  Parse --> Extract[Symbol + edge extraction]
+    subgraph Storage [Storage Engine]
+      direction TB
+      SQLite[(SQLite)]
+      Tantivy[(Tantivy)]
+      Lance[(LanceDB)]
+    end
 
-  Extract --> SQLite[(SQLite<br/>symbols, edges)]
-  Extract --> Tantivy[(Tantivy<br/>keyword index)]
-  Extract --> Lance[(LanceDB<br/>vector index)]
-
-  Retrieve --> Tantivy
-  Retrieve --> Lance
-  Retrieve --> Rank["Rank + diversify"]
-  Rank --> SQLite
-  SQLite --> Context[Context assembly]
-  Context --> Client
+    %% Data Flow
+    Tools -- Index --> Scan
+    Embed --> SQLite
+    Embed --> Tantivy
+    Embed --> Lance
+    
+    Tools -- Query --> SQLite
+    Tools -- Query --> Tantivy
+    Tools -- Query --> Lance
+  end
 ```
+
+---
+
+## Development
+
+1.  **Prerequisites**: Rust (stable), `protobuf`.
+2.  **Build**: `cargo build --release`
+3.  **Run**: `./scripts/start_mcp.sh`

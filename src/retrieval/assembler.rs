@@ -16,13 +16,24 @@ impl ContextAssembler {
         Self { config }
     }
 
-    pub fn assemble_context(&self, store: &SqliteStore, roots: &[SymbolRow]) -> Result<String> {
+    pub fn assemble_context(
+        &self,
+        store: &SqliteStore,
+        roots: &[SymbolRow],
+        extra: &[SymbolRow],
+    ) -> Result<String> {
         // 1. Expand context using graph with scoring
         // We fetch more candidates than we strictly need, then rerank.
-        let expanded = self.expand_with_scoring(store, roots, 50)?;
+        // We use both roots and extra as starting points, but we prioritize roots.
+        let mut seeds = Vec::new();
+        seeds.extend_from_slice(roots);
+        seeds.extend_from_slice(extra);
+
+        let expanded = self.expand_with_scoring(store, &seeds, 50)?;
 
         // 2. Format output
-        self.format_context(roots, &expanded)
+        // Roots are full text. Extra and Expanded are simplified.
+        self.format_context(roots, extra, &expanded)
     }
 
     fn expand_with_scoring(
@@ -104,14 +115,23 @@ impl ContextAssembler {
         Ok(result)
     }
 
-    pub fn format_context(&self, roots: &[SymbolRow], expanded: &[SymbolRow]) -> Result<String> {
+    pub fn format_context(
+        &self,
+        roots: &[SymbolRow],
+        explicit_extra: &[SymbolRow],
+        expanded: &[SymbolRow],
+    ) -> Result<String> {
         let mut out = String::new();
         let mut used = 0usize;
         let mut seen = HashSet::<&str>::new();
         let root_ids: HashSet<&String> = roots.iter().map(|r| &r.id).collect();
 
-        // Prioritize roots, then expanded
-        for sym in roots.iter().chain(expanded.iter()) {
+        // Prioritize roots, then explicit_extra, then expanded
+        for sym in roots
+            .iter()
+            .chain(explicit_extra.iter())
+            .chain(expanded.iter())
+        {
             if !seen.insert(&sym.id) {
                 continue;
             }
@@ -197,4 +217,118 @@ fn read_symbol_snippet(base_dir: &Path, sym: &SymbolRow) -> Result<String> {
     let slice = &bytes[start..end];
     let s = std::str::from_utf8(slice).unwrap_or("").to_string();
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::sqlite::SymbolRow;
+
+    fn make_config(max_bytes: usize) -> Arc<Config> {
+        Arc::new(Config {
+            db_path: std::path::PathBuf::from("db"),
+            vector_db_path: std::path::PathBuf::from("vec"),
+            tantivy_index_path: std::path::PathBuf::from("tantivy"),
+            base_dir: std::path::PathBuf::from("."),
+            embeddings_backend: crate::config::EmbeddingsBackend::Hash,
+            embeddings_model_dir: None,
+            embeddings_model_url: None,
+            embeddings_model_sha256: None,
+            embeddings_auto_download: false,
+            embeddings_model_repo: None,
+            embeddings_model_revision: None,
+            embeddings_model_hf_token: None,
+            embeddings_device: crate::config::EmbeddingsDevice::Cpu,
+            embedding_batch_size: 32,
+            hash_embedding_dim: 8,
+            vector_search_limit: 10,
+            hybrid_alpha: 0.7,
+            rank_vector_weight: 0.7,
+            rank_keyword_weight: 0.3,
+            rank_exported_boost: 0.0,
+            rank_index_file_boost: 0.0,
+            rank_test_penalty: 0.0,
+            rank_popularity_weight: 0.0,
+            rank_popularity_cap: 0,
+            index_patterns: vec![],
+            exclude_patterns: vec![],
+            watch_mode: false,
+            watch_debounce_ms: 100,
+            max_context_bytes: max_bytes,
+            index_node_modules: false,
+            repo_roots: vec![],
+        })
+    }
+
+    #[test]
+    fn format_context_simplifies_extra_symbols() {
+        let config = make_config(1000);
+        let assembler = ContextAssembler::new(config);
+
+        let long_body = "{\n  line1;\n  line2;\n  line3;\n  line4;\n  line5;\n  line6;\n}";
+
+        let root = SymbolRow {
+            id: "root".to_string(),
+            file_path: "root.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: "rootFunc".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 10,
+            text: format!("function rootFunc() {}", long_body),
+        };
+
+        let extra = SymbolRow {
+            id: "extra".to_string(),
+            file_path: "extra.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: "extraFunc".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 10,
+            text: format!("function extraFunc() {}", long_body),
+        };
+
+        let output = assembler.format_context(&[root], &[extra], &[]).unwrap();
+
+        // 1. Root should be full
+        assert!(
+            output.contains("line6"),
+            "Root symbol should contain full body"
+        );
+
+        // 2. Extra should be simplified (collapsed) because it has > 5 lines
+        // The simplify_code logic replaces "{ ... }" with "{ ... }" or similar signature retention
+        // Let's check that it DOES NOT contain the inner body lines
+        // Wait, simplify_code checks if lines().count() > 5.
+        // Our long_body has \n, so it has multiple lines.
+
+        // Split output into sections to be sure we are checking the right part
+        let parts: Vec<&str> = output.split("===").collect();
+
+        let header_idx = parts
+            .iter()
+            .position(|p| p.contains("extraFunc"))
+            .expect("Must contain extraFunc header");
+        let extra_body = parts
+            .get(header_idx + 1)
+            .expect("Must have body after header");
+
+        println!("DEBUG EXTRA BODY: '{}'", extra_body);
+
+        assert!(
+            !extra_body.contains("line3"),
+            "Extra symbol should be simplified/collapsed"
+        );
+        assert!(
+            extra_body.contains("... }"),
+            "Extra symbol should show collapsed signature"
+        );
+    }
 }

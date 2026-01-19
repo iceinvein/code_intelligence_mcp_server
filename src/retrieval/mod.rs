@@ -118,7 +118,7 @@ impl Retriever {
                                 .collect::<Vec<_>>();
 
                             let assembler = ContextAssembler::new(self.config.clone());
-                            let context = assembler.assemble_context(&sqlite, &rows)?;
+                            let context = assembler.assemble_context(&sqlite, &rows, &[])?;
 
                             let duration_ms =
                                 started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -181,15 +181,26 @@ impl Retriever {
         // sqlite already opened above
         let mut hits = apply_popularity_boost(&sqlite, hits, &self.config)?;
         hits = diversify_by_cluster(&sqlite, hits, limit);
-        hits.truncate(limit);
+        hits.truncate(limit); // Keep top results before expansion
 
-        let rows = hits
-            .iter()
-            .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
-            .collect::<Vec<_>>();
+        // Expansion step: fetch related symbols (callees/callers) for top hits
+        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, limit)?;
+
+        let mut roots = Vec::new();
+        let mut extra = Vec::new();
+
+        for h in &hits {
+            if let Some(row) = sqlite.get_symbol_by_id(&h.id).ok().flatten() {
+                if expanded_ids.contains(&h.id) {
+                    extra.push(row);
+                } else {
+                    roots.push(row);
+                }
+            }
+        }
 
         let assembler = ContextAssembler::new(self.config.clone());
-        let context = assembler.assemble_context(&sqlite, &rows)?;
+        let context = assembler.assemble_context(&sqlite, &roots, &extra)?;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -217,7 +228,7 @@ impl Retriever {
 
     pub fn assemble_definitions(&self, symbols: &[SymbolRow]) -> Result<String> {
         let assembler = ContextAssembler::new(self.config.clone());
-        assembler.format_context(symbols, &[])
+        assembler.format_context(symbols, &[], &[])
     }
 
     pub fn load_symbol_rows_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {
@@ -433,6 +444,87 @@ fn diversify_by_cluster(
     out
 }
 
+fn expand_with_edges(
+    sqlite: &SqliteStore,
+    hits: Vec<RankedHit>,
+    limit: usize,
+) -> Result<(Vec<RankedHit>, HashSet<String>)> {
+    if hits.is_empty() {
+        return Ok((hits, HashSet::new()));
+    }
+
+    let mut out = hits.clone();
+    let mut seen: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
+    let mut expanded_ids = HashSet::new();
+    let expand_candidates = hits.iter().take(3).cloned().collect::<Vec<_>>();
+
+    for h in expand_candidates {
+        let (is_func, is_type) = match h.kind.as_str() {
+            "function" | "method" => (true, false),
+            "struct" | "enum" | "class" | "interface" | "trait" => (false, true),
+            _ => (false, false),
+        };
+
+        if is_func {
+            // Find callees (implementation details)
+            let edges = sqlite.list_edges_from(&h.id, 5)?;
+            for edge in edges {
+                if edge.edge_type != "call" {
+                    continue;
+                }
+                if seen.insert(edge.to_symbol_id.clone()) {
+                    if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
+                        out.push(RankedHit {
+                            id: row.id.clone(),
+                            score: h.score * 0.8,
+                            name: row.name,
+                            kind: row.kind,
+                            file_path: row.file_path,
+                            exported: row.exported,
+                            language: row.language,
+                        });
+                        expanded_ids.insert(row.id);
+                    }
+                }
+            }
+        } else if is_type {
+            // Find usages (references TO this symbol)
+            let edges = sqlite.list_edges_to(&h.id, 5)?;
+            for edge in edges {
+                if edge.edge_type != "reference" && edge.edge_type != "type" {
+                    continue;
+                }
+                if seen.insert(edge.from_symbol_id.clone()) {
+                    if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
+                        out.push(RankedHit {
+                            id: row.id.clone(),
+                            score: h.score * 0.8,
+                            name: row.name,
+                            kind: row.kind,
+                            file_path: row.file_path,
+                            exported: row.exported,
+                            language: row.language,
+                        });
+                        expanded_ids.insert(row.id);
+                    }
+                }
+            }
+        }
+    }
+
+    // Re-sort and truncate
+    out.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.exported.cmp(&a.exported))
+    });
+    if out.len() > limit {
+        out.truncate(limit);
+    }
+
+    Ok((out, expanded_ids))
+}
+
 fn unix_now_s() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -532,7 +624,7 @@ mod tests {
             text: "export function alpha() { return \"你好\" }".to_string(),
         };
         let assembler = ContextAssembler::new(config.clone());
-        let out = assembler.format_context(&[sym], &[]).unwrap();
+        let out = assembler.format_context(&[sym], &[], &[]).unwrap();
         assert!(out.len() <= config.max_context_bytes);
         assert!(std::str::from_utf8(out.as_bytes()).is_ok());
     }
@@ -684,5 +776,121 @@ mod tests {
             out2.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
             vec!["a1", "a2", "x"]
         );
+    }
+
+    #[test]
+    fn expand_with_edges_finds_related_symbols() {
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        // 1. Setup: main -> calls -> helper
+        sqlite
+            .upsert_symbol(&SymbolRow {
+                id: "main".to_string(),
+                file_path: "main.ts".to_string(),
+                language: "typescript".to_string(),
+                kind: "function".to_string(),
+                name: "main".to_string(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 1,
+                end_line: 1,
+                text: "function main() {}".to_string(),
+            })
+            .unwrap();
+        sqlite
+            .upsert_symbol(&SymbolRow {
+                id: "helper".to_string(),
+                file_path: "helper.ts".to_string(),
+                language: "typescript".to_string(),
+                kind: "function".to_string(),
+                name: "helper".to_string(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 1,
+                end_line: 1,
+                text: "function helper() {}".to_string(),
+            })
+            .unwrap();
+        sqlite
+            .upsert_edge(&crate::storage::sqlite::EdgeRow {
+                from_symbol_id: "main".to_string(),
+                to_symbol_id: "helper".to_string(),
+                edge_type: "call".to_string(),
+                at_file: None,
+                at_line: None,
+            })
+            .unwrap();
+
+        // 2. Setup: consumer -> references -> MyStruct
+        sqlite
+            .upsert_symbol(&SymbolRow {
+                id: "struct1".to_string(),
+                file_path: "struct.ts".to_string(),
+                language: "typescript".to_string(),
+                kind: "struct".to_string(),
+                name: "MyStruct".to_string(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 1,
+                end_line: 1,
+                text: "struct MyStruct {}".to_string(),
+            })
+            .unwrap();
+        sqlite
+            .upsert_symbol(&SymbolRow {
+                id: "consumer".to_string(),
+                file_path: "consumer.ts".to_string(),
+                language: "typescript".to_string(),
+                kind: "function".to_string(),
+                name: "consumer".to_string(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 1,
+                end_line: 1,
+                text: "function consumer() {}".to_string(),
+            })
+            .unwrap();
+        sqlite
+            .upsert_edge(&crate::storage::sqlite::EdgeRow {
+                from_symbol_id: "consumer".to_string(),
+                to_symbol_id: "struct1".to_string(),
+                edge_type: "reference".to_string(),
+                at_file: None,
+                at_line: None,
+            })
+            .unwrap();
+
+        // Test Case A: Expand Function (Outgoing Calls)
+        let hits_func = vec![RankedHit {
+            id: "main".to_string(),
+            score: 1.0,
+            name: "main".to_string(),
+            kind: "function".to_string(),
+            file_path: "main.ts".to_string(),
+            exported: true,
+            language: "typescript".to_string(),
+        }];
+
+        let (expanded_func, _) = expand_with_edges(&sqlite, hits_func, 10).unwrap();
+        assert!(expanded_func.iter().any(|h| h.id == "helper"));
+
+        // Test Case B: Expand Struct (Incoming References)
+        let hits_struct = vec![RankedHit {
+            id: "struct1".to_string(),
+            score: 1.0,
+            name: "MyStruct".to_string(),
+            kind: "struct".to_string(),
+            file_path: "struct.ts".to_string(),
+            exported: true,
+            language: "typescript".to_string(),
+        }];
+
+        let (expanded_struct, _) = expand_with_edges(&sqlite, hits_struct, 10).unwrap();
+        assert!(expanded_struct.iter().any(|h| h.id == "consumer"));
     }
 }

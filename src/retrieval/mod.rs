@@ -78,6 +78,12 @@ impl Retriever {
         // 0. Intent Detection
         let intent = detect_intent(query);
 
+        // Normalize and expand query (Tweak 3: Acronyms & Casing)
+        let expanded_query = normalize_query(query);
+        // Use expanded query for search, but keep original for logging/response if desired?
+        // Actually, we usually want to search with the "better" query.
+        let search_query = &expanded_query;
+
         if let Some(Intent::Callers(name)) = &intent {
             let targets = sqlite.search_symbols_by_exact_name(name, None, 5)?;
             if let Some(target) = targets.first() {
@@ -146,13 +152,13 @@ impl Retriever {
 
         let k = self.config.vector_search_limit.max(limit).max(5);
         let keyword_t = Instant::now();
-        let keyword_hits = self.tantivy.search(query, k)?;
+        let keyword_hits = self.tantivy.search(search_query, k)?;
         let keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let vector_t = Instant::now();
         let query_vector = {
             let mut embedder = self.embedder.lock().await;
-            let mut out = embedder.embed(&[query.to_string()])?;
+            let mut out = embedder.embed(&[search_query.to_string()])?;
             out.pop()
                 .ok_or_else(|| anyhow!("Embedder returned no vector"))?
         };
@@ -160,7 +166,7 @@ impl Retriever {
         let vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let merge_t = Instant::now();
-        let ranked = rank_hits(&keyword_hits, &vector_hits, &self.config, &intent);
+        let ranked = rank_hits(&keyword_hits, &vector_hits, &self.config, &intent, query);
         let mut uniq = Vec::new();
         let mut seen = HashSet::new();
         for hit in ranked {
@@ -178,6 +184,7 @@ impl Retriever {
         // sqlite already opened above
         let mut hits = apply_popularity_boost(&sqlite, hits, &self.config)?;
         hits = diversify_by_cluster(&sqlite, hits, limit);
+        hits = diversify_by_kind(hits, limit);
         hits.truncate(limit); // Keep top results before expansion
 
         // Expansion step: fetch related symbols (callees/callers) for top hits
@@ -246,6 +253,7 @@ fn rank_hits(
     vector_hits: &[VectorHit],
     config: &Config,
     intent: &Option<Intent>,
+    query: &str,
 ) -> Vec<RankedHit> {
     let mut max_kw = 0.0f32;
     for h in keyword_hits {
@@ -281,8 +289,20 @@ fn rank_hits(
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
         let mut score = vector_w * v + keyword_w * kw;
-        score += structural_adjustment(config, h.exported, &h.file_path);
+        score += structural_adjustment(config, h.exported, &h.file_path, intent, query);
         score *= intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
+
+        // Definition Bias
+        if !matches!(intent, Some(Intent::Callers(_))) {
+            let q = query.trim();
+            if h.name.eq_ignore_ascii_case(q) && is_definition_kind(&h.kind) {
+                score += 10.0;
+            } else if h.name.to_lowercase().contains(&q.to_lowercase())
+                && is_definition_kind(&h.kind)
+            {
+                score += 1.0;
+            }
+        }
 
         merged.insert(
             h.id.clone(),
@@ -303,8 +323,20 @@ fn rank_hits(
         let v = vec_scores.get(&h.id).copied().unwrap_or(0.0);
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let mut score = vector_w * v + keyword_w * kw;
-        score += structural_adjustment(config, h.exported, &h.file_path);
+        score += structural_adjustment(config, h.exported, &h.file_path, intent, query);
         score *= intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
+
+        // Definition Bias
+        if !matches!(intent, Some(Intent::Callers(_))) {
+            let q = query.trim();
+            if h.name.eq_ignore_ascii_case(q) && is_definition_kind(&h.kind) {
+                score += 10.0;
+            } else if h.name.to_lowercase().contains(&q.to_lowercase())
+                && is_definition_kind(&h.kind)
+            {
+                score += 1.0;
+            }
+        }
 
         merged
             .entry(h.id.clone())
@@ -348,6 +380,16 @@ fn rank_hits(
 }
 
 fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool) -> f32 {
+    // Tweak 1: Test Penalty (0.5x multiplier)
+    let is_test = file_path.contains(".test.")
+        || file_path.contains(".spec.")
+        || file_path.contains("/__tests__/")
+        || file_path.contains("/tests/");
+
+    if is_test && !matches!(intent, Some(Intent::Test)) {
+        return 0.5;
+    }
+
     let Some(intent) = intent else {
         return 1.0;
     };
@@ -376,6 +418,7 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
             }
         }
         Intent::Callers(_) => 1.0, // Should be handled by graph search, but if fallback occurs
+        Intent::Test => 1.0,
     }
 }
 
@@ -388,18 +431,37 @@ fn normalize_pair(a: f32, b: f32) -> (f32, f32) {
     }
 }
 
-fn structural_adjustment(config: &Config, exported: bool, file_path: &str) -> f32 {
+fn structural_adjustment(
+    config: &Config,
+    exported: bool,
+    file_path: &str,
+    _intent: &Option<Intent>,
+    query: &str,
+) -> f32 {
     let mut score = 0.0;
     if exported {
         score += config.rank_exported_boost;
     }
-    if file_path.contains(".test.") || file_path.contains("/test/") || file_path.contains("/tests/")
-    {
-        score -= config.rank_test_penalty;
-    }
+    // Tweak 2: Glue Code Filtering
     if file_path.ends_with("index.ts") || file_path.ends_with("index.tsx") {
-        score += config.rank_index_file_boost;
+        // "Rank them lowest".
+        score -= 5.0;
     }
+
+    // Subdirectory Semantics
+    let terms: Vec<&str> = query
+        .split_whitespace()
+        .map(|s| s.trim())
+        .filter(|s| s.len() > 2)
+        .collect();
+
+    let path_parts: Vec<&str> = file_path.split('/').collect();
+    for term in terms {
+        if path_parts.iter().any(|p| p.eq_ignore_ascii_case(term)) {
+            score += 2.0; // Significant boost for directory/file match
+        }
+    }
+
     score
 }
 
@@ -474,6 +536,90 @@ fn diversify_by_cluster(
     }
 
     out
+}
+
+fn diversify_by_kind(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
+    if hits.len() <= limit {
+        return hits;
+    }
+
+    let mut defs = Vec::new();
+    let mut tests = Vec::new();
+    let mut others = Vec::new();
+
+    for h in hits {
+        let is_test = h.file_path.contains(".test.")
+            || h.file_path.contains(".spec.")
+            || h.file_path.contains("/tests/")
+            || h.file_path.contains("/__tests__/");
+
+        if is_test {
+            tests.push(h);
+        } else if is_definition_kind(&h.kind) {
+            defs.push(h);
+        } else {
+            others.push(h);
+        }
+    }
+
+    let mut out = Vec::with_capacity(limit);
+    let mut d_idx = 0;
+    let mut t_idx = 0;
+    let mut o_idx = 0;
+
+    // Ensure diversity: pick top 1 from each category if available
+    if d_idx < defs.len() {
+        out.push(defs[d_idx].clone());
+        d_idx += 1;
+    }
+    if o_idx < others.len() && out.len() < limit {
+        out.push(others[o_idx].clone());
+        o_idx += 1;
+    }
+    if t_idx < tests.len() && out.len() < limit {
+        out.push(tests[t_idx].clone());
+        t_idx += 1;
+    }
+
+    // Fill the rest by score
+    while out.len() < limit {
+        let d_score = defs.get(d_idx).map(|h| h.score).unwrap_or(-1.0);
+        let t_score = tests.get(t_idx).map(|h| h.score).unwrap_or(-1.0);
+        let o_score = others.get(o_idx).map(|h| h.score).unwrap_or(-1.0);
+
+        if d_score < 0.0 && t_score < 0.0 && o_score < 0.0 {
+            break;
+        }
+
+        if d_score >= t_score && d_score >= o_score {
+            out.push(defs[d_idx].clone());
+            d_idx += 1;
+        } else if t_score >= d_score && t_score >= o_score {
+            out.push(tests[t_idx].clone());
+            t_idx += 1;
+        } else {
+            out.push(others[o_idx].clone());
+            o_idx += 1;
+        }
+    }
+
+    out
+}
+
+fn is_definition_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class"
+            | "interface"
+            | "type_alias"
+            | "struct"
+            | "enum"
+            | "function"
+            | "method"
+            | "const"
+            | "trait"
+            | "module"
+    )
 }
 
 fn expand_with_edges(
@@ -577,10 +723,50 @@ enum Intent {
     Callers(String),
     Definition,
     Schema,
+    Test,
+}
+
+fn normalize_query(query: &str) -> String {
+    // 1. Split CamelCase
+    let mut new_query = String::new();
+    let chars: Vec<char> = query.chars().collect();
+
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 && c.is_uppercase() {
+            let prev = chars[i - 1];
+            if prev.is_lowercase() {
+                new_query.push(' ');
+            } else if i + 1 < chars.len() && chars[i + 1].is_lowercase() {
+                // Handles DBConnection -> DB Connection
+                new_query.push(' ');
+            }
+        }
+        new_query.push(c);
+    }
+
+    // 2. Acronym expansion
+    let mut final_parts = Vec::new();
+    for part in new_query.split_whitespace() {
+        final_parts.push(part.to_string());
+        match part.to_lowercase().as_str() {
+            "db" => final_parts.push("database".to_string()),
+            "auth" => final_parts.push("authentication".to_string()),
+            "nav" => final_parts.push("navigation".to_string()),
+            "config" => final_parts.push("configuration".to_string()),
+            _ => {}
+        }
+    }
+
+    final_parts.join(" ")
 }
 
 fn detect_intent(query: &str) -> Option<Intent> {
     let q = query.trim().to_lowercase();
+
+    // Tweak 1: Enhanced Test Detection
+    if q.contains("test") || q.contains("spec") || q.contains("verify") {
+        return Some(Intent::Test);
+    }
 
     // Definition keywords
     if q.contains("schema") || q.contains("model") || q.contains("db table") {
@@ -980,5 +1166,179 @@ mod tests {
 
         assert_eq!(schema_boost, 50.0);
         assert_eq!(other_boost, 0.5);
+    }
+
+    #[test]
+    fn rank_hits_applies_definition_bias() {
+        let cfg = cfg_with_max(1000);
+        let query = "MyClass";
+        let intent = Some(Intent::Definition); // or None, rank_hits handles it
+
+        let exact = KeywordHit {
+            id: "1".to_string(),
+            score: 1.0,
+            name: "MyClass".to_string(),
+            kind: "class".to_string(),
+            file_path: "src/my_class.ts".to_string(),
+            exported: true,
+        };
+
+        let partial = KeywordHit {
+            id: "2".to_string(),
+            score: 1.0, // Same base score
+            name: "MyClassHelper".to_string(),
+            kind: "class".to_string(),
+            file_path: "src/helper.ts".to_string(),
+            exported: true,
+        };
+
+        let hits = rank_hits(&[exact.clone(), partial.clone()], &[], &cfg, &intent, query);
+
+        // Exact match should have much higher score
+        let h1 = hits.iter().find(|h| h.id == "1").unwrap();
+        let h2 = hits.iter().find(|h| h.id == "2").unwrap();
+
+        assert!(
+            h1.score > h2.score + 5.0,
+            "Exact match should be significantly boosted"
+        );
+    }
+
+    #[test]
+    fn rank_hits_applies_subdirectory_bias() {
+        let cfg = cfg_with_max(1000);
+        let query = "auth login"; // "auth" matches directory
+
+        let hit_in_dir = KeywordHit {
+            id: "1".to_string(),
+            score: 1.0,
+            name: "login".to_string(),
+            kind: "function".to_string(),
+            file_path: "src/auth/login.ts".to_string(), // Matches "auth"
+            exported: true,
+        };
+
+        let hit_outside = KeywordHit {
+            id: "2".to_string(),
+            score: 1.0,
+            name: "login".to_string(),
+            kind: "function".to_string(),
+            file_path: "src/utils/login.ts".to_string(),
+            exported: true,
+        };
+
+        let hits = rank_hits(
+            &[hit_in_dir.clone(), hit_outside.clone()],
+            &[],
+            &cfg,
+            &None,
+            query,
+        );
+
+        let h1 = hits.iter().find(|h| h.id == "1").unwrap();
+        let h2 = hits.iter().find(|h| h.id == "2").unwrap();
+
+        assert!(h1.score > h2.score, "Subdirectory match should be boosted");
+    }
+
+    #[test]
+    fn intent_adjustment_applies_test_penalty() {
+        let file_path = "src/foo.test.ts";
+
+        // Case 1: No intent -> Penalty
+        let mult = intent_adjustment(&None, "function", file_path, true);
+        assert!(
+            (mult - 0.5).abs() < f32::EPSILON,
+            "Should penalize test files when intent is None"
+        );
+
+        // Case 2: Test intent -> No Penalty
+        let mult_test = intent_adjustment(&Some(Intent::Test), "function", file_path, true);
+        assert!(
+            (mult_test - 1.0).abs() < f32::EPSILON,
+            "Should NOT penalize test files when intent is Test"
+        );
+    }
+
+    #[test]
+    fn normalize_query_expands_acronyms_and_splits_camel_case() {
+        assert_eq!(normalize_query("DBConnection"), "DB database Connection");
+        assert_eq!(
+            normalize_query("auth service"),
+            "auth authentication service"
+        );
+        assert_eq!(normalize_query("nav bar"), "nav navigation bar");
+        assert_eq!(normalize_query("db connection"), "db database connection");
+        // Test combinations
+        // "AuthDB" -> "Auth DB" -> "Auth" + "authentication", "DB" + "database"
+        assert_eq!(normalize_query("AuthDB"), "Auth authentication DB database");
+    }
+
+    #[test]
+    fn diversify_by_kind_interleaves_results() {
+        let def = RankedHit {
+            id: "d".to_string(),
+            score: 10.0,
+            name: "d".to_string(),
+            kind: "function".to_string(),
+            file_path: "d.ts".to_string(),
+            exported: true,
+            language: "ts".to_string(),
+        };
+        let test = RankedHit {
+            id: "t".to_string(),
+            score: 9.0,
+            name: "t".to_string(),
+            kind: "function".to_string(),
+            file_path: "d.test.ts".to_string(),
+            exported: true,
+            language: "ts".to_string(),
+        };
+        let usage = RankedHit {
+            id: "u".to_string(),
+            score: 8.0,
+            name: "u".to_string(),
+            kind: "call".to_string(),
+            file_path: "u.ts".to_string(),
+            exported: true,
+            language: "ts".to_string(),
+        };
+
+        // Even if scores are ordered d, t, u, result should preserve them if limit allows
+        let hits = vec![def.clone(), test.clone(), usage.clone()];
+        let out = diversify_by_kind(hits, 3);
+        assert_eq!(out.len(), 3);
+
+        // If we have many definitions and limit 3, we should still try to include a test/usage
+        let def2 = RankedHit {
+            id: "d2".to_string(),
+            score: 9.5,
+            ..def.clone()
+        };
+        let def3 = RankedHit {
+            id: "d3".to_string(),
+            score: 9.2,
+            ..def.clone()
+        };
+
+        let hits2 = vec![
+            def.clone(),
+            def2.clone(),
+            def3.clone(),
+            test.clone(),
+            usage.clone(),
+        ];
+        let out2 = diversify_by_kind(hits2, 3);
+
+        // Should contain d (def), t (test), u (usage/other) because we try to pick one from each
+        // "others" bucket catches usage (kind="call" is not definition kind)
+
+        let has_def = out2.iter().any(|h| h.id.starts_with("d"));
+        let has_test = out2.iter().any(|h| h.id == "t");
+        let has_usage = out2.iter().any(|h| h.id == "u");
+
+        assert!(has_def);
+        assert!(has_test);
+        assert!(has_usage);
     }
 }

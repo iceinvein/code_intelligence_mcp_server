@@ -114,13 +114,21 @@ impl TantivyIndex {
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
+        // Tweak 3: Index normalization (CamelCase splitting)
+        let split_name = split_camel_case(&symbol.name);
+        let expanded_text = if split_name != symbol.name {
+            format!("{} {}", symbol.text, split_name)
+        } else {
+            symbol.text.clone()
+        };
+
         writer.add_document(doc!(
             self.fields.id => symbol.id.as_str(),
             self.fields.name => symbol.name.as_str(),
             self.fields.file_path => symbol.file_path.as_str(),
             self.fields.kind => symbol.kind.as_str(),
             self.fields.exported => if symbol.exported { 1u64 } else { 0u64 },
-            self.fields.text => symbol.text.as_str(),
+            self.fields.text => expanded_text.as_str(),
         ))?;
 
         Ok(())
@@ -227,6 +235,24 @@ fn build_schema() -> tantivy::schema::Schema {
     builder.build()
 }
 
+fn split_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 && c.is_uppercase() {
+            let prev = chars[i - 1];
+            if prev.is_lowercase() {
+                result.push(' ');
+            } else if i + 1 < chars.len() && chars[i + 1].is_lowercase() {
+                result.push(' ');
+            }
+        }
+        result.push(c);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +310,31 @@ mod tests {
         let reopened = TantivyIndex::open_or_create(&dir).unwrap();
         let hits2 = reopened.search("beta", 10).unwrap();
         assert!(hits2.iter().any(|h| h.id == "id2"));
+    }
+
+    #[test]
+    fn indexes_camel_case_split_tokens() {
+        let dir = tmp_index_dir();
+        let index = TantivyIndex::open_or_create(&dir).unwrap();
+
+        index
+            .upsert_symbol(&sample_symbol(
+                "id1",
+                "DBConnection",
+                "class DBConnection {}",
+            ))
+            .unwrap();
+        index.commit().unwrap();
+
+        // Should match "connection" (split from DBConnection)
+        let hits = index.search("connection", 10).unwrap();
+        assert!(
+            hits.iter().any(|h| h.id == "id1"),
+            "Should match 'connection'"
+        );
+
+        // Should match "db" (split from DBConnection)
+        let hits2 = index.search("db", 10).unwrap();
+        assert!(hits2.iter().any(|h| h.id == "id1"), "Should match 'db'");
     }
 }

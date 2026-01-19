@@ -85,6 +85,8 @@ cat > "$TEST_DIR/query_requests.jsonl" <<EOF
 {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_definition","arguments":{"symbol_name":"run"}}}
 {"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_type_graph","arguments":{"symbol_name":"Dog"}}}
 {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"find_references","arguments":{"symbol_name":"Animal"}}}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"explore_dependency_graph","arguments":{"symbol_name":"run","direction":"downstream","depth":1}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"utils file"}}}
 EOF
 
 cat "$TEST_DIR/query_requests.jsonl" | $SERVER_BIN > "$OUTPUT_FILE"
@@ -195,6 +197,29 @@ try:
     check('Find References (Animal)', 
           found_dog_ref, 
           'Dog implementation reference to Animal not found')
+
+    # Dependency Graph 'run'
+    graph_res = next((l for l in lines if l.get('id') == 9), {})
+    content = graph_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    graph_data = json.loads(content)
+    nodes = graph_data.get('nodes', [])
+    edges = graph_data.get('edges', [])
+    # run calls utils.doSomething or refers to Dog. 
+    # Current indexer might capture "utils.doSomething" as a call or reference.
+    # We should at least see 'run' as the root.
+    found_root = any(n['name'] == 'run' for n in nodes)
+    check('Dependency Graph (run)', found_root, 'Root symbol "run" not found in graph nodes')
+    # Check for downstream nodes (we expect at least 1 node besides root if edges exist)
+    # In app.ts: utils.doSomething() -> call to 'utils' or 'doSomething'?
+    # The indexer sees 'utils' as a reference probably.
+    
+    # File Search 'utils file'
+    file_search_res = next((l for l in lines if l.get('id') == 10), {})
+    content = file_search_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    file_hits = json.loads(content).get('hits', [])
+    # We expect a hit with kind="file" and name containing "utils.ts" or similar
+    found_file = any(h['kind'] == 'file' and 'utils' in h['file_path'] for h in file_hits)
+    check('File Level Search (utils file)', found_file, 'File record for utils.ts not found')
 
 except Exception as e:
     print(f'${RED}CRITICAL ERROR: {e}${NC}')

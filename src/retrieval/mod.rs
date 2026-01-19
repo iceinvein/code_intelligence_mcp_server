@@ -370,9 +370,9 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
                 || path.contains("entity")
                 || path.contains("db/")
             {
-                2.0
+                50.0
             } else {
-                1.0
+                0.5
             }
         }
         Intent::Callers(_) => 1.0, // Should be handled by graph search, but if fallback occurs
@@ -940,5 +940,45 @@ mod tests {
 
         let (expanded_struct, _) = expand_with_edges(&sqlite, hits_struct, 10).unwrap();
         assert!(expanded_struct.iter().any(|h| h.id == "consumer"));
+    }
+
+    #[test]
+    fn schema_intent_boosts_schema_files() {
+        let schema_hit = RankedHit {
+            id: "1".to_string(),
+            score: 0.5,
+            name: "UserSchema".to_string(),
+            kind: "struct".to_string(),
+            file_path: "src/db/schema.rs".to_string(),
+            exported: true,
+            language: "rust".to_string(),
+        };
+        let other_hit = RankedHit {
+            id: "2".to_string(),
+            score: 0.9,
+            name: "Other".to_string(),
+            kind: "function".to_string(),
+            file_path: "src/other.rs".to_string(),
+            exported: true,
+            language: "rust".to_string(),
+        };
+
+        let intent = Some(Intent::Schema);
+
+        let schema_boost = super::intent_adjustment(
+            &intent,
+            &schema_hit.kind,
+            &schema_hit.file_path,
+            schema_hit.exported,
+        );
+        let other_boost = super::intent_adjustment(
+            &intent,
+            &other_hit.kind,
+            &other_hit.file_path,
+            other_hit.exported,
+        );
+
+        assert_eq!(schema_boost, 50.0);
+        assert_eq!(other_boost, 0.5);
     }
 }

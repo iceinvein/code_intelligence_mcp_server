@@ -191,7 +191,7 @@ impl Config {
             .as_deref()
             .map(parse_bool)
             .transpose()?
-            .unwrap_or(false);
+            .unwrap_or(true);
 
         let watch_debounce_ms = optional_env("WATCH_DEBOUNCE_MS")
             .as_deref()
@@ -568,6 +568,16 @@ mod tests {
         assert!((cfg.hybrid_alpha - 0.2).abs() < f32::EPSILON);
         assert!((cfg.rank_vector_weight - 0.2).abs() < f32::EPSILON);
         assert!((cfg.rank_keyword_weight - 0.8).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn watch_mode_defaults_to_true() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        let base = tmp_dir();
+        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        let cfg = Config::from_env().unwrap();
+        assert!(cfg.watch_mode);
     }
 
     #[test]

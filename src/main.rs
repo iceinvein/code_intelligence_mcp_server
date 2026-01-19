@@ -63,7 +63,7 @@ fn print_help() {
     println!("  VECTOR_DB_PATH=./.cimcp/vectors             (resolved under BASE_DIR if relative)");
     println!("  TANTIVY_INDEX_PATH=./.cimcp/tantivy-index   (resolved under BASE_DIR if relative)");
     println!("  MAX_CONTEXT_BYTES=200000");
-    println!("  WATCH_MODE=true|false                (default: false)");
+    println!("  WATCH_MODE=true|false                (default: true)");
     println!("  REPO_ROOTS=/path/a,/path/b           (default: BASE_DIR only)");
     println!();
     println!("Embeddings auto-detection:");

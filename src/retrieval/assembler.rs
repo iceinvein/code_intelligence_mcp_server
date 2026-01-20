@@ -129,9 +129,19 @@ impl ContextAssembler {
                         "reference" => 0.8,
                         _ => 1.0,
                     };
+                    let resolution_multiplier = match edge.resolution.as_str() {
+                        "local" => 1.0,
+                        "import" => 0.9,
+                        "heuristic" => 0.75,
+                        _ => 0.8,
+                    };
                     let evidence_boost =
                         (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
-                    let score = depth_penalty * type_multiplier * edge.confidence * evidence_boost;
+                    let score = depth_penalty
+                        * type_multiplier
+                        * resolution_multiplier
+                        * edge.confidence
+                        * evidence_boost;
 
                     let entry = candidates.get_mut(&edge.to_symbol_id);
                     if let Some((_, s)) = entry {

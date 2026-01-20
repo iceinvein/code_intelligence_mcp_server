@@ -27,6 +27,7 @@ pub struct EdgeRow {
     pub at_line: Option<u32>,
     pub confidence: f32,
     pub evidence_count: u32,
+    pub resolution: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +158,8 @@ CREATE TABLE IF NOT EXISTS edges (
   at_line INTEGER,
   confidence REAL NOT NULL DEFAULT 1.0,
   evidence_count INTEGER NOT NULL DEFAULT 1,
+  resolution TEXT NOT NULL DEFAULT 'unknown',
+  resolution_rank INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   UNIQUE(from_symbol_id, to_symbol_id, edge_type),
   FOREIGN KEY(from_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
@@ -253,6 +256,7 @@ CREATE INDEX IF NOT EXISTS idx_similarity_clusters_key ON similarity_clusters(cl
         migrate_add_edges_location_columns(&self.conn)?;
         migrate_add_edges_confidence_column(&self.conn)?;
         migrate_add_edges_evidence_count_column(&self.conn)?;
+        migrate_add_edges_resolution_columns(&self.conn)?;
         Ok(())
     }
 
@@ -297,16 +301,22 @@ ON CONFLICT(id) DO UPDATE SET
     }
 
     pub fn upsert_edge(&self, edge: &EdgeRow) -> Result<()> {
+        let resolution_rank = edge_resolution_rank(edge.resolution.as_str());
         self.conn
             .execute(
                 r#"
-INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count, resolution, resolution_rank)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
 ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
   at_file=COALESCE(edges.at_file, excluded.at_file),
   at_line=COALESCE(edges.at_line, excluded.at_line),
   confidence=MAX(edges.confidence, excluded.confidence),
-  evidence_count=MAX(edges.evidence_count, excluded.evidence_count)
+  evidence_count=MAX(edges.evidence_count, excluded.evidence_count),
+  resolution_rank=MAX(edges.resolution_rank, excluded.resolution_rank),
+  resolution=CASE
+    WHEN excluded.resolution_rank > edges.resolution_rank THEN excluded.resolution
+    ELSE edges.resolution
+  END
 "#,
                 params![
                     edge.from_symbol_id,
@@ -315,7 +325,9 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
                     edge.at_file,
                     edge.at_line.map(|v| v as i64),
                     edge.confidence,
-                    edge.evidence_count as i64
+                    edge.evidence_count as i64,
+                    edge.resolution,
+                    resolution_rank
                 ],
             )
             .context("Failed to upsert edge")?;
@@ -391,7 +403,7 @@ LIMIT ?4
             .prepare(
                 r#"
 SELECT
-  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count, resolution
 FROM edges
 WHERE from_symbol_id = ?1
 ORDER BY edge_type ASC, to_symbol_id ASC
@@ -413,6 +425,7 @@ LIMIT ?2
                     .and_then(|v| u32::try_from(v).ok()),
                 confidence: row.get::<_, f64>(5)? as f32,
                 evidence_count: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(1),
+                resolution: row.get(7)?,
             });
         }
         Ok(out)
@@ -424,7 +437,7 @@ LIMIT ?2
             .prepare(
                 r#"
 SELECT
-  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count, resolution
 FROM edges
 WHERE to_symbol_id = ?1
 ORDER BY edge_type ASC, from_symbol_id ASC
@@ -446,6 +459,7 @@ LIMIT ?2
                     .and_then(|v| u32::try_from(v).ok()),
                 confidence: row.get::<_, f64>(5)? as f32,
                 evidence_count: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(1),
+                resolution: row.get(7)?,
             });
         }
         Ok(out)
@@ -1165,6 +1179,27 @@ fn migrate_add_edges_evidence_count_column(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_add_edges_resolution_columns(conn: &Connection) -> Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE edges ADD COLUMN resolution TEXT NOT NULL DEFAULT 'unknown'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE edges ADD COLUMN resolution_rank INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    Ok(())
+}
+
+fn edge_resolution_rank(resolution: &str) -> i64 {
+    match resolution {
+        "local" => 3,
+        "import" => 2,
+        "heuristic" => 1,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1249,6 +1284,7 @@ mod tests {
             at_line: None,
             confidence: 1.0,
             evidence_count: 1,
+            resolution: "unknown".to_string(),
         };
         store.upsert_edge(&edge).unwrap();
         store.upsert_edge(&edge).unwrap();
@@ -1281,6 +1317,7 @@ mod tests {
                 at_line: None,
                 confidence: 0.5,
                 evidence_count: 3,
+                resolution: "unknown".to_string(),
             })
             .unwrap();
         store
@@ -1292,6 +1329,7 @@ mod tests {
                 at_line: Some(1),
                 confidence: 0.9,
                 evidence_count: 1,
+                resolution: "unknown".to_string(),
             })
             .unwrap();
 
@@ -1301,6 +1339,51 @@ mod tests {
         assert_eq!(edges[0].evidence_count, 3);
         assert_eq!(edges[0].at_file.as_deref(), Some("src/a.ts"));
         assert_eq!(edges[0].at_line, Some(1));
+    }
+
+    #[test]
+    fn upsert_edge_prefers_higher_resolution() {
+        let store = SqliteStore::from_connection(Connection::open_in_memory().unwrap());
+        store.init().unwrap();
+
+        store
+            .upsert_symbol(&sample_symbol("id1", "src/a.ts", "alpha"))
+            .unwrap();
+        store
+            .upsert_symbol(&sample_symbol("id2", "src/a.ts", "beta"))
+            .unwrap();
+
+        store
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "id1".to_string(),
+                to_symbol_id: "id2".to_string(),
+                edge_type: "call".to_string(),
+                at_file: None,
+                at_line: None,
+                confidence: 0.9,
+                evidence_count: 1,
+                resolution: "import".to_string(),
+            })
+            .unwrap();
+
+        store
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "id1".to_string(),
+                to_symbol_id: "id2".to_string(),
+                edge_type: "call".to_string(),
+                at_file: Some("src/a.ts".to_string()),
+                at_line: Some(5),
+                confidence: 0.1,
+                evidence_count: 1,
+                resolution: "local".to_string(),
+            })
+            .unwrap();
+
+        let edges = store.list_edges_from("id1", 10).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].resolution, "local");
+        assert_eq!(edges[0].at_file.as_deref(), Some("src/a.ts"));
+        assert_eq!(edges[0].at_line, Some(5));
     }
 
     #[test]

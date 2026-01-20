@@ -1176,9 +1176,19 @@ fn expand_with_edges(
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
                         let evidence_boost =
                             (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
+                        let resolution_multiplier = match edge.resolution.as_str() {
+                            "local" => 1.0,
+                            "import" => 0.9,
+                            "heuristic" => 0.75,
+                            _ => 0.8,
+                        };
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score * 0.8 * edge.confidence * evidence_boost,
+                            score: h.score
+                                * 0.8
+                                * edge.confidence
+                                * evidence_boost
+                                * resolution_multiplier,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,
@@ -1205,9 +1215,19 @@ fn expand_with_edges(
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
                         let evidence_boost =
                             (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
+                        let resolution_multiplier = match edge.resolution.as_str() {
+                            "local" => 1.0,
+                            "import" => 0.9,
+                            "heuristic" => 0.75,
+                            _ => 0.8,
+                        };
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score * 0.8 * edge.confidence * evidence_boost,
+                            score: h.score
+                                * 0.8
+                                * edge.confidence
+                                * evidence_boost
+                                * resolution_multiplier,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,
@@ -1588,6 +1608,7 @@ mod tests {
                 at_line: None,
                 confidence: 1.0,
                 evidence_count: 1,
+                resolution: "local".to_string(),
             })
             .unwrap();
 
@@ -1631,6 +1652,7 @@ mod tests {
                 at_line: None,
                 confidence: 1.0,
                 evidence_count: 1,
+                resolution: "local".to_string(),
             })
             .unwrap();
 

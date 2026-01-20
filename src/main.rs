@@ -837,6 +837,7 @@ fn build_dependency_graph(
                         "at_file": e.at_file,
                         "at_line": e.at_line,
                         "evidence_count": e.evidence_count,
+                        "resolution": e.resolution,
                         "evidence": evidence.into_iter().map(|ev| json!({
                             "at_file": ev.at_file,
                             "at_line": ev.at_line,
@@ -888,6 +889,7 @@ fn build_dependency_graph(
                         "at_file": e.at_file,
                         "at_line": e.at_line,
                         "evidence_count": e.evidence_count,
+                        "resolution": e.resolution,
                         "evidence": sqlite
                             .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
                             .unwrap_or_default()
@@ -983,6 +985,7 @@ fn build_call_hierarchy(
                         "at_file": e.at_file,
                         "at_line": e.at_line,
                         "evidence_count": e.evidence_count,
+                        "resolution": e.resolution,
                         "evidence": sqlite
                             .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, "call", 3)
                             .unwrap_or_default()
@@ -1028,6 +1031,7 @@ fn build_call_hierarchy(
                         "at_file": e.at_file,
                         "at_line": e.at_line,
                         "evidence_count": e.evidence_count,
+                        "resolution": e.resolution,
                         "evidence": sqlite
                             .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, "call", 3)
                             .unwrap_or_default()
@@ -1121,6 +1125,7 @@ fn build_type_graph(
                     "at_file": e.at_file,
                     "at_line": e.at_line,
                     "evidence_count": e.evidence_count,
+                    "resolution": e.resolution,
                     "evidence": sqlite
                         .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
                         .unwrap_or_default()
@@ -1789,6 +1794,7 @@ mod tests {
                 at_line: Some(1),
                 confidence: 1.0,
                 evidence_count: 1,
+                resolution: "local".to_string(),
             })
             .unwrap();
         sqlite
@@ -1800,6 +1806,7 @@ mod tests {
                 at_line: Some(1),
                 confidence: 1.0,
                 evidence_count: 1,
+                resolution: "local".to_string(),
             })
             .unwrap();
 
@@ -1844,6 +1851,7 @@ mod tests {
                     at_line: Some(1),
                     confidence: 1.0,
                     evidence_count: 1,
+                    resolution: "local".to_string(),
                 })
                 .unwrap();
         }

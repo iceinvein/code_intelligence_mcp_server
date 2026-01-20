@@ -663,16 +663,16 @@ fn extract_edges_for_symbol(
     }
 
     for callee in extract_callee_names(&row.text) {
-        let to_id = if let Some(local_id) = name_to_id.get(&callee) {
+        let (to_id, resolution) = if let Some(local_id) = name_to_id.get(&callee) {
             if local_id == &row.id {
                 continue;
             }
-            Some(local_id.clone())
+            (Some(local_id.clone()), "local")
         } else if let Some(imp) = import_map.get(callee.as_str()) {
             // Resolve import
-            resolve_imported_symbol_id(&row.file_path, imp)
+            (resolve_imported_symbol_id(&row.file_path, imp), "import")
         } else {
-            None
+            (None, "unknown")
         };
 
         let Some(to_id) = to_id else {
@@ -692,6 +692,7 @@ fn extract_edges_for_symbol(
                 at_line: Some(at_line),
                 confidence: confidence_for("call"),
                 evidence_count: count,
+                resolution: resolution.to_string(),
             },
             evidence_rows
                 .into_iter()
@@ -712,15 +713,15 @@ fn extract_edges_for_symbol(
         let (extends, implements, aliases) = parse_type_relations(&row.text);
 
         let mut handle_relation = |name: String, rel_type: &str| {
-            let to_id = if let Some(local_id) = name_to_id.get(&name) {
+            let (to_id, resolution) = if let Some(local_id) = name_to_id.get(&name) {
                 if local_id == &row.id {
                     return;
                 }
-                Some(local_id.clone())
+                (Some(local_id.clone()), "local")
             } else if let Some(imp) = import_map.get(name.as_str()) {
-                resolve_imported_symbol_id(&row.file_path, imp)
+                (resolve_imported_symbol_id(&row.file_path, imp), "import")
             } else {
-                None
+                (None, "unknown")
             };
 
             if let Some(id) = to_id {
@@ -735,6 +736,7 @@ fn extract_edges_for_symbol(
                             at_line: Some(at_line),
                             confidence: confidence_for(rel_type),
                             evidence_count: count,
+                            resolution: resolution.to_string(),
                         },
                         evidence_rows
                             .into_iter()
@@ -815,15 +817,15 @@ fn extract_edges_for_symbol(
             continue;
         }
 
-        let to_id = if let Some(local_id) = name_to_id.get(&ident) {
+        let (to_id, resolution) = if let Some(local_id) = name_to_id.get(&ident) {
             if local_id == &row.id {
                 continue;
             }
-            Some(local_id.clone())
+            (Some(local_id.clone()), "local")
         } else if let Some(imp) = import_map.get(ident.as_str()) {
-            resolve_imported_symbol_id(&row.file_path, imp)
+            (resolve_imported_symbol_id(&row.file_path, imp), "import")
         } else {
-            None
+            (None, "unknown")
         };
 
         if let Some(id) = to_id {
@@ -838,6 +840,7 @@ fn extract_edges_for_symbol(
                         at_line: Some(at_line),
                         confidence: confidence_for("reference"),
                         evidence_count: count,
+                        resolution: resolution.to_string(),
                     },
                     evidence_rows
                         .into_iter()
@@ -860,15 +863,15 @@ fn extract_edges_for_symbol(
     for (parent_name, type_name) in type_edges {
         if parent_name == &row.name {
             // Resolve type_name
-            let to_id = if let Some(local_id) = name_to_id.get(type_name) {
+            let (to_id, resolution) = if let Some(local_id) = name_to_id.get(type_name) {
                 if local_id == &row.id {
                     continue;
                 }
-                Some(local_id.clone())
+                (Some(local_id.clone()), "local")
             } else if let Some(imp) = import_map.get(type_name.as_str()) {
-                resolve_imported_symbol_id(&row.file_path, imp)
+                (resolve_imported_symbol_id(&row.file_path, imp), "import")
             } else {
-                None
+                (None, "unknown")
             };
 
             if let Some(id) = to_id {
@@ -883,6 +886,7 @@ fn extract_edges_for_symbol(
                             at_line: Some(at_line),
                             confidence: confidence_for("type"),
                             evidence_count: count,
+                            resolution: resolution.to_string(),
                         },
                         evidence_rows
                             .into_iter()

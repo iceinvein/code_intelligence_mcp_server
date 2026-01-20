@@ -23,12 +23,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         "function_declaration" => {
             if let Some(name) = symbol_name(node, source) {
                 let exported = is_exported(&name);
-                symbols.push(symbol_from_node(
-                    name,
-                    SymbolKind::Function,
-                    exported,
-                    node,
-                ));
+                symbols.push(symbol_from_node(name, SymbolKind::Function, exported, node));
             }
         }
         "method_declaration" => {
@@ -48,20 +43,23 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             if let Some(name) = symbol_name(node, source) {
                 let exported = is_exported(&name);
                 // Check what kind of type it is
-                let kind = if node.child_by_field_name("type").map(|n| n.kind() == "struct_type").unwrap_or(false) {
+                let kind = if node
+                    .child_by_field_name("type")
+                    .map(|n| n.kind() == "struct_type")
+                    .unwrap_or(false)
+                {
                     SymbolKind::Struct
-                } else if node.child_by_field_name("type").map(|n| n.kind() == "interface_type").unwrap_or(false) {
+                } else if node
+                    .child_by_field_name("type")
+                    .map(|n| n.kind() == "interface_type")
+                    .unwrap_or(false)
+                {
                     SymbolKind::Interface
                 } else {
                     SymbolKind::TypeAlias // or just Type
                 };
-                
-                symbols.push(symbol_from_node(
-                    name,
-                    kind,
-                    exported,
-                    node,
-                ));
+
+                symbols.push(symbol_from_node(name, kind, exported, node));
             }
         }
         "import_spec" => {
@@ -100,15 +98,13 @@ fn symbol_name(node: Node, source: &str) -> Option<String> {
 
 fn is_exported(name: &str) -> bool {
     // In Go, exported symbols start with an uppercase letter
-    name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+    name.chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
 }
 
-fn symbol_from_node(
-    name: String,
-    kind: SymbolKind,
-    exported: bool,
-    node: Node,
-) -> ExtractedSymbol {
+fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) -> ExtractedSymbol {
     let start = node.start_position();
     let end = node.end_position();
     ExtractedSymbol {
@@ -130,26 +126,30 @@ fn extract_import(node: Node, source: &str, imports: &mut Vec<Import>) {
     // import_spec: (name)? (path)
     let path_node = node.child_by_field_name("path");
     let name_node = node.child_by_field_name("name");
-    
+
     if let Some(path_n) = path_node {
         let path_str = path_n.utf8_text(source.as_bytes()).unwrap().to_string();
         // path_str includes quotes, e.g. "fmt"
         let source_path = path_str.trim_matches('"').to_string();
-        
+
         let alias = name_node.map(|n| n.utf8_text(source.as_bytes()).unwrap().to_string());
-        
+
         // If no alias, the name is the last component of the path (usually)
         // But Import struct has name, source, alias.
         // name: local name used in file
         // source: import path
-        
+
         let name = if let Some(a) = &alias {
             a.clone()
         } else {
             // derive from source path
-            source_path.split('/').last().unwrap_or(&source_path).to_string()
+            source_path
+                .split('/')
+                .last()
+                .unwrap_or(&source_path)
+                .to_string()
         };
-        
+
         imports.push(Import {
             name,
             source: source_path,
@@ -187,36 +187,54 @@ type MyInterface interface {
 }
 "#;
         let extracted = extract_go_symbols(source).unwrap();
-        
+
         // Symbols: main, ExportedFunc, MyStruct, MyInterface
-        // Note: Field and Method inside struct/interface are not extracted by top-level walk unless we handle field_declaration/method_spec inside type_spec, 
+        // Note: Field and Method inside struct/interface are not extracted by top-level walk unless we handle field_declaration/method_spec inside type_spec,
         // but walk visits all nodes, so if we have matchers for them we could.
         // But currently I only match function_declaration, method_declaration, type_spec.
         // Struct fields are "field_declaration" inside "struct_type".
         // Interface methods are "method_spec" inside "interface_type".
         // I haven't added matchers for those yet.
-        
+
         assert_eq!(extracted.symbols.len(), 4);
-        
+
         let main = extracted.symbols.iter().find(|s| s.name == "main").unwrap();
         assert_eq!(main.kind, SymbolKind::Function);
         assert!(!main.exported); // lowercase
-        
-        let exported = extracted.symbols.iter().find(|s| s.name == "ExportedFunc").unwrap();
+
+        let exported = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "ExportedFunc")
+            .unwrap();
         assert_eq!(exported.kind, SymbolKind::Function);
         assert!(exported.exported); // Uppercase
-        
-        let my_struct = extracted.symbols.iter().find(|s| s.name == "MyStruct").unwrap();
+
+        let my_struct = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyStruct")
+            .unwrap();
         assert_eq!(my_struct.kind, SymbolKind::Struct);
         assert!(my_struct.exported);
-        
-        let my_iface = extracted.symbols.iter().find(|s| s.name == "MyInterface").unwrap();
+
+        let my_iface = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyInterface")
+            .unwrap();
         assert_eq!(my_iface.kind, SymbolKind::Interface);
         assert!(my_iface.exported);
 
         // Imports
         assert_eq!(extracted.imports.len(), 2);
-        assert!(extracted.imports.iter().any(|i| i.source == "fmt" && i.name == "fmt"));
-        assert!(extracted.imports.iter().any(|i| i.source == "os" && i.alias.as_deref() == Some("my_os")));
+        assert!(extracted
+            .imports
+            .iter()
+            .any(|i| i.source == "fmt" && i.name == "fmt"));
+        assert!(extracted
+            .imports
+            .iter()
+            .any(|i| i.source == "os" && i.alias.as_deref() == Some("my_os")));
     }
 }

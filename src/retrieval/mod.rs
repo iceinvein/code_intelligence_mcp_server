@@ -3,7 +3,7 @@ pub mod assembler;
 use crate::{
     config::Config,
     embeddings::Embedder,
-    retrieval::assembler::ContextAssembler,
+    retrieval::assembler::{ContextAssembler, ContextItem},
     storage::{
         sqlite::{SqliteStore, SymbolRow},
         tantivy::{SearchHit as KeywordHit, TantivyIndex},
@@ -36,6 +36,7 @@ pub struct SearchResponse {
     pub limit: usize,
     pub hits: Vec<RankedHit>,
     pub context: String,
+    pub context_items: Vec<ContextItem>,
 }
 
 #[derive(Clone)]
@@ -124,7 +125,8 @@ impl Retriever {
                         .collect::<Vec<_>>();
 
                     let assembler = ContextAssembler::new(self.config.clone());
-                    let context = assembler.assemble_context(&sqlite, &rows, &[])?;
+                    let (context, context_items) =
+                        assembler.assemble_context_with_items(&sqlite, &rows, &[])?;
 
                     let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     let run = crate::storage::sqlite::SearchRunRow {
@@ -145,6 +147,7 @@ impl Retriever {
                         limit,
                         hits,
                         context,
+                        context_items,
                     });
                 }
             }
@@ -204,7 +207,8 @@ impl Retriever {
         }
 
         let assembler = ContextAssembler::new(self.config.clone());
-        let context = assembler.assemble_context(&sqlite, &roots, &extra)?;
+        let (context, context_items) =
+            assembler.assemble_context_with_items(&sqlite, &roots, &extra)?;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -227,12 +231,13 @@ impl Retriever {
             limit,
             hits,
             context,
+            context_items,
         })
     }
 
     pub fn assemble_definitions(&self, symbols: &[SymbolRow]) -> Result<String> {
         let assembler = ContextAssembler::new(self.config.clone());
-        assembler.format_context(symbols, &[], &[])
+        Ok(assembler.format_context(symbols, &[], &[])?.0)
     }
 
     pub fn load_symbol_rows_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {
@@ -409,9 +414,7 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
             let path = file_path.to_lowercase();
             if path.contains("schema") {
                 75.0
-            } else if path.contains("model")
-                || path.contains("entity")
-                || path.contains("entities")
+            } else if path.contains("model") || path.contains("entity") || path.contains("entities")
             {
                 50.0
             } else if path.contains("db/")
@@ -686,7 +689,11 @@ fn expand_with_edges(
             // Find usages (references TO this symbol)
             let edges = sqlite.list_edges_to(&h.id, 5)?;
             for edge in edges {
-                if edge.edge_type != "reference" && edge.edge_type != "type" {
+                if edge.edge_type != "reference"
+                    && edge.edge_type != "extends"
+                    && edge.edge_type != "implements"
+                    && edge.edge_type != "alias"
+                {
                     continue;
                 }
                 if seen.insert(edge.from_symbol_id.clone()) {
@@ -882,7 +889,7 @@ mod tests {
             text: "export function alpha() { return \"你好\" }".to_string(),
         };
         let assembler = ContextAssembler::new(config.clone());
-        let out = assembler.format_context(&[sym], &[], &[]).unwrap();
+        let (out, _) = assembler.format_context(&[sym], &[], &[]).unwrap();
         assert!(out.len() <= config.max_context_bytes);
         assert!(std::str::from_utf8(out.as_bytes()).is_ok());
     }

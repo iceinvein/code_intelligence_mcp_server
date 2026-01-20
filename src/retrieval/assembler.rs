@@ -2,10 +2,24 @@ use crate::config::Config;
 use crate::storage::sqlite::SqliteStore;
 use crate::storage::sqlite::SymbolRow;
 use anyhow::{anyhow, Context, Result};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextItem {
+    pub id: String,
+    pub file_path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub kind: String,
+    pub name: String,
+    pub role: String,
+    pub truncated: bool,
+    pub bytes: usize,
+}
 
 pub struct ContextAssembler {
     config: Arc<Config>,
@@ -22,6 +36,15 @@ impl ContextAssembler {
         roots: &[SymbolRow],
         extra: &[SymbolRow],
     ) -> Result<String> {
+        Ok(self.assemble_context_with_items(store, roots, extra)?.0)
+    }
+
+    pub fn assemble_context_with_items(
+        &self,
+        store: &SqliteStore,
+        roots: &[SymbolRow],
+        extra: &[SymbolRow],
+    ) -> Result<(String, Vec<ContextItem>)> {
         // 1. Expand context using graph with scoring
         // We fetch more candidates than we strictly need, then rerank.
         // We use both roots and extra as starting points, but we prioritize roots.
@@ -43,7 +66,7 @@ impl ContextAssembler {
         limit: usize,
     ) -> Result<Vec<SymbolRow>> {
         let mut candidates: HashMap<String, (SymbolRow, f32)> = HashMap::new();
-        let mut visited: HashSet<String> = roots.iter().map(|r| r.id.clone()).collect();
+        let mut expanded_frontier: HashSet<String> = roots.iter().map(|r| r.id.clone()).collect();
 
         // Initialize frontier with roots.
         // We don't add roots to candidates because they are already in the context.
@@ -70,32 +93,28 @@ impl ContextAssembler {
 
                 let edges = store.list_edges_from(&from_id, 20)?; // Limit fan-out per node
                 for edge in edges {
-                    if visited.contains(&edge.to_symbol_id) {
+                    let depth_penalty = 1.0 / ((depth + 1) as f32);
+                    let type_multiplier = match edge.edge_type.as_str() {
+                        "extends" | "implements" | "alias" => 1.5,
+                        "call" => 1.0,
+                        "reference" => 0.8,
+                        _ => 1.0,
+                    };
+                    let score = depth_penalty * type_multiplier;
+
+                    let entry = candidates.get_mut(&edge.to_symbol_id);
+                    if let Some((_, s)) = entry {
+                        if score > *s {
+                            *s = score;
+                        }
                         continue;
                     }
 
                     if let Some(row) = store.get_symbol_by_id(&edge.to_symbol_id)? {
-                        // Calculate score
-                        // Base score decays with depth
-                        let depth_penalty = 1.0 / ((depth + 1) as f32);
-
-                        // Edge type multiplier
-                        let type_multiplier = match edge.edge_type.as_str() {
-                            "type" => 1.5,
-                            "call" => 1.0,
-                            "reference" => 0.8,
-                            _ => 1.0,
-                        };
-
-                        let score = depth_penalty * type_multiplier;
-
-                        // If we already saw it (via another path in same depth?), keep max score?
-                        // But we check `visited` so we only see it once.
-                        // Wait, BFS level-by-level ensures shortest path.
-
                         candidates.insert(row.id.clone(), (row.clone(), score));
-                        visited.insert(row.id.clone());
-                        next_frontier.push(row.id);
+                        if expanded_frontier.insert(row.id.clone()) {
+                            next_frontier.push(row.id);
+                        }
                     }
                 }
             }
@@ -120,11 +139,13 @@ impl ContextAssembler {
         roots: &[SymbolRow],
         explicit_extra: &[SymbolRow],
         expanded: &[SymbolRow],
-    ) -> Result<String> {
+    ) -> Result<(String, Vec<ContextItem>)> {
         let mut out = String::new();
         let mut used = 0usize;
-        let mut seen = HashSet::<&str>::new();
+        let mut seen = HashSet::<String>::new();
         let root_ids: HashSet<&String> = roots.iter().map(|r| &r.id).collect();
+        let extra_ids: HashSet<&String> = explicit_extra.iter().map(|r| &r.id).collect();
+        let mut items: Vec<ContextItem> = Vec::new();
 
         // Prioritize roots, then explicit_extra, then expanded
         for sym in roots
@@ -132,18 +153,18 @@ impl ContextAssembler {
             .chain(explicit_extra.iter())
             .chain(expanded.iter())
         {
-            if !seen.insert(&sym.id) {
+            if !seen.insert(sym.id.clone()) {
                 continue;
             }
 
             let is_root = root_ids.contains(&sym.id);
-            let mut text = self.read_or_get_text(sym)?;
+            let text = self.read_or_get_text(sym)?;
 
-            text = self.simplify_code(&text, &sym.kind, is_root);
+            let (text, simplified) = self.simplify_code(&text, &sym.kind, is_root);
 
             let header = format!(
-                "=== {}:{}-{} ({} {}) ===\n",
-                sym.file_path, sym.start_line, sym.end_line, sym.kind, sym.name
+                "=== {}:{}-{} ({} {}) id={} ===\n",
+                sym.file_path, sym.start_line, sym.end_line, sym.kind, sym.name, sym.id
             );
 
             // ... check limits ...
@@ -168,17 +189,40 @@ impl ContextAssembler {
                     cut -= 1;
                 }
                 out.push_str(&block[..cut]);
+                items.push(ContextItem {
+                    id: sym.id.clone(),
+                    file_path: sym.file_path.clone(),
+                    start_line: sym.start_line,
+                    end_line: sym.end_line,
+                    kind: sym.kind.clone(),
+                    name: sym.name.clone(),
+                    role: role_for_symbol(is_root, extra_ids.contains(&sym.id)),
+                    truncated: true,
+                    bytes: cut,
+                });
                 break;
             }
 
             out.push_str(&block);
             used += block.len();
+
+            items.push(ContextItem {
+                id: sym.id.clone(),
+                file_path: sym.file_path.clone(),
+                start_line: sym.start_line,
+                end_line: sym.end_line,
+                kind: sym.kind.clone(),
+                name: sym.name.clone(),
+                role: role_for_symbol(is_root, extra_ids.contains(&sym.id)),
+                truncated: simplified,
+                bytes: block.len(),
+            });
         }
 
-        Ok(out)
+        Ok((out, items))
     }
 
-    fn simplify_code(&self, text: &str, kind: &str, is_root: bool) -> String {
+    fn simplify_code(&self, text: &str, kind: &str, is_root: bool) -> (String, bool) {
         let lines: Vec<&str> = text.lines().collect();
         // Spec: "If the body is >100 lines, provide the signature, the first 10 lines, ... and the last 5 lines."
         // We apply this to both roots and extra symbols to keep context manageable while "hydrating" structure.
@@ -195,14 +239,14 @@ impl ContextAssembler {
         };
 
         if lines.len() <= limit {
-            return text.to_string();
+            return (text.to_string(), false);
         }
 
         let head_count = if kind == "file" { 50 } else { 15 }; // Signature + start
         let tail_count = 5;
 
         if lines.len() <= head_count + tail_count {
-            return text.to_string();
+            return (text.to_string(), false);
         }
 
         let head = &lines[..head_count];
@@ -210,11 +254,11 @@ impl ContextAssembler {
 
         let mut out = head.join("\n");
         out.push_str(&format!(
-            "\n    // ... ({} lines hidden) ...\n",
+            "\n... ({} lines omitted) ...\n",
             lines.len().saturating_sub(head_count + tail_count)
         ));
         out.push_str(&tail.join("\n"));
-        out
+        (out, true)
     }
 
     fn read_or_get_text(&self, sym: &SymbolRow) -> Result<String> {
@@ -222,6 +266,16 @@ impl ContextAssembler {
             Ok(s) => Ok(s),
             Err(_) => Ok(sym.text.clone()),
         }
+    }
+}
+
+fn role_for_symbol(is_root: bool, is_extra: bool) -> String {
+    if is_root {
+        "root".to_string()
+    } else if is_extra {
+        "extra".to_string()
+    } else {
+        "expanded".to_string()
     }
 }
 
@@ -322,7 +376,7 @@ mod tests {
             text: format!("function hugeFunc() {{\n{}\n}}", huge_body),
         };
 
-        let output = assembler
+        let (output, items) = assembler
             .format_context(&[], &[small.clone(), huge.clone()], &[])
             .unwrap();
 
@@ -337,7 +391,7 @@ mod tests {
         // Actually output contains both.
         // Let's check specific truncation markers.
         assert!(
-            output.contains("lines hidden"),
+            output.contains("lines omitted"),
             "Huge symbol should be truncated"
         );
         assert!(output.contains("line0;"), "Huge symbol should show head");
@@ -346,5 +400,9 @@ mod tests {
             !output.contains("line100;"),
             "Huge symbol should hide middle"
         );
+
+        assert_eq!(items.len(), 2);
+        let huge_item = items.iter().find(|i| i.id == "huge").unwrap();
+        assert!(huge_item.truncated);
     }
 }

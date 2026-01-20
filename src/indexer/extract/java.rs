@@ -99,23 +99,18 @@ fn is_public(node: Node) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "modifiers" {
-             let mut mod_cursor = child.walk();
-             for mod_child in child.children(&mut mod_cursor) {
-                 if mod_child.kind() == "public" {
-                     return true;
-                 }
-             }
+            let mut mod_cursor = child.walk();
+            for mod_child in child.children(&mut mod_cursor) {
+                if mod_child.kind() == "public" {
+                    return true;
+                }
+            }
         }
     }
     false
 }
 
-fn symbol_from_node(
-    name: String,
-    kind: SymbolKind,
-    exported: bool,
-    node: Node,
-) -> ExtractedSymbol {
+fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) -> ExtractedSymbol {
     let start = node.start_position();
     let end = node.end_position();
     ExtractedSymbol {
@@ -139,18 +134,18 @@ fn extract_import(node: Node, source: &str, imports: &mut Vec<Import>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "scoped_identifier" || child.kind() == "identifier" {
-             let name = child.utf8_text(source.as_bytes()).unwrap().to_string();
-             // Java imports are usually full package paths
-             // We can treat the full path as source
-             // And the last part as name (unless it's import static or *)
-             
-             let last_part = name.split('.').last().unwrap_or(&name).to_string();
-             
-             imports.push(Import {
-                 name: last_part,
-                 source: name,
-                 alias: None,
-             });
+            let name = child.utf8_text(source.as_bytes()).unwrap().to_string();
+            // Java imports are usually full package paths
+            // We can treat the full path as source
+            // And the last part as name (unless it's import static or *)
+
+            let last_part = name.split('.').last().unwrap_or(&name).to_string();
+
+            imports.push(Import {
+                name: last_part,
+                source: name,
+                alias: None,
+            });
         }
     }
 }
@@ -180,11 +175,11 @@ public enum Color {
 }
 "#;
         let extracted = extract_java_symbols(source).unwrap();
-        
+
         // Symbols: MyClass, myMethod, internalMethod, MyInterface, doSomething, Color
         // Note: doSomething inside interface is "method_declaration"? Yes usually.
         // Enum constants? I don't extract them currently (enum_constant)
-        
+
         // Current logic:
         // class_declaration MyClass (public)
         // method_declaration myMethod (public)
@@ -192,30 +187,50 @@ public enum Color {
         // interface_declaration MyInterface (package-private -> exported=false)
         // method_declaration doSomething (implicitly public in interface, but check is_public logic? Interface methods don't have modifiers node usually if implicit)
         // enum_declaration Color (public)
-        
+
         // Wait, is_public only checks "modifiers" -> "public".
         // Interface methods are public by default, but my is_public will return false if "public" keyword is missing.
         // For now, that's acceptable behavior (following strict "public" keyword presence).
-        
+
         assert_eq!(extracted.symbols.len(), 6);
-        
-        let cls = extracted.symbols.iter().find(|s| s.name == "MyClass").unwrap();
+
+        let cls = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyClass")
+            .unwrap();
         assert_eq!(cls.kind, SymbolKind::Class);
         assert!(cls.exported, "Class should be exported (public)");
 
-        let method = extracted.symbols.iter().find(|s| s.name == "myMethod").unwrap();
+        let method = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "myMethod")
+            .unwrap();
         assert_eq!(method.kind, SymbolKind::Function);
         assert!(method.exported);
-        
-        let internal = extracted.symbols.iter().find(|s| s.name == "internalMethod").unwrap();
+
+        let internal = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "internalMethod")
+            .unwrap();
         assert_eq!(internal.kind, SymbolKind::Function);
         assert!(!internal.exported);
-        
-        let iface = extracted.symbols.iter().find(|s| s.name == "MyInterface").unwrap();
+
+        let iface = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyInterface")
+            .unwrap();
         assert_eq!(iface.kind, SymbolKind::Interface);
         assert!(!iface.exported); // no public keyword
-        
-        let color = extracted.symbols.iter().find(|s| s.name == "Color").unwrap();
+
+        let color = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Color")
+            .unwrap();
         assert_eq!(color.kind, SymbolKind::Enum);
         assert!(color.exported);
 

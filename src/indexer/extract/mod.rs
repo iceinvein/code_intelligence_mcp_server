@@ -1,9 +1,9 @@
+pub mod c;
+pub mod cpp;
+pub mod go;
+pub mod java;
+pub mod javascript;
+pub mod python;
 pub mod rust;
 pub mod symbol;
 pub mod typescript;
-pub mod python;
-pub mod go;
-pub mod c;
-pub mod cpp;
-pub mod java;
-pub mod javascript;

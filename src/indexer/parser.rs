@@ -97,10 +97,7 @@ mod tests {
             language_id_for_path(Path::new("x.js")),
             Some(LanguageId::Javascript)
         );
-        assert_eq!(
-            language_id_for_path(Path::new("x.c")),
-            Some(LanguageId::C)
-        );
+        assert_eq!(language_id_for_path(Path::new("x.c")), Some(LanguageId::C));
         assert_eq!(
             language_id_for_path(Path::new("x.cpp")),
             Some(LanguageId::Cpp)

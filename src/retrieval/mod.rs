@@ -13,7 +13,7 @@ use crate::{
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::Instant,
 };
@@ -60,6 +60,49 @@ struct QueryControls {
     kind: Option<String>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct SearchCache {
+    last_symbol_update_unix_s: Option<i64>,
+    max_entries: usize,
+    order: VecDeque<String>,
+    entries: HashMap<String, SearchResponse>,
+}
+
+impl SearchCache {
+    fn get(&mut self, key: &str) -> Option<SearchResponse> {
+        let v = self.entries.get(key).cloned()?;
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.to_string());
+        Some(v)
+    }
+
+    fn insert(&mut self, key: String, value: SearchResponse) {
+        if self.entries.contains_key(&key) {
+            self.entries.insert(key.clone(), value);
+            if let Some(pos) = self.order.iter().position(|k| k == &key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key);
+            return;
+        }
+
+        self.entries.insert(key.clone(), value);
+        self.order.push_back(key);
+        while self.order.len() > self.max_entries {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.order.clear();
+        self.entries.clear();
+    }
+}
+
 #[derive(Clone)]
 pub struct Retriever {
     config: Arc<Config>,
@@ -67,6 +110,7 @@ pub struct Retriever {
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+    cache: Arc<Mutex<SearchCache>>,
 }
 
 impl Retriever {
@@ -76,12 +120,19 @@ impl Retriever {
         vectors: Arc<LanceVectorTable>,
         embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
     ) -> Self {
+        let cache = SearchCache {
+            last_symbol_update_unix_s: None,
+            max_entries: 64,
+            order: VecDeque::new(),
+            entries: HashMap::new(),
+        };
         Self {
             db_path: config.db_path.clone(),
             config,
             tantivy,
             vectors,
             embedder,
+            cache: Arc::new(Mutex::new(cache)),
         }
     }
 
@@ -96,6 +147,25 @@ impl Retriever {
 
         let sqlite = SqliteStore::open(&self.db_path)?;
         sqlite.init()?;
+
+        let current_last_update = sqlite.most_recent_symbol_update().unwrap_or(None);
+        let cache_key = format!(
+            "q={}|l={}|e={}|b={}",
+            trim_query(query, 500),
+            limit,
+            exported_only,
+            self.config.max_context_bytes
+        );
+        {
+            let mut cache = self.cache.lock().await;
+            if cache.last_symbol_update_unix_s != current_last_update {
+                cache.clear();
+                cache.last_symbol_update_unix_s = current_last_update;
+            }
+            if let Some(resp) = cache.get(&cache_key) {
+                return Ok(resp);
+            }
+        }
 
         let (query_without_controls, controls) = Self::parse_query_controls(query);
 
@@ -154,14 +224,16 @@ impl Retriever {
                     },
                 );
 
-                return Ok(SearchResponse {
+                let resp = SearchResponse {
                     query: query.to_string(),
                     limit,
                     hits,
                     context,
                     context_items,
                     hit_signals,
-                });
+                };
+                self.cache.lock().await.insert(cache_key, resp.clone());
+                return Ok(resp);
             }
         }
 
@@ -231,14 +303,16 @@ impl Retriever {
                     };
                     let _ = sqlite.insert_search_run(&run);
 
-                    return Ok(SearchResponse {
+                    let resp = SearchResponse {
                         query: query.to_string(),
                         limit,
                         hits,
                         context,
                         context_items,
                         hit_signals: HashMap::new(),
-                    });
+                    };
+                    self.cache.lock().await.insert(cache_key, resp.clone());
+                    return Ok(resp);
                 }
             }
         }
@@ -324,14 +398,16 @@ impl Retriever {
         };
         let _ = sqlite.insert_search_run(&run);
 
-        Ok(SearchResponse {
+        let resp = SearchResponse {
             query: query.to_string(),
             limit,
             hits,
             context,
             context_items,
             hit_signals,
-        })
+        };
+        self.cache.lock().await.insert(cache_key, resp.clone());
+        Ok(resp)
     }
 
     fn parse_query_controls(query: &str) -> (String, QueryControls) {
@@ -691,6 +767,27 @@ fn structural_adjustment(
         score -= 5.0;
     }
 
+    let path = file_path.to_lowercase();
+    if path.contains("/node_modules/")
+        || path.contains("/target/")
+        || path.contains("/dist/")
+        || path.contains("/build/")
+        || path.contains("/vendor/")
+        || path.contains("/generated/")
+        || path.contains("/gen/")
+        || path.contains(".min.")
+    {
+        score -= 15.0;
+    }
+
+    if path.contains("/src/")
+        || path.contains("/lib/")
+        || path.contains("/app/")
+        || path.contains("/packages/")
+    {
+        score += 1.0;
+    }
+
     // Subdirectory Semantics
     let terms: Vec<&str> = query
         .split_whitespace()
@@ -953,7 +1050,7 @@ fn expand_with_edges(
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score * 0.8,
+                            score: h.score * 0.8 * edge.confidence,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,
@@ -969,6 +1066,7 @@ fn expand_with_edges(
             let edges = sqlite.list_edges_to(&h.id, 5)?;
             for edge in edges {
                 if edge.edge_type != "reference"
+                    && edge.edge_type != "type"
                     && edge.edge_type != "extends"
                     && edge.edge_type != "implements"
                     && edge.edge_type != "alias"
@@ -979,7 +1077,7 @@ fn expand_with_edges(
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score * 0.8,
+                            score: h.score * 0.8 * edge.confidence,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,
@@ -1030,37 +1128,98 @@ enum Intent {
 }
 
 fn normalize_query(query: &str) -> String {
-    // 1. Split CamelCase
-    let mut new_query = String::new();
+    let mut out = String::new();
+    let mut in_quotes = false;
     let chars: Vec<char> = query.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            in_quotes = !in_quotes;
+            out.push(c);
+            i += 1;
+            continue;
+        }
 
-    for (i, &c) in chars.iter().enumerate() {
-        if i > 0 && c.is_uppercase() {
+        if in_quotes {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+
+        if c == '_' || c == '.' || c == '/' || c == '\\' {
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        if c == '(' || c == ')' {
+            out.push(' ');
+            out.push(c);
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        if c == ':' && i + 1 < chars.len() && chars[i + 1] == ':' {
+            out.push(' ');
+            i += 2;
+            continue;
+        }
+
+        if c == '-' && i + 1 < chars.len() && chars[i + 1] == '>' {
+            out.push(' ');
+            i += 2;
+            continue;
+        }
+
+        if c.is_uppercase() && i > 0 {
             let prev = chars[i - 1];
-            if prev.is_lowercase() {
-                new_query.push(' ');
-            } else if i + 1 < chars.len() && chars[i + 1].is_lowercase() {
-                // Handles DBConnection -> DB Connection
-                new_query.push(' ');
+            if prev.is_lowercase()
+                || (i + 1 < chars.len() && chars[i + 1].is_lowercase() && prev.is_uppercase())
+            {
+                out.push(' ');
             }
         }
-        new_query.push(c);
+        out.push(c);
+        i += 1;
     }
 
-    // 2. Acronym expansion
     let mut final_parts = Vec::new();
-    for part in new_query.split_whitespace() {
+    for part in out.split_whitespace() {
         final_parts.push(part.to_string());
-        match part.to_lowercase().as_str() {
+        let lower = part.to_lowercase();
+        match lower.as_str() {
+            "and" | "or" | "not" => {}
             "db" => final_parts.push("database".to_string()),
             "auth" => final_parts.push("authentication".to_string()),
             "nav" => final_parts.push("navigation".to_string()),
             "config" => final_parts.push("configuration".to_string()),
             _ => {}
         }
+
+        if lower.chars().all(|c| c.is_ascii_alphabetic()) && lower.len() >= 5 {
+            for stem in simple_stems(&lower) {
+                final_parts.push(stem);
+            }
+        }
     }
 
     final_parts.join(" ")
+}
+
+fn simple_stems(token: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for suffix in ["ing", "ed", "es", "s"] {
+        if token.len() > suffix.len() + 2 && token.ends_with(suffix) {
+            let stem = token.trim_end_matches(suffix).to_string();
+            if stem.len() >= 3 {
+                out.push(stem);
+            }
+            break;
+        }
+    }
+    out
 }
 
 fn detect_intent(query: &str) -> Option<Intent> {
@@ -1367,6 +1526,7 @@ mod tests {
                 edge_type: "call".to_string(),
                 at_file: None,
                 at_line: None,
+                confidence: 1.0,
             })
             .unwrap();
 
@@ -1408,6 +1568,7 @@ mod tests {
                 edge_type: "reference".to_string(),
                 at_file: None,
                 at_line: None,
+                confidence: 1.0,
             })
             .unwrap();
 

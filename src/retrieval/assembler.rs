@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::storage::sqlite::SqliteStore;
 use crate::storage::sqlite::SymbolRow;
+use crate::storage::sqlite::UsageExampleRow;
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -21,6 +22,12 @@ pub struct ContextItem {
     pub reasons: Vec<String>,
     pub truncated: bool,
     pub bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum FormatMode {
+    Default,
+    Full,
 }
 
 pub struct ContextAssembler {
@@ -47,6 +54,16 @@ impl ContextAssembler {
         roots: &[SymbolRow],
         extra: &[SymbolRow],
     ) -> Result<(String, Vec<ContextItem>)> {
+        self.assemble_context_with_items_mode(store, roots, extra, FormatMode::Default)
+    }
+
+    pub fn assemble_context_with_items_mode(
+        &self,
+        store: &SqliteStore,
+        roots: &[SymbolRow],
+        extra: &[SymbolRow],
+        mode: FormatMode,
+    ) -> Result<(String, Vec<ContextItem>)> {
         // 1. Expand context using graph with scoring
         // We fetch more candidates than we strictly need, then rerank.
         // We use both roots and extra as starting points, but we prioritize roots.
@@ -56,9 +73,19 @@ impl ContextAssembler {
 
         let expanded = self.expand_with_scoring(store, &seeds, 50)?;
 
+        let mut stitched = Vec::new();
+        for root in roots {
+            let examples = store.list_usage_examples_for_symbol(&root.id, 5)?;
+            for ex in examples {
+                stitched.push(symbol_row_from_usage_example(root, &ex));
+            }
+        }
+        let mut combined_extra = extra.to_vec();
+        combined_extra.extend(stitched);
+
         // 2. Format output
         // Roots are full text. Extra and Expanded are simplified.
-        self.format_context(store, roots, extra, &expanded)
+        self.format_context_with_mode(store, roots, &combined_extra, &expanded, mode)
     }
 
     fn expand_with_scoring(
@@ -97,12 +124,12 @@ impl ContextAssembler {
                 for edge in edges {
                     let depth_penalty = 1.0 / ((depth + 1) as f32);
                     let type_multiplier = match edge.edge_type.as_str() {
-                        "extends" | "implements" | "alias" => 1.5,
+                        "extends" | "implements" | "alias" | "type" => 1.5,
                         "call" => 1.0,
                         "reference" => 0.8,
                         _ => 1.0,
                     };
-                    let score = depth_penalty * type_multiplier;
+                    let score = depth_penalty * type_multiplier * edge.confidence;
 
                     let entry = candidates.get_mut(&edge.to_symbol_id);
                     if let Some((_, s)) = entry {
@@ -143,6 +170,17 @@ impl ContextAssembler {
         explicit_extra: &[SymbolRow],
         expanded: &[SymbolRow],
     ) -> Result<(String, Vec<ContextItem>)> {
+        self.format_context_with_mode(store, roots, explicit_extra, expanded, FormatMode::Default)
+    }
+
+    pub fn format_context_with_mode(
+        &self,
+        store: &SqliteStore,
+        roots: &[SymbolRow],
+        explicit_extra: &[SymbolRow],
+        expanded: &[SymbolRow],
+        mode: FormatMode,
+    ) -> Result<(String, Vec<ContextItem>)> {
         let mut out = String::new();
         let mut used = 0usize;
         let mut seen = HashSet::<String>::new();
@@ -173,7 +211,10 @@ impl ContextAssembler {
             let is_root = root_ids.contains(&sym.id);
             let text = self.read_or_get_text(sym)?;
 
-            let (text, simplified) = self.simplify_code(&text, &sym.kind, is_root);
+            let (text, simplified) = match mode {
+                FormatMode::Full => (text, false),
+                FormatMode::Default => self.simplify_code(&text, &sym.kind, is_root),
+            };
             let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
             let cluster_key = store.get_similarity_cluster_key(&sym.id).ok().flatten();
 
@@ -364,6 +405,34 @@ fn fingerprint_text(text: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.to_lowercase().hash(&mut h);
     h.finish()
+}
+
+fn symbol_row_from_usage_example(root: &SymbolRow, ex: &UsageExampleRow) -> SymbolRow {
+    let id = stable_usage_id(&root.id, ex);
+    let line = ex.line.unwrap_or(1);
+    SymbolRow {
+        id,
+        file_path: ex.file_path.clone(),
+        language: root.language.clone(),
+        kind: format!("usage_{}", ex.example_type),
+        name: root.name.clone(),
+        exported: false,
+        start_byte: 0,
+        end_byte: 0,
+        start_line: line,
+        end_line: line,
+        text: ex.snippet.clone(),
+    }
+}
+
+fn stable_usage_id(root_id: &str, ex: &UsageExampleRow) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    root_id.hash(&mut h);
+    ex.example_type.hash(&mut h);
+    ex.file_path.hash(&mut h);
+    ex.line.hash(&mut h);
+    ex.snippet.hash(&mut h);
+    format!("usage:{:016x}", h.finish())
 }
 
 fn read_symbol_snippet(base_dir: &Path, sym: &SymbolRow) -> Result<String> {

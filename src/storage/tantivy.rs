@@ -114,13 +114,7 @@ impl TantivyIndex {
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
-        // Tweak 3: Index normalization (CamelCase splitting)
-        let split_name = split_camel_case(&symbol.name);
-        let expanded_text = if split_name != symbol.name {
-            format!("{} {}", symbol.text, split_name)
-        } else {
-            symbol.text.clone()
-        };
+        let expanded_text = expand_index_text(&symbol.name, &symbol.text);
 
         writer.add_document(doc!(
             self.fields.id => symbol.id.as_str(),
@@ -233,6 +227,30 @@ fn build_schema() -> tantivy::schema::Schema {
     builder.add_text_field("text", TEXT | STORED);
 
     builder.build()
+}
+
+fn expand_index_text(name: &str, text: &str) -> String {
+    let split = split_camel_case(name);
+    let split = split_separators(&split);
+    if split.trim().is_empty() {
+        return text.to_string();
+    }
+    if text.contains(&split) {
+        return text.to_string();
+    }
+    format!("{text} {split}")
+}
+
+fn split_separators(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c == '_' || c == '.' || c == '/' || c == '\\' || c == ':' {
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn split_camel_case(s: &str) -> String {

@@ -18,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 use code_intelligence_mcp_server::config::{Config, EmbeddingsBackend};
 use code_intelligence_mcp_server::embeddings::{hash::HashEmbedder, Embedder};
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
+use code_intelligence_mcp_server::retrieval::assembler::{ContextAssembler, FormatMode};
 use code_intelligence_mcp_server::retrieval::Retriever;
 use code_intelligence_mcp_server::storage::sqlite::{SqliteStore, SymbolRow};
 use code_intelligence_mcp_server::storage::tantivy::TantivyIndex;
@@ -193,6 +194,16 @@ pub struct GetSimilarityClusterTool {
     pub limit: Option<u32>,
 }
 
+#[macros::mcp_tool(
+    name = "hydrate_symbols",
+    description = "Hydrate full context for a set of symbol ids."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct HydrateSymbolsTool {
+    pub ids: Vec<String>,
+    pub mode: Option<String>,
+}
+
 #[derive(Clone)]
 struct AppState {
     config: Arc<Config>,
@@ -237,6 +248,7 @@ impl ServerHandler for CodeIntelligenceHandler {
                 GetTypeGraphTool::tool(),
                 GetUsageExamplesTool::tool(),
                 GetIndexStatsTool::tool(),
+                HydrateSymbolsTool::tool(),
             ],
             meta: None,
             next_cursor: None,
@@ -372,6 +384,43 @@ impl ServerHandler for CodeIntelligenceHandler {
                         "latest_search_run": latest_search_run,
                     }))
                     .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+                    .into(),
+                ]))
+            }
+            "hydrate_symbols" => {
+                let tool: HydrateSymbolsTool = parse_tool_args(&params)?;
+
+                let sqlite =
+                    SqliteStore::open(&self.state.config.db_path).map_err(tool_internal_error)?;
+                sqlite.init().map_err(tool_internal_error)?;
+
+                let mut rows = Vec::new();
+                let mut missing = Vec::new();
+                for id in tool.ids {
+                    match sqlite.get_symbol_by_id(&id).map_err(tool_internal_error)? {
+                        Some(row) => rows.push(row),
+                        None => missing.push(id),
+                    }
+                }
+
+                let mode = match tool.mode.as_deref() {
+                    Some("full") => FormatMode::Full,
+                    _ => FormatMode::Default,
+                };
+
+                let assembler = ContextAssembler::new(self.state.config.clone());
+                let (context, context_items) = assembler
+                    .format_context_with_mode(&sqlite, &rows, &[], &[], mode)
+                    .map_err(tool_internal_error)?;
+
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&json!({
+                        "count": rows.len(),
+                        "missing_ids": missing,
+                        "context": context,
+                        "context_items": context_items,
+                    }))
+                    .unwrap_or_else(|_| "{}".to_string())
                     .into(),
                 ]))
             }
@@ -1685,6 +1734,7 @@ mod tests {
                 edge_type: "call".to_string(),
                 at_file: Some("src/a.ts".to_string()),
                 at_line: Some(1),
+                confidence: 1.0,
             })
             .unwrap();
         sqlite
@@ -1694,6 +1744,7 @@ mod tests {
                 edge_type: "call".to_string(),
                 at_file: Some("src/a.ts".to_string()),
                 at_line: Some(1),
+                confidence: 1.0,
             })
             .unwrap();
 
@@ -1736,6 +1787,7 @@ mod tests {
                     edge_type: ty.to_string(),
                     at_file: Some("src/a.ts".to_string()),
                     at_line: Some(1),
+                    confidence: 1.0,
                 })
                 .unwrap();
         }

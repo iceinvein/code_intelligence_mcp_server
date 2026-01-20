@@ -18,13 +18,14 @@ pub struct SymbolRow {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeRow {
     pub from_symbol_id: String,
     pub to_symbol_id: String,
     pub edge_type: String,
     pub at_file: Option<String>,
     pub at_line: Option<u32>,
+    pub confidence: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +144,7 @@ CREATE TABLE IF NOT EXISTS edges (
   edge_type TEXT NOT NULL,
   at_file TEXT,
   at_line INTEGER,
+  confidence REAL NOT NULL DEFAULT 1.0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   UNIQUE(from_symbol_id, to_symbol_id, edge_type),
   FOREIGN KEY(from_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
@@ -218,6 +220,7 @@ CREATE INDEX IF NOT EXISTS idx_similarity_clusters_key ON similarity_clusters(cl
             .context("Failed to initialize sqlite schema")?;
 
         migrate_add_edges_location_columns(&self.conn)?;
+        migrate_add_edges_confidence_column(&self.conn)?;
         Ok(())
     }
 
@@ -265,16 +268,20 @@ ON CONFLICT(id) DO UPDATE SET
         self.conn
             .execute(
                 r#"
-INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line)
-VALUES (?1, ?2, ?3, ?4, ?5)
-ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO NOTHING
+INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
+  at_file=COALESCE(edges.at_file, excluded.at_file),
+  at_line=COALESCE(edges.at_line, excluded.at_line),
+  confidence=MAX(edges.confidence, excluded.confidence)
 "#,
                 params![
                     edge.from_symbol_id,
                     edge.to_symbol_id,
                     edge.edge_type,
                     edge.at_file,
-                    edge.at_line.map(|v| v as i64)
+                    edge.at_line.map(|v| v as i64),
+                    edge.confidence
                 ],
             )
             .context("Failed to upsert edge")?;
@@ -287,7 +294,7 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO NOTHING
             .prepare(
                 r#"
 SELECT
-  from_symbol_id, to_symbol_id, edge_type, at_file, at_line
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence
 FROM edges
 WHERE from_symbol_id = ?1
 ORDER BY edge_type ASC, to_symbol_id ASC
@@ -307,6 +314,7 @@ LIMIT ?2
                 at_line: row
                     .get::<_, Option<i64>>(4)?
                     .and_then(|v| u32::try_from(v).ok()),
+                confidence: row.get::<_, f64>(5)? as f32,
             });
         }
         Ok(out)
@@ -318,7 +326,7 @@ LIMIT ?2
             .prepare(
                 r#"
 SELECT
-  from_symbol_id, to_symbol_id, edge_type, at_file, at_line
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence
 FROM edges
 WHERE to_symbol_id = ?1
 ORDER BY edge_type ASC, from_symbol_id ASC
@@ -338,6 +346,7 @@ LIMIT ?2
                 at_line: row
                     .get::<_, Option<i64>>(4)?
                     .and_then(|v| u32::try_from(v).ok()),
+                confidence: row.get::<_, f64>(5)? as f32,
             });
         }
         Ok(out)
@@ -1040,6 +1049,14 @@ fn migrate_add_edges_location_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_add_edges_confidence_column(conn: &Connection) -> Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
+        [],
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1122,6 +1139,7 @@ mod tests {
             edge_type: "reference".to_string(),
             at_file: None,
             at_line: None,
+            confidence: 1.0,
         };
         store.upsert_edge(&edge).unwrap();
         store.upsert_edge(&edge).unwrap();

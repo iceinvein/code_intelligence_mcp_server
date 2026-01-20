@@ -638,6 +638,13 @@ fn extract_edges_for_symbol(
 ) -> Vec<EdgeRow> {
     let mut out = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
+    let confidence_for = |edge_type: &str| match edge_type {
+        "call" => 1.0,
+        "reference" => 0.8,
+        "type" => 0.9,
+        "extends" | "implements" | "alias" => 0.95,
+        _ => 0.7,
+    };
 
     // Map import alias/name to Import struct for fast lookup
     let mut import_map: HashMap<&str, &Import> = HashMap::new();
@@ -675,6 +682,7 @@ fn extract_edges_for_symbol(
             edge_type: "call".to_string(),
             at_file: Some(row.file_path.clone()),
             at_line: Some(row.start_line),
+            confidence: confidence_for("call"),
         });
     }
 
@@ -702,6 +710,7 @@ fn extract_edges_for_symbol(
                         edge_type: rel_type.to_string(),
                         at_file: Some(row.file_path.clone()),
                         at_line: Some(row.start_line),
+                        confidence: confidence_for(rel_type),
                     });
                 }
             }
@@ -789,6 +798,7 @@ fn extract_edges_for_symbol(
                     edge_type: "reference".to_string(),
                     at_file: Some(row.file_path.clone()),
                     at_line: Some(row.start_line),
+                    confidence: confidence_for("reference"),
                 });
             }
         }
@@ -818,6 +828,7 @@ fn extract_edges_for_symbol(
                         edge_type: "type".to_string(),
                         at_file: Some(row.file_path.clone()),
                         at_line: Some(row.start_line),
+                        confidence: confidence_for("type"),
                     });
                 }
             }

@@ -9,6 +9,7 @@ use crate::{
         tantivy::{SearchHit as KeywordHit, TantivyIndex},
         vector::{LanceVectorTable, VectorHit},
     },
+    text,
 };
 use anyhow::{anyhow, Result};
 use serde::Serialize;
@@ -1128,63 +1129,7 @@ enum Intent {
 }
 
 fn normalize_query(query: &str) -> String {
-    let mut out = String::new();
-    let mut in_quotes = false;
-    let chars: Vec<char> = query.chars().collect();
-    let mut i = 0usize;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '"' {
-            in_quotes = !in_quotes;
-            out.push(c);
-            i += 1;
-            continue;
-        }
-
-        if in_quotes {
-            out.push(c);
-            i += 1;
-            continue;
-        }
-
-        if c == '_' || c == '.' || c == '/' || c == '\\' {
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-
-        if c == '(' || c == ')' {
-            out.push(' ');
-            out.push(c);
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-
-        if c == ':' && i + 1 < chars.len() && chars[i + 1] == ':' {
-            out.push(' ');
-            i += 2;
-            continue;
-        }
-
-        if c == '-' && i + 1 < chars.len() && chars[i + 1] == '>' {
-            out.push(' ');
-            i += 2;
-            continue;
-        }
-
-        if c.is_uppercase() && i > 0 {
-            let prev = chars[i - 1];
-            if prev.is_lowercase()
-                || (i + 1 < chars.len() && chars[i + 1].is_lowercase() && prev.is_uppercase())
-            {
-                out.push(' ');
-            }
-        }
-        out.push(c);
-        i += 1;
-    }
-
+    let out = text::normalize_query_text(query);
     let mut final_parts = Vec::new();
     for part in out.split_whitespace() {
         final_parts.push(part.to_string());
@@ -1199,27 +1144,13 @@ fn normalize_query(query: &str) -> String {
         }
 
         if lower.chars().all(|c| c.is_ascii_alphabetic()) && lower.len() >= 5 {
-            for stem in simple_stems(&lower) {
+            for stem in text::simple_stems(&lower) {
                 final_parts.push(stem);
             }
         }
     }
 
     final_parts.join(" ")
-}
-
-fn simple_stems(token: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for suffix in ["ing", "ed", "es", "s"] {
-        if token.len() > suffix.len() + 2 && token.ends_with(suffix) {
-            let stem = token.trim_end_matches(suffix).to_string();
-            if stem.len() >= 3 {
-                out.push(stem);
-            }
-            break;
-        }
-    }
-    out
 }
 
 fn detect_intent(query: &str) -> Option<Intent> {
@@ -1761,6 +1692,12 @@ mod tests {
         // Test combinations
         // "AuthDB" -> "Auth DB" -> "Auth" + "authentication", "DB" + "database"
         assert_eq!(normalize_query("AuthDB"), "Auth authentication DB database");
+    }
+
+    #[test]
+    fn normalize_query_splits_digits_and_separators() {
+        assert_eq!(normalize_query("HTTP2Server_v1"), "HTTP 2 Server v1");
+        assert_eq!(normalize_query("foo/bar-baz"), "foo bar baz");
     }
 
     #[test]

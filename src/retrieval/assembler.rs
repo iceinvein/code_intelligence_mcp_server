@@ -147,6 +147,14 @@ impl ContextAssembler {
         let extra_ids: HashSet<&String> = explicit_extra.iter().map(|r| &r.id).collect();
         let mut items: Vec<ContextItem> = Vec::new();
 
+        let max_bytes = self.config.max_context_bytes;
+        let root_cap = ((max_bytes as f32) * 0.7) as usize;
+        let extra_cap = ((max_bytes as f32) * 0.2) as usize;
+        let expanded_cap = max_bytes.saturating_sub(root_cap + extra_cap);
+
+        let mut used_by_role = HashMap::<String, usize>::new();
+        let mut count_by_role = HashMap::<String, usize>::new();
+
         // Prioritize roots, then explicit_extra, then expanded
         for sym in roots
             .iter()
@@ -161,6 +169,7 @@ impl ContextAssembler {
             let text = self.read_or_get_text(sym)?;
 
             let (text, simplified) = self.simplify_code(&text, &sym.kind, is_root);
+            let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
 
             let header = format!(
                 "=== {}:{}-{} ({} {}) id={} ===\n",
@@ -180,6 +189,17 @@ impl ContextAssembler {
             }
             block.push('\n');
 
+            let role_cap = match role.as_str() {
+                "root" => root_cap,
+                "extra" => extra_cap,
+                _ => expanded_cap,
+            };
+            let role_used = used_by_role.get(&role).copied().unwrap_or(0);
+            let role_count = count_by_role.get(&role).copied().unwrap_or(0);
+            if role_count > 0 && role_used.saturating_add(block.len()) > role_cap {
+                continue;
+            }
+
             if used + block.len() > self.config.max_context_bytes {
                 // ... truncate logic ...
                 let remaining = self.config.max_context_bytes.saturating_sub(used);
@@ -196,10 +216,12 @@ impl ContextAssembler {
                     end_line: sym.end_line,
                     kind: sym.kind.clone(),
                     name: sym.name.clone(),
-                    role: role_for_symbol(is_root, extra_ids.contains(&sym.id)),
+                    role: role.clone(),
                     truncated: true,
                     bytes: cut,
                 });
+                *used_by_role.entry(role.clone()).or_insert(0) += cut;
+                *count_by_role.entry(role).or_insert(0) += 1;
                 break;
             }
 
@@ -213,10 +235,12 @@ impl ContextAssembler {
                 end_line: sym.end_line,
                 kind: sym.kind.clone(),
                 name: sym.name.clone(),
-                role: role_for_symbol(is_root, extra_ids.contains(&sym.id)),
+                role: role.clone(),
                 truncated: simplified,
                 bytes: block.len(),
             });
+            *used_by_role.entry(role.clone()).or_insert(0) += block.len();
+            *count_by_role.entry(role).or_insert(0) += 1;
         }
 
         Ok((out, items))
@@ -404,5 +428,38 @@ mod tests {
         assert_eq!(items.len(), 2);
         let huge_item = items.iter().find(|i| i.id == "huge").unwrap();
         assert!(huge_item.truncated);
+    }
+
+    #[test]
+    fn format_context_caps_roots_and_leaves_room_for_extra_and_expanded() {
+        let config = make_config(1200);
+        let assembler = ContextAssembler::new(config);
+
+        let mk = |id: &str, file: &str, name: &str, text_len: usize| SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 1,
+            text: "x".repeat(text_len),
+        };
+
+        let roots = vec![mk("r1", "r1.ts", "r1", 160), mk("r2", "r2.ts", "r2", 160)];
+        let extra = vec![mk("e1", "e1.ts", "e1", 120)];
+        let expanded = vec![mk("x1", "x1.ts", "x1", 120)];
+
+        let (_output, items) = assembler.format_context(&roots, &extra, &expanded).unwrap();
+        let roots_n = items.iter().filter(|i| i.role == "root").count();
+        let extra_n = items.iter().filter(|i| i.role == "extra").count();
+        let expanded_n = items.iter().filter(|i| i.role == "expanded").count();
+
+        assert!(roots_n >= 1);
+        assert!(extra_n >= 1);
+        assert!(expanded_n >= 1);
     }
 }

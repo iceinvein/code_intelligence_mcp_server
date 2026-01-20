@@ -37,6 +37,27 @@ pub struct SearchResponse {
     pub hits: Vec<RankedHit>,
     pub context: String,
     pub context_items: Vec<ContextItem>,
+    pub hit_signals: HashMap<String, HitSignals>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HitSignals {
+    pub keyword_score: f32,
+    pub vector_score: f32,
+    pub base_score: f32,
+    pub structural_adjust: f32,
+    pub intent_mult: f32,
+    pub definition_bias: f32,
+    pub popularity_boost: f32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct QueryControls {
+    id: Option<String>,
+    file: Option<String>,
+    path: Option<String>,
+    lang: Option<String>,
+    kind: Option<String>,
 }
 
 #[derive(Clone)]
@@ -76,11 +97,79 @@ impl Retriever {
         let sqlite = SqliteStore::open(&self.db_path)?;
         sqlite.init()?;
 
+        let (query_without_controls, controls) = Self::parse_query_controls(query);
+
+        if let Some(id) = &controls.id {
+            if let Some(row) = sqlite.get_symbol_by_id(id)? {
+                if exported_only && !row.exported {
+                    return Ok(SearchResponse {
+                        query: query.to_string(),
+                        limit,
+                        hits: vec![],
+                        context: String::new(),
+                        context_items: vec![],
+                        hit_signals: HashMap::new(),
+                    });
+                }
+
+                let hits = vec![RankedHit {
+                    id: row.id.clone(),
+                    score: 1.0,
+                    name: row.name.clone(),
+                    kind: row.kind.clone(),
+                    file_path: row.file_path.clone(),
+                    exported: row.exported,
+                    language: row.language.clone(),
+                }];
+
+                let assembler = ContextAssembler::new(self.config.clone());
+                let (context, context_items) =
+                    assembler.assemble_context_with_items(&sqlite, &[row], &[])?;
+
+                let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let run = crate::storage::sqlite::SearchRunRow {
+                    started_at_unix_s,
+                    duration_ms,
+                    keyword_ms: 0,
+                    vector_ms: 0,
+                    merge_ms: 0,
+                    query: trim_query(query, 200),
+                    query_limit: limit as u64,
+                    exported_only,
+                    result_count: hits.len() as u64,
+                };
+                let _ = sqlite.insert_search_run(&run);
+
+                let mut hit_signals = HashMap::new();
+                hit_signals.insert(
+                    hits[0].id.clone(),
+                    HitSignals {
+                        keyword_score: 0.0,
+                        vector_score: 0.0,
+                        base_score: 0.0,
+                        structural_adjust: 0.0,
+                        intent_mult: 1.0,
+                        definition_bias: 0.0,
+                        popularity_boost: 0.0,
+                    },
+                );
+
+                return Ok(SearchResponse {
+                    query: query.to_string(),
+                    limit,
+                    hits,
+                    context,
+                    context_items,
+                    hit_signals,
+                });
+            }
+        }
+
         // 0. Intent Detection
-        let intent = detect_intent(query);
+        let intent = detect_intent(&query_without_controls);
 
         // Normalize and expand query (Tweak 3: Acronyms & Casing)
-        let expanded_query = normalize_query(query);
+        let expanded_query = normalize_query(&query_without_controls);
         // Use expanded query for search, but keep original for logging/response if desired?
         // Actually, we usually want to search with the "better" query.
         let search_query = &expanded_query;
@@ -148,6 +237,7 @@ impl Retriever {
                         hits,
                         context,
                         context_items,
+                        hit_signals: HashMap::new(),
                     });
                 }
             }
@@ -169,7 +259,13 @@ impl Retriever {
         let vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let merge_t = Instant::now();
-        let ranked = rank_hits(&keyword_hits, &vector_hits, &self.config, &intent, query);
+        let (ranked, mut hit_signals) = rank_hits_with_signals(
+            &keyword_hits,
+            &vector_hits,
+            &self.config,
+            &intent,
+            search_query,
+        );
         let mut uniq = Vec::new();
         let mut seen = HashSet::new();
         for hit in ranked {
@@ -178,14 +274,16 @@ impl Retriever {
             }
         }
 
+        let hits = Self::filter_hits_by_controls(uniq, &controls);
         let hits = if exported_only {
-            uniq.into_iter().filter(|h| h.exported).collect::<Vec<_>>()
+            hits.into_iter().filter(|h| h.exported).collect::<Vec<_>>()
         } else {
-            uniq
+            hits
         };
 
         // sqlite already opened above
-        let mut hits = apply_popularity_boost(&sqlite, hits, &self.config)?;
+        let mut hits =
+            apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &self.config)?;
         hits = diversify_by_cluster(&sqlite, hits, limit);
         hits = diversify_by_kind(hits, limit);
         hits.truncate(limit); // Keep top results before expansion
@@ -232,7 +330,94 @@ impl Retriever {
             hits,
             context,
             context_items,
+            hit_signals,
         })
+    }
+
+    fn parse_query_controls(query: &str) -> (String, QueryControls) {
+        let mut controls = QueryControls::default();
+        let mut kept = Vec::new();
+        for token in query.split_whitespace() {
+            let Some((k, v)) = token.split_once(':') else {
+                kept.push(token);
+                continue;
+            };
+            let key = k.trim().to_lowercase();
+            let value = v.trim().trim_matches('"').trim_matches('\'');
+            if value.is_empty() {
+                kept.push(token);
+                continue;
+            }
+            match key.as_str() {
+                "id" => controls.id = Some(value.to_string()),
+                "file" => controls.file = Some(value.to_string()),
+                "path" => controls.path = Some(value.to_string()),
+                "lang" | "language" => controls.lang = Some(Self::normalize_lang(value)),
+                "kind" => controls.kind = Some(value.to_string()),
+                _ => kept.push(token),
+            }
+        }
+        (kept.join(" "), controls)
+    }
+
+    fn normalize_lang(s: &str) -> String {
+        match s.trim().to_lowercase().as_str() {
+            "ts" | "tsx" | "typescript" => "typescript".to_string(),
+            "js" | "jsx" | "javascript" => "javascript".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    fn filter_hits_by_controls(hits: Vec<RankedHit>, controls: &QueryControls) -> Vec<RankedHit> {
+        hits.into_iter()
+            .filter(|h| {
+                controls
+                    .lang
+                    .as_ref()
+                    .is_none_or(|l| h.language == l.as_str())
+            })
+            .filter(|h| {
+                controls
+                    .kind
+                    .as_ref()
+                    .is_none_or(|k| Self::kind_matches(&h.kind, k))
+            })
+            .filter(|h| {
+                controls
+                    .path
+                    .as_ref()
+                    .is_none_or(|p| Self::path_matches(&h.file_path, p))
+            })
+            .filter(|h| {
+                controls
+                    .file
+                    .as_ref()
+                    .is_none_or(|f| Self::file_matches(&h.file_path, f))
+            })
+            .collect()
+    }
+
+    fn kind_matches(kind: &str, control: &str) -> bool {
+        control
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .any(|k| kind.eq_ignore_ascii_case(k))
+    }
+
+    fn path_matches(file_path: &str, control: &str) -> bool {
+        file_path.to_lowercase().contains(&control.to_lowercase())
+    }
+
+    fn file_matches(file_path: &str, control: &str) -> bool {
+        let file_path = file_path.to_lowercase();
+        let control = control.to_lowercase();
+        match (control.starts_with('*'), control.ends_with('*')) {
+            (true, true) => file_path.contains(control.trim_matches('*')),
+            (true, false) => file_path.ends_with(control.trim_start_matches('*')),
+            (false, true) => file_path.starts_with(control.trim_end_matches('*')),
+            (false, false) => file_path.contains(&control),
+        }
     }
 
     pub fn assemble_definitions(&self, symbols: &[SymbolRow]) -> Result<String> {
@@ -253,6 +438,7 @@ impl Retriever {
     }
 }
 
+#[cfg(test)]
 fn rank_hits(
     keyword_hits: &[KeywordHit],
     vector_hits: &[VectorHit],
@@ -260,6 +446,16 @@ fn rank_hits(
     intent: &Option<Intent>,
     query: &str,
 ) -> Vec<RankedHit> {
+    rank_hits_with_signals(keyword_hits, vector_hits, config, intent, query).0
+}
+
+fn rank_hits_with_signals(
+    keyword_hits: &[KeywordHit],
+    vector_hits: &[VectorHit],
+    config: &Config,
+    intent: &Option<Intent>,
+    query: &str,
+) -> (Vec<RankedHit>, HashMap<String, HitSignals>) {
     let mut max_kw = 0.0f32;
     for h in keyword_hits {
         if h.score > max_kw {
@@ -285,6 +481,7 @@ fn rank_hits(
     }
 
     let mut merged = HashMap::<String, RankedHit>::new();
+    let mut signals = HashMap::<String, HitSignals>::new();
 
     let (vector_w, keyword_w) =
         normalize_pair(config.rank_vector_weight, config.rank_keyword_weight);
@@ -293,21 +490,38 @@ fn rank_hits(
         let v = vec_scores.get(&h.id).copied().unwrap_or(0.0);
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
-        let mut score = vector_w * v + keyword_w * kw;
-        score += structural_adjustment(config, h.exported, &h.file_path, intent, query);
-        score *= intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
+        let base_score = vector_w * v + keyword_w * kw;
+        let structural = structural_adjustment(config, h.exported, &h.file_path, intent, query);
+        let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
+        let mut score = (base_score + structural) * intent_mult;
 
         // Definition Bias
+        let mut definition_bias = 0.0;
         if !matches!(intent, Some(Intent::Callers(_))) {
             let q = query.trim();
             if h.name.eq_ignore_ascii_case(q) && is_definition_kind(&h.kind) {
                 score += 10.0;
+                definition_bias += 10.0;
             } else if h.name.to_lowercase().contains(&q.to_lowercase())
                 && is_definition_kind(&h.kind)
             {
                 score += 1.0;
+                definition_bias += 1.0;
             }
         }
+
+        signals.insert(
+            h.id.clone(),
+            HitSignals {
+                keyword_score: kw,
+                vector_score: v,
+                base_score,
+                structural_adjust: structural,
+                intent_mult,
+                definition_bias,
+                popularity_boost: 0.0,
+            },
+        );
 
         merged.insert(
             h.id.clone(),
@@ -327,21 +541,38 @@ fn rank_hits(
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
         let v = vec_scores.get(&h.id).copied().unwrap_or(0.0);
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
-        let mut score = vector_w * v + keyword_w * kw;
-        score += structural_adjustment(config, h.exported, &h.file_path, intent, query);
-        score *= intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
+        let base_score = vector_w * v + keyword_w * kw;
+        let structural = structural_adjustment(config, h.exported, &h.file_path, intent, query);
+        let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
+        let mut score = (base_score + structural) * intent_mult;
 
         // Definition Bias
+        let mut definition_bias = 0.0;
         if !matches!(intent, Some(Intent::Callers(_))) {
             let q = query.trim();
             if h.name.eq_ignore_ascii_case(q) && is_definition_kind(&h.kind) {
                 score += 10.0;
+                definition_bias += 10.0;
             } else if h.name.to_lowercase().contains(&q.to_lowercase())
                 && is_definition_kind(&h.kind)
             {
                 score += 1.0;
+                definition_bias += 1.0;
             }
         }
+
+        signals.insert(
+            h.id.clone(),
+            HitSignals {
+                keyword_score: kw,
+                vector_score: v,
+                base_score,
+                structural_adjust: structural,
+                intent_mult,
+                definition_bias,
+                popularity_boost: 0.0,
+            },
+        );
 
         merged
             .entry(h.id.clone())
@@ -381,7 +612,7 @@ fn rank_hits(
             .then_with(|| a.kind.cmp(&b.kind))
             .then_with(|| a.id.cmp(&b.id))
     });
-    out
+    (out, signals)
 }
 
 fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool) -> f32 {
@@ -485,6 +716,7 @@ fn structural_adjustment(
     score
 }
 
+#[cfg(test)]
 fn apply_popularity_boost(
     sqlite: &SqliteStore,
     mut hits: Vec<RankedHit>,
@@ -501,6 +733,51 @@ fn apply_popularity_boost(
         if denom > 0.0 {
             h.score += config.rank_popularity_weight * (capped / denom);
         }
+    }
+
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.exported.cmp(&a.exported))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(hits)
+}
+
+fn apply_popularity_boost_with_signals(
+    sqlite: &SqliteStore,
+    mut hits: Vec<RankedHit>,
+    hit_signals: &mut HashMap<String, HitSignals>,
+    config: &Config,
+) -> Result<Vec<RankedHit>> {
+    if hits.is_empty() || config.rank_popularity_weight == 0.0 || config.rank_popularity_cap == 0 {
+        return Ok(hits);
+    }
+
+    for h in hits.iter_mut() {
+        let count = sqlite.count_incoming_edges(&h.id).unwrap_or(0);
+        let capped = count.min(config.rank_popularity_cap) as f32;
+        let denom = config.rank_popularity_cap as f32;
+        if denom <= 0.0 {
+            continue;
+        }
+        let boost = config.rank_popularity_weight * (capped / denom);
+        h.score += boost;
+        hit_signals
+            .entry(h.id.clone())
+            .and_modify(|s| s.popularity_boost += boost)
+            .or_insert(HitSignals {
+                keyword_score: 0.0,
+                vector_score: 0.0,
+                base_score: 0.0,
+                structural_adjust: 0.0,
+                intent_mult: 1.0,
+                definition_bias: 0.0,
+                popularity_boost: boost,
+            });
     }
 
     hits.sort_by(|a, b| {
@@ -1319,6 +1596,51 @@ mod tests {
         // Test combinations
         // "AuthDB" -> "Auth DB" -> "Auth" + "authentication", "DB" + "database"
         assert_eq!(normalize_query("AuthDB"), "Auth authentication DB database");
+    }
+
+    #[test]
+    fn query_controls_strip_tokens_and_filter_hits() {
+        let (q, controls) =
+            Retriever::parse_query_controls("id:abc lang:ts kind:function file:*util* foo bar");
+        assert_eq!(q, "foo bar");
+        assert_eq!(controls.id.as_deref(), Some("abc"));
+        assert_eq!(controls.lang.as_deref(), Some("typescript"));
+        assert_eq!(controls.kind.as_deref(), Some("function"));
+        assert_eq!(controls.file.as_deref(), Some("*util*"));
+
+        let hits = vec![
+            RankedHit {
+                id: "1".to_string(),
+                score: 1.0,
+                name: "x".to_string(),
+                kind: "function".to_string(),
+                file_path: "src/util.ts".to_string(),
+                exported: true,
+                language: "typescript".to_string(),
+            },
+            RankedHit {
+                id: "2".to_string(),
+                score: 1.0,
+                name: "y".to_string(),
+                kind: "class".to_string(),
+                file_path: "src/util.ts".to_string(),
+                exported: true,
+                language: "typescript".to_string(),
+            },
+            RankedHit {
+                id: "3".to_string(),
+                score: 1.0,
+                name: "z".to_string(),
+                kind: "function".to_string(),
+                file_path: "src/other.rs".to_string(),
+                exported: true,
+                language: "rust".to_string(),
+            },
+        ];
+
+        let filtered = Retriever::filter_hits_by_controls(hits, &controls);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "1");
     }
 
     #[test]

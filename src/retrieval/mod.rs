@@ -15,10 +15,10 @@ use anyhow::{anyhow, Result};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Instant,
 };
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedHit {
@@ -61,17 +61,18 @@ struct QueryControls {
     kind: Option<String>,
 }
 
-#[derive(Debug, Default, Clone)]
-struct SearchCache {
-    last_symbol_update_unix_s: Option<i64>,
+#[derive(Debug, Clone)]
+struct LruCache<V> {
     max_entries: usize,
+    max_bytes: Option<usize>,
+    used_bytes: usize,
     order: VecDeque<String>,
-    entries: HashMap<String, SearchResponse>,
+    entries: HashMap<String, (V, usize)>,
 }
 
-impl SearchCache {
-    fn get(&mut self, key: &str) -> Option<SearchResponse> {
-        let v = self.entries.get(key).cloned()?;
+impl<V: Clone> LruCache<V> {
+    fn get(&mut self, key: &str) -> Option<V> {
+        let (v, _) = self.entries.get(key).cloned()?;
         if let Some(pos) = self.order.iter().position(|k| k == key) {
             self.order.remove(pos);
         }
@@ -79,21 +80,40 @@ impl SearchCache {
         Some(v)
     }
 
-    fn insert(&mut self, key: String, value: SearchResponse) {
+    fn insert(&mut self, key: String, value: V, size_bytes: usize) {
         if self.entries.contains_key(&key) {
-            self.entries.insert(key.clone(), value);
+            let old = self.entries.insert(key.clone(), (value, size_bytes));
+            if let Some((_, old_size)) = old {
+                self.used_bytes = self.used_bytes.saturating_sub(old_size);
+            }
+            self.used_bytes = self.used_bytes.saturating_add(size_bytes);
             if let Some(pos) = self.order.iter().position(|k| k == &key) {
                 self.order.remove(pos);
             }
             self.order.push_back(key);
-            return;
+        } else {
+            self.entries.insert(key.clone(), (value, size_bytes));
+            self.used_bytes = self.used_bytes.saturating_add(size_bytes);
+            self.order.push_back(key);
         }
 
-        self.entries.insert(key.clone(), value);
-        self.order.push_back(key);
         while self.order.len() > self.max_entries {
             if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
+                if let Some((_, sz)) = self.entries.remove(&oldest) {
+                    self.used_bytes = self.used_bytes.saturating_sub(sz);
+                }
+            }
+        }
+
+        if let Some(max) = self.max_bytes {
+            while self.used_bytes > max {
+                if let Some(oldest) = self.order.pop_front() {
+                    if let Some((_, sz)) = self.entries.remove(&oldest) {
+                        self.used_bytes = self.used_bytes.saturating_sub(sz);
+                    }
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -101,7 +121,17 @@ impl SearchCache {
     fn clear(&mut self) {
         self.order.clear();
         self.entries.clear();
+        self.used_bytes = 0;
     }
+}
+
+#[derive(Debug, Clone)]
+struct RetrieverCaches {
+    last_symbol_update_unix_s: Option<i64>,
+    last_index_run_started_at_unix_s: Option<i64>,
+    responses: LruCache<SearchResponse>,
+    embeddings: LruCache<Vec<f32>>,
+    contexts: LruCache<(String, Vec<ContextItem>)>,
 }
 
 #[derive(Clone)]
@@ -110,8 +140,9 @@ pub struct Retriever {
     db_path: std::path::PathBuf,
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
-    embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
-    cache: Arc<Mutex<SearchCache>>,
+    embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
+    cache: Arc<Mutex<RetrieverCaches>>,
+    cache_config_key: String,
 }
 
 impl Retriever {
@@ -119,14 +150,46 @@ impl Retriever {
         config: Arc<Config>,
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
-        embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+        embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
     ) -> Self {
-        let cache = SearchCache {
+        let cache = RetrieverCaches {
             last_symbol_update_unix_s: None,
-            max_entries: 64,
-            order: VecDeque::new(),
-            entries: HashMap::new(),
+            last_index_run_started_at_unix_s: None,
+            responses: LruCache {
+                max_entries: 64,
+                max_bytes: None,
+                used_bytes: 0,
+                order: VecDeque::new(),
+                entries: HashMap::new(),
+            },
+            embeddings: LruCache {
+                max_entries: 256,
+                max_bytes: Some(4 * 1024 * 1024),
+                used_bytes: 0,
+                order: VecDeque::new(),
+                entries: HashMap::new(),
+            },
+            contexts: LruCache {
+                max_entries: 64,
+                max_bytes: Some(8 * 1024 * 1024),
+                used_bytes: 0,
+                order: VecDeque::new(),
+                entries: HashMap::new(),
+            },
         };
+        let cache_config_key = format!(
+            "b={}|k={}|ha={:.3}|vw={:.3}|kw={:.3}|eb={:.3}|ib={:.3}|tp={:.3}|pw={:.3}|pc={}",
+            config.max_context_bytes,
+            config.vector_search_limit,
+            config.hybrid_alpha,
+            config.rank_vector_weight,
+            config.rank_keyword_weight,
+            config.rank_exported_boost,
+            config.rank_index_file_boost,
+            config.rank_test_penalty,
+            config.rank_popularity_weight,
+            config.rank_popularity_cap
+        );
         Self {
             db_path: config.db_path.clone(),
             config,
@@ -134,6 +197,7 @@ impl Retriever {
             vectors,
             embedder,
             cache: Arc::new(Mutex::new(cache)),
+            cache_config_key,
         }
     }
 
@@ -150,20 +214,30 @@ impl Retriever {
         sqlite.init()?;
 
         let current_last_update = sqlite.most_recent_symbol_update().unwrap_or(None);
+        let current_index_run_started_at = sqlite
+            .latest_index_run()
+            .ok()
+            .flatten()
+            .map(|r| r.started_at_unix_s);
         let cache_key = format!(
-            "q={}|l={}|e={}|b={}",
+            "v2|cfg={}|q={}|l={}|e={}",
+            self.cache_config_key,
             trim_query(query, 500),
             limit,
-            exported_only,
-            self.config.max_context_bytes
+            exported_only
         );
         {
-            let mut cache = self.cache.lock().await;
-            if cache.last_symbol_update_unix_s != current_last_update {
-                cache.clear();
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.last_symbol_update_unix_s != current_last_update
+                || cache.last_index_run_started_at_unix_s != current_index_run_started_at
+            {
+                cache.responses.clear();
+                cache.embeddings.clear();
+                cache.contexts.clear();
                 cache.last_symbol_update_unix_s = current_last_update;
+                cache.last_index_run_started_at_unix_s = current_index_run_started_at;
             }
-            if let Some(resp) = cache.get(&cache_key) {
+            if let Some(resp) = cache.responses.get(&cache_key) {
                 return Ok(resp);
             }
         }
@@ -193,9 +267,8 @@ impl Retriever {
                     language: row.language.clone(),
                 }];
 
-                let assembler = ContextAssembler::new(self.config.clone());
                 let (context, context_items) =
-                    assembler.assemble_context_with_items(&sqlite, &[row], &[])?;
+                    self.assemble_context_cached(&sqlite, &[row.clone()], &[])?;
 
                 let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 let run = crate::storage::sqlite::SearchRunRow {
@@ -233,7 +306,7 @@ impl Retriever {
                     context_items,
                     hit_signals,
                 };
-                self.cache.lock().await.insert(cache_key, resp.clone());
+                self.cache_insert_response(cache_key, resp.clone());
                 return Ok(resp);
             }
         }
@@ -286,9 +359,8 @@ impl Retriever {
                         .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
                         .collect::<Vec<_>>();
 
-                    let assembler = ContextAssembler::new(self.config.clone());
                     let (context, context_items) =
-                        assembler.assemble_context_with_items(&sqlite, &rows, &[])?;
+                        self.assemble_context_cached(&sqlite, &rows, &[])?;
 
                     let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     let run = crate::storage::sqlite::SearchRunRow {
@@ -312,7 +384,7 @@ impl Retriever {
                         context_items,
                         hit_signals: HashMap::new(),
                     };
-                    self.cache.lock().await.insert(cache_key, resp.clone());
+                    self.cache_insert_response(cache_key, resp.clone());
                     return Ok(resp);
                 }
             }
@@ -324,12 +396,7 @@ impl Retriever {
         let keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let vector_t = Instant::now();
-        let query_vector = {
-            let mut embedder = self.embedder.lock().await;
-            let mut out = embedder.embed(&[search_query.to_string()])?;
-            out.pop()
-                .ok_or_else(|| anyhow!("Embedder returned no vector"))?
-        };
+        let query_vector = self.get_query_vector_cached(search_query).await?;
         let vector_hits = self.vectors.search(&query_vector, k).await?;
         let vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
@@ -379,9 +446,7 @@ impl Retriever {
             }
         }
 
-        let assembler = ContextAssembler::new(self.config.clone());
-        let (context, context_items) =
-            assembler.assemble_context_with_items(&sqlite, &roots, &extra)?;
+        let (context, context_items) = self.assemble_context_cached(&sqlite, &roots, &extra)?;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -407,8 +472,68 @@ impl Retriever {
             context_items,
             hit_signals,
         };
-        self.cache.lock().await.insert(cache_key, resp.clone());
+        self.cache_insert_response(cache_key, resp.clone());
         Ok(resp)
+    }
+
+    fn cache_insert_response(&self, key: String, resp: SearchResponse) {
+        let size = resp.context.len() + resp.context_items.iter().map(|i| i.bytes).sum::<usize>();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.responses.insert(key, resp, size);
+    }
+
+    async fn get_query_vector_cached(&self, query: &str) -> Result<Vec<f32>> {
+        let key = format!("q={}", trim_query(query, 500));
+        {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(v) = cache.embeddings.get(&key) {
+                return Ok(v);
+            }
+        }
+
+        let v = {
+            let mut embedder = self.embedder.lock().await;
+            let mut out = embedder.embed(&[query.to_string()])?;
+            out.pop()
+                .ok_or_else(|| anyhow!("Embedder returned no vector"))?
+        };
+
+        let size = v.len().saturating_mul(4);
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.embeddings.insert(key, v.clone(), size);
+        Ok(v)
+    }
+
+    fn assemble_context_cached(
+        &self,
+        store: &SqliteStore,
+        roots: &[SymbolRow],
+        extra: &[SymbolRow],
+    ) -> Result<(String, Vec<ContextItem>)> {
+        let mut root_ids = roots.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
+        root_ids.sort_unstable();
+        let mut extra_ids = extra.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
+        extra_ids.sort_unstable();
+
+        let key = format!(
+            "m=default|b={}|r={}|x={}",
+            self.config.max_context_bytes,
+            root_ids.join(","),
+            extra_ids.join(",")
+        );
+        {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(v) = cache.contexts.get(&key) {
+                return Ok(v);
+            }
+        }
+
+        let assembler = ContextAssembler::new(self.config.clone());
+        let v = assembler.assemble_context_with_items(store, roots, extra)?;
+        let size = v.0.len() + v.1.iter().map(|i| i.bytes).sum::<usize>();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.contexts.insert(key, v.clone(), size);
+        Ok(v)
     }
 
     fn parse_query_controls(query: &str) -> (String, QueryControls) {
@@ -1049,9 +1174,11 @@ fn expand_with_edges(
                 }
                 if seen.insert(edge.to_symbol_id.clone()) {
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
+                        let evidence_boost =
+                            (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score * 0.8 * edge.confidence,
+                            score: h.score * 0.8 * edge.confidence * evidence_boost,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,
@@ -1076,9 +1203,11 @@ fn expand_with_edges(
                 }
                 if seen.insert(edge.from_symbol_id.clone()) {
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
+                        let evidence_boost =
+                            (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score * 0.8 * edge.confidence,
+                            score: h.score * 0.8 * edge.confidence * evidence_boost,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,
@@ -1458,6 +1587,7 @@ mod tests {
                 at_file: None,
                 at_line: None,
                 confidence: 1.0,
+                evidence_count: 1,
             })
             .unwrap();
 
@@ -1500,6 +1630,7 @@ mod tests {
                 at_file: None,
                 at_line: None,
                 confidence: 1.0,
+                evidence_count: 1,
             })
             .unwrap();
 
@@ -1811,5 +1942,82 @@ mod tests {
         assert!(has_def);
         assert!(has_test);
         assert!(has_usage);
+    }
+
+    #[tokio::test]
+    async fn search_reuses_query_embedding_across_cache_misses() {
+        use crate::embeddings::hash::HashEmbedder;
+        use crate::storage::{tantivy::TantivyIndex, vector::LanceDbStore};
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingEmbedder {
+            inner: HashEmbedder,
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl Embedder for CountingEmbedder {
+            fn dim(&self) -> usize {
+                self.inner.dim()
+            }
+
+            fn embed(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.embed(texts)
+            }
+        }
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base: PathBuf = std::env::temp_dir().join(format!("cimcp-cache-test-{nanos}"));
+        std::fs::create_dir_all(&base).unwrap();
+
+        let mut cfg = cfg_with_max(50_000);
+        cfg.base_dir = base.clone();
+        cfg.db_path = base.join("code-intel.db");
+        cfg.vector_db_path = base.join("vectors");
+        cfg.tantivy_index_path = base.join("tantivy");
+        cfg.repo_roots = vec![base.clone()];
+
+        let sqlite = SqliteStore::open(&cfg.db_path).unwrap();
+        sqlite.init().unwrap();
+        let sym = SymbolRow {
+            id: "id1".to_string(),
+            file_path: "src/a.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: "alpha".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 1,
+            text: "export function alpha() {}".to_string(),
+        };
+        sqlite.upsert_symbol(&sym).unwrap();
+
+        let tantivy = Arc::new(TantivyIndex::open_or_create(&cfg.tantivy_index_path).unwrap());
+        tantivy.upsert_symbol(&sym).unwrap();
+        tantivy.commit().unwrap();
+
+        let vec_store = LanceDbStore::connect(&cfg.vector_db_path).await.unwrap();
+        let vectors = Arc::new(vec_store.open_or_create_table("symbols", 8).await.unwrap());
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let embedder: Box<dyn Embedder + Send> = Box::new(CountingEmbedder {
+            inner: HashEmbedder::new(8),
+            calls: calls.clone(),
+        });
+        let embedder = Arc::new(AsyncMutex::new(embedder));
+
+        let retriever = Retriever::new(Arc::new(cfg), tantivy, vectors, embedder);
+
+        let _ = retriever.search("alpha", 3, false).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let _ = retriever.search("alpha", 4, false).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

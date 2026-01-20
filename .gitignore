@@ -4,7 +4,7 @@
 # Agent related
 .cimcp/
 :memory:
-.plan
+.plans
 
 # Rust build artifacts
 target

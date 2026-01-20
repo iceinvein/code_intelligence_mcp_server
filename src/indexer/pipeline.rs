@@ -3,6 +3,12 @@ use crate::{
     config::Config,
     embeddings::Embedder,
     indexer::{
+        extract::c::extract_c_symbols,
+        extract::cpp::extract_cpp_symbols,
+        extract::go::extract_go_symbols,
+        extract::java::extract_java_symbols,
+        extract::javascript::extract_javascript_symbols,
+        extract::python::extract_python_symbols,
         extract::rust::extract_rust_symbols,
         extract::typescript::extract_typescript_symbols,
         parser::{language_id_for_path, LanguageId},
@@ -324,6 +330,12 @@ impl IndexPipeline {
                     extract_typescript_symbols(language_id, &source)
                 }
                 LanguageId::Rust => extract_rust_symbols(&source),
+                LanguageId::Python => extract_python_symbols(&source),
+                LanguageId::Go => extract_go_symbols(&source),
+                LanguageId::C => extract_c_symbols(&source),
+                LanguageId::Cpp => extract_cpp_symbols(&source),
+                LanguageId::Java => extract_java_symbols(&source),
+                LanguageId::Javascript => extract_javascript_symbols(&source),
             };
 
             let extracted = match extracted {
@@ -569,6 +581,12 @@ fn language_string(language_id: LanguageId) -> &'static str {
         LanguageId::Typescript => "typescript",
         LanguageId::Tsx => "tsx",
         LanguageId::Rust => "rust",
+        LanguageId::Python => "python",
+        LanguageId::Go => "go",
+        LanguageId::Java => "java",
+        LanguageId::Javascript => "javascript",
+        LanguageId::C => "c",
+        LanguageId::Cpp => "cpp",
     }
 }
 

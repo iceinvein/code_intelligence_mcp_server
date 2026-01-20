@@ -13,7 +13,7 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2", features = ["serde"] }
-tree-sitter = "0.24"
+tree-sitter = "0.25.0"
 tree-sitter-rust = "0.23"
 tree-sitter-typescript = "0.23.2"
 rusqlite = { version = "0.33", features = ["bundled"] }
@@ -26,6 +26,12 @@ fastembed = "4"
 
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
+tree-sitter-python = "0.25.0"
+tree-sitter-go = "0.25.0"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-c = "0.24.1"
+tree-sitter-cpp = "0.23.4"
 
 [features]
 default = []

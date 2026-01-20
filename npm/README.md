@@ -60,6 +60,21 @@ Available tools for the agent:
 
 ---
 
+## Supported Languages
+
+The server supports semantic navigation and symbol extraction for the following languages:
+
+*   **Rust**
+*   **TypeScript / TSX**
+*   **JavaScript**
+*   **Python**
+*   **Go**
+*   **Java**
+*   **C**
+*   **C++**
+
+---
+
 ## Smart Ranking
 
 The ranking engine optimizes results for relevance using several heuristics:

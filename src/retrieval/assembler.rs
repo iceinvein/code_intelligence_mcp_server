@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ pub struct ContextItem {
     pub kind: String,
     pub name: String,
     pub role: String,
+    pub reasons: Vec<String>,
     pub truncated: bool,
     pub bytes: usize,
 }
@@ -56,7 +58,7 @@ impl ContextAssembler {
 
         // 2. Format output
         // Roots are full text. Extra and Expanded are simplified.
-        self.format_context(roots, extra, &expanded)
+        self.format_context(store, roots, extra, &expanded)
     }
 
     fn expand_with_scoring(
@@ -136,6 +138,7 @@ impl ContextAssembler {
 
     pub fn format_context(
         &self,
+        store: &SqliteStore,
         roots: &[SymbolRow],
         explicit_extra: &[SymbolRow],
         expanded: &[SymbolRow],
@@ -154,6 +157,8 @@ impl ContextAssembler {
 
         let mut used_by_role = HashMap::<String, usize>::new();
         let mut count_by_role = HashMap::<String, usize>::new();
+        let mut count_by_cluster_key = HashMap::<String, usize>::new();
+        let mut count_by_fingerprint = HashMap::<u64, usize>::new();
 
         // Prioritize roots, then explicit_extra, then expanded
         for sym in roots
@@ -170,6 +175,7 @@ impl ContextAssembler {
 
             let (text, simplified) = self.simplify_code(&text, &sym.kind, is_root);
             let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
+            let cluster_key = store.get_similarity_cluster_key(&sym.id).ok().flatten();
 
             let header = format!(
                 "=== {}:{}-{} ({} {}) id={} ===\n",
@@ -188,6 +194,24 @@ impl ContextAssembler {
                 block.push('\n');
             }
             block.push('\n');
+
+            let role_cluster_limit = match role.as_str() {
+                "root" => 2usize,
+                _ => 1usize,
+            };
+
+            if let Some(key) = &cluster_key {
+                let n = count_by_cluster_key.get(key).copied().unwrap_or(0);
+                if n >= role_cluster_limit {
+                    continue;
+                }
+            } else {
+                let fp = fingerprint_text(&text);
+                let n = count_by_fingerprint.get(&fp).copied().unwrap_or(0);
+                if n >= role_cluster_limit {
+                    continue;
+                }
+            }
 
             let role_cap = match role.as_str() {
                 "root" => root_cap,
@@ -209,6 +233,16 @@ impl ContextAssembler {
                     cut -= 1;
                 }
                 out.push_str(&block[..cut]);
+                let mut reasons = vec![format!("role:{role}")];
+                if let Some(key) = &cluster_key {
+                    reasons.push(format!("cluster:{key}"));
+                } else {
+                    reasons.push("dedupe:fingerprint".to_string());
+                }
+                if simplified {
+                    reasons.push("simplified".to_string());
+                }
+                reasons.push("truncated".to_string());
                 items.push(ContextItem {
                     id: sym.id.clone(),
                     file_path: sym.file_path.clone(),
@@ -217,17 +251,33 @@ impl ContextAssembler {
                     kind: sym.kind.clone(),
                     name: sym.name.clone(),
                     role: role.clone(),
+                    reasons,
                     truncated: true,
                     bytes: cut,
                 });
                 *used_by_role.entry(role.clone()).or_insert(0) += cut;
                 *count_by_role.entry(role).or_insert(0) += 1;
+                if let Some(key) = &cluster_key {
+                    *count_by_cluster_key.entry(key.clone()).or_insert(0) += 1;
+                } else {
+                    let fp = fingerprint_text(&text);
+                    *count_by_fingerprint.entry(fp).or_insert(0) += 1;
+                }
                 break;
             }
 
             out.push_str(&block);
             used += block.len();
 
+            let mut reasons = vec![format!("role:{role}")];
+            if let Some(key) = &cluster_key {
+                reasons.push(format!("cluster:{key}"));
+            } else {
+                reasons.push("dedupe:fingerprint".to_string());
+            }
+            if simplified {
+                reasons.push("simplified".to_string());
+            }
             items.push(ContextItem {
                 id: sym.id.clone(),
                 file_path: sym.file_path.clone(),
@@ -236,11 +286,18 @@ impl ContextAssembler {
                 kind: sym.kind.clone(),
                 name: sym.name.clone(),
                 role: role.clone(),
+                reasons,
                 truncated: simplified,
                 bytes: block.len(),
             });
             *used_by_role.entry(role.clone()).or_insert(0) += block.len();
             *count_by_role.entry(role).or_insert(0) += 1;
+            if let Some(key) = &cluster_key {
+                *count_by_cluster_key.entry(key.clone()).or_insert(0) += 1;
+            } else {
+                let fp = fingerprint_text(&text);
+                *count_by_fingerprint.entry(fp).or_insert(0) += 1;
+            }
         }
 
         Ok((out, items))
@@ -303,6 +360,12 @@ fn role_for_symbol(is_root: bool, is_extra: bool) -> String {
     }
 }
 
+fn fingerprint_text(text: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.to_lowercase().hash(&mut h);
+    h.finish()
+}
+
 fn read_symbol_snippet(base_dir: &Path, sym: &SymbolRow) -> Result<String> {
     let abs = base_dir.join(&sym.file_path);
     let bytes = fs::read(&abs).with_context(|| format!("Failed to read {}", abs.display()))?;
@@ -363,6 +426,8 @@ mod tests {
     fn format_context_hydrates_small_and_truncates_huge() {
         let config = make_config(10000);
         let assembler = ContextAssembler::new(config);
+        let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        store.init().unwrap();
 
         // 1. Small function (should be hydrated/full)
         let small_body = "{\n  line1;\n  line2;\n}";
@@ -401,7 +466,7 @@ mod tests {
         };
 
         let (output, items) = assembler
-            .format_context(&[], &[small.clone(), huge.clone()], &[])
+            .format_context(&store, &[], &[small.clone(), huge.clone()], &[])
             .unwrap();
 
         // Check Small
@@ -434,8 +499,10 @@ mod tests {
     fn format_context_caps_roots_and_leaves_room_for_extra_and_expanded() {
         let config = make_config(1200);
         let assembler = ContextAssembler::new(config);
+        let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        store.init().unwrap();
 
-        let mk = |id: &str, file: &str, name: &str, text_len: usize| SymbolRow {
+        let mk = |id: &str, file: &str, name: &str, ch: char, text_len: usize| SymbolRow {
             id: id.to_string(),
             file_path: file.to_string(),
             language: "typescript".to_string(),
@@ -446,14 +513,19 @@ mod tests {
             end_byte: 0,
             start_line: 1,
             end_line: 1,
-            text: "x".repeat(text_len),
+            text: ch.to_string().repeat(text_len),
         };
 
-        let roots = vec![mk("r1", "r1.ts", "r1", 160), mk("r2", "r2.ts", "r2", 160)];
-        let extra = vec![mk("e1", "e1.ts", "e1", 120)];
-        let expanded = vec![mk("x1", "x1.ts", "x1", 120)];
+        let roots = vec![
+            mk("r1", "r1.ts", "r1", 'r', 160),
+            mk("r2", "r2.ts", "r2", 'r', 160),
+        ];
+        let extra = vec![mk("e1", "e1.ts", "e1", 'e', 120)];
+        let expanded = vec![mk("x1", "x1.ts", "x1", 'x', 120)];
 
-        let (_output, items) = assembler.format_context(&roots, &extra, &expanded).unwrap();
+        let (_output, items) = assembler
+            .format_context(&store, &roots, &extra, &expanded)
+            .unwrap();
         let roots_n = items.iter().filter(|i| i.role == "root").count();
         let extra_n = items.iter().filter(|i| i.role == "extra").count();
         let expanded_n = items.iter().filter(|i| i.role == "expanded").count();
@@ -461,5 +533,34 @@ mod tests {
         assert!(roots_n >= 1);
         assert!(extra_n >= 1);
         assert!(expanded_n >= 1);
+    }
+
+    #[test]
+    fn format_context_dedupes_by_fingerprint_when_no_cluster_key() {
+        let config = make_config(10_000);
+        let assembler = ContextAssembler::new(config);
+        let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        store.init().unwrap();
+
+        let mk = |id: &str| SymbolRow {
+            id: id.to_string(),
+            file_path: format!("{id}.ts"),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: id.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 1,
+            text: "export function same() { return 1 }".to_string(),
+        };
+
+        let expanded = vec![mk("a"), mk("b")];
+        let (_output, items) = assembler
+            .format_context(&store, &[], &[], &expanded)
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].reasons.iter().any(|r| r == "dedupe:fingerprint"));
     }
 }

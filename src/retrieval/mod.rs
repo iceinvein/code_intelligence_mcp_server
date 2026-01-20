@@ -421,8 +421,10 @@ impl Retriever {
     }
 
     pub fn assemble_definitions(&self, symbols: &[SymbolRow]) -> Result<String> {
+        let sqlite = SqliteStore::open(&self.db_path)?;
+        sqlite.init()?;
         let assembler = ContextAssembler::new(self.config.clone());
-        Ok(assembler.format_context(symbols, &[], &[])?.0)
+        Ok(assembler.format_context(&sqlite, symbols, &[], &[])?.0)
     }
 
     pub fn load_symbol_rows_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {
@@ -1166,7 +1168,9 @@ mod tests {
             text: "export function alpha() { return \"你好\" }".to_string(),
         };
         let assembler = ContextAssembler::new(config.clone());
-        let (out, _) = assembler.format_context(&[sym], &[], &[]).unwrap();
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+        let (out, _) = assembler.format_context(&sqlite, &[sym], &[], &[]).unwrap();
         assert!(out.len() <= config.max_context_bytes);
         assert!(std::str::from_utf8(out.as_bytes()).is_ok());
     }

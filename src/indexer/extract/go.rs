@@ -237,4 +237,36 @@ type MyInterface interface {
             .iter()
             .any(|i| i.source == "os" && i.alias.as_deref() == Some("my_os")));
     }
+
+    #[test]
+    fn test_extract_go_struct_method() {
+        let source = r#"
+package main
+
+import "fmt"
+
+type GoGreeter struct {
+    Name string
+}
+
+func (g *GoGreeter) Greet() {
+    fmt.Println("Hello from Go")
+}
+"#;
+        let extracted = extract_go_symbols(source).unwrap();
+
+        let greeter = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "GoGreeter")
+            .unwrap();
+        assert_eq!(greeter.kind, SymbolKind::Struct);
+
+        let greet = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Greet")
+            .unwrap();
+        assert_eq!(greet.kind, SymbolKind::Function);
+    }
 }

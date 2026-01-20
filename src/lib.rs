@@ -1,6 +1,10 @@
 pub mod config;
 pub mod embeddings;
+pub mod graph;
+pub mod handlers;
 pub mod indexer;
 pub mod retrieval;
+pub mod server;
 pub mod storage;
 pub mod text;
+pub mod tools;

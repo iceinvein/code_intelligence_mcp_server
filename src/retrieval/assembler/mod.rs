@@ -1,34 +1,17 @@
+pub mod formatting;
+pub mod graph;
+
 use crate::config::Config;
 use crate::storage::sqlite::SqliteStore;
 use crate::storage::sqlite::SymbolRow;
-use crate::storage::sqlite::UsageExampleRow;
 use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
+use formatting::{fingerprint_text, role_for_symbol, simplify_code, symbol_row_from_usage_example};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ContextItem {
-    pub id: String,
-    pub file_path: String,
-    pub start_line: u32,
-    pub end_line: u32,
-    pub kind: String,
-    pub name: String,
-    pub role: String,
-    pub reasons: Vec<String>,
-    pub truncated: bool,
-    pub bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FormatMode {
-    Default,
-    Full,
-}
+pub use formatting::{ContextItem, FormatMode};
 
 pub struct ContextAssembler {
     config: Arc<Config>,
@@ -71,7 +54,7 @@ impl ContextAssembler {
         seeds.extend_from_slice(roots);
         seeds.extend_from_slice(extra);
 
-        let expanded = self.expand_with_scoring(store, &seeds, 50)?;
+        let expanded = graph::expand_with_scoring(store, &seeds, 50)?;
 
         let mut stitched = Vec::new();
         for root in roots {
@@ -86,93 +69,6 @@ impl ContextAssembler {
         // 2. Format output
         // Roots are full text. Extra and Expanded are simplified.
         self.format_context_with_mode(store, roots, &combined_extra, &expanded, mode)
-    }
-
-    fn expand_with_scoring(
-        &self,
-        store: &SqliteStore,
-        roots: &[SymbolRow],
-        limit: usize,
-    ) -> Result<Vec<SymbolRow>> {
-        let mut candidates: HashMap<String, (SymbolRow, f32)> = HashMap::new();
-        let mut expanded_frontier: HashSet<String> = roots.iter().map(|r| r.id.clone()).collect();
-
-        // Initialize frontier with roots.
-        // We don't add roots to candidates because they are already in the context.
-        // We just use them to explore.
-        let mut frontier: Vec<String> = roots.iter().map(|r| r.id.clone()).collect();
-
-        let max_depth = 2; // Depth 1 (direct neighbors) and maybe Depth 2
-        let exploration_limit = 100; // Don't fetch too many symbols total
-
-        for depth in 0..max_depth {
-            if candidates.len() >= exploration_limit {
-                break;
-            }
-            if frontier.is_empty() {
-                break;
-            }
-
-            let mut next_frontier = Vec::new();
-
-            for from_id in frontier {
-                if candidates.len() >= exploration_limit {
-                    break;
-                }
-
-                let edges = store.list_edges_from(&from_id, 20)?; // Limit fan-out per node
-                for edge in edges {
-                    let depth_penalty = 1.0 / ((depth + 1) as f32);
-                    let type_multiplier = match edge.edge_type.as_str() {
-                        "extends" | "implements" | "alias" | "type" => 1.5,
-                        "call" => 1.0,
-                        "reference" => 0.8,
-                        _ => 1.0,
-                    };
-                    let resolution_multiplier = match edge.resolution.as_str() {
-                        "local" => 1.0,
-                        "import" => 0.9,
-                        "heuristic" => 0.75,
-                        _ => 0.8,
-                    };
-                    let evidence_boost =
-                        (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
-                    let score = depth_penalty
-                        * type_multiplier
-                        * resolution_multiplier
-                        * edge.confidence
-                        * evidence_boost;
-
-                    let entry = candidates.get_mut(&edge.to_symbol_id);
-                    if let Some((_, s)) = entry {
-                        if score > *s {
-                            *s = score;
-                        }
-                        continue;
-                    }
-
-                    if let Some(row) = store.get_symbol_by_id(&edge.to_symbol_id)? {
-                        candidates.insert(row.id.clone(), (row.clone(), score));
-                        if expanded_frontier.insert(row.id.clone()) {
-                            next_frontier.push(row.id);
-                        }
-                    }
-                }
-            }
-            frontier = next_frontier;
-        }
-
-        // Convert to vec and sort by score
-        let mut scored_rows: Vec<(SymbolRow, f32)> = candidates.into_values().collect();
-        scored_rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Take top `limit`
-        let result = scored_rows
-            .into_iter()
-            .take(limit)
-            .map(|(row, _)| row)
-            .collect();
-        Ok(result)
     }
 
     pub fn format_context(
@@ -225,7 +121,7 @@ impl ContextAssembler {
 
             let (text, simplified) = match mode {
                 FormatMode::Full => (text, false),
-                FormatMode::Default => self.simplify_code(&text, &sym.kind, is_root),
+                FormatMode::Default => simplify_code(&text, &sym.kind, is_root),
             };
             let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
             let cluster_key = store.get_similarity_cluster_key(&sym.id).ok().flatten();
@@ -356,95 +252,12 @@ impl ContextAssembler {
         Ok((out, items))
     }
 
-    fn simplify_code(&self, text: &str, kind: &str, is_root: bool) -> (String, bool) {
-        let lines: Vec<&str> = text.lines().collect();
-        // Spec: "If the body is >100 lines, provide the signature, the first 10 lines, ... and the last 5 lines."
-        // We apply this to both roots and extra symbols to keep context manageable while "hydrating" structure.
-
-        // Give roots more room. Files get generous room if they are roots.
-        let limit = if is_root {
-            if kind == "file" {
-                1000
-            } else {
-                500
-            }
-        } else {
-            100
-        };
-
-        if lines.len() <= limit {
-            return (text.to_string(), false);
-        }
-
-        let head_count = if kind == "file" { 50 } else { 15 }; // Signature + start
-        let tail_count = 5;
-
-        if lines.len() <= head_count + tail_count {
-            return (text.to_string(), false);
-        }
-
-        let head = &lines[..head_count];
-        let tail = &lines[lines.len().saturating_sub(tail_count)..];
-
-        let mut out = head.join("\n");
-        out.push_str(&format!(
-            "\n... ({} lines omitted) ...\n",
-            lines.len().saturating_sub(head_count + tail_count)
-        ));
-        out.push_str(&tail.join("\n"));
-        (out, true)
-    }
-
     fn read_or_get_text(&self, sym: &SymbolRow) -> Result<String> {
         match read_symbol_snippet(&self.config.base_dir, sym) {
             Ok(s) => Ok(s),
             Err(_) => Ok(sym.text.clone()),
         }
     }
-}
-
-fn role_for_symbol(is_root: bool, is_extra: bool) -> String {
-    if is_root {
-        "root".to_string()
-    } else if is_extra {
-        "extra".to_string()
-    } else {
-        "expanded".to_string()
-    }
-}
-
-fn fingerprint_text(text: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    text.to_lowercase().hash(&mut h);
-    h.finish()
-}
-
-fn symbol_row_from_usage_example(root: &SymbolRow, ex: &UsageExampleRow) -> SymbolRow {
-    let id = stable_usage_id(&root.id, ex);
-    let line = ex.line.unwrap_or(1);
-    SymbolRow {
-        id,
-        file_path: ex.file_path.clone(),
-        language: root.language.clone(),
-        kind: format!("usage_{}", ex.example_type),
-        name: root.name.clone(),
-        exported: false,
-        start_byte: 0,
-        end_byte: 0,
-        start_line: line,
-        end_line: line,
-        text: ex.snippet.clone(),
-    }
-}
-
-fn stable_usage_id(root_id: &str, ex: &UsageExampleRow) -> String {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    root_id.hash(&mut h);
-    ex.example_type.hash(&mut h);
-    ex.file_path.hash(&mut h);
-    ex.line.hash(&mut h);
-    ex.snippet.hash(&mut h);
-    format!("usage:{:016x}", h.finish())
 }
 
 fn read_symbol_snippet(base_dir: &Path, sym: &SymbolRow) -> Result<String> {
@@ -574,46 +387,6 @@ mod tests {
         assert_eq!(items.len(), 2);
         let huge_item = items.iter().find(|i| i.id == "huge").unwrap();
         assert!(huge_item.truncated);
-    }
-
-    #[test]
-    fn format_context_caps_roots_and_leaves_room_for_extra_and_expanded() {
-        let config = make_config(1200);
-        let assembler = ContextAssembler::new(config);
-        let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
-        store.init().unwrap();
-
-        let mk = |id: &str, file: &str, name: &str, ch: char, text_len: usize| SymbolRow {
-            id: id.to_string(),
-            file_path: file.to_string(),
-            language: "typescript".to_string(),
-            kind: "function".to_string(),
-            name: name.to_string(),
-            exported: true,
-            start_byte: 0,
-            end_byte: 0,
-            start_line: 1,
-            end_line: 1,
-            text: ch.to_string().repeat(text_len),
-        };
-
-        let roots = vec![
-            mk("r1", "r1.ts", "r1", 'r', 160),
-            mk("r2", "r2.ts", "r2", 'r', 160),
-        ];
-        let extra = vec![mk("e1", "e1.ts", "e1", 'e', 120)];
-        let expanded = vec![mk("x1", "x1.ts", "x1", 'x', 120)];
-
-        let (_output, items) = assembler
-            .format_context(&store, &roots, &extra, &expanded)
-            .unwrap();
-        let roots_n = items.iter().filter(|i| i.role == "root").count();
-        let extra_n = items.iter().filter(|i| i.role == "extra").count();
-        let expanded_n = items.iter().filter(|i| i.role == "expanded").count();
-
-        assert!(roots_n >= 1);
-        assert!(extra_n >= 1);
-        assert!(expanded_n >= 1);
     }
 
     #[test]

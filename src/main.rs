@@ -1735,6 +1735,7 @@ mod tests {
                 at_file: Some("src/a.ts".to_string()),
                 at_line: Some(1),
                 confidence: 1.0,
+                evidence_count: 1,
             })
             .unwrap();
         sqlite
@@ -1745,6 +1746,7 @@ mod tests {
                 at_file: Some("src/a.ts".to_string()),
                 at_line: Some(1),
                 confidence: 1.0,
+                evidence_count: 1,
             })
             .unwrap();
 
@@ -1788,6 +1790,7 @@ mod tests {
                     at_file: Some("src/a.ts".to_string()),
                     at_line: Some(1),
                     confidence: 1.0,
+                    evidence_count: 1,
                 })
                 .unwrap();
         }

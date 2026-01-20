@@ -129,7 +129,9 @@ impl ContextAssembler {
                         "reference" => 0.8,
                         _ => 1.0,
                     };
-                    let score = depth_penalty * type_multiplier * edge.confidence;
+                    let evidence_boost =
+                        (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
+                    let score = depth_penalty * type_multiplier * edge.confidence * evidence_boost;
 
                     let entry = candidates.get_mut(&edge.to_symbol_id);
                     if let Some((_, s)) = entry {

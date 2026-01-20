@@ -645,6 +645,7 @@ fn extract_edges_for_symbol(
         "extends" | "implements" | "alias" => 0.95,
         _ => 0.7,
     };
+    let evidence_for = |name: &str| count_identifier_mentions(&row.text, name).max(1);
 
     // Map import alias/name to Import struct for fast lookup
     let mut import_map: HashMap<&str, &Import> = HashMap::new();
@@ -683,6 +684,7 @@ fn extract_edges_for_symbol(
             at_file: Some(row.file_path.clone()),
             at_line: Some(row.start_line),
             confidence: confidence_for("call"),
+            evidence_count: evidence_for(&callee),
         });
     }
 
@@ -711,6 +713,7 @@ fn extract_edges_for_symbol(
                         at_file: Some(row.file_path.clone()),
                         at_line: Some(row.start_line),
                         confidence: confidence_for(rel_type),
+                        evidence_count: evidence_for(&name),
                     });
                 }
             }
@@ -799,6 +802,7 @@ fn extract_edges_for_symbol(
                     at_file: Some(row.file_path.clone()),
                     at_line: Some(row.start_line),
                     confidence: confidence_for("reference"),
+                    evidence_count: evidence_for(&ident),
                 });
             }
         }
@@ -829,6 +833,7 @@ fn extract_edges_for_symbol(
                         at_file: Some(row.file_path.clone()),
                         at_line: Some(row.start_line),
                         confidence: confidence_for("type"),
+                        evidence_count: evidence_for(type_name),
                     });
                 }
             }
@@ -1143,6 +1148,39 @@ fn extract_identifiers(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn count_identifier_mentions(text: &str, target: &str) -> u32 {
+    if target.is_empty() {
+        return 0;
+    }
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    let mut count = 0u32;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let is_ident_start = b.is_ascii_alphabetic() || b == b'_' || b == b'$';
+        if !is_ident_start {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'$' {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        let ident = &text[start..i];
+        if ident == target {
+            count = count.saturating_add(1);
+        }
+    }
+    count
 }
 
 fn parse_type_relations(text: &str) -> (Vec<String>, Vec<String>, Vec<String>) {

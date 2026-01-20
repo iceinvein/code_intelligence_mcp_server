@@ -26,6 +26,7 @@ pub struct EdgeRow {
     pub at_file: Option<String>,
     pub at_line: Option<u32>,
     pub confidence: f32,
+    pub evidence_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +146,7 @@ CREATE TABLE IF NOT EXISTS edges (
   at_file TEXT,
   at_line INTEGER,
   confidence REAL NOT NULL DEFAULT 1.0,
+  evidence_count INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   UNIQUE(from_symbol_id, to_symbol_id, edge_type),
   FOREIGN KEY(from_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
@@ -221,6 +223,7 @@ CREATE INDEX IF NOT EXISTS idx_similarity_clusters_key ON similarity_clusters(cl
 
         migrate_add_edges_location_columns(&self.conn)?;
         migrate_add_edges_confidence_column(&self.conn)?;
+        migrate_add_edges_evidence_count_column(&self.conn)?;
         Ok(())
     }
 
@@ -268,12 +271,13 @@ ON CONFLICT(id) DO UPDATE SET
         self.conn
             .execute(
                 r#"
-INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
   at_file=COALESCE(edges.at_file, excluded.at_file),
   at_line=COALESCE(edges.at_line, excluded.at_line),
-  confidence=MAX(edges.confidence, excluded.confidence)
+  confidence=MAX(edges.confidence, excluded.confidence),
+  evidence_count=MAX(edges.evidence_count, excluded.evidence_count)
 "#,
                 params![
                     edge.from_symbol_id,
@@ -281,7 +285,8 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
                     edge.edge_type,
                     edge.at_file,
                     edge.at_line.map(|v| v as i64),
-                    edge.confidence
+                    edge.confidence,
+                    edge.evidence_count as i64
                 ],
             )
             .context("Failed to upsert edge")?;
@@ -294,7 +299,7 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
             .prepare(
                 r#"
 SELECT
-  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count
 FROM edges
 WHERE from_symbol_id = ?1
 ORDER BY edge_type ASC, to_symbol_id ASC
@@ -315,6 +320,7 @@ LIMIT ?2
                     .get::<_, Option<i64>>(4)?
                     .and_then(|v| u32::try_from(v).ok()),
                 confidence: row.get::<_, f64>(5)? as f32,
+                evidence_count: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(1),
             });
         }
         Ok(out)
@@ -326,7 +332,7 @@ LIMIT ?2
             .prepare(
                 r#"
 SELECT
-  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count
 FROM edges
 WHERE to_symbol_id = ?1
 ORDER BY edge_type ASC, from_symbol_id ASC
@@ -347,6 +353,7 @@ LIMIT ?2
                     .get::<_, Option<i64>>(4)?
                     .and_then(|v| u32::try_from(v).ok()),
                 confidence: row.get::<_, f64>(5)? as f32,
+                evidence_count: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(1),
             });
         }
         Ok(out)
@@ -1057,6 +1064,14 @@ fn migrate_add_edges_confidence_column(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_add_edges_evidence_count_column(conn: &Connection) -> Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE edges ADD COLUMN evidence_count INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1140,6 +1155,7 @@ mod tests {
             at_file: None,
             at_line: None,
             confidence: 1.0,
+            evidence_count: 1,
         };
         store.upsert_edge(&edge).unwrap();
         store.upsert_edge(&edge).unwrap();
@@ -1149,6 +1165,49 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn upsert_edge_keeps_max_confidence_and_evidence_count() {
+        let store = SqliteStore::from_connection(Connection::open_in_memory().unwrap());
+        store.init().unwrap();
+
+        store
+            .upsert_symbol(&sample_symbol("id1", "src/a.ts", "alpha"))
+            .unwrap();
+        store
+            .upsert_symbol(&sample_symbol("id2", "src/a.ts", "beta"))
+            .unwrap();
+
+        store
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "id1".to_string(),
+                to_symbol_id: "id2".to_string(),
+                edge_type: "reference".to_string(),
+                at_file: None,
+                at_line: None,
+                confidence: 0.5,
+                evidence_count: 3,
+            })
+            .unwrap();
+        store
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "id1".to_string(),
+                to_symbol_id: "id2".to_string(),
+                edge_type: "reference".to_string(),
+                at_file: Some("src/a.ts".to_string()),
+                at_line: Some(1),
+                confidence: 0.9,
+                evidence_count: 1,
+            })
+            .unwrap();
+
+        let edges = store.list_edges_from("id1", 10).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert!((edges[0].confidence - 0.9).abs() < 1e-6);
+        assert_eq!(edges[0].evidence_count, 3);
+        assert_eq!(edges[0].at_file.as_deref(), Some("src/a.ts"));
+        assert_eq!(edges[0].at_line, Some(1));
     }
 
     #[test]

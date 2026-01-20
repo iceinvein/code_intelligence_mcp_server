@@ -195,7 +195,17 @@ impl IndexPipeline {
         }
         matches!(
             language_id_for_path(path),
-            Some(LanguageId::Typescript | LanguageId::Tsx | LanguageId::Rust)
+            Some(
+                LanguageId::Typescript
+                    | LanguageId::Tsx
+                    | LanguageId::Rust
+                    | LanguageId::Python
+                    | LanguageId::Go
+                    | LanguageId::Java
+                    | LanguageId::Javascript
+                    | LanguageId::C
+                    | LanguageId::Cpp
+            )
         )
     }
 

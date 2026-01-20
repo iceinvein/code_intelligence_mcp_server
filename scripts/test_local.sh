@@ -61,6 +61,81 @@ export const utils = {
 };
 EOF
 
+# Create dummy Python file
+cat > "$TEST_DIR/src/script.py" <<EOF
+def py_hello():
+    print("Hello from Python")
+
+class PyGreeter:
+    def greet(self):
+        py_hello()
+EOF
+
+# Create dummy Go file
+cat > "$TEST_DIR/src/main.go" <<EOF
+package main
+
+import "fmt"
+
+type GoGreeter struct {
+    Name string
+}
+
+func (g *GoGreeter) Greet() {
+    fmt.Println("Hello from Go")
+}
+EOF
+
+# Create dummy Java file
+cat > "$TEST_DIR/src/App.java" <<EOF
+package com.example;
+
+public class JavaGreeter {
+    public void greet() {
+        System.out.println("Hello from Java");
+    }
+}
+EOF
+
+# Create dummy C file
+cat > "$TEST_DIR/src/lib.c" <<EOF
+#include <stdio.h>
+
+struct CPoint {
+    int x;
+    int y;
+};
+
+void c_greet() {
+    printf("Hello from C");
+}
+EOF
+
+# Create dummy C++ file
+cat > "$TEST_DIR/src/lib.cpp" <<EOF
+#include <iostream>
+
+class CppGreeter {
+public:
+    void greet() {
+        std::cout << "Hello from C++";
+    }
+};
+EOF
+
+# Create dummy JavaScript file
+cat > "$TEST_DIR/src/index.js" <<EOF
+function jsHello() {
+    console.log("Hello from JS");
+}
+
+class JsGreeter {
+    greet() {
+        jsHello();
+    }
+}
+EOF
+
 # Environment
 export BASE_DIR="$(pwd)/$TEST_DIR"
 export EMBEDDINGS_BACKEND=hash
@@ -87,6 +162,12 @@ cat > "$TEST_DIR/query_requests.jsonl" <<EOF
 {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"find_references","arguments":{"symbol_name":"Animal"}}}
 {"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"explore_dependency_graph","arguments":{"symbol_name":"run","direction":"downstream","depth":1}}}
 {"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"utils file"}}}
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"PyGreeter"}}}
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"GoGreeter"}}}
+{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"JavaGreeter"}}}
+{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"c_greet"}}}
+{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"CppGreeter"}}}
+{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"jsHello"}}}
 EOF
 
 cat "$TEST_DIR/query_requests.jsonl" | $SERVER_BIN > "$OUTPUT_FILE"
@@ -120,8 +201,8 @@ try:
     content = index_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
     stats = json.loads(content).get('stats', {})
     check('Indexing Codebase', 
-          stats.get('files_indexed', 0) >= 3, 
-          f'Expected >= 3 files indexed, got {stats.get(\"files_indexed\")}')
+          stats.get('files_indexed', 0) >= 9, 
+          f'Expected >= 9 files indexed, got {stats.get(\"files_indexed\")}')
 
     # Verify Queries
     with open('$OUTPUT_FILE', 'r') as f:
@@ -220,6 +301,48 @@ try:
     # We expect a hit with kind="file" and name containing "utils.ts" or similar
     found_file = any(h['kind'] == 'file' and 'utils' in h['file_path'] for h in file_hits)
     check('File Level Search (utils file)', found_file, 'File record for utils.ts not found')
+
+    # Python Search
+    py_res = next((l for l in lines if l.get('id') == 11), {})
+    content = py_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    py_hits = json.loads(content).get('hits', [])
+    found_py = any(h['name'] == 'PyGreeter' for h in py_hits)
+    check('Python Search (PyGreeter)', found_py, 'PyGreeter not found')
+
+    # Go Search
+    go_res = next((l for l in lines if l.get('id') == 12), {})
+    content = go_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    go_hits = json.loads(content).get('hits', [])
+    found_go = any(h['name'] == 'GoGreeter' for h in go_hits)
+    check('Go Search (GoGreeter)', found_go, 'GoGreeter not found')
+
+    # Java Search
+    java_res = next((l for l in lines if l.get('id') == 13), {})
+    content = java_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    java_hits = json.loads(content).get('hits', [])
+    found_java = any(h['name'] == 'JavaGreeter' for h in java_hits)
+    check('Java Search (JavaGreeter)', found_java, 'JavaGreeter not found')
+
+    # C Search
+    c_res = next((l for l in lines if l.get('id') == 14), {})
+    content = c_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    c_hits = json.loads(content).get('hits', [])
+    found_c = any(h['name'] == 'c_greet' for h in c_hits)
+    check('C Search (c_greet)', found_c, 'c_greet not found')
+
+    # C++ Search
+    cpp_res = next((l for l in lines if l.get('id') == 15), {})
+    content = cpp_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    cpp_hits = json.loads(content).get('hits', [])
+    found_cpp = any(h['name'] == 'CppGreeter' for h in cpp_hits)
+    check('C++ Search (CppGreeter)', found_cpp, 'CppGreeter not found')
+
+    # JS Search
+    js_res = next((l for l in lines if l.get('id') == 16), {})
+    content = js_res.get('result', {}).get('content', [{}])[0].get('text', '{}')
+    js_hits = json.loads(content).get('hits', [])
+    found_js = any(h['name'] == 'jsHello' for h in js_hits)
+    check('JS Search (jsHello)', found_js, 'jsHello not found')
 
 except Exception as e:
     print(f'${RED}CRITICAL ERROR: {e}${NC}')

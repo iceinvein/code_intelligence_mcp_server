@@ -268,7 +268,7 @@ impl Retriever {
                 }];
 
                 let (context, context_items) =
-                    self.assemble_context_cached(&sqlite, &[row.clone()], &[])?;
+                    self.assemble_context_cached(&sqlite, std::slice::from_ref(&row), &[])?;
 
                 let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 let run = crate::storage::sqlite::SearchRunRow {

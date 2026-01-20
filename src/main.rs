@@ -827,12 +827,21 @@ fn build_dependency_graph(
                     }
 
                     // Add edge
+                    let evidence = sqlite
+                        .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
+                        .unwrap_or_default();
                     edges.push(json!({
                         "from": e.from_symbol_id,
                         "to": e.to_symbol_id,
                         "edge_type": e.edge_type,
                         "at_file": e.at_file,
                         "at_line": e.at_line,
+                        "evidence_count": e.evidence_count,
+                        "evidence": evidence.into_iter().map(|ev| json!({
+                            "at_file": ev.at_file,
+                            "at_line": ev.at_line,
+                            "count": ev.count,
+                        })).collect::<Vec<_>>(),
                     }));
 
                     if visited.insert(caller.id.clone()) {
@@ -878,6 +887,17 @@ fn build_dependency_graph(
                         "edge_type": e.edge_type,
                         "at_file": e.at_file,
                         "at_line": e.at_line,
+                        "evidence_count": e.evidence_count,
+                        "evidence": sqlite
+                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|ev| json!({
+                                "at_file": ev.at_file,
+                                "at_line": ev.at_line,
+                                "count": ev.count,
+                            }))
+                            .collect::<Vec<_>>(),
                     }));
 
                     if visited.insert(callee.id.clone()) {
@@ -962,6 +982,17 @@ fn build_call_hierarchy(
                         "edge_type": "call",
                         "at_file": e.at_file,
                         "at_line": e.at_line,
+                        "evidence_count": e.evidence_count,
+                        "evidence": sqlite
+                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, "call", 3)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|ev| json!({
+                                "at_file": ev.at_file,
+                                "at_line": ev.at_line,
+                                "count": ev.count,
+                            }))
+                            .collect::<Vec<_>>(),
                     }));
                     if visited.insert(caller.id.clone()) {
                         next.push(caller.id);
@@ -996,6 +1027,17 @@ fn build_call_hierarchy(
                         "edge_type": "call",
                         "at_file": e.at_file,
                         "at_line": e.at_line,
+                        "evidence_count": e.evidence_count,
+                        "evidence": sqlite
+                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, "call", 3)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|ev| json!({
+                                "at_file": ev.at_file,
+                                "at_line": ev.at_line,
+                                "count": ev.count,
+                            }))
+                            .collect::<Vec<_>>(),
                     }));
                     if visited.insert(callee.id.clone()) {
                         next.push(callee.id);
@@ -1078,6 +1120,17 @@ fn build_type_graph(
                     "edge_type": e.edge_type,
                     "at_file": e.at_file,
                     "at_line": e.at_line,
+                    "evidence_count": e.evidence_count,
+                    "evidence": sqlite
+                        .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|ev| json!({
+                            "at_file": ev.at_file,
+                            "at_line": ev.at_line,
+                            "count": ev.count,
+                        }))
+                        .collect::<Vec<_>>(),
                 }));
                 if visited.insert(to_sym.id.clone()) {
                     next.push(to_sym.id);

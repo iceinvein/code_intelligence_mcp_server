@@ -14,7 +14,9 @@ use crate::{
         parser::{language_id_for_path, LanguageId},
     },
     storage::{
-        sqlite::{EdgeRow, SimilarityClusterRow, SqliteStore, SymbolRow, UsageExampleRow},
+        sqlite::{
+            EdgeEvidenceRow, EdgeRow, SimilarityClusterRow, SqliteStore, SymbolRow, UsageExampleRow,
+        },
         tantivy::TantivyIndex,
         vector::{LanceVectorTable, VectorRecord},
     },
@@ -454,8 +456,11 @@ impl IndexPipeline {
                             &extracted.imports,
                             &extracted.type_edges,
                         );
-                        for edge in edges {
+                        for (edge, evidence) in edges {
                             let _ = sqlite.upsert_edge(&edge);
+                            for ev in evidence {
+                                let _ = sqlite.upsert_edge_evidence(&ev);
+                            }
                         }
                     }
 
@@ -635,8 +640,8 @@ fn extract_edges_for_symbol(
     name_to_id: &HashMap<String, String>,
     imports: &[Import],
     type_edges: &[(String, String)],
-) -> Vec<EdgeRow> {
-    let mut out = Vec::new();
+) -> Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> {
+    let mut out: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
     let confidence_for = |edge_type: &str| match edge_type {
         "call" => 1.0,
@@ -645,7 +650,7 @@ fn extract_edges_for_symbol(
         "extends" | "implements" | "alias" => 0.95,
         _ => 0.7,
     };
-    let evidence_for = |name: &str| count_identifier_mentions(&row.text, name).max(1);
+    let evidence_for = |name: &str| identifier_evidence(&row.text, name, row.start_line);
 
     // Map import alias/name to Import struct for fast lookup
     let mut import_map: HashMap<&str, &Import> = HashMap::new();
@@ -677,15 +682,29 @@ fn extract_edges_for_symbol(
         if !used_edges.insert(("call".to_string(), to_id.clone())) {
             continue;
         }
-        out.push(EdgeRow {
-            from_symbol_id: row.id.clone(),
-            to_symbol_id: to_id,
-            edge_type: "call".to_string(),
-            at_file: Some(row.file_path.clone()),
-            at_line: Some(row.start_line),
-            confidence: confidence_for("call"),
-            evidence_count: evidence_for(&callee),
-        });
+        let (count, at_line, evidence_rows) = evidence_for(&callee);
+        out.push((
+            EdgeRow {
+                from_symbol_id: row.id.clone(),
+                to_symbol_id: to_id.clone(),
+                edge_type: "call".to_string(),
+                at_file: Some(row.file_path.clone()),
+                at_line: Some(at_line),
+                confidence: confidence_for("call"),
+                evidence_count: count,
+            },
+            evidence_rows
+                .into_iter()
+                .map(|(line, c)| EdgeEvidenceRow {
+                    from_symbol_id: row.id.clone(),
+                    to_symbol_id: to_id.clone(),
+                    edge_type: "call".to_string(),
+                    at_file: row.file_path.clone(),
+                    at_line: line,
+                    count: c,
+                })
+                .collect(),
+        ));
     }
 
     // Handle extends/implements
@@ -706,15 +725,29 @@ fn extract_edges_for_symbol(
 
             if let Some(id) = to_id {
                 if used_edges.insert((rel_type.to_string(), id.clone())) {
-                    out.push(EdgeRow {
-                        from_symbol_id: row.id.clone(),
-                        to_symbol_id: id,
-                        edge_type: rel_type.to_string(),
-                        at_file: Some(row.file_path.clone()),
-                        at_line: Some(row.start_line),
-                        confidence: confidence_for(rel_type),
-                        evidence_count: evidence_for(&name),
-                    });
+                    let (count, at_line, evidence_rows) = evidence_for(&name);
+                    out.push((
+                        EdgeRow {
+                            from_symbol_id: row.id.clone(),
+                            to_symbol_id: id.clone(),
+                            edge_type: rel_type.to_string(),
+                            at_file: Some(row.file_path.clone()),
+                            at_line: Some(at_line),
+                            confidence: confidence_for(rel_type),
+                            evidence_count: count,
+                        },
+                        evidence_rows
+                            .into_iter()
+                            .map(|(line, c)| EdgeEvidenceRow {
+                                from_symbol_id: row.id.clone(),
+                                to_symbol_id: id.clone(),
+                                edge_type: rel_type.to_string(),
+                                at_file: row.file_path.clone(),
+                                at_line: line,
+                                count: c,
+                            })
+                            .collect(),
+                    ));
                 }
             }
         };
@@ -795,15 +828,29 @@ fn extract_edges_for_symbol(
 
         if let Some(id) = to_id {
             if used_edges.insert(("reference".to_string(), id.clone())) {
-                out.push(EdgeRow {
-                    from_symbol_id: row.id.clone(),
-                    to_symbol_id: id,
-                    edge_type: "reference".to_string(),
-                    at_file: Some(row.file_path.clone()),
-                    at_line: Some(row.start_line),
-                    confidence: confidence_for("reference"),
-                    evidence_count: evidence_for(&ident),
-                });
+                let (count, at_line, evidence_rows) = evidence_for(&ident);
+                out.push((
+                    EdgeRow {
+                        from_symbol_id: row.id.clone(),
+                        to_symbol_id: id.clone(),
+                        edge_type: "reference".to_string(),
+                        at_file: Some(row.file_path.clone()),
+                        at_line: Some(at_line),
+                        confidence: confidence_for("reference"),
+                        evidence_count: count,
+                    },
+                    evidence_rows
+                        .into_iter()
+                        .map(|(line, c)| EdgeEvidenceRow {
+                            from_symbol_id: row.id.clone(),
+                            to_symbol_id: id.clone(),
+                            edge_type: "reference".to_string(),
+                            at_file: row.file_path.clone(),
+                            at_line: line,
+                            count: c,
+                        })
+                        .collect(),
+                ));
             }
         }
         refs_added += 1;
@@ -826,21 +873,94 @@ fn extract_edges_for_symbol(
 
             if let Some(id) = to_id {
                 if used_edges.insert(("type".to_string(), id.clone())) {
-                    out.push(EdgeRow {
-                        from_symbol_id: row.id.clone(),
-                        to_symbol_id: id,
-                        edge_type: "type".to_string(),
-                        at_file: Some(row.file_path.clone()),
-                        at_line: Some(row.start_line),
-                        confidence: confidence_for("type"),
-                        evidence_count: evidence_for(type_name),
-                    });
+                    let (count, at_line, evidence_rows) = evidence_for(type_name);
+                    out.push((
+                        EdgeRow {
+                            from_symbol_id: row.id.clone(),
+                            to_symbol_id: id.clone(),
+                            edge_type: "type".to_string(),
+                            at_file: Some(row.file_path.clone()),
+                            at_line: Some(at_line),
+                            confidence: confidence_for("type"),
+                            evidence_count: count,
+                        },
+                        evidence_rows
+                            .into_iter()
+                            .map(|(line, c)| EdgeEvidenceRow {
+                                from_symbol_id: row.id.clone(),
+                                to_symbol_id: id.clone(),
+                                edge_type: "type".to_string(),
+                                at_file: row.file_path.clone(),
+                                at_line: line,
+                                count: c,
+                            })
+                            .collect(),
+                    ));
                 }
             }
         }
     }
 
     out
+}
+
+fn identifier_evidence(text: &str, target: &str, start_line: u32) -> (u32, u32, Vec<(u32, u32)>) {
+    if target.is_empty() {
+        return (1, start_line, Vec::new());
+    }
+
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    let mut line = start_line;
+    let mut first_line = None::<u32>;
+    let mut total = 0u32;
+    let mut counts = HashMap::<u32, u32>::new();
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\n' {
+            line = line.saturating_add(1);
+            i += 1;
+            continue;
+        }
+
+        let is_ident_start = b.is_ascii_alphabetic() || b == b'_' || b == b'$';
+        if !is_ident_start {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'$' {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        let ident = &text[start..i];
+        if ident == target {
+            total = total.saturating_add(1);
+            first_line.get_or_insert(line);
+            *counts.entry(line).or_insert(0) += 1;
+        }
+    }
+
+    if total == 0 {
+        return (1, start_line, Vec::new());
+    }
+
+    let mut per_line = counts.into_iter().collect::<Vec<_>>();
+    per_line.sort_by(|(a_line, a_count), (b_line, b_count)| {
+        b_count.cmp(a_count).then_with(|| a_line.cmp(b_line))
+    });
+    if per_line.len() > 5 {
+        per_line.truncate(5);
+    }
+
+    (total.max(1), first_line.unwrap_or(start_line), per_line)
 }
 
 fn resolve_imported_symbol_id(current_file_path: &str, imp: &Import) -> Option<String> {
@@ -1150,39 +1270,6 @@ fn extract_identifiers(text: &str) -> Vec<String> {
     out
 }
 
-fn count_identifier_mentions(text: &str, target: &str) -> u32 {
-    if target.is_empty() {
-        return 0;
-    }
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    let mut count = 0u32;
-    while i < bytes.len() {
-        let b = bytes[i];
-        let is_ident_start = b.is_ascii_alphabetic() || b == b'_' || b == b'$';
-        if !is_ident_start {
-            i += 1;
-            continue;
-        }
-
-        let start = i;
-        i += 1;
-        while i < bytes.len() {
-            let b = bytes[i];
-            if b.is_ascii_alphanumeric() || b == b'_' || b == b'$' {
-                i += 1;
-            } else {
-                break;
-            }
-        }
-        let ident = &text[start..i];
-        if ident == target {
-            count = count.saturating_add(1);
-        }
-    }
-    count
-}
-
 fn parse_type_relations(text: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut extends = Vec::new();
     let mut implements = Vec::new();
@@ -1322,17 +1409,17 @@ mod tests {
 
         assert!(edges
             .iter()
-            .any(|e| e.edge_type == "call" && e.to_symbol_id == expected_b_id));
+            .any(|(e, _)| { e.edge_type == "call" && e.to_symbol_id == expected_b_id }));
 
         // 'c' is called. It is local.
         assert!(edges
             .iter()
-            .any(|e| e.edge_type == "call" && e.to_symbol_id == "id_c"));
+            .any(|(e, _)| e.edge_type == "call" && e.to_symbol_id == "id_c"));
 
         // 'b' is also referenced (identifiers)
         assert!(edges
             .iter()
-            .any(|e| e.edge_type == "reference" && e.to_symbol_id == expected_b_id));
+            .any(|(e, _)| { e.edge_type == "reference" && e.to_symbol_id == expected_b_id }));
 
         // "import" edges are removed for now.
     }

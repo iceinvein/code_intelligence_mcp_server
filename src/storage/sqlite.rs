@@ -30,6 +30,16 @@ pub struct EdgeRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeEvidenceRow {
+    pub from_symbol_id: String,
+    pub to_symbol_id: String,
+    pub edge_type: String,
+    pub at_file: String,
+    pub at_line: u32,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolHeaderRow {
     pub id: String,
     pub file_path: String,
@@ -156,6 +166,25 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);
+
+CREATE TABLE IF NOT EXISTS edge_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_symbol_id TEXT NOT NULL,
+  to_symbol_id TEXT NOT NULL,
+  edge_type TEXT NOT NULL,
+  at_file TEXT NOT NULL,
+  at_line INTEGER NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(from_symbol_id, to_symbol_id, edge_type, at_file, at_line),
+  FOREIGN KEY(from_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+  FOREIGN KEY(to_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_edge_evidence_from ON edge_evidence(from_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_edge_evidence_to ON edge_evidence(to_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_edge_evidence_type ON edge_evidence(edge_type);
+CREATE INDEX IF NOT EXISTS idx_edge_evidence_loc ON edge_evidence(at_file, at_line);
 
 CREATE TABLE IF NOT EXISTS file_fingerprints (
   file_path TEXT PRIMARY KEY NOT NULL,
@@ -293,6 +322,69 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
         Ok(())
     }
 
+    pub fn upsert_edge_evidence(&self, evidence: &EdgeEvidenceRow) -> Result<()> {
+        self.conn
+            .execute(
+                r#"
+INSERT INTO edge_evidence(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, count)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(from_symbol_id, to_symbol_id, edge_type, at_file, at_line) DO UPDATE SET
+  count=MAX(edge_evidence.count, excluded.count)
+"#,
+                params![
+                    evidence.from_symbol_id,
+                    evidence.to_symbol_id,
+                    evidence.edge_type,
+                    evidence.at_file,
+                    evidence.at_line as i64,
+                    evidence.count as i64
+                ],
+            )
+            .context("Failed to upsert edge evidence")?;
+        Ok(())
+    }
+
+    pub fn list_edge_evidence(
+        &self,
+        from_symbol_id: &str,
+        to_symbol_id: &str,
+        edge_type: &str,
+        limit: usize,
+    ) -> Result<Vec<EdgeEvidenceRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
+SELECT
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, count
+FROM edge_evidence
+WHERE from_symbol_id = ?1 AND to_symbol_id = ?2 AND edge_type = ?3
+ORDER BY count DESC, at_file ASC, at_line ASC, id ASC
+LIMIT ?4
+"#,
+            )
+            .context("Failed to prepare list_edge_evidence")?;
+
+        let mut rows = stmt.query(params![
+            from_symbol_id,
+            to_symbol_id,
+            edge_type,
+            limit as i64
+        ])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(EdgeEvidenceRow {
+                from_symbol_id: row.get(0)?,
+                to_symbol_id: row.get(1)?,
+                edge_type: row.get(2)?,
+                at_file: row.get(3)?,
+                at_line: u32::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                count: u32::try_from(row.get::<_, i64>(5)?).unwrap_or(1),
+            });
+        }
+        Ok(out)
+    }
+
     pub fn list_edges_from(&self, from_symbol_id: &str, limit: usize) -> Result<Vec<EdgeRow>> {
         let mut stmt = self
             .conn
@@ -376,6 +468,7 @@ LIMIT ?2
             .execute_batch(
                 r#"
 DELETE FROM edges;
+DELETE FROM edge_evidence;
 DELETE FROM symbols;
 DELETE FROM file_fingerprints;
 DELETE FROM usage_examples;
@@ -1208,6 +1301,57 @@ mod tests {
         assert_eq!(edges[0].evidence_count, 3);
         assert_eq!(edges[0].at_file.as_deref(), Some("src/a.ts"));
         assert_eq!(edges[0].at_line, Some(1));
+    }
+
+    #[test]
+    fn upsert_and_list_edge_evidence_keeps_max_count() {
+        let store = SqliteStore::from_connection(Connection::open_in_memory().unwrap());
+        store.init().unwrap();
+
+        store
+            .upsert_symbol(&sample_symbol("id1", "src/a.ts", "alpha"))
+            .unwrap();
+        store
+            .upsert_symbol(&sample_symbol("id2", "src/a.ts", "beta"))
+            .unwrap();
+
+        store
+            .upsert_edge_evidence(&EdgeEvidenceRow {
+                from_symbol_id: "id1".to_string(),
+                to_symbol_id: "id2".to_string(),
+                edge_type: "call".to_string(),
+                at_file: "src/a.ts".to_string(),
+                at_line: 10,
+                count: 2,
+            })
+            .unwrap();
+        store
+            .upsert_edge_evidence(&EdgeEvidenceRow {
+                from_symbol_id: "id1".to_string(),
+                to_symbol_id: "id2".to_string(),
+                edge_type: "call".to_string(),
+                at_file: "src/a.ts".to_string(),
+                at_line: 10,
+                count: 1,
+            })
+            .unwrap();
+        store
+            .upsert_edge_evidence(&EdgeEvidenceRow {
+                from_symbol_id: "id1".to_string(),
+                to_symbol_id: "id2".to_string(),
+                edge_type: "call".to_string(),
+                at_file: "src/a.ts".to_string(),
+                at_line: 12,
+                count: 5,
+            })
+            .unwrap();
+
+        let ev = store.list_edge_evidence("id1", "id2", "call", 10).unwrap();
+        assert_eq!(ev.len(), 2);
+        assert_eq!(ev[0].at_line, 12);
+        assert_eq!(ev[0].count, 5);
+        assert_eq!(ev[1].at_line, 10);
+        assert_eq!(ev[1].count, 2);
     }
 
     #[test]

@@ -407,20 +407,19 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
         }
         Intent::Schema => {
             let path = file_path.to_lowercase();
-            if path.contains("schema")
-                || path.contains("model")
+            if path.contains("schema") {
+                75.0
+            } else if path.contains("model")
                 || path.contains("entity")
                 || path.contains("entities")
-                || path.contains("db/")
+            {
+                50.0
+            } else if path.contains("db/")
                 || path.contains("database/")
                 || path.contains("migrations/")
                 || path.contains("sql/")
             {
-                if path.contains("db/") {
-                    75.0
-                } else {
-                    50.0
-                }
+                25.0
             } else {
                 0.5
             }
@@ -1164,6 +1163,15 @@ mod tests {
             exported: true,
             language: "rust".to_string(),
         };
+        let db_infra_hit = RankedHit {
+            id: "3".to_string(),
+            score: 0.5,
+            name: "init_db".to_string(),
+            kind: "function".to_string(),
+            file_path: "src/db/init.rs".to_string(),
+            exported: true,
+            language: "rust".to_string(),
+        };
         let other_hit = RankedHit {
             id: "2".to_string(),
             score: 0.9,
@@ -1182,6 +1190,12 @@ mod tests {
             &schema_hit.file_path,
             schema_hit.exported,
         );
+        let db_infra_boost = super::intent_adjustment(
+            &intent,
+            &db_infra_hit.kind,
+            &db_infra_hit.file_path,
+            db_infra_hit.exported,
+        );
         let other_boost = super::intent_adjustment(
             &intent,
             &other_hit.kind,
@@ -1189,7 +1203,8 @@ mod tests {
             other_hit.exported,
         );
 
-        assert_eq!(schema_boost, 75.0); // db/ folder gets extra boost
+        assert_eq!(schema_boost, 75.0); // Explicit schema file gets max boost
+        assert_eq!(db_infra_boost, 25.0); // Generic db file gets lower boost
         assert_eq!(other_boost, 0.5);
     }
 

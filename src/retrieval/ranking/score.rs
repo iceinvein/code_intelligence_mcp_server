@@ -197,6 +197,10 @@ pub fn rank_hits_with_signals(
 }
 
 /// Apply popularity boost based on incoming edges
+///
+/// #[deprecated] Note: This function uses O(N) database queries and is replaced by
+/// apply_popularity_boost_with_signals which uses batch PageRank lookup.
+#[deprecated(note = "Use apply_popularity_boost_with_signals for O(1) batch PageRank lookup")]
 #[cfg(test)]
 pub fn apply_popularity_boost(
     sqlite: &SqliteStore,
@@ -228,25 +232,50 @@ pub fn apply_popularity_boost(
     Ok(hits)
 }
 
-/// Apply popularity boost with signals tracking
+/// Apply popularity boost with signals tracking using PageRank scores
+///
+/// This function boosts search result scores based on symbol PageRank from the
+/// symbol_metrics table. PageRank considers the importance of linking symbols,
+/// not just the count of incoming edges.
+///
+/// The PageRank scores are normalized to the 0-1 range before applying the
+/// configured weight, ensuring consistent boost magnitudes across different
+/// codebases.
 pub fn apply_popularity_boost_with_signals(
     sqlite: &SqliteStore,
     mut hits: Vec<RankedHit>,
     hit_signals: &mut HashMap<String, HitSignals>,
     config: &Config,
 ) -> Result<Vec<RankedHit>> {
-    if hits.is_empty() || config.rank_popularity_weight == 0.0 || config.rank_popularity_cap == 0 {
+    if hits.is_empty() || config.rank_popularity_weight == 0.0 {
         return Ok(hits);
     }
 
+    // Collect symbol IDs for batch lookup
+    let symbol_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+
+    // Batch load PageRank scores from symbol_metrics table
+    let pagerank_map = sqlite
+        .batch_get_symbol_metrics(&symbol_ids)
+        .unwrap_or_default();
+
+    // Find max PageRank for normalization
+    let max_pagerank = pagerank_map
+        .values()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    // Avoid division by zero - if all PageRanks are 0 or empty, skip boost
+    if max_pagerank <= 0.0 {
+        return Ok(hits);
+    }
+
+    // Apply normalized PageRank boost to each hit
     for h in hits.iter_mut() {
-        let count = sqlite.count_incoming_edges(&h.id).unwrap_or(0);
-        let capped = count.min(config.rank_popularity_cap) as f32;
-        let denom = config.rank_popularity_cap as f32;
-        if denom <= 0.0 {
-            continue;
-        }
-        let boost = config.rank_popularity_weight * (capped / denom);
+        let pagerank = pagerank_map.get(&h.id).copied().unwrap_or(0.0);
+        let normalized = pagerank / max_pagerank;
+        let boost = config.rank_popularity_weight * normalized as f32;
+
         h.score += boost;
         hit_signals
             .entry(h.id.clone())
@@ -262,6 +291,7 @@ pub fn apply_popularity_boost_with_signals(
             });
     }
 
+    // Re-sort by score after applying boosts
     hits.sort_by(|a, b| {
         b.score
             .total_cmp(&a.score)

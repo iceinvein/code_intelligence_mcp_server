@@ -434,3 +434,294 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
         Intent::Migration => 1.0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::storage::sqlite::SqliteStore;
+    use crate::storage::sqlite::schema::{SymbolMetricsRow, SymbolRow};
+    use std::collections::HashMap;
+
+    /// Create a minimal test config
+    fn test_config(popularity_weight: f32) -> Config {
+        use crate::config::{EmbeddingsBackend, EmbeddingsDevice};
+        use std::path::PathBuf;
+        Config {
+            base_dir: PathBuf::from("/tmp/test"),
+            db_path: PathBuf::from("/tmp/test.db"),
+            vector_db_path: PathBuf::from("/tmp/vectors"),
+            tantivy_index_path: PathBuf::from("/tmp/tantivy"),
+            embeddings_backend: EmbeddingsBackend::Hash,
+            embeddings_model_dir: None,
+            embeddings_model_url: None,
+            embeddings_model_sha256: None,
+            embeddings_auto_download: false,
+            embeddings_model_repo: None,
+            embeddings_model_revision: None,
+            embeddings_model_hf_token: None,
+            embeddings_device: EmbeddingsDevice::Cpu,
+            embedding_batch_size: 32,
+            hash_embedding_dim: 64,
+            vector_search_limit: 20,
+            hybrid_alpha: 0.7,
+            rank_vector_weight: 0.5,
+            rank_keyword_weight: 0.5,
+            rank_exported_boost: 0.0,
+            rank_index_file_boost: 0.0,
+            rank_test_penalty: 0.1,
+            rank_popularity_weight: popularity_weight,
+            rank_popularity_cap: 0, // No longer used
+            index_patterns: vec!["**/*.ts".to_string()],
+            exclude_patterns: vec!["**/node_modules/**".to_string()],
+            watch_mode: false,
+            watch_debounce_ms: 250,
+            max_context_bytes: 200_000,
+            index_node_modules: false,
+            repo_roots: vec![],
+            reranker_model_path: None,
+            reranker_top_k: 5,
+            reranker_cache_dir: None,
+            learning_enabled: false,
+            learning_selection_boost: 0.0,
+            learning_file_affinity_boost: 0.0,
+            max_context_tokens: 8000,
+            token_encoding: "cl100k_base".to_string(),
+            parallel_workers: 4,
+            embedding_cache_enabled: true,
+            pagerank_damping: 0.85,
+            pagerank_iterations: 20,
+            synonym_expansion_enabled: true,
+            acronym_expansion_enabled: true,
+        }
+    }
+
+    /// Helper to insert a symbol for testing
+    fn insert_test_symbol(sqlite: &SqliteStore, id: &str, name: &str) {
+        let symbol = SymbolRow {
+            id: id.to_string(),
+            file_path: format!("/path/to/{}.rs", name),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 2,
+            text: format!("fn {}() {{}}", name),
+        };
+        sqlite.upsert_symbol(&symbol).unwrap();
+    }
+
+    /// Helper to create a test hit
+    fn make_hit(id: &str, name: &str, score: f32) -> RankedHit {
+        RankedHit {
+            id: id.to_string(),
+            score,
+            name: name.to_string(),
+            kind: "function".to_string(),
+            file_path: format!("/path/to/{}.rs", name),
+            exported: true,
+            language: "rust".to_string(),
+        }
+    }
+
+    #[test]
+    fn page_rank_boosts_important_symbols() {
+        let db_path = std::env::temp_dir().join("test_page_rank_boosts.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            // Insert symbols first (required for foreign key constraint)
+            insert_test_symbol(&sqlite, "symbol1", "symbol1");
+            insert_test_symbol(&sqlite, "symbol2", "symbol2");
+            insert_test_symbol(&sqlite, "symbol3", "symbol3");
+
+            // Insert PageRank values: symbol3 > symbol2 > symbol1
+            let metrics = vec![
+                SymbolMetricsRow { symbol_id: "symbol1".to_string(), pagerank: 0.01, in_degree: 1, out_degree: 0, updated_at: 0 },
+                SymbolMetricsRow { symbol_id: "symbol2".to_string(), pagerank: 0.05, in_degree: 5, out_degree: 2, updated_at: 0 },
+                SymbolMetricsRow { symbol_id: "symbol3".to_string(), pagerank: 0.1, in_degree: 10, out_degree: 5, updated_at: 0 },
+            ];
+            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+
+            let hits = vec![make_hit("symbol1", "symbol1", 10.0), make_hit("symbol2", "symbol2", 10.0), make_hit("symbol3", "symbol3", 10.0)];
+            let mut hit_signals = HashMap::new();
+            let config = test_config(0.1);
+
+            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+
+            // After PageRank boost, symbol3 (highest PageRank) should be first
+            assert_eq!(result[0].id, "symbol3");
+            assert_eq!(result[1].id, "symbol2");
+            assert_eq!(result[2].id, "symbol1");
+            assert!(hit_signals.get("symbol3").unwrap().popularity_boost > 0.0);
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn page_rank_normalization_works() {
+        let db_path = std::env::temp_dir().join("test_page_rank_normalization.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            insert_test_symbol(&sqlite, "low", "low");
+            insert_test_symbol(&sqlite, "high", "high");
+
+            let metrics = vec![
+                SymbolMetricsRow { symbol_id: "low".to_string(), pagerank: 0.01, in_degree: 1, out_degree: 0, updated_at: 0 },
+                SymbolMetricsRow { symbol_id: "high".to_string(), pagerank: 0.1, in_degree: 10, out_degree: 5, updated_at: 0 },
+            ];
+            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+
+            let hits = vec![make_hit("low", "low", 10.0), make_hit("high", "high", 10.0)];
+            let mut hit_signals = HashMap::new();
+            let config = test_config(0.1);
+
+            let _result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+
+            let high_boost = hit_signals.get("high").unwrap().popularity_boost;
+            let low_boost = hit_signals.get("low").unwrap().popularity_boost;
+
+            // Verify normalization: high should get ~10x more boost than low (0.1/0.01 = 10)
+            assert!((high_boost / low_boost - 10.0).abs() < 0.01);
+            // Both boosts should be in 0-0.1 range
+            assert!(high_boost > 0.0 && high_boost <= 0.1);
+            assert!(low_boost > 0.0 && low_boost <= 0.1);
+            // Max PageRank symbol gets normalized to 1.0
+            assert!((high_boost - 0.1).abs() < 0.001);
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn page_rank_handles_missing_metrics() {
+        let db_path = std::env::temp_dir().join("test_page_rank_missing.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            insert_test_symbol(&sqlite, "has_metrics", "has_metrics");
+
+            let metrics = vec![SymbolMetricsRow {
+                symbol_id: "has_metrics".to_string(),
+                pagerank: 0.05,
+                in_degree: 5,
+                out_degree: 2,
+                updated_at: 0,
+            }];
+            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+
+            let hits = vec![make_hit("has_metrics", "has_metrics", 10.0), make_hit("no_metrics", "no_metrics", 10.0)];
+            let mut hit_signals = HashMap::new();
+            let config = test_config(0.1);
+
+            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+
+            assert!(hit_signals.get("has_metrics").unwrap().popularity_boost > 0.0);
+            assert_eq!(hit_signals.get("no_metrics").unwrap().popularity_boost, 0.0);
+            assert_eq!(result[0].id, "has_metrics");
+            assert_eq!(result[1].id, "no_metrics");
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn page_rank_handles_empty_result_set() {
+        let db_path = std::env::temp_dir().join("test_page_rank_empty.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            let hits = vec![make_hit("symbol1", "symbol1", 10.0), make_hit("symbol2", "symbol2", 5.0)];
+            let mut hit_signals = HashMap::new();
+            let config = test_config(0.1);
+
+            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+
+            // No boost applied (no metrics in DB)
+            // Note: hit_signals may not contain entries for symbols with no boost
+            assert!(hit_signals.get("symbol1").map_or(true, |s| s.popularity_boost == 0.0));
+            assert!(hit_signals.get("symbol2").map_or(true, |s| s.popularity_boost == 0.0));
+            // Original scores unchanged
+            assert_eq!(result[0].id, "symbol1");
+            assert_eq!(result[0].score, 10.0);
+            assert_eq!(result[1].id, "symbol2");
+            assert_eq!(result[1].score, 5.0);
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn page_rank_empty_hits_returns_early() {
+        let db_path = std::env::temp_dir().join("test_page_rank_empty_hits.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            let hits: Vec<RankedHit> = vec![];
+            let mut hit_signals = HashMap::new();
+            let config = test_config(0.1);
+
+            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+
+            assert!(result.is_empty());
+            assert!(hit_signals.is_empty());
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn page_rank_zero_weight_returns_early() {
+        let db_path = std::env::temp_dir().join("test_page_rank_zero_weight.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            insert_test_symbol(&sqlite, "symbol1", "symbol1");
+
+            let metrics = vec![SymbolMetricsRow {
+                symbol_id: "symbol1".to_string(),
+                pagerank: 0.1,
+                in_degree: 10,
+                out_degree: 5,
+                updated_at: 0,
+            }];
+            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+
+            let hits = vec![make_hit("symbol1", "symbol1", 10.0)];
+            let mut hit_signals = HashMap::new();
+            let config = test_config(0.0);
+
+            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+
+            // No boost applied when weight is 0
+            assert_eq!(result[0].score, 10.0);
+            // hit_signals may be empty when weight is 0 (early return)
+            assert!(hit_signals.get("symbol1").map_or(true, |s| s.popularity_boost == 0.0));
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+}

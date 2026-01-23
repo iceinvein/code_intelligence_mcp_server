@@ -65,6 +65,26 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         max_context_bytes: 200_000,
         index_node_modules: false,
         repo_roots: vec![base_dir],
+        // Reranker config (FNDN-03)
+        reranker_model_path: None,
+        reranker_top_k: 20,
+        reranker_cache_dir: None,
+        // Learning config (FNDN-04)
+        learning_enabled: false,
+        learning_selection_boost: 0.1,
+        learning_file_affinity_boost: 0.05,
+        // Token config (FNDN-05)
+        max_context_tokens: 8192,
+        token_encoding: "o200k_base".to_string(),
+        // Performance config (FNDN-06)
+        parallel_workers: 4,
+        embedding_cache_enabled: true,
+        // PageRank config (FNDN-07)
+        pagerank_damping: 0.85,
+        pagerank_iterations: 20,
+        // Query expansion config (FNDN-02)
+        synonym_expansion_enabled: true,
+        acronym_expansion_enabled: true,
     }
 }
 

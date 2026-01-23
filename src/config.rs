@@ -52,6 +52,32 @@ pub struct Config {
     pub max_context_bytes: usize,
     pub index_node_modules: bool,
     pub repo_roots: Vec<PathBuf>,
+
+    // Reranker config (FNDN-03)
+    pub reranker_model_path: Option<PathBuf>,
+    pub reranker_top_k: usize,
+    pub reranker_cache_dir: Option<PathBuf>,
+
+    // Learning config (FNDN-04)
+    pub learning_enabled: bool,
+    pub learning_selection_boost: f32,
+    pub learning_file_affinity_boost: f32,
+
+    // Token config (FNDN-05)
+    pub max_context_tokens: usize,
+    pub token_encoding: String,
+
+    // Performance config (FNDN-06)
+    pub parallel_workers: usize,
+    pub embedding_cache_enabled: bool,
+
+    // PageRank config (FNDN-07)
+    pub pagerank_damping: f32,
+    pub pagerank_iterations: usize,
+
+    // Query expansion config (FNDN-02)
+    pub synonym_expansion_enabled: bool,
+    pub acronym_expansion_enabled: bool,
 }
 
 impl Config {
@@ -222,6 +248,80 @@ impl Config {
             }
         }
 
+        // Reranker config (FNDN-03)
+        let reranker_model_path = optional_env("RERANKER_MODEL_PATH")
+            .map(|s| PathBuf::from(s));
+        let reranker_top_k = optional_env("RERANKER_TOP_K")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(20);
+        let reranker_cache_dir = optional_env("RERANKER_CACHE_DIR")
+            .map(|s| PathBuf::from(s))
+            .or_else(|| Some(base_dir.join(".cimcp/reranker-cache")));
+
+        // Learning config (FNDN-04)
+        let learning_enabled = optional_env("LEARNING_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(false);
+        let learning_selection_boost = optional_env("LEARNING_SELECTION_BOOST")
+            .as_deref()
+            .map(parse_any_f32)
+            .transpose()?
+            .unwrap_or(0.1);
+        let learning_file_affinity_boost = optional_env("LEARNING_FILE_AFFINITY_BOOST")
+            .as_deref()
+            .map(parse_any_f32)
+            .transpose()?
+            .unwrap_or(0.05);
+
+        // Token config (FNDN-05)
+        let max_context_tokens = optional_env("MAX_CONTEXT_TOKENS")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(8192);
+        let token_encoding = optional_env("TOKEN_ENCODING")
+            .unwrap_or_else(|| "o200k_base".to_string());
+
+        // Performance config (FNDN-06)
+        let parallel_workers = optional_env("PARALLEL_WORKERS")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or_else(|| num_cpus::get());
+        let embedding_cache_enabled = optional_env("EMBEDDING_CACHE_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true);
+
+        // PageRank config (FNDN-07)
+        let pagerank_damping = optional_env("PAGERANK_DAMPING")
+            .as_deref()
+            .map(parse_any_f32)
+            .transpose()?
+            .unwrap_or(0.85);
+        let pagerank_iterations = optional_env("PAGERANK_ITERATIONS")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(20);
+
+        // Query expansion config (FNDN-02)
+        let synonym_expansion_enabled = optional_env("SYNONYM_EXPANSION_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true);
+        let acronym_expansion_enabled = optional_env("ACRONYM_EXPANSION_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true);
+
         Ok(Self {
             base_dir,
             db_path,
@@ -255,6 +355,32 @@ impl Config {
             max_context_bytes,
             index_node_modules,
             repo_roots,
+
+            // Reranker config (FNDN-03)
+            reranker_model_path,
+            reranker_top_k,
+            reranker_cache_dir,
+
+            // Learning config (FNDN-04)
+            learning_enabled,
+            learning_selection_boost,
+            learning_file_affinity_boost,
+
+            // Token config (FNDN-05)
+            max_context_tokens,
+            token_encoding,
+
+            // Performance config (FNDN-06)
+            parallel_workers,
+            embedding_cache_enabled,
+
+            // PageRank config (FNDN-07)
+            pagerank_damping,
+            pagerank_iterations,
+
+            // Query expansion config (FNDN-02)
+            synonym_expansion_enabled,
+            acronym_expansion_enabled,
         })
     }
 
@@ -447,6 +573,26 @@ mod tests {
             "MAX_CONTEXT_BYTES",
             "INDEX_NODE_MODULES",
             "REPO_ROOTS",
+            // Reranker config (FNDN-03)
+            "RERANKER_MODEL_PATH",
+            "RERANKER_TOP_K",
+            "RERANKER_CACHE_DIR",
+            // Learning config (FNDN-04)
+            "LEARNING_ENABLED",
+            "LEARNING_SELECTION_BOOST",
+            "LEARNING_FILE_AFFINITY_BOOST",
+            // Token config (FNDN-05)
+            "MAX_CONTEXT_TOKENS",
+            "TOKEN_ENCODING",
+            // Performance config (FNDN-06)
+            "PARALLEL_WORKERS",
+            "EMBEDDING_CACHE_ENABLED",
+            // PageRank config (FNDN-07)
+            "PAGERANK_DAMPING",
+            "PAGERANK_ITERATIONS",
+            // Query expansion config (FNDN-02)
+            "SYNONYM_EXPANSION_ENABLED",
+            "ACRONYM_EXPANSION_ENABLED",
         ] {
             std::env::remove_var(k);
         }

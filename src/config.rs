@@ -17,6 +17,7 @@ pub enum EmbeddingsDevice {
 pub enum EmbeddingsBackend {
     FastEmbed,
     Hash,
+    JinaCode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,11 +113,21 @@ impl Config {
                 (EmbeddingsBackend::FastEmbed, embeddings_model_dir)
             }
             Some(EmbeddingsBackend::Hash) => (EmbeddingsBackend::Hash, None),
+            Some(EmbeddingsBackend::JinaCode) => {
+                let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
+                    Some(raw) => Some(Path::new(raw).to_path_buf()),
+                    None => {
+                        // Default to .cimcp/models/jina-code-onnx
+                        Some(base_dir.join("./.cimcp/models/jina-code-onnx"))
+                    }
+                };
+                (EmbeddingsBackend::JinaCode, embeddings_model_dir)
+            }
             None => {
-                // Default to FastEmbed
+                // Default to JinaCode for better code understanding
                 (
-                    EmbeddingsBackend::FastEmbed,
-                    Some(base_dir.join("./.cimcp/embeddings-cache")),
+                    EmbeddingsBackend::JinaCode,
+                    Some(base_dir.join("./.cimcp/models/jina-code-onnx")),
                 )
             }
         };
@@ -124,7 +135,12 @@ impl Config {
         // We don't strictly need model_url/sha256/revision for FastEmbed as it manages it,
         // but we DO need the repo name (model name).
         let embeddings_model_repo = optional_env("EMBEDDINGS_MODEL_REPO")
-            .unwrap_or_else(|| "BAAI/bge-base-en-v1.5".to_string()); // Default to BGE-Base-v1.5
+            .unwrap_or_else(|| {
+                match embeddings_backend {
+                    EmbeddingsBackend::JinaCode => "jinaai/jina-embeddings-v2-base-code".to_string(),
+                    _ => "BAAI/bge-base-en-v1.5".to_string(),
+                }
+            });
 
         let db_path = default_path(&base_dir, "DB_PATH", "./.cimcp/code-intelligence.db")?;
         let vector_db_path = default_path(&base_dir, "VECTOR_DB_PATH", "./.cimcp/vectors")?;
@@ -475,6 +491,7 @@ fn parse_embeddings_backend(value: &str) -> Result<EmbeddingsBackend> {
     match value.trim().to_lowercase().as_str() {
         "fastembed" => Ok(EmbeddingsBackend::FastEmbed),
         "hash" => Ok(EmbeddingsBackend::Hash),
+        "jinacode" | "jina-code" | "jina" | "jinacode" => Ok(EmbeddingsBackend::JinaCode),
         other => Err(anyhow!("Invalid EMBEDDINGS_BACKEND: {other}")),
     }
 }

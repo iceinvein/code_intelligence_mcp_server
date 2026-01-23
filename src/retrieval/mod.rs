@@ -9,6 +9,7 @@ use crate::{
     config::Config,
     embeddings::Embedder,
     retrieval::assembler::{ContextAssembler, ContextItem},
+    reranker::Reranker,
     storage::{
         sqlite::{SqliteStore, SymbolRow},
         tantivy::TantivyIndex,
@@ -20,7 +21,7 @@ use cache::RetrieverCaches;
 use query::{detect_intent, normalize_query, parse_query_controls, trim_query, Intent, QueryControls};
 use ranking::{
     apply_popularity_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
-    rank_hits_with_signals,
+    rank_hits_with_signals, apply_reranker_scores, prepare_rerank_docs, should_rerank,
 };
 use serde::Serialize;
 use std::{
@@ -73,6 +74,7 @@ pub struct Retriever {
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
+    reranker: Option<Arc<dyn Reranker>>,
     cache: Arc<Mutex<RetrieverCaches>>,
     cache_config_key: String,
 }
@@ -83,6 +85,7 @@ impl Retriever {
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
         embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
+        reranker: Option<Arc<dyn Reranker>>,
     ) -> Self {
         let cache = RetrieverCaches::new();
         let cache_config_key = format!(
@@ -104,6 +107,7 @@ impl Retriever {
             tantivy,
             vectors,
             embedder,
+            reranker,
             cache: Arc::new(Mutex::new(cache)),
             cache_config_key,
         }
@@ -329,6 +333,31 @@ impl Retriever {
 
         let mut hits =
             apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &self.config)?;
+
+        // Apply cross-encoder reranking if available
+        let mut hits = if let Some(reranker) = &self.reranker {
+            if should_rerank(hits.len(), 3) {
+                // Collect symbol texts for reranking
+                let mut texts = HashMap::new();
+                for hit in &hits {
+                    if let Some(row) = sqlite.get_symbol_by_id(&hit.id).ok().flatten() {
+                        texts.insert(hit.id.clone(), row.text);
+                    }
+                }
+
+                let docs = prepare_rerank_docs(&hits, &texts);
+                if let Ok(rerank_scores) = reranker.rerank(search_query, &docs).await {
+                    apply_reranker_scores(&hits, &rerank_scores, 0.3) // 30% reranker weight
+                } else {
+                    hits
+                }
+            } else {
+                hits
+            }
+        } else {
+            hits
+        };
+
         hits = diversify_by_cluster(&sqlite, hits, limit);
         hits = diversify_by_kind(hits, limit);
         hits.truncate(limit);

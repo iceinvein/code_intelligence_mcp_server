@@ -624,14 +624,14 @@ mod tests {
     }
 
     #[test]
-    fn from_env_defaults_to_fastembed_backend_without_model_dir() {
+    fn from_env_defaults_to_jinacode_backend_without_model_dir() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
         std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
 
         let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::FastEmbed);
+        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
         assert!(cfg.embeddings_model_dir.is_some());
         assert_eq!(
             cfg.db_path,
@@ -646,22 +646,22 @@ mod tests {
     }
 
     #[test]
-    fn fastembed_backend_configured_by_default() {
+    fn jinacode_backend_configured_by_default() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
         std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
 
-        // Default should be FastEmbed
+        // Default should be JinaCode
         let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::FastEmbed);
+        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
         assert_eq!(
             cfg.embeddings_model_dir,
-            Some(cfg.base_dir.join("./.cimcp/embeddings-cache"))
+            Some(cfg.base_dir.join("./.cimcp/models/jina-code-onnx"))
         );
         assert_eq!(
             cfg.embeddings_model_repo.as_deref(),
-            Some("BAAI/bge-base-en-v1.5")
+            Some("jinaai/jina-embeddings-v2-base-code")
         );
     }
 
@@ -681,15 +681,15 @@ mod tests {
     }
 
     #[test]
-    fn fastembed_backend_defaults_if_backend_not_set() {
+    fn jinacode_backend_defaults_if_backend_not_set() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
         std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
-        // No backend set, should default to FastEmbed
+        // No backend set, should default to JinaCode
 
         let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::FastEmbed);
+        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
         assert!(cfg.embeddings_model_dir.is_some());
     }
 

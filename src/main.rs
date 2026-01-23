@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
-use code_intelligence_mcp_server::config::{Config, EmbeddingsBackend};
-use code_intelligence_mcp_server::embeddings::{hash::HashEmbedder, Embedder};
+use code_intelligence_mcp_server::config::Config;
+use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::retrieval::Retriever;
@@ -77,32 +77,21 @@ async fn run() -> SdkResult<()> {
         description: err.to_string(),
     })?;
 
-    let embedder: Box<dyn Embedder + Send> = match config.embeddings_backend {
-        EmbeddingsBackend::FastEmbed => {
-            let model_repo = config
-                .embeddings_model_repo
-                .as_deref()
-                .unwrap_or("BAAI/bge-base-en-v1.5");
-            let cache_dir = config.embeddings_model_dir.as_deref();
+    let embedder = create_embedder(
+        config.embeddings_backend,
+        config.embeddings_model_dir.as_deref(),
+        config.embeddings_model_repo.as_deref(),
+        config.embeddings_device,
+        config.hash_embedding_dim,
+    )
+    .map_err(|err| McpSdkError::Internal {
+        description: format!("Failed to create embedder: {}", err),
+    })?;
 
-            info!(
-                "Initializing FastEmbed with model: {} (cache: {:?})",
-                model_repo, cache_dir
-            );
-
-            Box::new(
-                code_intelligence_mcp_server::embeddings::fastembed::FastEmbedder::new(
-                    model_repo,
-                    cache_dir,
-                    config.embeddings_device,
-                )
-                .map_err(|err| McpSdkError::Internal {
-                    description: format!("Failed to initialize FastEmbed: {}", err),
-                })?,
-            )
-        }
-        EmbeddingsBackend::Hash => Box::new(HashEmbedder::new(config.hash_embedding_dim)),
-    };
+    info!(
+        "Created embedder with dimension: {}",
+        embedder.dim()
+    );
 
     let tantivy = TantivyIndex::open_or_create(&config.tantivy_index_path).map_err(|err| {
         McpSdkError::Internal {

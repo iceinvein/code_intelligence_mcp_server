@@ -153,27 +153,21 @@ pub fn compute_and_store_pagerank(sqlite: &SqliteStore, config: &Config) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use rusqlite::Connection;
 
-    fn setup_test_store() -> (SqliteStore, std::path::PathBuf) {
-        let temp_dir = std::env::temp_dir().join(format!("pagerank-test-{}", std::process::id()));
-        fs::create_dir_all(&temp_dir).unwrap();
-        let db_path = temp_dir.join("test.db");
-        let sqlite = SqliteStore::open(&db_path).unwrap();
+    fn setup_test_store() -> SqliteStore {
+        let conn = Connection::open_in_memory().unwrap();
+        let sqlite = SqliteStore::from_connection(conn);
         sqlite.init().unwrap();
-        (sqlite, temp_dir)
+        sqlite
     }
 
-    fn cleanup_test_store(temp_dir: std::path::PathBuf) {
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    fn create_test_config(base: &std::path::Path) -> Config {
+    fn create_test_config() -> Config {
         Config {
-            base_dir: base.to_path_buf(),
-            db_path: base.join("test.db"),
-            vector_db_path: base.join("vectors"),
-            tantivy_index_path: base.join("tantivy"),
+            base_dir: "/tmp/test".into(),
+            db_path: "/tmp/test.db".into(),
+            vector_db_path: "/tmp/vectors".into(),
+            tantivy_index_path: "/tmp/tantivy".into(),
             embeddings_backend: crate::config::EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_model_url: None,
@@ -200,7 +194,7 @@ mod tests {
             watch_debounce_ms: 250,
             max_context_bytes: 200_000,
             index_node_modules: false,
-            repo_roots: vec![base.to_path_buf()],
+            repo_roots: vec!["/tmp/test".into()],
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: None,
@@ -220,18 +214,17 @@ mod tests {
 
     #[test]
     fn empty_graph_returns_ok() {
-        let (sqlite, temp_dir) = setup_test_store();
-        let config = create_test_config(&temp_dir);
+        let sqlite = setup_test_store();
+        let config = create_test_config();
 
         let result = compute_and_store_pagerank(&sqlite, &config);
         assert!(result.is_ok());
-        cleanup_test_store(temp_dir);
     }
 
     #[test]
     fn three_node_graph_produces_expected_scores() {
-        let (sqlite, temp_dir) = setup_test_store();
-        let config = create_test_config(&temp_dir);
+        let sqlite = setup_test_store();
+        let config = create_test_config();
 
         // Create a simple 3-node graph: A -> B -> C
         // Using low iterations for deterministic test
@@ -342,13 +335,12 @@ mod tests {
         // In a chain A->B->C, C accumulates the most flow
         assert!(metrics_c.pagerank > metrics_b.pagerank);
         assert!(metrics_c.pagerank > metrics_a.pagerank);
-        cleanup_test_store(temp_dir);
     }
 
     #[test]
     fn file_root_symbols_excluded_from_pagerank() {
-        let (sqlite, temp_dir) = setup_test_store();
-        let config = create_test_config(&temp_dir);
+        let sqlite = setup_test_store();
+        let config = create_test_config();
 
         // Add both file and function symbols
         use crate::storage::sqlite::SymbolRow;
@@ -413,6 +405,5 @@ mod tests {
             .unwrap()
             .expect("function symbol should have metrics");
         assert!(func_metrics.pagerank > 0.0);
-        cleanup_test_store(temp_dir);
     }
 }

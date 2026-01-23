@@ -204,4 +204,8 @@ impl SqliteStore {
     ) -> Result<std::collections::HashMap<String, f64>> {
         queries::metrics::batch_get_symbol_metrics(&self.conn, symbol_ids)
     }
+
+    pub fn get_symbol_metrics(&self, symbol_id: &str) -> Result<Option<SymbolMetricsRow>> {
+        queries::metrics::get_symbol_metrics(&self.conn, symbol_id)
+    }
 }

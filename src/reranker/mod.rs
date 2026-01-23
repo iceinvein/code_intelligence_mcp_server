@@ -6,6 +6,7 @@ pub mod cache;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Trait for reranking search results
 #[async_trait]
@@ -35,7 +36,7 @@ pub fn create_reranker(
     model_path: Option<&Path>,
     cache_dir: Option<&Path>,
     top_k: usize,
-) -> Result<Option<Box<dyn Reranker>>> {
+) -> Result<Option<Arc<dyn Reranker>>> {
     let model_path = match model_path {
         Some(p) if p.exists() => p.to_path_buf(),
         Some(p) => {
@@ -48,7 +49,7 @@ pub fn create_reranker(
         }
     };
 
-    Ok(Some(Box::new(onnx::CrossEncoderReranker::new(
+    Ok(Some(Arc::new(onnx::CrossEncoderReranker::new(
         &model_path,
         cache_dir,
         top_k,

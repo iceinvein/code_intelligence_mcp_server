@@ -1,8 +1,6 @@
 //! Integration between reranker and search pipeline
 
 use crate::retrieval::RankedHit;
-use crate::reranker::Reranker;
-use anyhow::Result;
 use std::collections::HashMap;
 
 /// Apply reranker scores to ranked hits

@@ -331,7 +331,7 @@ impl Retriever {
             hits
         };
 
-        let mut hits =
+        let hits =
             apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &self.config)?;
 
         // Apply cross-encoder reranking if available

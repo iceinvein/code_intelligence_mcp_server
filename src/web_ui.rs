@@ -262,13 +262,16 @@ export function beta() { return alpha() }
             config.hash_embedding_dim,
         )) as _));
 
+        // No reranker for web UI tests (keep it simple)
+        let reranker: Option<Arc<dyn code_intelligence_mcp_server::reranker::Reranker>> = None;
+
         let indexer = IndexPipeline::new(
             config.clone(),
             tantivy.clone(),
             vectors.clone(),
             embedder.clone(),
         );
-        let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder);
+        let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, reranker);
 
         indexer.index_all().await.unwrap();
 

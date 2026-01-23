@@ -8,6 +8,7 @@ pub mod utils;
 use crate::{
     config::Config,
     embeddings::Embedder,
+    graph::pagerank,
     indexer::{
         extract::c::extract_c_symbols,
         extract::cpp::extract_cpp_symbols,
@@ -408,6 +409,15 @@ impl IndexPipeline {
             stats.symbols_indexed += symbol_rows.len();
             stats.files_indexed += 1;
             self.tantivy.commit()?;
+        }
+
+        // Compute PageRank scores after all indexing is complete
+        // This runs once per full index run, not per-file
+        {
+            let sqlite = SqliteStore::open(&self.db_path)?;
+            sqlite.init()?;
+            pagerank::compute_and_store_pagerank(&sqlite, &self.config)
+                .context("Failed to compute PageRank scores")?;
         }
 
         tracing::debug!(?stats, "Index run completed");

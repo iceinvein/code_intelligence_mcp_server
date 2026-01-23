@@ -1,5 +1,7 @@
 //! Graph building functions for call hierarchies, type graphs, and dependency graphs
 
+pub mod pagerank;
+
 use crate::storage::sqlite::{SqliteStore, SymbolRow};
 use serde_json::json;
 

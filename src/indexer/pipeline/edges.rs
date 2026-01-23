@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::indexer::extract::symbol::Import;
+use crate::indexer::extract::symbol::{DataFlowEdge, DataFlowType, Import};
 use crate::storage::sqlite::{EdgeEvidenceRow, EdgeRow, SymbolRow};
 
 use super::parsing::{
@@ -23,6 +23,7 @@ pub fn extract_edges_for_symbol(
     name_to_id: &HashMap<String, String>,
     imports: &[Import],
     type_edges: &[(String, String)],
+    dataflow_edges: &[DataFlowEdge],
 ) -> Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> {
     let mut out: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
@@ -31,6 +32,7 @@ pub fn extract_edges_for_symbol(
         "reference" => 0.8,
         "type" => 0.9,
         "extends" | "implements" | "alias" => 0.95,
+        "reads" | "writes" => 0.7,
         _ => 0.7,
     };
     let evidence_for = |name: &str| identifier_evidence(&row.text, name, row.start_line);
@@ -239,6 +241,49 @@ pub fn extract_edges_for_symbol(
         }
     }
 
+    // Handle data flow edges
+    for dfe in dataflow_edges {
+        // Resolve from_symbol to actual symbol ID
+        let (to_id, resolution) = if let Some(local_id) = name_to_id.get(&dfe.from_symbol) {
+            if local_id == &row.id {
+                continue;
+            }
+            (Some(local_id.clone()), "local")
+        } else if let Some(imp) = import_map.get(dfe.from_symbol.as_str()) {
+            (resolve_imported_symbol_id(&row.file_path, imp), "import")
+        } else {
+            // For data flow edges, we might not have a symbol ID yet
+            // Skip edges to unknown symbols for now
+            continue;
+        };
+
+        if let Some(id) = to_id {
+            let edge_type = match dfe.flow_type {
+                DataFlowType::Reads => "reads",
+                DataFlowType::Writes => "writes",
+            };
+
+            // Skip if we already have this edge type to this target
+            if !used_edges.insert((edge_type.to_string(), id.clone())) {
+                continue;
+            }
+
+            out.push((
+                EdgeRow {
+                    from_symbol_id: row.id.clone(),
+                    to_symbol_id: id,
+                    edge_type: edge_type.to_string(),
+                    at_file: Some(row.file_path.clone()),
+                    at_line: Some(dfe.at_line),
+                    confidence: 0.7,
+                    evidence_count: 1,
+                    resolution: resolution.to_string(),
+                },
+                vec![],  // No evidence for data flow edges yet
+            ));
+        }
+    }
+
     out
 }
 
@@ -280,8 +325,9 @@ mod tests {
             alias: None,
         }];
         let type_edges = vec![];
+        let dataflow_edges = vec![];
 
-        let edges = extract_edges_for_symbol(&row, &name_to_id, &imports, &type_edges);
+        let edges = extract_edges_for_symbol(&row, &name_to_id, &imports, &type_edges, &dataflow_edges);
 
         let expected_b_id = stable_symbol_id("src/b.ts", "b", 0);
 

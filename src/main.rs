@@ -107,6 +107,15 @@ async fn run() -> SdkResult<()> {
         .map_err(|err| McpSdkError::Internal {
             description: err.to_string(),
         })?;
+
+    // Migrate vector table if dimensions have changed (e.g., 384 -> 768)
+    lancedb
+        .migrate_vector_table("symbols", vector_dim)
+        .await
+        .map_err(|err| McpSdkError::Internal {
+            description: format!("Failed to migrate vector table: {}", err),
+        })?;
+
     let vectors = lancedb
         .open_or_create_table("symbols", vector_dim)
         .await

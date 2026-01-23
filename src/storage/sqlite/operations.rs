@@ -48,6 +48,12 @@ DELETE FROM usage_examples;
 DELETE FROM index_runs;
 DELETE FROM search_runs;
 DELETE FROM similarity_clusters;
+DELETE FROM symbol_metrics;
+DELETE FROM query_selections;
+DELETE FROM user_file_affinity;
+DELETE FROM docstrings;
+DELETE FROM packages;
+DELETE FROM repositories;
 "#,
             )
             .context("Failed to clear sqlite index")?;

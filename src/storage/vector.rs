@@ -84,6 +84,88 @@ impl LanceDbStore {
 
         Ok(LanceVectorTable { table, vector_dim })
     }
+
+    /// Migrate vector table to a new dimension if needed.
+    ///
+    /// This function checks if the existing table has the expected vector dimension.
+    /// If the dimensions don't match (e.g., switching from BGE's 384 to Jina's 768),
+    /// the table is dropped and will be recreated with the new dimension.
+    ///
+    /// # Arguments
+    /// * `table_name` - Name of the vector table
+    /// * `expected_dim` - Expected vector dimension (e.g., 768 for Jina Code)
+    ///
+    /// # Returns
+    /// Ok(()) if migration succeeds or table doesn't exist
+    ///
+    /// # Note
+    /// This is a destructive operation - all existing embeddings will be lost
+    /// and must be re-indexed. This is intentional when switching embedding models.
+    pub async fn migrate_vector_table(&self, table_name: &str, expected_dim: usize) -> Result<()> {
+        let existing = self
+            .db
+            .table_names()
+            .execute()
+            .await
+            .context("Failed to list lancedb table names")?;
+
+        if !existing.iter().any(|n| n == table_name) {
+            // Table doesn't exist, nothing to migrate
+            return Ok(());
+        }
+
+        let table = self
+            .db
+            .open_table(table_name)
+            .execute()
+            .await
+            .context("Failed to open lancedb table")?;
+
+        // Check the schema to determine current vector dimension
+        let schema = table.schema().await.context("Failed to get table schema")?;
+
+        // Find the vector field by name
+        let vector_field_index = schema
+            .index_of("vector")
+            .map_err(|_| anyhow!("Missing 'vector' field in table schema"))?;
+        let vector_field = schema.field(vector_field_index);
+
+        // Extract dimension from FixedSizeList type
+        let current_dim = match vector_field.data_type() {
+            DataType::FixedSizeList(field, size) => {
+                if let DataType::Float32 = field.data_type() {
+                    *size as usize
+                } else {
+                    return Err(anyhow!("Vector field is not Float32"));
+                }
+            }
+            _ => return Err(anyhow!("Vector field is not FixedSizeList")),
+        };
+
+        // If dimensions match, no migration needed
+        if current_dim == expected_dim {
+            return Ok(());
+        }
+
+        // Dimensions don't match - drop the table
+        // This forces a re-index with the new embedding model
+        tracing::warn!(
+            "Vector dimension mismatch detected for table '{}': expected {} but got {}. Dropping table for re-index.",
+            table_name, expected_dim, current_dim
+        );
+
+        self.db
+            .drop_table(table_name, &[])
+            .await
+            .context("Failed to drop lancedb table during migration")?;
+
+        tracing::info!(
+            "Dropped table '{}' due to dimension migration ({} -> {}). Full re-index required.",
+            table_name, current_dim, expected_dim
+        );
+
+        Ok(())
+    }
 }
 
 pub struct LanceVectorTable {

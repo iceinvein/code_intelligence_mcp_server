@@ -122,3 +122,108 @@ pub fn batch_get_symbol_metrics(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_batch_get_symbol_metrics() {
+        // Create an in-memory database
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Create the symbol_metrics table
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS symbol_metrics (
+              symbol_id TEXT PRIMARY KEY NOT NULL,
+              pagerank REAL NOT NULL DEFAULT 0.0,
+              in_degree INTEGER NOT NULL DEFAULT 0,
+              out_degree INTEGER NOT NULL DEFAULT 0,
+              updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+            )
+        "#,
+            [],
+        )
+        .unwrap();
+
+        // Insert test data
+        conn.execute(
+            r#"
+            INSERT INTO symbol_metrics (symbol_id, pagerank, in_degree, out_degree)
+            VALUES
+                ('symbol1', 0.1, 10, 5),
+                ('symbol2', 0.05, 5, 2),
+                ('symbol3', 0.01, 1, 0)
+        "#,
+            [],
+        )
+        .unwrap();
+
+        // Query for 2 out of 3 symbols
+        let symbol_ids = vec!["symbol1".to_string(), "symbol2".to_string()];
+        let result = batch_get_symbol_metrics(&conn, &symbol_ids).unwrap();
+
+        // Verify results
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("symbol1"), Some(&0.1));
+        assert_eq!(result.get("symbol2"), Some(&0.05));
+        assert_eq!(result.get("symbol3"), None); // Not requested
+    }
+
+    #[test]
+    fn test_batch_get_symbol_metrics_empty() {
+        // Create an in-memory database
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Create the symbol_metrics table
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS symbol_metrics (
+              symbol_id TEXT PRIMARY KEY NOT NULL,
+              pagerank REAL NOT NULL DEFAULT 0.0,
+              in_degree INTEGER NOT NULL DEFAULT 0,
+              out_degree INTEGER NOT NULL DEFAULT 0,
+              updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+            )
+        "#,
+            [],
+        )
+        .unwrap();
+
+        // Query with empty input
+        let symbol_ids: Vec<String> = vec![];
+        let result = batch_get_symbol_metrics(&conn, &symbol_ids).unwrap();
+
+        // Verify empty result
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_batch_get_symbol_metrics_not_found() {
+        // Create an in-memory database
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Create the symbol_metrics table
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS symbol_metrics (
+              symbol_id TEXT PRIMARY KEY NOT NULL,
+              pagerank REAL NOT NULL DEFAULT 0.0,
+              in_degree INTEGER NOT NULL DEFAULT 0,
+              out_degree INTEGER NOT NULL DEFAULT 0,
+              updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+            )
+        "#,
+            [],
+        )
+        .unwrap();
+
+        // Query for non-existent symbols
+        let symbol_ids = vec!["nonexistent1".to_string(), "nonexistent2".to_string()];
+        let result = batch_get_symbol_metrics(&conn, &symbol_ids).unwrap();
+
+        // Verify empty result (symbols don't exist)
+        assert!(result.is_empty());
+    }
+}

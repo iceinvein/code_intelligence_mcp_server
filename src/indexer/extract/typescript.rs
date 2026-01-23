@@ -2,7 +2,10 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
-use super::symbol::{ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
+use super::symbol::{
+    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
+    SymbolKind,
+};
 
 pub fn extract_typescript_symbols(language_id: LanguageId, source: &str) -> Result<ExtractedFile> {
     if !matches!(language_id, LanguageId::Typescript | LanguageId::Tsx) {
@@ -23,6 +26,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut type_edges = Vec::new();
+    let mut dataflow_edges = Vec::new();
 
     walk(cursor, &mut |node| {
         let kind = node.kind();
@@ -34,6 +38,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                         symbol_from_node(name.clone(), SymbolKind::Function, exported, def_node);
                     symbols.push(sym);
                     extract_function_signature_types(node, source, &name, &mut type_edges);
+                    extract_dataflow_from_function_body(
+                        node,
+                        source,
+                        &name,
+                        &mut dataflow_edges,
+                    );
                 }
             }
             "method_definition" => {
@@ -47,7 +57,17 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                         node,
                     ));
                     extract_function_signature_types(node, source, &name, &mut type_edges);
+                    extract_dataflow_from_function_body(
+                        node,
+                        source,
+                        &name,
+                        &mut dataflow_edges,
+                    );
                 }
+            }
+            "arrow_function" => {
+                // Extract data flow from arrow functions that are part of const declarations
+                // These will be handled when we process the parent lexical_declaration
             }
             "class_declaration" => {
                 if let Some(name) = symbol_name_from_declaration(node, source) {
@@ -94,6 +114,13 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             }
             "lexical_declaration" => {
                 extract_const_declarators(node, source, &mut symbols, &mut type_edges);
+                // Extract data flow from const/let declarations with arrow functions
+                extract_dataflow_from_lexical_declaration(
+                    node,
+                    source,
+                    &symbols,
+                    &mut dataflow_edges,
+                );
             }
             "import_statement" => {
                 extract_imports(node, source, &mut imports);
@@ -113,7 +140,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         symbols,
         imports,
         type_edges,
-        dataflow_edges: Vec::new(), // Will be populated by Task 2
+        dataflow_edges,
     })
 }
 
@@ -525,6 +552,378 @@ fn extract_export_specifiers(
     }
 }
 
+/// Extract data flow edges from function/method bodies
+/// Tracks reads and writes of identifiers within function scopes
+fn extract_dataflow_from_function_body(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    // Find the statement block (body) of the function
+    let body = match node.child_by_field_name("body") {
+        Some(b) if b.kind() == "statement_block" => b,
+        _ => return,
+    };
+
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        extract_dataflow_from_node(child, source, context_name, out);
+    }
+}
+
+/// Extract data flow from lexical declarations (const/let)
+/// Handles arrow functions and direct assignments
+fn extract_dataflow_from_lexical_declaration(
+    node: Node<'_>,
+    source: &str,
+    _symbols: &[ExtractedSymbol],
+    out: &mut Vec<DataFlowEdge>,
+) {
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "variable_declarator" {
+            // Get the name being declared
+            let name = if let Some(name_node) = child.child_by_field_name("name") {
+                text_for_node(name_node, source)
+            } else {
+                continue;
+            };
+
+            // Check if this is an arrow function (we want to extract dataflow from its body)
+            if let Some(value_node) = child.child_by_field_name("value") {
+                if value_node.kind() == "arrow_function" {
+                    // Extract data flow from arrow function body using the const name as context
+                    extract_dataflow_from_arrow_function(value_node, source, &name, out);
+                } else {
+                    // For non-arrow function values, track what's being read to initialize this
+                    extract_reads_from_expression(value_node, source, &name, out);
+                    // Track write to the variable being declared
+                    out.push(DataFlowEdge {
+                        from_symbol: name.clone(),
+                        to_symbol: "<scope>".to_string(),
+                        flow_type: DataFlowType::Writes,
+                        at_line: node.start_position().row as u32,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Extract data flow from arrow function body
+fn extract_dataflow_from_arrow_function(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    let body = match node.child_by_field_name("body") {
+        Some(b) => b,
+        None => return,
+    };
+
+    // Arrow function body can be a statement_block or a single expression
+    if body.kind() == "statement_block" {
+        let mut cursor = body.walk();
+        for child in body.children(&mut cursor) {
+            extract_dataflow_from_node(child, source, context_name, out);
+        }
+    } else {
+        // Single expression body
+        extract_reads_from_expression(body, source, context_name, out);
+    }
+}
+
+/// Recursively extract data flow from a node
+fn extract_dataflow_from_node(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    match node.kind() {
+        "assignment_expression" => {
+            extract_dataflow_from_assignment(node, source, context_name, out);
+        }
+        "call_expression" => {
+            extract_dataflow_from_call(node, source, context_name, out);
+        }
+        "statement_block" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                extract_dataflow_from_node(child, source, context_name, out);
+            }
+        }
+        "if_statement" | "for_statement" | "while_statement" | "do_statement" => {
+            // Handle control flow bodies
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind().ends_with("body") || child.kind() == "consequence" || child.kind() == "alternative" {
+                    extract_dataflow_from_node(child, source, context_name, out);
+                }
+            }
+        }
+        _ => {
+            // Recursively process children to find nested assignments/calls
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    extract_dataflow_from_node(cursor.node(), source, context_name, out);
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extract data flow from assignment expressions
+/// Pattern: left = right  -> left is written, identifiers in right are read
+fn extract_dataflow_from_assignment(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    let left = match node.child_by_field_name("left") {
+        Some(l) => l,
+        None => return,
+    };
+    let right = match node.child_by_field_name("right") {
+        Some(r) => r,
+        None => return,
+    };
+
+    let line = node.start_position().row as u32;
+
+    // Extract what's being written (left side)
+    if let Some(name) = extract_identifier_from_assignment_left(left, source) {
+        out.push(DataFlowEdge {
+            from_symbol: name,
+            to_symbol: context_name.to_string(),
+            flow_type: DataFlowType::Writes,
+            at_line: line,
+        });
+    }
+
+    // Extract what's being read (right side)
+    for ident in extract_identifiers_from_expression(right, source) {
+        out.push(DataFlowEdge {
+            from_symbol: ident,
+            to_symbol: context_name.to_string(),
+            flow_type: DataFlowType::Reads,
+            at_line: line,
+        });
+    }
+}
+
+/// Extract data flow from function/method calls
+fn extract_dataflow_from_call(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    let line = node.start_position().row as u32;
+
+    // The function being called is being read
+    if let Some(func_node) = node.child_by_field_name("function") {
+        if let Some(name) = extract_callee_name(func_node, source) {
+            out.push(DataFlowEdge {
+                from_symbol: name,
+                to_symbol: context_name.to_string(),
+                flow_type: DataFlowType::Reads,
+                at_line: line,
+            });
+        }
+    }
+
+    // Arguments are being read
+    if let Some(args_node) = node.child_by_field_name("arguments") {
+        let mut cursor = args_node.walk();
+        for child in args_node.children(&mut cursor) {
+            for ident in extract_identifiers_from_expression(child, source) {
+                out.push(DataFlowEdge {
+                    from_symbol: ident,
+                    to_symbol: context_name.to_string(),
+                    flow_type: DataFlowType::Reads,
+                    at_line: line,
+                });
+            }
+        }
+    }
+}
+
+/// Extract all identifiers read from an expression (right side of assignments, arguments, etc.)
+fn extract_reads_from_expression(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    let line = node.start_position().row as u32;
+    for ident in extract_identifiers_from_expression(node, source) {
+        out.push(DataFlowEdge {
+            from_symbol: ident,
+            to_symbol: context_name.to_string(),
+            flow_type: DataFlowType::Reads,
+            at_line: line,
+        });
+    }
+}
+
+/// Extract identifier name from the left side of an assignment
+/// Handles: identifier, member_expression (obj.prop), etc.
+fn extract_identifier_from_assignment_left(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(text_for_node(node, source)),
+        "member_expression" => {
+            // For obj.prop, we track the object being accessed
+            if let Some(obj_node) = node.child_by_field_name("object") {
+                if obj_node.kind() == "identifier" {
+                    Some(text_for_node(obj_node, source))
+                } else {
+                    extract_identifier_from_assignment_left(obj_node, source)
+                }
+            } else {
+                None
+            }
+        }
+        "array_pattern" | "object_pattern" => {
+            // Destructuring: extract identifiers from the pattern
+            let mut ids = Vec::new();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    ids.push(text_for_node(child, source));
+                } else if child.kind() == "pair" {
+                    // Object destructuring with key: value
+                    if let Some(value_node) = child.child_by_field_name("value") {
+                        if value_node.kind() == "identifier" {
+                            ids.push(text_for_node(value_node, source));
+                        }
+                    }
+                }
+            }
+            // Return first identifier or join them
+            ids.into_iter().next()
+        }
+        _ => None,
+    }
+}
+
+/// Extract all identifiers from an expression
+/// Recursively finds identifiers in nested expressions
+fn extract_identifiers_from_expression(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut identifiers = Vec::new();
+
+    match node.kind() {
+        "identifier" => {
+            identifiers.push(text_for_node(node, source));
+        }
+        "member_expression" => {
+            // Extract object being accessed
+            if let Some(obj_node) = node.child_by_field_name("object") {
+                identifiers.extend(extract_identifiers_from_expression(obj_node, source));
+            }
+            // Extract property if it's a computed property
+            if let Some(prop_node) = node.child_by_field_name("property") {
+                if prop_node.kind() == "identifier" && node.child_by_field_name("object").map_or(false, |o| o.kind() != "member_expression") {
+                    // Only add property if it's not part of a chain
+                }
+                identifiers.extend(extract_identifiers_from_expression(prop_node, source));
+            }
+        }
+        "call_expression" => {
+            // Extract function being called
+            if let Some(func_node) = node.child_by_field_name("function") {
+                if let Some(name) = extract_callee_name(func_node, source) {
+                    identifiers.push(name);
+                }
+            }
+            // Extract arguments
+            if let Some(args_node) = node.child_by_field_name("arguments") {
+                let mut cursor = args_node.walk();
+                for child in args_node.children(&mut cursor) {
+                    identifiers.extend(extract_identifiers_from_expression(child, source));
+                }
+            }
+        }
+        "binary_expression" | "unary_expression" | "logical_expression" => {
+            // Process both sides
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                identifiers.extend(extract_identifiers_from_expression(child, source));
+            }
+        }
+        "parenthesized_expression" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                identifiers.extend(extract_identifiers_from_expression(child, source));
+            }
+        }
+        "array" | "array_expression" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                identifiers.extend(extract_identifiers_from_expression(child, source));
+            }
+        }
+        "object" | "object_expression" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "pair" {
+                    if let Some(value_node) = child.child_by_field_name("value") {
+                        identifiers.extend(extract_identifiers_from_expression(value_node, source));
+                    }
+                }
+            }
+        }
+        "arrow_function" | "function_expression" => {
+            // Don't extract identifiers from nested function declarations
+            // They are separate scopes
+        }
+        _ => {
+            // Recursively process children for unknown node types
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    identifiers.extend(extract_identifiers_from_expression(cursor.node(), source));
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    identifiers
+}
+
+/// Extract the function name from a callee node
+/// Handles: identifier, member_expression (obj.method), etc.
+fn extract_callee_name(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(text_for_node(node, source)),
+        "member_expression" => {
+            // For obj.method(), return the method name
+            if let Some(prop_node) = node.child_by_field_name("property") {
+                if prop_node.kind() == "property_identifier" {
+                    return Some(text_for_node(prop_node, source));
+                }
+            }
+            // Otherwise return the object
+            if let Some(obj_node) = node.child_by_field_name("object") {
+                return extract_callee_name(obj_node, source);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,5 +1015,68 @@ export function Comp() {
         assert!(has_edge("MyType", "User"));
         assert!(has_edge("MyType", "string"));
         assert!(has_edge("manage", "User"));
+    }
+
+    #[test]
+    fn extracts_data_flow_edges_from_assignments() {
+        let source = r#"
+export function processData() {
+    let x = 1;
+    let y = foo();
+    let z = bar(x);
+    x = 2;
+    return z;
+}
+
+const arrowFunc = (input: string) => {
+    let result = input.trim();
+    return result.toUpperCase();
+};
+"#;
+
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let df_edges = &extracted.dataflow_edges;
+
+        // Check for writes to x
+        assert!(df_edges.iter().any(|e| {
+            e.from_symbol == "x" && matches!(e.flow_type, DataFlowType::Writes)
+        }));
+
+        // Check for reads of foo (function call on right side of assignment)
+        assert!(df_edges.iter().any(|e| {
+            e.from_symbol == "foo" && matches!(e.flow_type, DataFlowType::Reads)
+        }));
+
+        // Check for reads of x (used in bar(x))
+        assert!(df_edges.iter().any(|e| {
+            e.from_symbol == "x" && matches!(e.flow_type, DataFlowType::Reads)
+        }));
+
+        // Check that dataflow_edges is populated
+        assert!(!df_edges.is_empty(), "Should have extracted data flow edges");
+    }
+
+    #[test]
+    fn extracts_data_flow_edges_from_member_expressions() {
+        let source = r#"
+export function processUser(user: any) {
+    let name = user.name;
+    let age = user.age;
+    return name;
+}
+"#;
+
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let df_edges = &extracted.dataflow_edges;
+
+        // Check for reads of user (from user.name, user.age)
+        assert!(df_edges.iter().any(|e| {
+            e.from_symbol == "user" && matches!(e.flow_type, DataFlowType::Reads)
+        }));
+
+        // Check for writes to name
+        assert!(df_edges.iter().any(|e| {
+            e.from_symbol == "name" && matches!(e.flow_type, DataFlowType::Writes)
+        }));
     }
 }

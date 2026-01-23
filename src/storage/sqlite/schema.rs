@@ -99,6 +99,66 @@ pub struct SimilarityClusterRow {
     pub cluster_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolMetricsRow {
+    pub symbol_id: String,
+    pub pagerank: f64,
+    pub in_degree: u32,
+    pub out_degree: u32,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuerySelectionRow {
+    pub id: i64,
+    pub query_text: String,
+    pub query_normalized: String,
+    pub selected_symbol_id: String,
+    pub position: u32,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserFileAffinityRow {
+    pub file_path: String,
+    pub view_count: u32,
+    pub edit_count: u32,
+    pub last_accessed_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryRow {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+    pub vcs_type: Option<String>,
+    pub remote_url: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageRow {
+    pub id: String,
+    pub repository_id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub manifest_path: String,
+    pub package_type: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocstringRow {
+    pub symbol_id: String,
+    pub raw_text: String,
+    pub summary: Option<String>,
+    pub params_json: Option<String>,
+    pub returns_text: Option<String>,
+    pub examples_json: Option<String>,
+    pub updated_at: i64,
+}
+
 pub const SCHEMA_SQL: &str = r#"
 PRAGMA foreign_keys = ON;
 
@@ -223,4 +283,73 @@ CREATE TABLE IF NOT EXISTS similarity_clusters (
   FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_similarity_clusters_key ON similarity_clusters(cluster_key);
+
+-- Symbol metrics for PageRank and graph analysis (FNDN-08)
+CREATE TABLE IF NOT EXISTS symbol_metrics (
+  symbol_id TEXT PRIMARY KEY NOT NULL,
+  pagerank REAL NOT NULL DEFAULT 0.0,
+  in_degree INTEGER NOT NULL DEFAULT 0,
+  out_degree INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_symbol_metrics_pagerank ON symbol_metrics(pagerank);
+
+-- Query selections for learning from user choices (FNDN-09)
+CREATE TABLE IF NOT EXISTS query_selections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query_text TEXT NOT NULL,
+  query_normalized TEXT NOT NULL,
+  selected_symbol_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(selected_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_query_selections_query ON query_selections(query_normalized);
+CREATE INDEX IF NOT EXISTS idx_query_selections_symbol ON query_selections(selected_symbol_id);
+
+-- User file affinity for personalization (FNDN-10)
+CREATE TABLE IF NOT EXISTS user_file_affinity (
+  file_path TEXT PRIMARY KEY NOT NULL,
+  view_count INTEGER NOT NULL DEFAULT 0,
+  edit_count INTEGER NOT NULL DEFAULT 0,
+  last_accessed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_user_file_affinity_accessed ON user_file_affinity(last_accessed_at);
+
+-- Repositories for multi-repo support (FNDN-11)
+CREATE TABLE IF NOT EXISTS repositories (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  vcs_type TEXT,
+  remote_url TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Packages for package-aware scoring (FNDN-12)
+CREATE TABLE IF NOT EXISTS packages (
+  id TEXT PRIMARY KEY NOT NULL,
+  repository_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  version TEXT,
+  manifest_path TEXT NOT NULL,
+  package_type TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_packages_repo ON packages(repository_id);
+
+-- Docstrings for documentation extraction (FNDN-13)
+CREATE TABLE IF NOT EXISTS docstrings (
+  symbol_id TEXT PRIMARY KEY NOT NULL,
+  raw_text TEXT NOT NULL,
+  summary TEXT,
+  params_json TEXT,
+  returns_text TEXT,
+  examples_json TEXT,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
 "#;

@@ -15,6 +15,7 @@ use code_intelligence_mcp_server::config::Config;
 use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
+use code_intelligence_mcp_server::reranker::create_reranker;
 use code_intelligence_mcp_server::retrieval::Retriever;
 use code_intelligence_mcp_server::server::CodeIntelligenceHandler;
 use code_intelligence_mcp_server::storage::sqlite::SqliteStore;
@@ -127,6 +128,16 @@ async fn run() -> SdkResult<()> {
     let tantivy = Arc::new(tantivy);
     let vectors = Arc::new(vectors);
 
+    // Create reranker if model path is configured
+    let reranker = create_reranker(
+        config.reranker_model_path.as_deref(),
+        config.reranker_cache_dir.as_deref(),
+        config.reranker_top_k,
+    )
+    .map_err(|err| McpSdkError::Internal {
+        description: format!("Failed to create reranker: {}", err),
+    })?;
+
     let indexer = IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
@@ -138,6 +149,7 @@ async fn run() -> SdkResult<()> {
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        reranker,
     );
 
     let state = Arc::new(AppState {

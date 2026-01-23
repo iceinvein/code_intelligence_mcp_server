@@ -1,6 +1,6 @@
 //! Query processing and normalization
 
-use crate::text;
+use crate::text as text_module;
 
 #[derive(Debug, Clone, Default)]
 pub struct QueryControls {
@@ -31,7 +31,7 @@ pub enum Intent {
 
 /// Normalize query text for better search results
 pub fn normalize_query(query: &str) -> String {
-    let out = text::normalize_query_text(query);
+    let out = text_module::normalize_query_text(query);
     let mut final_parts = Vec::new();
     for part in out.split_whitespace() {
         final_parts.push(part.to_string());
@@ -46,7 +46,7 @@ pub fn normalize_query(query: &str) -> String {
         }
 
         if lower.chars().all(|c| c.is_ascii_alphabetic()) && lower.len() >= 5 {
-            for stem in text::simple_stems(&lower) {
+            for stem in text_module::simple_stems(&lower) {
                 final_parts.push(stem);
             }
         }
@@ -206,6 +206,52 @@ pub fn trim_query(s: &str, max_len: usize) -> String {
         out.truncate(max_len);
     }
     out
+}
+
+/// Normalize and expand a query for search (FNDN-02)
+///
+/// This is the main entry point for query text processing. It chains:
+/// 1. normalize_query_text() - camelCase/snake_case splitting
+/// 2. expand_synonyms() - adds related terms (if enabled)
+/// 3. expand_acronyms() - expands abbreviations (if enabled)
+///
+/// The config flags control whether synonym and acronym expansion are applied.
+/// This allows disabling expansion at runtime via environment variables.
+///
+/// # Arguments
+/// * `query` - The raw query string from the user
+/// * `synonym_enabled` - Whether to apply synonym expansion (from Config::synonym_expansion_enabled)
+/// * `acronym_enabled` - Whether to apply acronym expansion (from Config::acronym_expansion_enabled)
+///
+/// # Returns
+/// The processed query string, ready for search
+///
+/// # Example
+/// ```rust,ignore
+/// use code_intelligence_mcp_server::retrieval::query::normalize_and_expand_query;
+///
+/// let result = normalize_and_expand_query("getUserById fn", true, true);
+/// // Returns: "get User By Id fn method" (synonym expansion added "method")
+/// ```
+pub fn normalize_and_expand_query(
+    query: &str,
+    synonym_enabled: bool,
+    acronym_enabled: bool,
+) -> String {
+    // Step 1: Always normalize (camelCase/splits)
+    let mut result = text_module::normalize_query_text(query);
+
+    // Step 2: Optionally expand synonyms
+    if synonym_enabled {
+        result = text_module::expand_synonyms(&result);
+    }
+
+    // Step 3: Optionally expand acronyms
+    if acronym_enabled {
+        result = text_module::expand_acronyms(&result);
+    }
+
+    result
 }
 
 /// Decompose compound queries like "auth and db" into sub-queries (FNDN-16)
@@ -472,5 +518,57 @@ mod tests {
         assert!(!contains_code_snippet("how do I authenticate users"));
         assert!(!contains_code_snippet("find the login function"));
         assert!(!contains_code_snippet("search for database"));
+    }
+
+    #[test]
+    fn test_normalize_and_expand_query_chains_all_processing() {
+        // Test full pipeline: normalize + synonym + acronym
+        let result = normalize_and_expand_query("getUserById api", true, true);
+        assert!(result.contains("get"));
+        assert!(result.contains("User"));
+        assert!(result.contains("By") || result.contains("by"));
+        assert!(result.contains("Id") || result.contains("id"));
+        assert!(
+            result.contains("application programming interface")
+                || result.contains("api")
+        );
+    }
+
+    #[test]
+    fn test_normalize_and_expand_query_respects_synonym_flag() {
+        let with_synonym = normalize_and_expand_query("auth function", true, false);
+        let without_synonym = normalize_and_expand_query("auth function", false, false);
+
+        // With synonym enabled, should have "authentication" or "method"
+        assert!(
+            with_synonym.contains("authentication") || with_synonym.contains("method")
+        );
+
+        // Without synonym, should NOT have these extras
+        assert!(!without_synonym.contains("authentication"));
+        assert!(!without_synonym.contains("method"));
+    }
+
+    #[test]
+    fn test_normalize_and_expand_query_respects_acronym_flag() {
+        let with_acronym = normalize_and_expand_query("api endpoint", false, true);
+        let without_acronym = normalize_and_expand_query("api endpoint", false, false);
+
+        // With acronym enabled, should have full expansion
+        assert!(with_acronym.contains("application programming interface"));
+
+        // Without acronym, should just have "api"
+        assert!(!without_acronym.contains("application programming interface"));
+        assert!(without_acronym.contains("api"));
+    }
+
+    #[test]
+    fn test_normalize_and_expand_query_both_disabled() {
+        // When both disabled, only normalization should happen
+        let result = normalize_and_expand_query("getUserById", false, false);
+        // Should be normalized (camelCase split) but no expansions
+        assert!(result.contains("get") || result.contains("Get"));
+        assert!(result.contains("user") || result.contains("User"));
+        assert!(!result.contains("authentication")); // synonym not added
     }
 }

@@ -2,7 +2,7 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
-use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
+use super::symbol::{ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
 
 pub fn extract_typescript_symbols(language_id: LanguageId, source: &str) -> Result<ExtractedFile> {
     if !matches!(language_id, LanguageId::Typescript | LanguageId::Tsx) {
@@ -113,6 +113,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         symbols,
         imports,
         type_edges,
+        dataflow_edges: Vec::new(), // Will be populated by Task 2
     })
 }
 

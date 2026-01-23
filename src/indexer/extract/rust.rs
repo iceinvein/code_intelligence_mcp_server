@@ -90,6 +90,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         symbols,
         imports: Vec::new(),
         type_edges,
+        dataflow_edges: Vec::new(),
     })
 }
 

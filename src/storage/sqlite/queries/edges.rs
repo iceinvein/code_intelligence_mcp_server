@@ -185,6 +185,41 @@ pub fn count_edges(conn: &Connection) -> Result<u64> {
     Ok(count.max(0) as u64)
 }
 
+pub fn list_all_edges(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT from_symbol_id, to_symbol_id
+FROM edges
+"#,
+        )
+        .context("Failed to prepare list_all_edges")?;
+
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((row.get(0)?, row.get(1)?));
+    }
+    Ok(out)
+}
+
+pub fn list_all_symbol_ids(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT id, kind FROM symbols
+"#,
+        )
+        .context("Failed to prepare list_all_symbol_ids")?;
+
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((row.get(0)?, row.get(1)?));
+    }
+    Ok(out)
+}
+
 fn edge_resolution_rank(resolution: &str) -> i64 {
     match resolution {
         "local" => 3,

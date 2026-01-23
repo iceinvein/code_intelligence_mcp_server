@@ -117,6 +117,14 @@ impl SqliteStore {
         queries::edges::count_edges(&self.conn)
     }
 
+    pub fn list_all_edges(&self) -> Result<Vec<(String, String)>> {
+        queries::edges::list_all_edges(&self.conn)
+    }
+
+    pub fn list_all_symbol_ids(&self) -> Result<Vec<(String, String)>> {
+        queries::edges::list_all_symbol_ids(&self.conn)
+    }
+
     pub fn get_file_fingerprint(&self, file_path: &str) -> Result<Option<FileFingerprintRow>> {
         queries::files::get_file_fingerprint(&self.conn, file_path)
     }
@@ -184,5 +192,16 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<UsageExampleRow>> {
         queries::misc::list_usage_examples_for_symbol(&self.conn, to_symbol_id, limit)
+    }
+
+    pub fn upsert_symbol_metrics(&self, metrics: &SymbolMetricsRow) -> Result<()> {
+        queries::metrics::upsert_symbol_metrics(&self.conn, metrics)
+    }
+
+    pub fn batch_get_symbol_metrics(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, f64>> {
+        queries::metrics::batch_get_symbol_metrics(&self.conn, symbol_ids)
     }
 }

@@ -83,3 +83,42 @@ pub fn delete_symbol_metrics(conn: &Connection, symbol_id: &str) -> Result<()> {
     .context("Failed to delete symbol metrics")?;
     Ok(())
 }
+
+pub fn batch_get_symbol_metrics(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> Result<std::collections::HashMap<String, f64>> {
+    if symbol_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let placeholders = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let query = format!(
+        "SELECT symbol_id, pagerank FROM symbol_metrics WHERE symbol_id IN ({})",
+        placeholders
+    );
+
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_get_symbol_metrics")?;
+
+    let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut rows = stmt.query(params.as_slice())?;
+    let mut out = std::collections::HashMap::new();
+    while let Some(row) = rows.next()? {
+        let symbol_id: String = row.get(0)?;
+        let pagerank: f64 = row.get(1)?;
+        out.insert(symbol_id, pagerank);
+    }
+    Ok(out)
+}

@@ -43,6 +43,10 @@ prometheus = "0.13"
 rayon = "1"
 tiktoken-rs = "0.7"
 
+# Phase 3 Reranker dependencies (03-02)
+ndarray = "0.16"
+tokenizers = "0.21"
+
 [features]
 default = []
 

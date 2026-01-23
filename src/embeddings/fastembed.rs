@@ -6,6 +6,7 @@ use std::path::Path;
 
 pub struct FastEmbedder {
     model: TextEmbedding,
+    model_name: String,
 }
 
 impl FastEmbedder {
@@ -22,9 +23,10 @@ impl FastEmbedder {
             "BAAI/bge-base-en-v1.5" => EmbeddingModel::BGEBaseENV15,
             "BAAI/bge-small-en-v1.5" => EmbeddingModel::BGESmallENV15,
             "sentence-transformers/all-MiniLM-L6-v2" => EmbeddingModel::AllMiniLML6V2,
+            "jinaai/jina-embeddings-v2-base-code" => EmbeddingModel::JinaEmbeddingsV2BaseCode,
             "jinaai/jina-embeddings-v2-base-en" => EmbeddingModel::JinaEmbeddingsV2BaseCode,
             // Fallback or error? Let's error to be safe, or default to BGE-Base
-            _ => return Err(anyhow!("Unsupported model for FastEmbed: {}. Supported: BAAI/bge-base-en-v1.5, BAAI/bge-small-en-v1.5, sentence-transformers/all-MiniLM-L6-v2, jinaai/jina-embeddings-v2-base-en", model_name)),
+            _ => return Err(anyhow!("Unsupported model for FastEmbed: {}. Supported: BAAI/bge-base-en-v1.5, BAAI/bge-small-en-v1.5, sentence-transformers/all-MiniLM-L6-v2, jinaai/jina-embeddings-v2-base-code", model_name)),
         };
 
         let mut options = InitOptions::new(model_enum);
@@ -41,30 +43,20 @@ impl FastEmbedder {
         let model = TextEmbedding::try_new(options)
             .map_err(|e| anyhow!("Failed to initialize FastEmbed: {}", e))?;
 
-        Ok(Self { model })
+        Ok(Self { model, model_name: model_name.to_string() })
     }
 }
 
 impl Embedder for FastEmbedder {
     fn dim(&self) -> usize {
-        // FastEmbed doesn't expose dim() directly on the struct easily without digging into the model info,
-        // but we can infer it or run a dummy embedding?
-        // Actually, TextEmbedding::get_embedding_model_info() -> EmbeddingModelInfo
-        // But that might require holding the model info.
-        // Let's check the model enum.
-        // For now, we can run a dummy embedding once at startup if needed, or hardcode based on known models.
-        // Or better, let's just run a dummy embedding of an empty string or "a" to get the dimension.
-        // It's a bit hacky but robust.
-
-        // Optimization: Lazy load or cache?
-        // Let's try to get it from the model itself if possible.
-        // Looking at docs, `model.get_model_info()` might exist.
-        // If not, we'll dummy embed.
-
-        // For the sake of implementation speed:
-        match self.model.embed(vec!["a"], None) {
-            Ok(vecs) => vecs.first().map(|v| v.len()).unwrap_or(0),
-            Err(_) => 0,
+        // Return known dimensions for supported models
+        // Jina Code v2 Base has 768 dimensions
+        // BGE models have 384 dimensions
+        match self.model_name.as_str() {
+            "jinaai/jina-embeddings-v2-base-code" | "jinaai/jina-embeddings-v2-base-en" => 768,
+            "BAAI/bge-base-en-v1.5" | "BAAI/bge-small-en-v1.5" => 384,
+            "sentence-transformers/all-MiniLM-L6-v2" => 384,
+            _ => 384, // Default to 384 for unknown models
         }
     }
 

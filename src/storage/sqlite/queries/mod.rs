@@ -1,5 +1,8 @@
+pub mod affinity;
 pub mod edges;
 pub mod files;
+pub mod metrics;
 pub mod misc;
+pub mod selections;
 pub mod stats;
 pub mod symbols;

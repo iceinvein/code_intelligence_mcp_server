@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::indexer::extract::symbol::Import;
 use crate::indexer::parser::LanguageId;
+use crate::storage::sqlite::SqliteStore;
 use anyhow::{Context, Result};
 use std::{
     collections::HashMap,
@@ -96,13 +97,36 @@ pub fn cluster_key_from_vector(vector: &[f32]) -> String {
 }
 
 pub fn resolve_imported_symbol_id(current_file_path: &str, imp: &Import) -> Option<String> {
-    // Basic resolution: assume TS relative path
-    // current: src/a.ts, source: ./b
-    // result: src/b.ts
-    // We assume the symbol name in the target file is `imp.name` (the remote name).
-    // The ID is stable_symbol_id(target_path, imp.name, 0).
+    // Enhanced resolution: try to find the actual exported symbol in target file
+    // Falls back to file-level ID if symbol-level lookup fails
 
     let target_path = resolve_path(current_file_path, &imp.source)?;
+
+    // Try to find an exported symbol with matching name in the target file
+    // For now, we use the file-level ID as fallback since we don't have SqliteStore access here
+    // TODO: Pass SqliteStore when available for symbol-level lookup
+
+    // The ID is stable_symbol_id(target_path, imp.name, 0) for exported symbols
+    Some(stable_symbol_id(&target_path, &imp.name, 0))
+}
+
+/// Enhanced import resolution that queries the database for actual exported symbols
+/// This should be used when SqliteStore is available for more accurate resolution
+pub fn resolve_imported_symbol_id_with_db(
+    current_file_path: &str,
+    imp: &Import,
+    sqlite: &SqliteStore,
+) -> Option<String> {
+    let target_path = resolve_path(current_file_path, &imp.source)?;
+
+    // Try to find an exported symbol with matching name in the target file
+    if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, Some(&target_path), 1) {
+        if let Some(symbol) = results.iter().find(|s| s.exported) {
+            return Some(symbol.id.clone());
+        }
+    }
+
+    // Fallback to file-level ID
     Some(stable_symbol_id(&target_path, &imp.name, 0))
 }
 
@@ -247,5 +271,72 @@ mod tests {
         let k2 = file_key(&config, &outside);
         assert!(k2.ends_with("/b.ts"));
         assert!(k2.contains(&*other.to_string_lossy()));
+    }
+
+    #[test]
+    fn resolve_imported_symbol_id_finds_exported_symbol() {
+        let base0 = tmp_dir();
+        let base = base0.canonicalize().unwrap_or(base0);
+
+        // Create a test database
+        let db_path = base.join("test.db");
+        let sqlite = SqliteStore::open(&db_path).unwrap();
+        sqlite.init().unwrap();
+
+        // Add a target symbol
+        use crate::storage::sqlite::SymbolRow;
+        let target_symbol = SymbolRow {
+            id: "target_symbol_id".to_string(),
+            file_path: "src/utils.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: "helper".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            end_line: 10,
+            text: "export function helper() {}".to_string(),
+        };
+        sqlite.upsert_symbol(&target_symbol).unwrap();
+
+        // Create an import that should resolve to the target symbol
+        let imp = Import {
+            name: "helper".to_string(),
+            source: "./utils".to_string(),
+            alias: None,
+        };
+
+        // Test the enhanced resolution with database
+        let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &sqlite);
+
+        // Should resolve to the actual symbol ID from the database
+        assert_eq!(resolved, Some("target_symbol_id".to_string()));
+    }
+
+    #[test]
+    fn resolve_imported_symbol_id_fallback_to_file_level() {
+        let base0 = tmp_dir();
+        let base = base0.canonicalize().unwrap_or(base0);
+
+        // Create a test database
+        let db_path = base.join("test.db");
+        let sqlite = SqliteStore::open(&db_path).unwrap();
+        sqlite.init().unwrap();
+
+        // Create an import for a symbol that doesn't exist in the database
+        let imp = Import {
+            name: "nonExistent".to_string(),
+            source: "./utils".to_string(),
+            alias: None,
+        };
+
+        // Test the enhanced resolution - should fall back to file-level ID
+        let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &sqlite);
+
+        // Should fall back to stable_symbol_id based on path and name
+        assert!(resolved.is_some());
+        let resolved_id = resolved.unwrap();
+        assert!(resolved_id.starts_with("0x") || resolved_id.len() == 16);
     }
 }

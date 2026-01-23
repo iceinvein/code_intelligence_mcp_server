@@ -394,5 +394,13 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
         }
         Intent::Callers(_) => 1.0,
         Intent::Test => 1.0,
+        // New intents (FNDN-15) - default multiplier of 1.0
+        Intent::Implementation => 1.0,
+        Intent::Config => 1.0,
+        Intent::Error => 1.0,
+        Intent::API => 1.0,
+        Intent::Hook => 1.0,
+        Intent::Middleware => 1.0,
+        Intent::Migration => 1.0,
     }
 }

@@ -13,10 +13,20 @@ pub struct QueryControls {
 
 #[derive(Debug, Clone)]
 pub enum Intent {
+    // Existing
     Callers(String),
     Definition,
     Schema,
     Test,
+
+    // New intents (FNDN-15)
+    Implementation,  // "how is X implemented", "implementation of"
+    Config,          // "configuration", "settings", "env", "config"
+    Error,           // "error handling", "exception", "error"
+    API,             // "endpoint", "route", "handler", "api"
+    Hook,            // "useEffect", "hook", "lifecycle"
+    Middleware,      // "middleware", "interceptor"
+    Migration,       // "migration", "schema change", "migrate"
 }
 
 /// Normalize query text for better search results
@@ -49,24 +59,80 @@ pub fn normalize_query(query: &str) -> String {
 pub fn detect_intent(query: &str) -> Option<Intent> {
     let q = query.trim().to_lowercase();
 
-    // Test Detection
+    // Test Detection (existing)
     if q.contains("test") || q.contains("spec") || q.contains("verify") {
         return Some(Intent::Test);
     }
 
-    // Schema keywords
+    // NEW: Migration intent - check before Schema since "migration" is more specific
+    if q.contains("migration") || q.contains("migrate") || q.contains("schema change") {
+        return Some(Intent::Migration);
+    }
+
+    // Schema keywords (existing)
     if q.contains("schema")
         || q.contains("model")
         || q.contains("db table")
         || q.contains("database")
-        || q.contains("migration")
         || q.contains("entity")
         || q.split_whitespace().any(|w| w == "db")
     {
         return Some(Intent::Schema);
     }
 
-    // Definition keywords
+    // NEW: Implementation intent
+    if q.contains("implementation")
+        || q.contains("how is")
+        || q.contains("how does")
+        || q.starts_with("implement")
+    {
+        return Some(Intent::Implementation);
+    }
+
+    // NEW: Config intent
+    if q.contains("configuration")
+        || q.contains("settings")
+        || q.contains("environment")
+        || q.split_whitespace().any(|w| w == "config" || w == "env")
+    {
+        return Some(Intent::Config);
+    }
+
+    // NEW: Error intent
+    if q.contains("error handling")
+        || q.contains("exception")
+        || q.contains("error")
+        || q.contains("catch")
+        || q.contains("throw")
+    {
+        return Some(Intent::Error);
+    }
+
+    // NEW: API intent
+    if q.contains("endpoint")
+        || q.contains("route")
+        || q.contains("handler")
+        || q.split_whitespace().any(|w| w == "api")
+    {
+        return Some(Intent::API);
+    }
+
+    // NEW: Hook intent
+    if q.contains("useeffect")
+        || q.contains("usestate")
+        || q.contains("usememo")
+        || q.contains("hook")
+        || q.contains("lifecycle")
+    {
+        return Some(Intent::Hook);
+    }
+
+    // NEW: Middleware intent
+    if q.contains("middleware") || q.contains("interceptor") {
+        return Some(Intent::Middleware);
+    }
+
+    // Definition keywords (existing)
     if q.contains("class")
         || q.contains("interface")
         || q.contains("struct")
@@ -76,7 +142,7 @@ pub fn detect_intent(query: &str) -> Option<Intent> {
         return Some(Intent::Definition);
     }
 
-    // Callers patterns
+    // Callers patterns (existing - keep unchanged)
     if let Some(s) = q.strip_prefix("who calls ") {
         return Some(Intent::Callers(s.trim().to_string()));
     }
@@ -172,5 +238,28 @@ mod tests {
         assert_eq!(query, "search term");
         assert_eq!(controls.id, Some("abc123".to_string()));
         assert_eq!(controls.file, Some("test.ts".to_string()));
+    }
+
+    #[test]
+    fn detect_intent_recognizes_new_intents() {
+        assert!(matches!(
+            detect_intent("how is auth implemented"),
+            Some(Intent::Implementation)
+        ));
+        assert!(matches!(
+            detect_intent("configuration settings"),
+            Some(Intent::Config)
+        ));
+        assert!(matches!(detect_intent("error handling"), Some(Intent::Error)));
+        assert!(matches!(detect_intent("api endpoint"), Some(Intent::API)));
+        assert!(matches!(detect_intent("useEffect hook"), Some(Intent::Hook)));
+        assert!(matches!(
+            detect_intent("middleware"),
+            Some(Intent::Middleware)
+        ));
+        assert!(matches!(
+            detect_intent("database migration"),
+            Some(Intent::Migration)
+        ));
     }
 }

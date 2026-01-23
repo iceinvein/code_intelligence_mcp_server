@@ -738,4 +738,63 @@ mod tests {
         assert!(cfg.watch_mode);
         assert!(cfg.index_node_modules);
     }
+
+    #[test]
+    fn new_config_fields_have_defaults() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        let base = tmp_dir();
+        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+
+        let cfg = Config::from_env().unwrap();
+
+        // Reranker defaults
+        assert!(cfg.reranker_model_path.is_none());
+        assert_eq!(cfg.reranker_top_k, 20);
+        assert!(cfg.reranker_cache_dir.is_some());
+
+        // Learning defaults
+        assert!(!cfg.learning_enabled);
+        assert!((cfg.learning_selection_boost - 0.1).abs() < f32::EPSILON);
+        assert!((cfg.learning_file_affinity_boost - 0.05).abs() < f32::EPSILON);
+
+        // Token defaults
+        assert_eq!(cfg.max_context_tokens, 8192);
+        assert_eq!(cfg.token_encoding, "o200k_base");
+
+        // Performance defaults
+        assert!(cfg.parallel_workers >= 1);
+        assert!(cfg.embedding_cache_enabled);
+
+        // PageRank defaults
+        assert!((cfg.pagerank_damping - 0.85).abs() < f32::EPSILON);
+        assert_eq!(cfg.pagerank_iterations, 20);
+
+        // Query expansion defaults (FNDN-02)
+        assert!(cfg.synonym_expansion_enabled);
+        assert!(cfg.acronym_expansion_enabled);
+    }
+
+    #[test]
+    fn new_config_fields_parsed_from_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        let base = tmp_dir();
+        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("LEARNING_ENABLED", "true");
+        std::env::set_var("MAX_CONTEXT_TOKENS", "16384");
+        std::env::set_var("PAGERANK_DAMPING", "0.9");
+        std::env::set_var("PARALLEL_WORKERS", "4");
+        std::env::set_var("SYNONYM_EXPANSION_ENABLED", "false");
+        std::env::set_var("ACRONYM_EXPANSION_ENABLED", "false");
+
+        let cfg = Config::from_env().unwrap();
+
+        assert!(cfg.learning_enabled);
+        assert_eq!(cfg.max_context_tokens, 16384);
+        assert!((cfg.pagerank_damping - 0.9).abs() < f32::EPSILON);
+        assert_eq!(cfg.parallel_workers, 4);
+        assert!(!cfg.synonym_expansion_enabled);
+        assert!(!cfg.acronym_expansion_enabled);
+    }
 }

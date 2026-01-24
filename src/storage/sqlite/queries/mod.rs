@@ -1,4 +1,5 @@
 pub mod affinity;
+pub mod decorators;
 pub mod edges;
 pub mod files;
 pub mod metrics;

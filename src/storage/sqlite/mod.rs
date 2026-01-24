@@ -261,6 +261,10 @@ impl SqliteStore {
         queries::docstrings::has_docstring(&self.conn, symbol_id)
     }
 
+    pub fn get_docstring_by_symbol(&self, symbol_id: &str) -> Result<Option<schema::DocstringRow>> {
+        queries::docstrings::get_docstring_by_symbol(&self.conn, symbol_id)
+    }
+
     pub fn delete_docstrings_by_file(&self, file_path: &str) -> Result<()> {
         queries::docstrings::delete_docstrings_by_file(&self.conn, file_path)
     }
@@ -271,6 +275,20 @@ impl SqliteStore {
 
     pub fn delete_decorators_by_file(&self, file_path: &str) -> Result<()> {
         queries::decorators::delete_decorators_by_file(&self.conn, file_path)
+    }
+
+    pub fn search_decorators_by_name(
+        &self,
+        name: Option<&str>,
+        decorator_type: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DecoratorRow>> {
+        queries::decorators::search_decorators_by_name_filtered(
+            &self.conn,
+            name,
+            decorator_type,
+            limit,
+        )
     }
 
     pub fn is_test_file(&self, path: &str) -> bool {

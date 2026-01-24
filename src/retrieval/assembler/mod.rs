@@ -333,6 +333,17 @@ mod tests {
             // Query expansion config (FNDN-02)
             synonym_expansion_enabled: true,
             acronym_expansion_enabled: true,
+            // RRF config (RETR-05)
+            rrf_enabled: true,
+            rrf_k: 60.0,
+            rrf_keyword_weight: 1.0,
+            rrf_vector_weight: 1.0,
+            rrf_graph_weight: 0.5,
+            // HyDE config (RETR-06, RETR-07)
+            hyde_enabled: false,
+            hyde_llm_backend: "openai".to_string(),
+            hyde_api_key: None,
+            hyde_max_tokens: 512,
         })
     }
 

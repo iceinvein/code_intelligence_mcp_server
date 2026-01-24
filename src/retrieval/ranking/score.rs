@@ -493,6 +493,15 @@ mod tests {
             pagerank_iterations: 20,
             synonym_expansion_enabled: true,
             acronym_expansion_enabled: true,
+            rrf_enabled: true,
+            rrf_k: 60.0,
+            rrf_keyword_weight: 1.0,
+            rrf_vector_weight: 1.0,
+            rrf_graph_weight: 0.5,
+            hyde_enabled: false,
+            hyde_llm_backend: "openai".to_string(),
+            hyde_api_key: None,
+            hyde_max_tokens: 512,
         }
     }
 

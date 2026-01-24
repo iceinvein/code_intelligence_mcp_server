@@ -90,8 +90,8 @@ impl Retriever {
     ) -> Self {
         let cache = RetrieverCaches::new();
         let cache_config_key = format!(
-            "b={}|k={}|ha={:.3}|vw={:.3}|kw={:.3}|eb={:.3}|ib={:.3}|tp={:.3}|pw={:.3}|pc={}",
-            config.max_context_bytes,
+            "t={}|k={}|ha={:.3}|vw={:.3}|kw={:.3}|eb={:.3}|ib={:.3}|tp={:.3}|pw={:.3}|pc={}",
+            config.max_context_tokens,
             config.vector_search_limit,
             config.hybrid_alpha,
             config.rank_vector_weight,
@@ -506,7 +506,7 @@ impl Retriever {
     }
 
     fn cache_insert_response(&self, key: String, resp: SearchResponse) {
-        let size = resp.context.len() + resp.context_items.iter().map(|i| i.bytes).sum::<usize>();
+        let size = resp.context.len() + resp.context_items.iter().map(|i| i.tokens * 4).sum::<usize>();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.responses.insert(key, resp, size);
     }
@@ -545,8 +545,8 @@ impl Retriever {
         extra_ids.sort_unstable();
 
         let key = format!(
-            "m=default|b={}|r={}|x={}",
-            self.config.max_context_bytes,
+            "m=default|t={}|r={}|x={}",
+            self.config.max_context_tokens,
             root_ids.join(","),
             extra_ids.join(",")
         );
@@ -559,7 +559,7 @@ impl Retriever {
 
         let assembler = ContextAssembler::new(self.config.clone());
         let v = assembler.assemble_context_with_items(store, roots, extra)?;
-        let size = v.0.len() + v.1.iter().map(|i| i.bytes).sum::<usize>();
+        let size = v.0.len() + v.1.iter().map(|i| i.tokens * 4).sum::<usize>();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.contexts.insert(key, v.clone(), size);
         Ok(v)

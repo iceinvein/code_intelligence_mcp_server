@@ -13,7 +13,7 @@ pub struct ContextItem {
     pub role: String,
     pub reasons: Vec<String>,
     pub truncated: bool,
-    pub bytes: usize,
+    pub tokens: usize,
 }
 
 #[derive(Debug, Clone, Copy)]

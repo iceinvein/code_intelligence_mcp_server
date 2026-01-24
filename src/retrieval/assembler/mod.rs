@@ -91,16 +91,18 @@ impl ContextAssembler {
         mode: FormatMode,
     ) -> Result<(String, Vec<ContextItem>)> {
         let mut out = String::new();
-        let mut used = 0usize;
+        let mut used_tokens = 0usize;
         let mut seen = HashSet::<String>::new();
         let root_ids: HashSet<&String> = roots.iter().map(|r| &r.id).collect();
         let extra_ids: HashSet<&String> = explicit_extra.iter().map(|r| &r.id).collect();
         let mut items: Vec<ContextItem> = Vec::new();
 
-        let max_bytes = self.config.max_context_bytes;
-        let root_cap = ((max_bytes as f32) * 0.7) as usize;
-        let extra_cap = ((max_bytes as f32) * 0.2) as usize;
-        let expanded_cap = max_bytes.saturating_sub(root_cap + extra_cap);
+        // Use token-based budgeting instead of byte-based
+        let counter = tokens::get_token_counter();
+        let max_tokens = self.config.max_context_tokens;
+        let root_cap = ((max_tokens as f32) * 0.7) as usize;
+        let extra_cap = ((max_tokens as f32) * 0.2) as usize;
+        let expanded_cap = max_tokens.saturating_sub(root_cap + extra_cap);
 
         let mut used_by_role = HashMap::<String, usize>::new();
         let mut count_by_role = HashMap::<String, usize>::new();
@@ -132,9 +134,9 @@ impl ContextAssembler {
                 sym.file_path, sym.start_line, sym.end_line, sym.kind, sym.name, sym.id
             );
 
-            // ... check limits ...
-            let header_len = header.len();
-            if used + header_len >= self.config.max_context_bytes {
+            // ... check limits using token count ...
+            let header_tokens = counter.count(&header);
+            if used_tokens + header_tokens >= max_tokens {
                 break;
             }
 
@@ -144,6 +146,8 @@ impl ContextAssembler {
                 block.push('\n');
             }
             block.push('\n');
+
+            let block_tokens = counter.count(&block);
 
             let role_cluster_limit = match role.as_str() {
                 "root" => 2usize,
@@ -170,19 +174,21 @@ impl ContextAssembler {
             };
             let role_used = used_by_role.get(&role).copied().unwrap_or(0);
             let role_count = count_by_role.get(&role).copied().unwrap_or(0);
-            if role_count > 0 && role_used.saturating_add(block.len()) > role_cap {
+            if role_count > 0 && role_used.saturating_add(block_tokens) > role_cap {
                 continue;
             }
 
-            if used + block.len() > self.config.max_context_bytes {
+            if used_tokens + block_tokens > max_tokens {
                 // ... truncate logic ...
-                let remaining = self.config.max_context_bytes.saturating_sub(used);
+                // For truncation, we use UTF-8 byte boundaries for safety
+                let remaining_bytes = (max_tokens.saturating_sub(used_tokens) * 4).min(block.len());
                 let bytes = block.as_bytes();
-                let mut cut = remaining.min(bytes.len());
+                let mut cut = remaining_bytes.min(bytes.len());
                 while cut > 0 && !block.is_char_boundary(cut) {
                     cut -= 1;
                 }
                 out.push_str(&block[..cut]);
+                let truncated_tokens = counter.count(&block[..cut]);
                 let mut reasons = vec![format!("role:{role}")];
                 if let Some(key) = &cluster_key {
                     reasons.push(format!("cluster:{key}"));
@@ -203,9 +209,9 @@ impl ContextAssembler {
                     role: role.clone(),
                     reasons,
                     truncated: true,
-                    bytes: cut,
+                    tokens: truncated_tokens,
                 });
-                *used_by_role.entry(role.clone()).or_insert(0) += cut;
+                *used_by_role.entry(role.clone()).or_insert(0) += truncated_tokens;
                 *count_by_role.entry(role).or_insert(0) += 1;
                 if let Some(key) = &cluster_key {
                     *count_by_cluster_key.entry(key.clone()).or_insert(0) += 1;
@@ -217,7 +223,7 @@ impl ContextAssembler {
             }
 
             out.push_str(&block);
-            used += block.len();
+            used_tokens += block_tokens;
 
             let mut reasons = vec![format!("role:{role}")];
             if let Some(key) = &cluster_key {
@@ -238,9 +244,9 @@ impl ContextAssembler {
                 role: role.clone(),
                 reasons,
                 truncated: simplified,
-                bytes: block.len(),
+                tokens: block_tokens,
             });
-            *used_by_role.entry(role.clone()).or_insert(0) += block.len();
+            *used_by_role.entry(role.clone()).or_insert(0) += block_tokens;
             *count_by_role.entry(role).or_insert(0) += 1;
             if let Some(key) = &cluster_key {
                 *count_by_cluster_key.entry(key.clone()).or_insert(0) += 1;

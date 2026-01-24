@@ -330,6 +330,57 @@ impl LanceVectorTable {
 
         Ok(out)
     }
+
+    /// Get embedding vector for a symbol by its ID.
+    ///
+    /// This is used by find_similar_code to retrieve the vector for a given symbol,
+    /// which is then used as the query vector for semantic similarity search.
+    pub async fn get_embedding_by_id(&self, id: &str) -> Result<Vec<f32>> {
+        let escaped = escape_lancedb_string(id);
+        let filter = format!("id = '{escaped}'");
+
+        // Use LanceDB's filter to find the record by ID
+        let stream = self
+            .table
+            .query()
+            .filter(&filter)
+            .limit(1)
+            .execute()
+            .await
+            .context("Failed to execute lancedb query for get_embedding_by_id")?;
+
+        let batches: Vec<RecordBatch> = stream
+            .try_collect()
+            .await
+            .context("Failed to collect results for get_embedding_by_id")?;
+
+        if batches.is_empty() {
+            return Err(anyhow::anyhow!("No embedding found for symbol ID: {}", id));
+        }
+
+        let batch = &batches[0];
+        if batch.num_rows() == 0 {
+            return Err(anyhow::anyhow!("No embedding found for symbol ID: {}", id));
+        }
+
+        let vector_col = batch
+            .column_by_name("vector")
+            .ok_or_else(|| anyhow!("Missing vector column in lancedb result"))?;
+
+        let vector_arr = vector_col
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .ok_or_else(|| anyhow!("Vector column is not FixedSizeListArray"))?;
+
+        // Extract the vector values from the first row
+        let vector_data = vector_arr.value(0);
+        let primitive_array = vector_data
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .ok_or_else(|| anyhow!("Vector data is not Float32Array"))?;
+
+        Ok(primitive_array.values().to_vec())
+    }
 }
 
 fn escape_lancedb_string(s: &str) -> String {

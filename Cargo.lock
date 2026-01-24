@@ -1384,6 +1384,7 @@ dependencies = [
  "postcard",
  "prometheus",
  "rayon",
+ "reqwest",
  "rusqlite",
  "rust-mcp-sdk",
  "serde",

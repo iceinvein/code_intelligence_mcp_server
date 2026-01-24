@@ -2,6 +2,7 @@
 
 pub mod assembler;
 mod cache;
+pub mod hyde;
 mod query;
 mod ranking;
 

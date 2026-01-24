@@ -453,6 +453,151 @@ pub async fn handle_report_selection(
     }))
 }
 
+/// Handle explain_search tool - returns detailed scoring breakdown
+pub async fn handle_explain_search(
+    retriever: &Retriever,
+    tool: ExplainSearchTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    use crate::retrieval::HitSignals;
+
+    let limit = tool.limit.unwrap_or(10).max(1) as usize;
+    let exported_only = tool.exported_only.unwrap_or(false);
+    let verbose = tool.verbose.unwrap_or(false);
+
+    let resp = retriever.search(&tool.query, limit, exported_only).await?;
+
+    // Build detailed breakdown with display formatting
+    let mut results = Vec::new();
+    for hit in &resp.hits {
+        let signals = resp.hit_signals.get(&hit.id);
+        let mut breakdown = json!({
+            "symbol_id": hit.id,
+            "symbol_name": hit.name,
+            "kind": hit.kind,
+            "file_path": hit.file_path,
+            "score": hit.score,
+            "exported": hit.exported,
+        });
+
+        if let Some(sig) = signals {
+            breakdown["score_breakdown"] = json!({
+                "keyword_score": sig.keyword_score,
+                "vector_score": sig.vector_score,
+                "base_score": sig.base_score,
+                "structural_adjust": sig.structural_adjust,
+                "intent_multiplier": sig.intent_mult,
+                "definition_bias": sig.definition_bias,
+                "popularity_boost": sig.popularity_boost,
+                "learning_boost": sig.learning_boost,
+                "affinity_boost": sig.affinity_boost,
+            });
+        }
+
+        if verbose {
+            if let Some(sig) = signals {
+                breakdown["signals"] = json!({
+                    "test_file_penalty": sig.keyword_score < 0.0,
+                    "glue_code_penalty": sig.structural_adjust < 0.0,
+                    "export_boost": sig.definition_bias > 0.0,
+                });
+            }
+        }
+
+        results.push(breakdown);
+    }
+
+    // Build display field with markdown table
+    let display = format_scoring_breakdown(&resp.query, &results);
+
+    Ok(json!({
+        "query": resp.query,
+        "limit": resp.limit,
+        "count": results.len(),
+        "results": results,
+        "display": display,
+    }))
+}
+
+/// Handle find_similar_code tool - semantic similarity search via embeddings
+pub async fn handle_find_similar_code(
+    state: &AppState,
+    tool: FindSimilarCodeTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(10).max(1) as usize;
+
+    let sqlite = SqliteStore::open(&state.config.db_path)?;
+    sqlite.init()?;
+
+    // Get the source symbol
+    let source_symbol = sqlite
+        .get_symbol_by_id(&tool.symbol_id)?
+        .ok_or_else(|| anyhow::anyhow!("Symbol not found: {}", tool.symbol_id))?;
+
+    // Generate embedding for the source symbol text
+    let query_vector = state.retriever.embed_text(&source_symbol.text).await?;
+
+    // Get vector store and search for similar code (excluding self by ID)
+    let filter = format!("id != '{}'", tool.symbol_id.replace("'", "''"));
+    let vector_store = state.retriever.get_vector_store();
+    let similar = vector_store.search_with_filter(&query_vector, limit, &filter).await?;
+
+    // Enrich results with symbol metadata from SQLite
+    let mut results = Vec::new();
+    for hit in similar {
+        if let Some(symbol) = sqlite.get_symbol_by_id(&hit.id)? {
+            results.push(json!({
+                "symbol_id": hit.id,
+                "symbol_name": symbol.name,
+                "kind": symbol.kind,
+                "file_path": symbol.file_path,
+                "language": symbol.language,
+                "exported": symbol.exported,
+                "similarity_score": 1.0 - hit.distance.unwrap_or(1.0),
+                "distance": hit.distance,
+            }));
+        }
+    }
+
+    Ok(json!({
+        "source_symbol_id": tool.symbol_id,
+        "source_symbol_name": source_symbol.name,
+        "count": results.len(),
+        "similar_code": results,
+    }))
+}
+
+fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> String {
+    let mut out = format!("# Search Scoring Breakdown\n\n**Query:** `{}`\n\n", query);
+    out.push_str("| Rank | Symbol | File | Score | Key | Vec | Pop | Learn |\n");
+    out.push_str("|------|--------|------|-------|-----|-----|-----|-------|\n");
+
+    for (i, r) in results.iter().enumerate() {
+        let score = r.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let name = r.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+        let file = r.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+        let file_short = file.split('/').last().unwrap_or(file);
+
+        let (kw, vec, pop, lrn) = if let Some(bd) = r.get("score_breakdown") {
+            (
+                bd.get("keyword_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                bd.get("vector_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                bd.get("popularity_boost").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                bd.get("learning_boost").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            )
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+
+        out.push_str(&format!(
+            "| {} | **{}** | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |\n",
+            i + 1, name, file_short, score, kw, vec, pop, lrn
+        ));
+    }
+
+    out.push_str("\n*Scores: keyword, vector, popularity, learning boosts*\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

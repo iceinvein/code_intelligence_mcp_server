@@ -328,6 +328,63 @@ pub fn simplify_code_with_query(
     (out, true)
 }
 
+/// Format a markdown section header (## Section Name)
+pub fn format_section_header(name: &str) -> String {
+    format!("\n## {}\n\n", name)
+}
+
+/// Format a single symbol as a markdown code block with metadata
+///
+/// Creates a markdown code block with symbol metadata header including
+/// file path, line range, symbol name, kind, and language.
+pub fn format_symbol_section(sym: &SymbolRow, text: &str, role: &str) -> String {
+    format!(
+        "### {}:{}-{} `{}` ({})\n```{}\n{}\n```\n\n",
+        sym.file_path, sym.start_line, sym.end_line, sym.name, sym.kind, sym.language, text
+    )
+}
+
+/// Format structured output with markdown sections (Definitions, Examples, Related)
+///
+/// Groups symbols by role and organizes them into clear markdown sections
+/// for better LLM comprehension. Uses ## Section headers.
+///
+/// # Arguments
+/// * `definitions` - Root symbols with their formatted text
+/// * `examples` - Usage examples with their formatted text
+/// * `related` - Expanded/extra symbols with their formatted text
+pub fn format_structured_output(
+    definitions: &[(SymbolRow, String)],
+    examples: &[(SymbolRow, String)],
+    related: &[(SymbolRow, String)],
+) -> String {
+    let mut out = String::new();
+
+    // Definitions section (always present)
+    out.push_str(&format_section_header("Definitions"));
+    for (sym, text) in definitions {
+        out.push_str(&format_symbol_section(sym, text, "root"));
+    }
+
+    // Examples section (if non-empty)
+    if !examples.is_empty() {
+        out.push_str(&format_section_header("Examples"));
+        for (sym, text) in examples {
+            out.push_str(&format_symbol_section(sym, text, "extra"));
+        }
+    }
+
+    // Related section (if non-empty)
+    if !related.is_empty() {
+        out.push_str(&format_section_header("Related"));
+        for (sym, text) in related {
+            out.push_str(&format_symbol_section(sym, text, "expanded"));
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +449,121 @@ mod tests {
         let (result, simplified) = simplify_code_with_query(text, "function", true, None, &counter, 1000);
         assert_eq!(result, text);
         assert!(!simplified);
+    }
+
+    #[test]
+    fn test_format_section_header() {
+        let result = format_section_header("Definitions");
+        assert_eq!(result, "\n## Definitions\n\n");
+    }
+
+    #[test]
+    fn test_format_symbol_section() {
+        let sym = SymbolRow {
+            id: "test".to_string(),
+            file_path: "test.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: "test_func".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            end_line: 5,
+            text: "fn test_func() {}".to_string(),
+        };
+        let result = format_symbol_section(&sym, "fn test_func() {}", "root");
+        assert!(result.contains("### test.rs:1-5"));
+        assert!(result.contains("`test_func`"));
+        assert!(result.contains("(function)"));
+        assert!(result.contains("```rust"));
+        assert!(result.contains("fn test_func() {}"));
+    }
+
+    #[test]
+    fn test_format_structured_output() {
+        let def_sym = SymbolRow {
+            id: "def".to_string(),
+            file_path: "def.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: "definition".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            end_line: 5,
+            text: "fn definition() {}".to_string(),
+        };
+        let ex_sym = SymbolRow {
+            id: "ex".to_string(),
+            file_path: "ex.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "usage_call".to_string(),
+            name: "example".to_string(),
+            exported: false,
+            start_byte: 0,
+            end_byte: 30,
+            start_line: 10,
+            end_line: 10,
+            text: "definition();".to_string(),
+        };
+        let rel_sym = SymbolRow {
+            id: "rel".to_string(),
+            file_path: "rel.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "type".to_string(),
+            name: "related_type".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 40,
+            start_line: 1,
+            end_line: 3,
+            text: "type Related = ();".to_string(),
+        };
+
+        let definitions = vec![(def_sym, "fn definition() {}".to_string())];
+        let examples = vec![(ex_sym, "definition();".to_string())];
+        let related = vec![(rel_sym, "type Related = ();".to_string())];
+
+        let result = format_structured_output(&definitions, &examples, &related);
+
+        // Check section headers
+        assert!(result.contains("## Definitions"));
+        assert!(result.contains("## Examples"));
+        assert!(result.contains("## Related"));
+
+        // Check content in correct sections
+        assert!(result.contains("### def.rs:1-5 `definition`"));
+        assert!(result.contains("### ex.rs:10-10 `example`"));
+        assert!(result.contains("### rel.rs:1-3 `related_type`"));
+    }
+
+    #[test]
+    fn test_format_structured_output_empty_sections() {
+        let def_sym = SymbolRow {
+            id: "def".to_string(),
+            file_path: "def.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: "definition".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            end_line: 5,
+            text: "fn definition() {}".to_string(),
+        };
+
+        let definitions = vec![(def_sym, "fn definition() {}".to_string())];
+        let examples: Vec<(SymbolRow, String)> = vec![];
+        let related: Vec<(SymbolRow, String)> = vec![];
+
+        let result = format_structured_output(&definitions, &examples, &related);
+
+        // Should have Definitions but not Examples or Related
+        assert!(result.contains("## Definitions"));
+        assert!(!result.contains("## Examples"));
+        assert!(!result.contains("## Related"));
     }
 }

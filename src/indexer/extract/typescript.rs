@@ -3,8 +3,8 @@ use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
 use super::symbol::{
-    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
-    SymbolKind,
+    ByteSpan, DataFlowEdge, DataFlowType, DecoratorEntry, DecoratorType, ExtractedFile,
+    ExtractedSymbol, Import, JSDocEntry, JSDocParam, LineSpan, SymbolKind, TodoEntry, TodoKind,
 };
 
 pub fn extract_typescript_symbols(language_id: LanguageId, source: &str) -> Result<ExtractedFile> {
@@ -13,10 +13,15 @@ pub fn extract_typescript_symbols(language_id: LanguageId, source: &str) -> Resu
     }
 
     let mut parser = parser_for_id(language_id)?;
-    extract_symbols_with_parser(&mut parser, source)
+    extract_symbols_with_parser(&mut parser, source, "<unknown>", language_id)
 }
 
-fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<ExtractedFile> {
+fn extract_symbols_with_parser(
+    parser: &mut Parser,
+    source: &str,
+    file_path: &str,
+    language_id: LanguageId,
+) -> Result<ExtractedFile> {
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| anyhow!("Failed to parse source"))?;
@@ -136,14 +141,24 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     });
 
     symbols.sort_by_key(|s| s.bytes.start);
+
+    // Extract TODO/FIXME comments
+    let todos = extract_todo_comments(cursor, source, file_path);
+
+    // Extract JSDoc entries
+    let jsdoc_entries = extract_jsdoc_entries(&symbols, source, file_path, language_id);
+
+    // Extract decorators
+    let decorators = extract_decorators_for_symbols(&symbols, source, cursor);
+
     Ok(ExtractedFile {
         symbols,
         imports,
         type_edges,
         dataflow_edges,
-        todos: Vec::new(),
-        jsdoc_entries: Vec::new(),
-        decorators: Vec::new(),
+        todos,
+        jsdoc_entries,
+        decorators,
     })
 }
 
@@ -925,6 +940,138 @@ fn extract_callee_name(node: Node<'_>, source: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Check if comment line contains TODO or FIXME
+fn is_todo_comment(line: &str) -> Option<(TodoKind, String)> {
+    let lower = line.to_lowercase();
+
+    // Match "TODO:" or "TODO " patterns
+    if let Some(pos) = lower.find("todo") {
+        let after_todo = &lower[pos..];
+        if after_todo.starts_with("todo:") || after_todo.starts_with("todo ") {
+            let text = extract_todo_text(line, pos, "TODO");
+            return Some((TodoKind::Todo, text));
+        }
+    }
+
+    // Match "FIXME:" or "FIXME " patterns
+    if let Some(pos) = lower.find("fixme") {
+        let after_fixme = &lower[pos..];
+        if after_fixme.starts_with("fixme:") || after_fixme.starts_with("fixme ") {
+            let text = extract_todo_text(line, pos, "FIXME");
+            return Some((TodoKind::Fixme, text));
+        }
+    }
+
+    None
+}
+
+/// Extract the text portion of a TODO comment
+fn extract_todo_text(line: &str, keyword_start: usize, keyword: &str) -> String {
+    // Find the end of the keyword
+    let keyword_end = keyword_start + keyword.len();
+
+    // Get the rest of the line after the keyword and its separator
+    let rest = if keyword_end < line.len() {
+        let after_keyword = &line[keyword_end..];
+        // Skip colon, spaces, or dash
+        let trimmed = after_keyword
+            .trim_start_matches(':')
+            .trim_start_matches(' ')
+            .trim_start_matches('-')
+            .trim_start_matches('-')
+            .trim();
+        trimmed.to_string()
+    } else {
+        String::new()
+    };
+
+    // Also remove leading comment markers
+    let cleaned = rest
+        .trim_start_matches("//")
+        .trim_start_matches("/*")
+        .trim_start_matches("*")
+        .trim()
+        .to_string();
+
+    cleaned
+}
+
+/// Extract TODO/FIXME comments from the file
+fn extract_todo_comments(cursor: TreeCursor, source: &str, file_path: &str) -> Vec<TodoEntry> {
+    let mut todos = Vec::new();
+
+    // First pass: find all comment nodes
+    let mut comment_nodes = Vec::new();
+
+    fn collect_comments(node: Node, comments: &mut Vec<Node>) {
+        if node.kind() == "comment" || node.kind() == "block_comment" {
+            comments.push(node);
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                collect_comments(cursor.node(), comments);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    collect_comments(cursor.node(), &mut comment_nodes);
+
+    // Process each comment
+    for comment_node in comment_nodes {
+        let text = text_for_node(comment_node, source);
+        let line_num = comment_node.start_position().row as u32;
+
+        // Check each line for TODO/FIXME
+        for line in text.lines() {
+            if let Some((kind, todo_text)) = is_todo_comment(line) {
+                // Find next symbol after this TODO for association
+                let mut current = comment_node;
+                let associated_symbol = loop {
+                    current = match current.next_sibling() {
+                        Some(s) => s,
+                        None => break None,
+                    };
+
+                    // Skip non-named nodes (whitespace, punctuation)
+                    if !current.is_named() {
+                        continue;
+                    }
+
+                    // Found a named node - try to get its symbol name
+                    match current.kind() {
+                        "function_declaration"
+                        | "class_declaration"
+                        | "interface_declaration"
+                        | "type_alias_declaration"
+                        | "enum_declaration"
+                        | "lexical_declaration"
+                        | "method_definition" => {
+                            if let Some(name_node) = current.child_by_field_name("name") {
+                                break Some(text_for_node(name_node, source));
+                            }
+                        }
+                        _ => break None,
+                    }
+                };
+
+                todos.push(TodoEntry {
+                    kind,
+                    text: todo_text,
+                    file_path: file_path.to_string(),
+                    line: line_num,
+                    associated_symbol,
+                });
+            }
+        }
+    }
+
+    todos
 }
 
 #[cfg(test)]

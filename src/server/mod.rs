@@ -39,6 +39,8 @@ impl ServerHandler for CodeIntelligenceHandler {
                 GetIndexStatsTool::tool(),
                 HydrateSymbolsTool::tool(),
                 ReportSelectionTool::tool(),
+                ExplainSearchTool::tool(),
+                FindSimilarCodeTool::tool(),
             ],
             meta: None,
             next_cursor: None,

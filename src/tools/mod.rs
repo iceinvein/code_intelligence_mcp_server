@@ -162,3 +162,16 @@ pub struct FindSimilarCodeTool {
     pub limit: Option<u32>,
     pub threshold: Option<f32>,
 }
+
+#[macros::mcp_tool(
+    name = "trace_data_flow",
+    description = "Trace variable reads and writes through the codebase to understand data flow."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct TraceDataFlowTool {
+    pub symbol_name: String,
+    pub file_path: Option<String>,
+    pub direction: Option<String>,
+    pub depth: Option<u32>,
+    pub limit: Option<u32>,
+}

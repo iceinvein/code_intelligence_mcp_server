@@ -33,7 +33,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 // Re-export for tests
 #[cfg(test)]
-pub use ranking::{apply_popularity_boost, is_definition_kind, rank_hits};
+pub use ranking::{apply_popularity_boost_with_signals, is_definition_kind, rank_hits_with_signals};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedHit {

@@ -4,7 +4,7 @@ use super::{Reranker, RerankDocument};
 use anyhow::{Context, Result};
 use ndarray::Array;
 use ort::session::Session;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokenizers::Tokenizer;
 use tokio::sync::Mutex;
 
@@ -14,7 +14,6 @@ pub struct CrossEncoderReranker {
     tokenizer: Mutex<Tokenizer>,
     max_length: usize,
     top_k: usize,
-    model_path: PathBuf,
 }
 
 impl CrossEncoderReranker {
@@ -59,7 +58,6 @@ impl CrossEncoderReranker {
             tokenizer: Mutex::new(tokenizer),
             max_length: 512,
             top_k: top_k.min(50), // Cap at 50 for performance
-            model_path: model_path.to_path_buf(),
         })
     }
 }
@@ -196,7 +194,6 @@ impl CrossEncoderReranker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn sigmoid_conversion() {

@@ -208,4 +208,27 @@ impl SqliteStore {
     pub fn get_symbol_metrics(&self, symbol_id: &str) -> Result<Option<SymbolMetricsRow>> {
         queries::metrics::get_symbol_metrics(&self.conn, symbol_id)
     }
+
+    pub fn insert_query_selection(
+        &self,
+        query_text: &str,
+        query_normalized: &str,
+        selected_symbol_id: &str,
+        position: u32,
+    ) -> Result<i64> {
+        queries::selections::insert_query_selection(
+            &self.conn,
+            query_text,
+            query_normalized,
+            selected_symbol_id,
+            position,
+        )
+    }
+
+    pub fn batch_get_selection_boosts(
+        &self,
+        pairs: &[(String, String)],
+    ) -> Result<std::collections::HashMap<String, f32>> {
+        queries::selections::batch_get_selection_boosts(&self.conn, pairs)
+    }
 }

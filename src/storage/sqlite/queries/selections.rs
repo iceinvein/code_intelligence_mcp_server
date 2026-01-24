@@ -92,3 +92,69 @@ LIMIT ?1
     }
     Ok(out)
 }
+
+/// Batch query for selection boost scores
+///
+/// Returns a HashMap with keys "query_normalized|symbol_id" mapping to boost scores.
+/// Boost score = position_discount * time_decay where:
+/// - position_discount = 1.0 / ln(position + 2.0) for position bias correction
+/// - time_decay = exp(-0.1 * age_in_days) with lambda=0.1
+///
+/// Multiple selections per (query, symbol) pair are aggregated by summing boosts.
+pub fn batch_get_selection_boosts(
+    conn: &Connection,
+    pairs: &[(String, String)],
+) -> Result<std::collections::HashMap<String, f32>> {
+    use std::collections::HashMap;
+
+    if pairs.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut result = HashMap::new();
+
+    // Build WHERE clause for batch query
+    let placeholders: Vec<String> = (0..pairs.len())
+        .map(|i| format!("(?{} AS q{}, ?{} AS s{})", i * 2 + 1, i, i * 2 + 2, i))
+        .collect();
+
+    // Use a CTE approach for efficient batch lookup
+    let query = format!(
+        r#"
+        WITH input_pairs(query_normalized, symbol_id) AS (
+            VALUES {}
+        )
+        SELECT
+            i.query_normalized,
+            i.symbol_id,
+            SUM(1.0 / LN(qs.position + 2.0) * EXP(-0.1 * (unixepoch() - qs.created_at) / 86400.0)) as boost_score
+        FROM input_pairs i
+        LEFT JOIN query_selections qs
+            ON qs.query_normalized = i.query_normalized
+            AND qs.selected_symbol_id = i.symbol_id
+        GROUP BY i.query_normalized, i.symbol_id
+        "#,
+        placeholders.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&query)?;
+
+    // Flatten pairs into params
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    for (query, symbol_id) in pairs {
+        params.push(rusqlite::types::Value::Text(query.clone()));
+        params.push(rusqlite::types::Value::Text(symbol_id.clone()));
+    }
+
+    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+
+    while let Some(row) = rows.next()? {
+        let query_normalized: String = row.get(0)?;
+        let symbol_id: String = row.get(1)?;
+        let boost_score: f64 = row.get::<_, f64>(2).unwrap_or(0.0);
+        let key = format!("{}|{}", query_normalized, symbol_id);
+        result.insert(key, boost_score as f32);
+    }
+
+    Ok(result)
+}

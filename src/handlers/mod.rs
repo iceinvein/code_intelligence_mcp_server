@@ -1018,7 +1018,172 @@ fn format_module_summary(
     }
 
     out
+/// Handle summarize_file tool - generate file-level summary with symbol counts and purpose inference
+pub fn handle_summarize_file(
+    db_path: &std::path::Path,
+    tool: SummarizeFileTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let include_signatures = tool.include_signatures.unwrap_or(false);
+    let verbose = tool.verbose.unwrap_or(false);
+
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    // Get all symbols in file
+    let symbols = sqlite.list_symbols_by_file(&tool.file_path)?;
+
+    if symbols.is_empty() {
+        return Ok(json!({
+            "file_path": tool.file_path,
+            "error": "FILE_NOT_FOUND",
+            "message": format!("No indexed symbols found for '{}'", tool.file_path),
+            "summary": null,
+        }));
+    }
+
+    // Count by kind
+    let mut counts_by_kind = std::collections::HashMap::new();
+    for sym in &symbols {
+        *counts_by_kind.entry(sym.kind.clone()).or_insert(0) += 1;
+    }
+
+    // Count exports
+    let export_count = symbols.iter().filter(|s| s.exported).count();
+    let internal_count = symbols.len() - export_count;
+
+    // Detect language
+    let language = symbols.first().map(|s| s.language.clone()).unwrap_or_default();
+
+    // Build export list if include_signatures
+    let exports = if include_signatures {
+        symbols
+            .iter()
+            .filter(|s| s.exported || verbose)
+            .map(|s| {
+                let sig = extract_signature_for_summary(&s.text, &s.kind);
+                json!({
+                    "name": s.name,
+                    "kind": s.kind,
+                    "exported": s.exported,
+                    "signature": sig,
+                    "line": s.start_line,
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+
+    // Detect file purpose
+    let purpose = infer_file_purpose_for_summary(&symbols);
+
+    // Build display
+    let display =
+        format_file_summary(&tool.file_path, &symbols, &counts_by_kind, export_count, &purpose);
+
+    Ok(json!({
+        "file_path": tool.file_path,
+        "language": language,
+        "total_symbols": symbols.len(),
+        "exported_symbols": export_count,
+        "internal_symbols": internal_count,
+        "counts_by_kind": counts_by_kind,
+        "purpose": purpose,
+        "exports": exports,
+        "display": display,
+    }))
 }
+
+/// Extract signature from symbol text for summarize_file
+fn extract_signature_for_summary(text: &str, kind: &str) -> String {
+    let first_line = text.lines().next().unwrap_or("");
+    let sig = match kind {
+        "function" | "method" => first_line
+            .trim_start_matches("export ")
+            .trim_start_matches("async ")
+            .trim_start_matches("pub ")
+            .trim()
+            .to_string(),
+        "class" | "interface" | "type" => first_line
+            .trim_start_matches("export ")
+            .trim_start_matches("pub ")
+            .trim()
+            .to_string(),
+        _ => first_line.chars().take(100).collect::<String>(),
+    };
+    if sig.len() > 100 {
+        format!("{}...", &sig[..97])
+    } else {
+        sig
+    }
+}
+
+/// Infer file purpose from symbol composition
+fn infer_file_purpose_for_summary(symbols: &[SymbolRow]) -> String {
+    if symbols.is_empty() {
+        return "Empty or unknown".to_string();
+    }
+
+    let kinds: std::collections::HashSet<_> =
+        symbols.iter().map(|s| s.kind.as_str()).collect();
+    let export_ratio =
+        symbols.iter().filter(|s| s.exported).count() as f64 / symbols.len() as f64;
+
+    let mut tags = Vec::new();
+
+    if export_ratio > 0.8 {
+        tags.push("module");
+    } else if export_ratio > 0.0 {
+        tags.push("mixed-exports");
+    } else {
+        tags.push("internal");
+    }
+
+    if kinds.contains("interface") || kinds.contains("type") {
+        tags.push("type-defs");
+    }
+    if kinds.contains("function") || kinds.contains("method") {
+        tags.push("functions");
+    }
+    if kinds.contains("class") {
+        tags.push("classes");
+    }
+
+    tags.join(" | ")
+}
+
+/// Format file summary as markdown
+fn format_file_summary(
+    file_path: &str,
+    symbols: &[SymbolRow],
+    counts_by_kind: &std::collections::HashMap<String, usize>,
+    export_count: usize,
+    purpose: &str,
+) -> String {
+    let file_name = file_path.split('/').last().unwrap_or(file_path);
+    let mut out = format!("# File Summary: {}\n\n", file_name);
+    out.push_str(&format!("**Path:** `{}`\n", file_path));
+    out.push_str(&format!("**Total Symbols:** {}\n", symbols.len()));
+    out.push_str(&format!("**Exports:** {}\n", export_count));
+    out.push_str(&format!("**Purpose:** {}\n\n", purpose));
+
+    out.push_str("## Symbol Counts\n\n");
+    let mut kinds: Vec<_> = counts_by_kind.iter().collect();
+    kinds.sort_by(|a, b| b.1.cmp(a.1));
+    for (kind, count) in kinds {
+        out.push_str(&format!("- **{}:** {}\n", kind, count));
+    }
+
+    if export_count > 0 && export_count < symbols.len() {
+        out.push_str(&format!("\n## Top Exports ({})\n\n", export_count));
+        for sym in symbols.iter().filter(|s| s.exported).take(10) {
+            out.push_str(&format!("- `{}` ({})\n", sym.name, sym.kind));
+        }
+    }
+
+    out
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1029,5 +1194,101 @@ mod tests {
         let text = "line1\n   call alpha();   \nline3";
         let got = extract_usage_line(text, "alpha").unwrap();
         assert_eq!(got, "call alpha();");
+    }
+
+    #[test]
+    fn test_extract_signature_for_summary_function() {
+        let text = "export async function fetchData() {\n  return true;\n}";
+        let sig = extract_signature_for_summary(text, "function");
+        assert_eq!(sig, "function fetchData()");
+    }
+
+    #[test]
+    fn test_extract_signature_for_summary_class() {
+        let text = "export class MyClass extends Base {\n  constructor() {}\n}";
+        let sig = extract_signature_for_summary(text, "class");
+        assert_eq!(sig, "class MyClass extends Base {");
+    }
+
+    #[test]
+    fn test_extract_signature_for_summary_truncates() {
+        let text = "export function this_is_a_very_long_function_name_that_exceeds_limit() {\n  return true;\n}";
+        let sig = extract_signature_for_summary(text, "function");
+        assert!(sig.len() <= 101);
+        assert!(sig.ends_with("..."));
+    }
+
+    #[test]
+    fn test_infer_file_purpose_for_summary_module() {
+        let symbols = vec![
+            SymbolRow {
+                id: "1".to_string(),
+                file_path: "test.ts".to_string(),
+                language: "typescript".to_string(),
+                kind: "function".to_string(),
+                name: "exportedFunc".to_string(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 10,
+                start_line: 1,
+                end_line: 2,
+                text: "export function exportedFunc() {}".to_string(),
+            },
+            SymbolRow {
+                id: "2".to_string(),
+                file_path: "test.ts".to_string(),
+                language: "typescript".to_string(),
+                kind: "function".to_string(),
+                name: "anotherExportedFunc".to_string(),
+                exported: true,
+                start_byte: 10,
+                end_byte: 20,
+                start_line: 2,
+                end_line: 3,
+                text: "export function anotherExportedFunc() {}".to_string(),
+            },
+        ];
+        let purpose = infer_file_purpose_for_summary(&symbols);
+        assert!(purpose.contains("module"));
+        assert!(purpose.contains("functions"));
+    }
+
+    #[test]
+    fn test_infer_file_purpose_for_summary_internal() {
+        let symbols = vec![SymbolRow {
+            id: "1".to_string(),
+            file_path: "test.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: "internalFunc".to_string(),
+            exported: false,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 2,
+            text: "function internalFunc() {}".to_string(),
+        }];
+        let purpose = infer_file_purpose_for_summary(&symbols);
+        assert!(purpose.contains("internal"));
+    }
+
+    #[test]
+    fn test_infer_file_purpose_for_summary_classes() {
+        let symbols = vec![SymbolRow {
+            id: "1".to_string(),
+            file_path: "test.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "class".to_string(),
+            name: "MyClass".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 2,
+            text: "export class MyClass {}".to_string(),
+        }];
+        let purpose = infer_file_purpose_for_summary(&symbols);
+        assert!(purpose.contains("module"));
+        assert!(purpose.contains("classes"));
     }
 }

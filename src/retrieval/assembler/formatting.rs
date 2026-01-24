@@ -1,3 +1,4 @@
+use crate::storage::sqlite::schema::DocstringRow;
 use crate::storage::sqlite::SymbolRow;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -342,6 +343,79 @@ pub fn format_symbol_section(sym: &SymbolRow, text: &str, role: &str) -> String 
         "### {}:{}-{} `{}` ({})\n```{}\n{}\n```\n\n",
         sym.file_path, sym.start_line, sym.end_line, sym.name, sym.kind, sym.language, text
     )
+}
+
+/// Format a symbol with its JSDoc documentation included
+///
+/// Adds JSDoc summary, params, returns, and examples to the formatted output
+/// for enhanced context when searching for documented symbols.
+pub fn format_symbol_with_docstring(
+    sym: &SymbolRow,
+    text: &str,
+    role: &str,
+    docstring: Option<&DocstringRow>,
+) -> String {
+    let mut out = String::new();
+
+    // Start with standard symbol section
+    out.push_str(&format_symbol_section(sym, text, role));
+
+    // Add JSDoc content if available
+    if let Some(doc) = docstring {
+        // Add summary
+        if let Some(summary) = &doc.summary {
+            if !summary.is_empty() {
+                out.push_str(&format!("**Summary:** {}\n\n", summary));
+            }
+        }
+
+        // Add params
+        if let Some(params_json) = &doc.params_json {
+            if let Ok(params) = serde_json::from_str::<Vec<serde_json::Value>>(params_json) {
+                if !params.is_empty() {
+                    out.push_str("**Parameters:**\n");
+                    for param in params {
+                        if let Some(name) = param.get("name").and_then(|v| v.as_str()) {
+                            let desc = param.get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let type_str = param.get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if type_str.is_empty() {
+                                out.push_str(&format!("- `{}`: {}\n", name, desc));
+                            } else {
+                                out.push_str(&format!("- `{}`: `{}` {}\n", name, type_str, desc));
+                            }
+                        }
+                    }
+                    out.push('\n');
+                }
+            }
+        }
+
+        // Add returns
+        if let Some(returns) = &doc.returns_text {
+            if !returns.is_empty() {
+                out.push_str(&format!("**Returns:** {}\n\n", returns));
+            }
+        }
+
+        // Add examples
+        if let Some(examples_json) = &doc.examples_json {
+            if let Ok(examples) = serde_json::from_str::<Vec<String>>(examples_json) {
+                if !examples.is_empty() {
+                    out.push_str("**Examples:**\n");
+                    for example in examples {
+                        out.push_str(&format!("```{}\n{}\n```\n", sym.language, example));
+                    }
+                    out.push('\n');
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Format structured output with markdown sections (Definitions, Examples, Related)

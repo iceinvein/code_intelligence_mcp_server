@@ -1,6 +1,9 @@
 use crate::storage::sqlite::SymbolRow;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+
+use super::tokens::TokenCounter;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ContextItem {
@@ -106,4 +109,288 @@ fn stable_usage_id(root_id: &str, ex: &crate::storage::sqlite::UsageExampleRow) 
     ex.line.hash(&mut h);
     ex.snippet.hash(&mut h);
     format!("usage:{:016x}", h.finish())
+}
+
+/// Score lines by relevance to query using BM25-like scoring
+///
+/// Returns a vec of (line_index, score) sorted by score descending.
+/// Higher scores indicate more relevant lines.
+pub fn rank_lines_by_relevance(lines: &[&str], query: &str) -> Vec<(usize, f32)> {
+    let query_lower = query.to_lowercase();
+    let query_terms: HashSet<&str> = query_lower
+        .split_whitespace()
+        .collect();
+
+    let mut line_scores: Vec<(usize, f32)> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let line_lower = line.to_lowercase();
+            let mut score = 0.0f32;
+
+            // Exact term matches (case-insensitive)
+            for term in &query_terms {
+                if line_lower.contains(term) {
+                    score += 1.0;
+                }
+                // Word boundary match (higher weight)
+                for word in line_lower.split_whitespace() {
+                    if word == *term {
+                        score += 2.0;
+                    }
+                }
+            }
+
+            // Bonus for lines with structural keywords
+            if line_lower.contains("fn ")
+                || line_lower.contains("function ")
+                || line_lower.contains("class ")
+                || line_lower.contains("interface ")
+                || line_lower.contains("struct ")
+                || line_lower.contains("impl ")
+                || line_lower.contains("type ")
+                || line_lower.contains("trait ")
+            {
+                score += 0.5;
+            }
+            if line_lower.contains("return ") || line_lower.contains("pub ") || line_lower.contains("export ") {
+                score += 0.3;
+            }
+
+            (i, score)
+        })
+        .collect();
+
+    line_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    line_scores
+}
+
+/// Smart truncate: keep most relevant lines within token budget
+///
+/// Preserves header and footer lines while selecting the most query-relevant
+/// lines from the middle section. Lines are ranked by relevance to the query
+/// using `rank_lines_by_relevance`.
+pub fn smart_truncate(text: &str, query: &str, max_tokens: usize, counter: &TokenCounter) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+
+    // If within budget, return as-is
+    if counter.count(text) <= max_tokens {
+        return text.to_string();
+    }
+
+    // Always keep first few lines (header/signature) and last few lines (footer)
+    let header_count = 5.min(lines.len());
+    let footer_count = 3.min(lines.len());
+
+    // Can't fit header + footer
+    if header_count + footer_count > lines.len() {
+        return text.to_string();
+    }
+
+    let mut selected_indices = HashSet::new();
+
+    // Mark header lines as selected
+    for i in 0..header_count {
+        selected_indices.insert(i);
+    }
+
+    // Footer indices to add later (don't mark as selected yet)
+    let footer_start = lines.len().saturating_sub(footer_count);
+    let footer_indices: Vec<usize> = (footer_start..lines.len()).collect();
+
+    // Score middle lines by relevance
+    let middle_start = header_count;
+    let middle_end = lines.len().saturating_sub(footer_count);
+    if middle_end > middle_start {
+        let middle_lines: Vec<&str> = lines[middle_start..middle_end].to_vec();
+        let scored = rank_lines_by_relevance(&middle_lines, query);
+
+        // Build result lines preserving original order
+        let mut result_lines: Vec<(usize, &str)> = Vec::new();
+        let mut current_tokens = 0usize;
+
+        // Add header first
+        for i in 0..header_count {
+            result_lines.push((i, lines[i]));
+            current_tokens += counter.count(lines[i]);
+        }
+
+        // Add relevant middle lines until budget exhausted
+        for (relative_idx, _score) in scored {
+            let abs_idx = middle_start + relative_idx;
+            if selected_indices.contains(&abs_idx) {
+                continue;
+            }
+            let line_tokens = counter.count(lines[abs_idx]);
+            if current_tokens + line_tokens > max_tokens {
+                break;
+            }
+            selected_indices.insert(abs_idx);
+            result_lines.push((abs_idx, lines[abs_idx]));
+            current_tokens += line_tokens;
+        }
+
+        // Add footer if space permits
+        for i in footer_indices {
+            if !selected_indices.contains(&i) {
+                let line_tokens = counter.count(lines[i]);
+                if current_tokens + line_tokens <= max_tokens {
+                    result_lines.push((i, lines[i]));
+                    current_tokens += line_tokens;
+                }
+            }
+        }
+
+        // Sort by original line number and join
+        result_lines.sort_by_key(|(idx, _)| *idx);
+        let result: String = result_lines
+            .iter()
+            .map(|(_, line)| *line)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        return result;
+    }
+
+    // Fallback: just head + tail
+    let mut result = String::new();
+    for i in 0..header_count {
+        result.push_str(lines[i]);
+        result.push('\n');
+    }
+    if middle_end > middle_start {
+        let omitted = middle_end - middle_start;
+        result.push_str(&format!("... ({} lines omitted) ...\n", omitted));
+    }
+    for i in lines.len().saturating_sub(footer_count)..lines.len() {
+        result.push_str(lines[i]);
+        if i < lines.len() - 1 {
+            result.push('\n');
+        }
+    }
+    result
+}
+
+/// Simplify code with optional query-aware smart truncation
+///
+/// When query is provided, uses smart truncation to keep query-relevant lines.
+/// When query is None, uses simple head/tail truncation.
+pub fn simplify_code_with_query(
+    text: &str,
+    kind: &str,
+    is_root: bool,
+    query: Option<&str>,
+    counter: &TokenCounter,
+    max_tokens: usize,
+) -> (String, bool) {
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Give roots more room. Files get generous room if they are roots.
+    let limit = if is_root {
+        if kind == "file" {
+            1000
+        } else {
+            500
+        }
+    } else {
+        100
+    };
+
+    if lines.len() <= limit {
+        let tokens = counter.count(text);
+        if tokens <= max_tokens {
+            return (text.to_string(), false);
+        }
+    }
+
+    // Use smart truncation when query is available
+    if let Some(q) = query {
+        return (smart_truncate(text, q, max_tokens, counter), true);
+    }
+
+    // Fallback to simple head/tail truncation
+    let head_count = if kind == "file" { 50 } else { 15 };
+    let tail_count = 5;
+
+    if lines.len() <= head_count + tail_count {
+        return (text.to_string(), false);
+    }
+
+    let head = &lines[..head_count];
+    let tail = &lines[lines.len().saturating_sub(tail_count)..];
+
+    let mut out = head.join("\n");
+    out.push_str(&format!(
+        "\n... ({} lines omitted) ...\n",
+        lines.len().saturating_sub(head_count + tail_count)
+    ));
+    out.push_str(&tail.join("\n"));
+    (out, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rank_lines_by_relevance_basic() {
+        let lines = vec![
+            "fn process_data() {",
+            "    let x = 1;",
+            "    return x;",
+            "}",
+        ];
+        let result = rank_lines_by_relevance(&lines, "process_data");
+        assert_eq!(result[0].0, 0);
+        assert_eq!(result[1].0, 2);
+    }
+
+    #[test]
+    fn test_rank_lines_by_relevance_case_insensitive() {
+        let lines = vec![
+            "function processData() {",
+            "    const x = 1;",
+            "}",
+        ];
+        let result = rank_lines_by_relevance(&lines, "PROCESSDATA");
+        assert!(result[0].1 > 0.0);
+    }
+
+    #[test]
+    fn test_smart_truncate_within_budget() {
+        let counter = TokenCounter::new("o200k_base").unwrap();
+        let text = "fn test() {\n    let x = 1;\n    return x;\n}";
+        let result = smart_truncate(text, "test", 1000, &counter);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn test_smart_truncate_preserves_header_footer() {
+        let counter = TokenCounter::new("o200k_base").unwrap();
+        let mut lines = vec![
+            "fn big_function() {".to_string(),
+            "    // setup".to_string(),
+        ];
+        for i in 0..50 {
+            lines.push(format!("    let x{} = {};", i, i));
+        }
+        lines.push("    return 0;".to_string());
+        lines.push("}".to_string());
+        let text: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let text_joined = text.join("\n");
+
+        let result = smart_truncate(&text_joined, "big_function", 100, &counter);
+        assert!(result.contains("fn big_function() {"));
+        // With a 100 token budget, should be able to keep the closing brace
+        assert!(result.contains("}"));
+    }
+
+    #[test]
+    fn test_simplify_code_with_query_no_query() {
+        let counter = TokenCounter::new("o200k_base").unwrap();
+        let text = "fn test() {\n    let x = 1;\n    return x;\n}";
+        let (result, simplified) = simplify_code_with_query(text, "function", true, None, &counter, 1000);
+        assert_eq!(result, text);
+        assert!(!simplified);
+    }
 }

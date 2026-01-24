@@ -65,6 +65,7 @@ pub struct HitSignals {
     pub definition_bias: f32,
     pub popularity_boost: f32,
     pub learning_boost: f32,
+    pub affinity_boost: f32,
 }
 
 #[derive(Clone)]
@@ -211,6 +212,7 @@ impl Retriever {
                         definition_bias: 0.0,
                         popularity_boost: 0.0,
                         learning_boost: 0.0,
+                        affinity_boost: 0.0,
                     },
                 );
 
@@ -401,6 +403,7 @@ impl Retriever {
                         definition_bias: 0.0,
                         popularity_boost: 0.0,
                         learning_boost: 0.0,
+                        affinity_boost: 0.0,
                     },
                 );
             }

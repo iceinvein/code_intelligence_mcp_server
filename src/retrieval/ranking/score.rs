@@ -61,6 +61,91 @@ pub fn apply_selection_boost_with_signals(
                     definition_bias: 0.0,
                     popularity_boost: 0.0,
                     learning_boost: final_boost,
+                    affinity_boost: 0.0,
+                });
+        }
+    }
+
+    // Re-sort by score after applying boosts
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.exported.cmp(&a.exported))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(hits)
+}
+
+/// Apply file affinity boost with signals tracking
+///
+/// This function boosts search result scores based on user file affinity patterns.
+/// Files that are frequently viewed or edited receive higher affinity scores,
+/// which decay over time to favor recent engagement.
+///
+/// The affinity boost is computed from user_file_affinity table considering:
+/// - View count (1x weight): how often a file is viewed
+/// - Edit count (2x weight): edits indicate stronger engagement than views
+/// - Time decay: exp(-0.05 * age_in_days) with lambda=0.05 (slower than selections)
+///
+/// Affinity scores are normalized to the 0-1 range before applying the
+/// configured boost weight.
+pub fn apply_file_affinity_boost_with_signals(
+    sqlite: &SqliteStore,
+    mut hits: Vec<RankedHit>,
+    hit_signals: &mut HashMap<String, HitSignals>,
+    config: &Config,
+) -> Result<Vec<RankedHit>> {
+    if hits.is_empty() || !config.learning_enabled || config.learning_file_affinity_boost == 0.0 {
+        return Ok(hits);
+    }
+
+    // Collect unique file paths from hits
+    let mut file_paths_set = std::collections::HashSet::new();
+    for h in &hits {
+        file_paths_set.insert(h.file_path.as_str());
+    }
+    let file_paths: Vec<&str> = file_paths_set.into_iter().collect();
+
+    // Batch load affinity boost scores
+    let affinity_map = sqlite
+        .batch_get_affinity_boosts(&file_paths)
+        .unwrap_or_default();
+
+    // Find max affinity_score for normalization (avoid division by zero)
+    let max_affinity = affinity_map
+        .values()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    // Avoid division by zero - if all affinities are 0 or empty, skip boost
+    if max_affinity <= 0.0 {
+        return Ok(hits);
+    }
+
+    // Apply normalized affinity boost to each hit
+    for h in hits.iter_mut() {
+        let affinity = affinity_map.get(&h.file_path).copied().unwrap_or(0.0);
+        if affinity > 0.0 {
+            let normalized = affinity / max_affinity;
+            let final_boost = config.learning_file_affinity_boost * normalized;
+            h.score += final_boost;
+
+            hit_signals
+                .entry(h.id.clone())
+                .and_modify(|s| s.affinity_boost += final_boost)
+                .or_insert_with(|| HitSignals {
+                    keyword_score: 0.0,
+                    vector_score: 0.0,
+                    base_score: 0.0,
+                    structural_adjust: 0.0,
+                    intent_mult: 1.0,
+                    definition_bias: 0.0,
+                    popularity_boost: 0.0,
+                    learning_boost: 0.0,
+                    affinity_boost: final_boost,
                 });
         }
     }
@@ -167,6 +252,7 @@ pub fn rank_hits_with_signals(
                 definition_bias,
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
+                affinity_boost: 0.0,
             },
         );
 
@@ -223,6 +309,7 @@ pub fn rank_hits_with_signals(
                 definition_bias,
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
+                affinity_boost: 0.0,
             },
         );
 
@@ -360,6 +447,7 @@ pub fn apply_popularity_boost_with_signals(
                 definition_bias: 0.0,
                 popularity_boost: boost,
                 learning_boost: 0.0,
+                affinity_boost: 0.0,
             });
     }
 

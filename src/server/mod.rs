@@ -41,6 +41,8 @@ impl ServerHandler for CodeIntelligenceHandler {
                 ReportSelectionTool::tool(),
                 ExplainSearchTool::tool(),
                 FindSimilarCodeTool::tool(),
+                SummarizeFileTool::tool(),
+                GetModuleSummaryTool::tool(),
             ],
             meta: None,
             next_cursor: None,

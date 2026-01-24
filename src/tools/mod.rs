@@ -209,3 +209,33 @@ pub struct GetModuleSummaryTool {
     pub file_path: String,
     pub group_by_kind: Option<bool>,
 }
+
+#[macros::mcp_tool(
+    name = "search_todos",
+    description = "Search for TODO and FIXME comments in the codebase to track technical debt."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct SearchTodosTool {
+    /// Keyword to search for in TODO text (e.g., 'auth', 'parser', 'refactor')
+    pub query: Option<String>,
+    /// Filter to specific file path
+    pub file_path: Option<String>,
+    /// Filter to specific TODO kind: 'todo', 'fixme', or None for both
+    pub kind: Option<String>,
+    /// Maximum number of results to return
+    pub limit: Option<u32>,
+}
+
+#[macros::mcp_tool(
+    name = "find_tests_for_symbol",
+    description = "Find test files that test a given symbol or source file. Returns test file paths and associated symbols."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct FindTestsForSymbolTool {
+    /// Symbol name to find tests for
+    pub symbol_name: String,
+    /// Optional file path to disambiguate symbols
+    pub file_path: Option<String>,
+    /// Maximum number of test files to return
+    pub limit: Option<u32>,
+}

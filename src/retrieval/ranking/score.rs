@@ -9,6 +9,75 @@ use std::collections::HashMap;
 
 use super::diversify::is_definition_kind;
 
+/// Apply selection boost with signals tracking based on user selection history
+///
+/// This function boosts search result scores based on previous user selections
+/// for the same query-symbol pairs. Users tend to select the same symbols for
+/// the same queries, indicating relevance.
+///
+/// The boost is computed from query_selections table considering:
+/// - Position bias: selections at higher positions get more weight
+/// - Time decay: recent selections have more influence than old ones
+pub fn apply_selection_boost_with_signals(
+    sqlite: &SqliteStore,
+    mut hits: Vec<RankedHit>,
+    hit_signals: &mut HashMap<String, HitSignals>,
+    query_normalized: &str,
+    config: &Config,
+) -> Result<Vec<RankedHit>> {
+    if hits.is_empty() || !config.learning_enabled || config.learning_selection_boost == 0.0 {
+        return Ok(hits);
+    }
+
+    // Build (query, symbol_id) pairs for batch lookup
+    let pairs: Vec<(String, String)> = hits
+        .iter()
+        .map(|h| (query_normalized.to_string(), h.id.clone()))
+        .collect();
+
+    // Batch load selection boost scores
+    let boost_map = sqlite
+        .batch_get_selection_boosts(&pairs)
+        .unwrap_or_default();
+
+    // Apply boosts to hits
+    for h in hits.iter_mut() {
+        let key = format!("{}|{}", query_normalized, h.id);
+        let boost = boost_map.get(&key).copied().unwrap_or(0.0);
+
+        if boost > 0.0 {
+            let final_boost = config.learning_selection_boost * boost;
+            h.score += final_boost;
+
+            hit_signals
+                .entry(h.id.clone())
+                .and_modify(|s| s.learning_boost += final_boost)
+                .or_insert_with(|| HitSignals {
+                    keyword_score: 0.0,
+                    vector_score: 0.0,
+                    base_score: 0.0,
+                    structural_adjust: 0.0,
+                    intent_mult: 1.0,
+                    definition_bias: 0.0,
+                    popularity_boost: 0.0,
+                    learning_boost: final_boost,
+                });
+        }
+    }
+
+    // Re-sort by score after applying boosts
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.exported.cmp(&a.exported))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(hits)
+}
+
 /// Rank hits from keyword and vector search
 #[cfg(test)]
 pub fn rank_hits(
@@ -97,6 +166,7 @@ pub fn rank_hits_with_signals(
                 intent_mult,
                 definition_bias,
                 popularity_boost: 0.0,
+                learning_boost: 0.0,
             },
         );
 
@@ -152,6 +222,7 @@ pub fn rank_hits_with_signals(
                 intent_mult,
                 definition_bias,
                 popularity_boost: 0.0,
+                learning_boost: 0.0,
             },
         );
 
@@ -288,6 +359,7 @@ pub fn apply_popularity_boost_with_signals(
                 intent_mult: 1.0,
                 definition_bias: 0.0,
                 popularity_boost: boost,
+                learning_boost: 0.0,
             });
     }
 

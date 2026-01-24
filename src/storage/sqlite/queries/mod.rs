@@ -7,4 +7,5 @@ pub mod misc;
 pub mod selections;
 pub mod stats;
 pub mod symbols;
+pub mod tests;
 pub mod todos;

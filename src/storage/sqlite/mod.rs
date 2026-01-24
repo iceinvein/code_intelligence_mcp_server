@@ -253,6 +253,18 @@ impl SqliteStore {
         queries::todos::delete_todos_by_file(&self.conn, file_path)
     }
 
+    pub fn batch_upsert_docstrings(&self, entries: &[crate::indexer::extract::symbol::JSDocEntry]) -> Result<()> {
+        queries::docstrings::batch_upsert_docstrings(&self.conn, entries)
+    }
+
+    pub fn has_docstring(&self, symbol_id: &str) -> Result<bool> {
+        queries::docstrings::has_docstring(&self.conn, symbol_id)
+    }
+
+    pub fn delete_docstrings_by_file(&self, file_path: &str) -> Result<()> {
+        queries::docstrings::delete_docstrings_by_file(&self.conn, file_path)
+    }
+
     pub fn is_test_file(&self, path: &str) -> bool {
         queries::tests::is_test_file(path)
     }

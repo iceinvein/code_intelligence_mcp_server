@@ -181,6 +181,8 @@ impl IndexPipeline {
                     sqlite.delete_symbols_by_file(&file_path)?;
                     sqlite.delete_usage_examples_by_file(&file_path)?;
                     sqlite.delete_todos_by_file(&file_path)?;
+                    sqlite.delete_docstrings_by_file(&file_path)?;
+                    sqlite.delete_decorators_by_file(&file_path)?;
                     sqlite.delete_test_links_for_file(&file_path)?;
                     sqlite.delete_file_fingerprint(&file_path)?;
                 }
@@ -288,6 +290,12 @@ impl IndexPipeline {
                 sqlite
                     .delete_todos_by_file(&rel)
                     .with_context(|| format!("Failed to delete old todos for {rel}"))?;
+                sqlite
+                    .delete_docstrings_by_file(&rel)
+                    .with_context(|| format!("Failed to delete old docstrings for {rel}"))?;
+                sqlite
+                    .delete_decorators_by_file(&rel)
+                    .with_context(|| format!("Failed to delete old decorators for {rel}"))?;
                 sqlite
                     .delete_test_links_for_file(&rel)
                     .with_context(|| format!("Failed to delete old test links for {rel}"))?;
@@ -403,6 +411,29 @@ impl IndexPipeline {
                     // Store TODO entries extracted from this file
                     if !extracted.todos.is_empty() {
                         let _ = sqlite.batch_upsert_todos(&extracted.todos);
+                    }
+
+                    // Store JSDoc entries extracted from this file
+                    if !extracted.jsdoc_entries.is_empty() {
+                        let _ = sqlite.batch_upsert_docstrings(&extracted.jsdoc_entries);
+                    }
+
+                    // Store decorator entries extracted from this file
+                    if !extracted.decorators.is_empty() {
+                        use crate::storage::sqlite::schema::DecoratorRow;
+                        let decorator_rows: Vec<DecoratorRow> = extracted
+                            .decorators
+                            .iter()
+                            .map(|d| DecoratorRow {
+                                symbol_id: d.symbol_id.clone(),
+                                name: d.name.clone(),
+                                arguments: d.arguments.clone(),
+                                target_line: d.target_line,
+                                decorator_type: serde_json::to_string(&d.decorator_type).unwrap_or_else(|_| "unknown".to_string()),
+                                updated_at: 0,
+                            })
+                            .collect();
+                        let _ = sqlite.batch_upsert_decorators(&decorator_rows);
                     }
 
                     // Create test links if this is a test file

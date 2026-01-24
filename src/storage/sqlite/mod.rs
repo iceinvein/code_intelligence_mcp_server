@@ -265,6 +265,14 @@ impl SqliteStore {
         queries::docstrings::delete_docstrings_by_file(&self.conn, file_path)
     }
 
+    pub fn batch_upsert_decorators(&self, decorators: &[crate::storage::sqlite::schema::DecoratorRow]) -> Result<()> {
+        queries::decorators::batch_upsert_decorators(&self.conn, decorators)
+    }
+
+    pub fn delete_decorators_by_file(&self, file_path: &str) -> Result<()> {
+        queries::decorators::delete_decorators_by_file(&self.conn, file_path)
+    }
+
     pub fn is_test_file(&self, path: &str) -> bool {
         queries::tests::is_test_file(path)
     }

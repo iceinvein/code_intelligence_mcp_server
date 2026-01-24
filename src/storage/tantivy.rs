@@ -162,6 +162,13 @@ impl TantivyIndex {
             )
         })?;
 
+        // Clean up stale lock files from previous crashes
+        // These can remain after abnormal termination and prevent writer creation
+        let meta_lock = index_dir.join(".tantivy-meta.lock");
+        let writer_lock = index_dir.join(".tantivy-writer.lock");
+        let _ = std::fs::remove_file(&meta_lock);
+        let _ = std::fs::remove_file(&writer_lock);
+
         let version_path = index_dir.join("schema_version");
         let existing_version = std::fs::read_to_string(&version_path)
             .ok()

@@ -18,6 +18,7 @@ pub struct HyDEQuery {
 }
 
 /// Generator for hypothetical code snippets using HyDE
+#[derive(Clone)]
 pub struct HypotheticalCodeGenerator {
     /// LLM backend ("openai", "anthropic", or "mock" for testing)
     backend: String,

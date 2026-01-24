@@ -62,6 +62,7 @@ pub fn apply_selection_boost_with_signals(
                     popularity_boost: 0.0,
                     learning_boost: final_boost,
                     affinity_boost: 0.0,
+                    docstring_boost: 0.0,
                 });
         }
     }
@@ -146,6 +147,7 @@ pub fn apply_file_affinity_boost_with_signals(
                     popularity_boost: 0.0,
                     learning_boost: 0.0,
                     affinity_boost: final_boost,
+                    docstring_boost: 0.0,
                 });
         }
     }
@@ -253,6 +255,7 @@ pub fn rank_hits_with_signals(
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
+                docstring_boost: 0.0,
             },
         );
 
@@ -310,6 +313,7 @@ pub fn rank_hits_with_signals(
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
+                docstring_boost: 0.0,
             },
         );
 
@@ -448,7 +452,58 @@ pub fn apply_popularity_boost_with_signals(
                 popularity_boost: boost,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
+                docstring_boost: 0.0,
             });
+    }
+
+    // Re-sort by score after applying boosts
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.exported.cmp(&a.exported))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(hits)
+}
+
+/// Apply JSDoc documentation boost with signals tracking
+///
+/// This function boosts search result scores for symbols that have JSDoc documentation.
+/// Symbols with JSDoc receive a 1.5x boost to promote well-documented code.
+pub fn apply_docstring_boost_with_signals(
+    sqlite: &SqliteStore,
+    mut hits: Vec<RankedHit>,
+    hit_signals: &mut HashMap<String, HitSignals>,
+) -> Result<Vec<RankedHit>> {
+    const DOCSTRING_BOOST: f32 = 0.5; // 1.5x multiplier = 1.0 + 0.5 boost
+
+    for h in hits.iter_mut() {
+        if sqlite.has_docstring(&h.id).unwrap_or(false) {
+            h.score *= 1.5;
+
+            hit_signals
+                .entry(h.id.clone())
+                .and_modify(|s| {
+                    s.docstring_boost += DOCSTRING_BOOST;
+                    // Also adjust base_score to reflect the 1.5x multiplier
+                    s.base_score *= 1.5;
+                })
+                .or_insert(HitSignals {
+                    keyword_score: 0.0,
+                    vector_score: 0.0,
+                    base_score: 0.0,
+                    structural_adjust: 0.0,
+                    intent_mult: 1.0,
+                    definition_bias: 0.0,
+                    popularity_boost: 0.0,
+                    learning_boost: 0.0,
+                    affinity_boost: 0.0,
+                    docstring_boost: DOCSTRING_BOOST,
+                });
+        }
     }
 
     // Re-sort by score after applying boosts

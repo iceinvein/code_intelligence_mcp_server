@@ -1,5 +1,6 @@
 pub mod formatting;
 pub mod graph;
+pub mod tokens;
 
 use crate::config::Config;
 use crate::storage::sqlite::SqliteStore;

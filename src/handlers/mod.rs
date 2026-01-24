@@ -1186,6 +1186,187 @@ fn format_file_summary(
     out
 }
 
+/// Handle find_affected_code tool - find code affected if a symbol changes
+pub fn handle_find_affected_code(
+    db_path: &std::path::Path,
+    tool: FindAffectedCodeTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let depth = tool.depth.unwrap_or(3) as usize;
+    let limit = tool.limit.unwrap_or(100).max(1) as usize;
+    let include_tests = tool.include_tests.unwrap_or(false);
+
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    // Find the root symbol
+    let roots = sqlite.search_symbols_by_exact_name(
+        &tool.symbol_name,
+        tool.file_path.as_deref(),
+        1
+    )?;
+    let Some(root) = roots.first() else {
+        return Ok(json!({
+            "symbol_name": tool.symbol_name,
+            "error": "SYMBOL_NOT_FOUND",
+            "message": format!("Symbol '{}' not found", tool.symbol_name),
+            "affected": [],
+        }));
+    };
+
+    // Use build_dependency_graph with "upstream" direction
+    let graph_result = build_dependency_graph(&sqlite, root, "upstream", depth, limit);
+
+    let (affected, warning) = match graph_result {
+        Ok(graph) => {
+            let empty_nodes: Vec<serde_json::Value> = vec![];
+            let nodes = graph.get("nodes").and_then(|v| v.as_array()).unwrap_or(&empty_nodes);
+
+            // Build affected list with impact info
+            let mut affected_list = Vec::new();
+            let mut file_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+
+            for node in nodes {
+                let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                if id == root.id {
+                    continue;
+                }
+
+                let file_path = node.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                let exported = node.get("exported").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                // Filter out tests if requested
+                if !include_tests && is_test_file_for_affected(file_path) {
+                    continue;
+                }
+
+                *file_counts.entry(file_path.to_string()).or_insert(0) += 1;
+
+                affected_list.push(json!({
+                    "symbol_id": id,
+                    "symbol_name": node.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "kind": node.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                    "file_path": file_path,
+                    "exported": exported,
+                    "impact": if exported { "high" } else { "medium" },
+                }));
+            }
+
+            // Sort by impact then by file
+            affected_list.sort_by(|a, b| {
+                let ia = a.get("impact").and_then(|v| v.as_str()).unwrap_or("");
+                let ib = b.get("impact").and_then(|v| v.as_str()).unwrap_or("");
+                match (ia, ib) {
+                    ("high", "medium") => std::cmp::Ordering::Less,
+                    ("medium", "high") => std::cmp::Ordering::Greater,
+                    _ => {
+                        let fa_path = a.get("file_path").and_then(|v| v.as_str());
+                        let fb_path = b.get("file_path").and_then(|v| v.as_str());
+                        fa_path.cmp(&fb_path)
+                    }
+                }
+            });
+
+            (affected_list, None)
+        }
+        Err(e) => {
+            (vec![], Some(format!("Could not complete full trace: {}", e)))
+        }
+    };
+
+    // Truncate to limit
+    let affected = affected.into_iter().take(limit).collect::<Vec<_>>();
+
+    // Build summary stats
+    let affected_files = affected.iter()
+        .map(|f| f.get("file_path").and_then(|v| v.as_str()).unwrap_or(""))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    // Build display
+    let display = format_affected_code(root, &affected, affected_files);
+
+    Ok(json!({
+        "symbol_name": root.name,
+        "symbol_kind": root.kind,
+        "file_path": root.file_path,
+        "depth": depth,
+        "affected_count": affected.len(),
+        "affected_files": affected_files,
+        "affected": affected,
+        "warning": warning,
+        "display": display,
+    }))
+}
+
+/// Check if a file path appears to be a test file
+fn is_test_file_for_affected(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.contains(".test.")
+        || lower.contains(".spec.")
+        || lower.ends_with("_test.rs")
+        || lower.ends_with("_test.ts")
+        || lower.ends_with("_test.tsx")
+        || lower.ends_with("_test.js")
+        || lower.contains("/test/")
+        || lower.contains("/tests/")
+        || lower.contains("/__tests__/")
+        || lower.contains("/spec/")
+}
+
+/// Format affected code results as markdown
+fn format_affected_code(root: &SymbolRow, affected: &[serde_json::Value], affected_files: usize) -> String {
+    let mut out = format!("# Affected Code: {}\n\n", root.name);
+    out.push_str(&format!("**Kind:** {}\n", root.kind));
+    out.push_str(&format!("**File:** `{}`\n\n", root.file_path));
+
+    out.push_str(&format!("**Affected:** {} symbols in {} files\n\n", affected.len(), affected_files));
+
+    if affected.is_empty() {
+        out.push_str("*No reverse dependencies found*\n");
+        return out;
+    }
+
+    // Group by impact level
+    let high_impact: Vec<_> = affected.iter()
+        .filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("high"))
+        .collect();
+    let medium_impact: Vec<_> = affected.iter()
+        .filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("medium"))
+        .collect();
+
+    if !high_impact.is_empty() {
+        out.push_str("## [!] High Impact (Exported)\n\n");
+        for a in high_impact.iter().take(20) {
+            let name = a.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let file_short = file.split('/').last().unwrap_or(file);
+            out.push_str(&format!("- **{}** ({}) - `{}`\n", name, kind, file_short));
+        }
+        if high_impact.len() > 20 {
+            out.push_str(&format!("*... and {} more*\n", high_impact.len() - 20));
+        }
+        out.push('\n');
+    }
+
+    if !medium_impact.is_empty() {
+        out.push_str("## Medium Impact (Internal)\n\n");
+        for a in medium_impact.iter().take(20) {
+            let name = a.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let file_short = file.split('/').last().unwrap_or(file);
+            out.push_str(&format!("- **{}** ({}) - `{}`\n", name, kind, file_short));
+        }
+        if medium_impact.len() > 20 {
+            out.push_str(&format!("*... and {} more*\n", medium_impact.len() - 20));
+        }
+    }
+
+    out
+}
+
 
 #[cfg(test)]
 mod tests {

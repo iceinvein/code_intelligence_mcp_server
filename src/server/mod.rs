@@ -43,6 +43,8 @@ impl ServerHandler for CodeIntelligenceHandler {
                 FindSimilarCodeTool::tool(),
                 SummarizeFileTool::tool(),
                 GetModuleSummaryTool::tool(),
+                TraceDataFlowTool::tool(),
+                FindAffectedCodeTool::tool(),
             ],
             meta: None,
             next_cursor: None,

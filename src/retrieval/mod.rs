@@ -21,7 +21,7 @@ use anyhow::{anyhow, Result};
 use cache::RetrieverCaches;
 use query::{detect_intent, normalize_query, parse_query_controls, trim_query, Intent, QueryControls};
 use ranking::{
-    apply_file_affinity_boost_with_signals, apply_popularity_boost_with_signals, apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
+    apply_docstring_boost_with_signals, apply_file_affinity_boost_with_signals, apply_popularity_boost_with_signals, apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
     rank_hits_with_signals, apply_reranker_scores, prepare_rerank_docs, should_rerank,
     reciprocal_rank_fusion, get_graph_ranked_hits,
 };
@@ -440,6 +440,9 @@ impl Retriever {
 
         let hits =
             apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &self.config)?;
+
+        // Apply JSDoc documentation boost (1.5x for well-documented symbols)
+        let hits = apply_docstring_boost_with_signals(&sqlite, hits, &mut hit_signals)?;
 
         let hits = apply_selection_boost_with_signals(
             &sqlite,

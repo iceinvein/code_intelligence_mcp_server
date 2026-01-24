@@ -381,6 +381,128 @@ impl LanceVectorTable {
 
         Ok(primitive_array.values().to_vec())
     }
+
+    /// Search with a filter predicate to exclude certain results.
+    ///
+    /// This is used by find_similar_code to exclude the source symbol from results
+    /// (e.g., `id != 'symbol_id'`) when searching for similar code.
+    pub async fn search_with_filter(
+        &self,
+        query_vector: &[f32],
+        limit: usize,
+        filter: &str,
+    ) -> Result<Vec<VectorHit>> {
+        if query_vector.len() != self.vector_dim {
+            return Err(anyhow!(
+                "Query vector dim mismatch: expected {}, got {}",
+                self.vector_dim,
+                query_vector.len()
+            ));
+        }
+
+        let stream = self
+            .table
+            .query()
+            .nearest_to(query_vector)
+            .context("Failed to create lancedb nearest_to query")?
+            .limit(limit)
+            .filter(filter)
+            .execute()
+            .await
+            .context("Failed to execute lancedb query with filter")?;
+
+        let batches: Vec<RecordBatch> = stream.try_collect().await?;
+
+        let mut out = Vec::new();
+        for batch in batches {
+            let id = batch
+                .column_by_name("id")
+                .ok_or_else(|| anyhow!("Missing id column in lancedb result"))?;
+            let name = batch
+                .column_by_name("name")
+                .ok_or_else(|| anyhow!("Missing name column in lancedb result"))?;
+            let kind = batch
+                .column_by_name("kind")
+                .ok_or_else(|| anyhow!("Missing kind column in lancedb result"))?;
+            let file_path = batch
+                .column_by_name("file_path")
+                .ok_or_else(|| anyhow!("Missing file_path column in lancedb result"))?;
+            let exported = batch
+                .column_by_name("exported")
+                .ok_or_else(|| anyhow!("Missing exported column in lancedb result"))?;
+            let language = batch
+                .column_by_name("language")
+                .ok_or_else(|| anyhow!("Missing language column in lancedb result"))?;
+            let distance_col = batch
+                .column_by_name("_distance")
+                .or_else(|| batch.column_by_name("distance"));
+
+            let id = id
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| anyhow!("id column is not StringArray"))?;
+            let name = name
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| anyhow!("name column is not StringArray"))?;
+            let kind = kind
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| anyhow!("kind column is not StringArray"))?;
+            let file_path = file_path
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| anyhow!("file_path column is not StringArray"))?;
+            let exported = exported
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or_else(|| anyhow!("exported column is not BooleanArray"))?;
+            let language = language
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| anyhow!("language column is not StringArray"))?;
+            let distance_col = distance_col.and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+
+            for row in 0..batch.num_rows() {
+                if id.is_null(row) {
+                    continue;
+                }
+                out.push(VectorHit {
+                    id: id.value(row).to_string(),
+                    name: if name.is_null(row) {
+                        "".to_string()
+                    } else {
+                        name.value(row).to_string()
+                    },
+                    kind: if kind.is_null(row) {
+                        "".to_string()
+                    } else {
+                        kind.value(row).to_string()
+                    },
+                    file_path: if file_path.is_null(row) {
+                        "".to_string()
+                    } else {
+                        file_path.value(row).to_string()
+                    },
+                    exported: !exported.is_null(row) && exported.value(row),
+                    language: if language.is_null(row) {
+                        "".to_string()
+                    } else {
+                        language.value(row).to_string()
+                    },
+                    distance: distance_col.and_then(|d| {
+                        if d.is_null(row) {
+                            None
+                        } else {
+                            Some(d.value(row))
+                        }
+                    }),
+                });
+            }
+        }
+
+        Ok(out)
+    }
 }
 
 fn escape_lancedb_string(s: &str) -> String {

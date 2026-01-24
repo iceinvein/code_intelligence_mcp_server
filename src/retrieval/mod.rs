@@ -21,7 +21,7 @@ use anyhow::{anyhow, Result};
 use cache::RetrieverCaches;
 use query::{detect_intent, normalize_query, parse_query_controls, trim_query, Intent, QueryControls};
 use ranking::{
-    apply_popularity_boost_with_signals, apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
+    apply_file_affinity_boost_with_signals, apply_popularity_boost_with_signals, apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
     rank_hits_with_signals, apply_reranker_scores, prepare_rerank_docs, should_rerank,
     reciprocal_rank_fusion, get_graph_ranked_hits,
 };
@@ -443,6 +443,13 @@ impl Retriever {
             hits,
             &mut hit_signals,
             &expanded_query,
+            &self.config,
+        )?;
+
+        let hits = apply_file_affinity_boost_with_signals(
+            &sqlite,
+            hits,
+            &mut hit_signals,
             &self.config,
         )?;
 

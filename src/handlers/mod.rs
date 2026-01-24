@@ -523,47 +523,125 @@ pub async fn handle_find_similar_code(
     state: &AppState,
     tool: FindSimilarCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(10).max(1) as usize;
+    use crate::storage::vector::LanceVectorTable;
+
+    let limit = tool.limit.unwrap_or(20).max(1).min(100) as usize;
+    let threshold = tool.threshold.unwrap_or(0.5);
 
     let sqlite = SqliteStore::open(&state.config.db_path)?;
     sqlite.init()?;
 
-    // Get the source symbol
-    let source_symbol = sqlite
-        .get_symbol_by_id(&tool.symbol_id)?
-        .ok_or_else(|| anyhow::anyhow!("Symbol not found: {}", tool.symbol_id))?;
+    // Determine search vector: either from symbol_name or code_snippet
+    let (query_vector, query_description) = if let Some(name) = &tool.symbol_name {
+        // Find symbol and get its embedding
+        let roots = sqlite.search_symbols_by_exact_name(
+            name,
+            tool.file_path.as_deref(),
+            1
+        )?;
+        let Some(root) = roots.first() else {
+            return Ok(json!({
+                "error": "SYMBOL_NOT_FOUND",
+                "message": format!("Symbol '{}' not found", name),
+                "results": [],
+            }));
+        };
 
-    // Generate embedding for the source symbol text
-    let query_vector = state.retriever.embed_text(&source_symbol.text).await?;
+        // Get embedding from LanceDB by symbol ID
+        let vector = state.retriever.get_vector_store().get_embedding_by_id(&root.id).await?;
+        (vector, name.clone())
+    } else if let Some(snippet) = &tool.code_snippet {
+        // Embed the code snippet
+        let vector = state.retriever.embed_text(snippet).await?;
+        let desc = if snippet.len() > 50 {
+            format!("{}...", &snippet[..50])
+        } else {
+            snippet.clone()
+        };
+        (vector, desc)
+    } else {
+        return Ok(json!({
+            "error": "INVALID_INPUT",
+            "message": "Either symbol_name or code_snippet must be provided",
+            "results": [],
+        }));
+    };
 
-    // Get vector store and search for similar code (excluding self by ID)
-    let filter = format!("id != '{}'", tool.symbol_id.replace("'", "''"));
-    let vector_store = state.retriever.get_vector_store();
-    let similar = vector_store.search_with_filter(&query_vector, limit, &filter).await?;
+    // Search LanceDB for similar vectors (fetch more for threshold filtering)
+    let similar = state
+        .retriever
+        .get_vector_store()
+        .search(&query_vector, limit * 2)
+        .await?;
 
-    // Enrich results with symbol metadata from SQLite
+    // Filter by threshold and fetch symbol details
     let mut results = Vec::new();
-    for hit in similar {
-        if let Some(symbol) = sqlite.get_symbol_by_id(&hit.id)? {
+    for hit in similar.into_iter().take(limit * 2) {
+        let distance = hit.distance.unwrap_or(1.0);
+        let similarity = 1.0 / (1.0 + distance); // Convert distance to similarity
+
+        if similarity < threshold {
+            continue;
+        }
+
+        if let Some(row) = sqlite.get_symbol_by_id(&hit.id)? {
             results.push(json!({
-                "symbol_id": hit.id,
-                "symbol_name": symbol.name,
-                "kind": symbol.kind,
-                "file_path": symbol.file_path,
-                "language": symbol.language,
-                "exported": symbol.exported,
-                "similarity_score": 1.0 - hit.distance.unwrap_or(1.0),
-                "distance": hit.distance,
+                "symbol_id": row.id,
+                "symbol_name": row.name,
+                "kind": row.kind,
+                "file_path": row.file_path,
+                "language": row.language,
+                "similarity": similarity,
+                "exported": row.exported,
             }));
         }
     }
 
+    // Sort by similarity descending and limit
+    results.sort_by(|a, b| {
+        let sa = a.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let sb = b.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results.truncate(limit);
+
+    // Build display
+    let display = format_similar_results(&query_description, threshold, &results);
+
     Ok(json!({
-        "source_symbol_id": tool.symbol_id,
-        "source_symbol_name": source_symbol.name,
+        "query": query_description,
+        "threshold": threshold,
         "count": results.len(),
-        "similar_code": results,
+        "results": results,
+        "display": display,
     }))
+}
+
+fn format_similar_results(query: &str, threshold: f32, results: &[serde_json::Value]) -> String {
+    let mut out = format!("# Similar Code Results\n\n**Query:** `{}`\n**Threshold:** {:.0}%\n\n", query, threshold * 100.0);
+
+    if results.is_empty() {
+        out.push_str("*No similar code found above threshold*\n");
+        return out;
+    }
+
+    out.push_str("| Rank | Symbol | File | Kind | Similarity |\n");
+    out.push_str("|------|--------|------|------|------------|\n");
+
+    for (i, r) in results.iter().enumerate() {
+        let name = r.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+        let file = r.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+        let file_short = file.split('/').last().unwrap_or(file);
+        let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+        let sim = r.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+        out.push_str(&format!(
+            "| {} | **{}** | {} | {} | {:.1}% |\n",
+            i + 1, name, file_short, kind, sim * 100.0
+        ));
+    }
+
+    out
 }
 
 fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> String {

@@ -199,3 +199,13 @@ pub struct FindAffectedCodeTool {
     pub limit: Option<u32>,
     pub include_tests: Option<bool>,
 }
+
+#[macros::mcp_tool(
+    name = "get_module_summary",
+    description = "List all exported symbols from a module/file with their signatures."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct GetModuleSummaryTool {
+    pub file_path: String,
+    pub group_by_kind: Option<bool>,
+}

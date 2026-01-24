@@ -85,6 +85,17 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         // Query expansion config (FNDN-02)
         synonym_expansion_enabled: true,
         acronym_expansion_enabled: true,
+        // RRF config (RETR-05)
+        rrf_enabled: true,
+        rrf_k: 60.0,
+        rrf_keyword_weight: 1.0,
+        rrf_vector_weight: 1.0,
+        rrf_graph_weight: 0.5,
+        // HyDE config (RETR-06, RETR-07)
+        hyde_enabled: false,
+        hyde_llm_backend: "openai".to_string(),
+        hyde_api_key: None,
+        hyde_max_tokens: 512,
     }
 }
 
@@ -144,6 +155,8 @@ pub fn foo() -> Foo { Foo { a: 1 } }
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        None,
+        None,
     );
 
     let stats = indexer.index_all().await.unwrap();
@@ -217,6 +230,8 @@ pub fn gamma() -> i32 { 7 }
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        None,
+        None,
     );
 
     let stats1 = indexer.index_all().await.unwrap();
@@ -345,7 +360,7 @@ export function extraRoot() { return 42 }
         vectors.clone(),
         embedder.clone(),
     );
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder);
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
 
     indexer.index_all().await.unwrap();
     let resp = retriever.search("extraRoot", 5, false).await.unwrap();
@@ -392,7 +407,7 @@ export function callerOne() { targetFunc(); }
         vectors.clone(),
         embedder.clone(),
     );
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder);
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
 
     indexer.index_all().await.unwrap();
 

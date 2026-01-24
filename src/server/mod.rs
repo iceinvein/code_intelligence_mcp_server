@@ -189,6 +189,48 @@ impl ServerHandler for CodeIntelligenceHandler {
                         .into(),
                 ]))
             }
+            "explain_search" => {
+                let tool: ExplainSearchTool = parse_tool_args(&params)?;
+                let result = handle_explain_search(&self.state.retriever, tool)
+                    .await
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+                        .into(),
+                ]))
+            }
+            "find_similar_code" => {
+                let tool: FindSimilarCodeTool = parse_tool_args(&params)?;
+                let result = handle_find_similar_code(&self.state, tool)
+                    .await
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+                        .into(),
+                ]))
+            }
+            "summarize_file" => {
+                let tool: SummarizeFileTool = parse_tool_args(&params)?;
+                let result = handle_summarize_file(&self.state.config.db_path, tool)
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+                        .into(),
+                ]))
+            }
+            "get_module_summary" => {
+                let tool: GetModuleSummaryTool = parse_tool_args(&params)?;
+                let result = handle_get_module_summary(&self.state.config.db_path, tool)
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+                        .into(),
+                ]))
+            }
             _ => Err(CallToolError::unknown_tool(params.name)),
         }
     }

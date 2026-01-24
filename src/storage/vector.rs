@@ -339,11 +339,11 @@ impl LanceVectorTable {
         let escaped = escape_lancedb_string(id);
         let filter = format!("id = '{escaped}'");
 
-        // Use LanceDB's filter to find the record by ID
+        // Use LanceDB's only_if to find the record by ID
         let stream = self
             .table
             .query()
-            .filter(&filter)
+            .only_if(&filter)
             .limit(1)
             .execute()
             .await
@@ -405,8 +405,8 @@ impl LanceVectorTable {
             .query()
             .nearest_to(query_vector)
             .context("Failed to create lancedb nearest_to query")?
+            .only_if(filter)
             .limit(limit)
-            .filter(filter)
             .execute()
             .await
             .context("Failed to execute lancedb query with filter")?;

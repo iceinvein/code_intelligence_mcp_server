@@ -233,6 +233,26 @@ impl ServerHandler for CodeIntelligenceHandler {
                         .into(),
                 ]))
             }
+            "trace_data_flow" => {
+                let tool: TraceDataFlowTool = parse_tool_args(&params)?;
+                let result = handle_trace_data_flow(&self.state.config.db_path, tool)
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{}".to_string())
+                        .into(),
+                ]))
+            }
+            "find_affected_code" => {
+                let tool: FindAffectedCodeTool = parse_tool_args(&params)?;
+                let result = handle_find_affected_code(&self.state.config.db_path, tool)
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{}".to_string())
+                        .into(),
+                ]))
+            }
             _ => Err(CallToolError::unknown_tool(params.name)),
         }
     }

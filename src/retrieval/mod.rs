@@ -23,6 +23,7 @@ use query::{detect_intent, normalize_query, parse_query_controls, trim_query, In
 use ranking::{
     apply_popularity_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
     rank_hits_with_signals, apply_reranker_scores, prepare_rerank_docs, should_rerank,
+    reciprocal_rank_fusion, get_graph_ranked_hits,
 };
 use serde::Serialize;
 use std::{
@@ -306,13 +307,87 @@ impl Retriever {
         let vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let merge_t = Instant::now();
-        let (ranked, mut hit_signals) = rank_hits_with_signals(
-            &keyword_hits,
-            &vector_hits,
-            &self.config,
-            &intent,
-            search_query,
-        );
+
+        // Use RRF if enabled, otherwise use existing score fusion
+        let (ranked, mut hit_signals) = if self.config.rrf_enabled {
+            // Convert keyword_hits to RankedHit for RRF
+            let keyword_ranked: Vec<RankedHit> = keyword_hits
+                .iter()
+                .map(|h| RankedHit {
+                    id: h.id.clone(),
+                    score: h.score,
+                    name: h.name.clone(),
+                    kind: h.kind.clone(),
+                    file_path: h.file_path.clone(),
+                    exported: h.exported,
+                    language: String::new(), // Will be filled from DB if needed
+                })
+                .collect();
+
+            // Convert vector_hits to RankedHit for RRF
+            let vector_ranked: Vec<RankedHit> = vector_hits
+                .iter()
+                .map(|h| RankedHit {
+                    id: h.id.clone(),
+                    score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)), // Convert distance to score
+                    name: h.name.clone(),
+                    kind: h.kind.clone(),
+                    file_path: h.file_path.clone(),
+                    exported: h.exported,
+                    language: h.language.clone(),
+                })
+                .collect();
+
+            // Get graph-ranked hits
+            let graph_hits = if let Ok(graph) = get_graph_ranked_hits(&keyword_ranked, &sqlite) {
+                graph
+            } else {
+                keyword_ranked.clone()
+            };
+
+            // Apply RRF
+            let weights = (
+                self.config.rrf_keyword_weight,
+                self.config.rrf_vector_weight,
+                self.config.rrf_graph_weight,
+            );
+
+            let rrf_results = reciprocal_rank_fusion(
+                &keyword_ranked,
+                &vector_ranked,
+                &graph_hits,
+                weights,
+            );
+
+            // Generate signals for RRF results
+            let mut signals = HashMap::new();
+            for hit in &rrf_results {
+                signals.insert(
+                    hit.id.clone(),
+                    HitSignals {
+                        keyword_score: 0.0,  // RRF doesn't preserve raw scores
+                        vector_score: 0.0,
+                        base_score: hit.score,
+                        structural_adjust: 0.0,
+                        intent_mult: 1.0,
+                        definition_bias: 0.0,
+                        popularity_boost: 0.0,
+                    },
+                );
+            }
+
+            (rrf_results, signals)
+        } else {
+            // Use existing score fusion
+            rank_hits_with_signals(
+                &keyword_hits,
+                &vector_hits,
+                &self.config,
+                &intent,
+                search_query,
+            )
+        };
+
         let mut uniq = Vec::new();
         let mut seen = HashSet::new();
         for hit in ranked {

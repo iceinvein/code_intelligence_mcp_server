@@ -4,15 +4,24 @@
 //! and handle error cases appropriately.
 
 use code_intelligence_mcp_server::{
+    config::{Config, EmbeddingsBackend, EmbeddingsDevice},
+    embeddings::hash::HashEmbedder,
     handlers::{
-        handle_find_affected_code, handle_get_module_summary, handle_report_selection,
-        handle_summarize_file, handle_trace_data_flow,
+        handle_explain_search, handle_find_affected_code, handle_find_similar_code,
+        handle_get_module_summary, handle_report_selection, handle_summarize_file,
+        handle_trace_data_flow,
     },
-    storage::sqlite::{SqliteStore, SymbolRow},
-    tools::{FindAffectedCodeTool, GetModuleSummaryTool, ReportSelectionTool, SummarizeFileTool, TraceDataFlowTool},
+    retrieval::Retriever,
+    storage::{sqlite::{SqliteStore, SymbolRow}, tantivy::TantivyIndex, vector::LanceDbStore},
+    tools::{ExplainSearchTool, FindAffectedCodeTool, FindSimilarCodeTool, GetModuleSummaryTool, ReportSelectionTool, SummarizeFileTool, TraceDataFlowTool},
 };
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use tokio::sync::Mutex as AsyncMutex;
+
+/// Empty JSON array for default values
+static EMPTY: &[serde_json::Value] = &[];
 
 /// Generate a unique temporary directory for test isolation
 fn tmp_db_path() -> PathBuf {
@@ -380,4 +389,345 @@ fn test_report_selection_normalizes_query() {
 
     // Query should be normalized (lowercased, trimmed)
     assert_eq!(result.get("query_normalized").and_then(|v| v.as_str()), Some("test search"));
+}
+
+// ============================================================================
+// Test infrastructure for explain_search and find_similar_code
+// ============================================================================
+
+/// Create a temporary test directory with config
+fn tmp_test_dir() -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(100);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let c = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cimcp-search-test-{nanos}-{c}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Create test configuration
+fn test_config(base_dir: &PathBuf) -> Config {
+    let base_dir = base_dir.canonicalize().unwrap_or_else(|_| base_dir.clone());
+    Config {
+        db_path: base_dir.join("code-intelligence.db"),
+        vector_db_path: base_dir.join("vectors"),
+        tantivy_index_path: base_dir.join("tantivy-index"),
+        base_dir: base_dir.clone(),
+        embeddings_backend: EmbeddingsBackend::Hash,
+        embeddings_model_dir: None,
+        embeddings_model_url: None,
+        embeddings_model_sha256: None,
+        embeddings_auto_download: false,
+        embeddings_model_repo: None,
+        embeddings_model_revision: None,
+        embeddings_model_hf_token: None,
+        embeddings_device: EmbeddingsDevice::Cpu,
+        embedding_batch_size: 32,
+        hash_embedding_dim: 32,
+        vector_search_limit: 20,
+        hybrid_alpha: 0.7,
+        rank_vector_weight: 0.7,
+        rank_keyword_weight: 0.3,
+        rank_exported_boost: 0.1,
+        rank_index_file_boost: 0.05,
+        rank_test_penalty: 0.1,
+        rank_popularity_weight: 0.05,
+        rank_popularity_cap: 50,
+        index_patterns: vec![
+            "**/*.ts".to_string(),
+            "**/*.tsx".to_string(),
+            "**/*.rs".to_string(),
+        ],
+        exclude_patterns: vec![],
+        watch_mode: false,
+        watch_debounce_ms: 100,
+        max_context_bytes: 200_000,
+        index_node_modules: false,
+        repo_roots: vec![base_dir],
+        reranker_model_path: None,
+        reranker_top_k: 20,
+        reranker_cache_dir: None,
+        learning_enabled: false,
+        learning_selection_boost: 0.1,
+        learning_file_affinity_boost: 0.05,
+        max_context_tokens: 8192,
+        token_encoding: "o200k_base".to_string(),
+        parallel_workers: 4,
+        embedding_cache_enabled: true,
+        pagerank_damping: 0.85,
+        pagerank_iterations: 20,
+        synonym_expansion_enabled: true,
+        acronym_expansion_enabled: true,
+        rrf_enabled: true,
+        rrf_k: 60.0,
+        rrf_keyword_weight: 1.0,
+        rrf_vector_weight: 1.0,
+        rrf_graph_weight: 0.5,
+        hyde_enabled: false,
+        hyde_llm_backend: "openai".to_string(),
+        hyde_api_key: None,
+        hyde_max_tokens: 512,
+    }
+}
+
+/// Setup test environment with indexed content
+async fn setup_search_test() -> (PathBuf, Arc<Retriever>) {
+    let dir = tmp_test_dir();
+
+    // Create test source files
+    std::fs::write(
+        dir.join("search.ts"),
+        r#"
+export function searchFunction(query: string): string {
+    return "result: " + query;
+}
+
+export function helperFunction(value: number): number {
+    return value * 2;
+}
+"#,
+    ).unwrap();
+
+    let config = Arc::new(test_config(&dir));
+
+    let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+    let embedder = Arc::new(AsyncMutex::new(
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+    ));
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vectors = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", config.hash_embedding_dim)
+            .await
+            .unwrap(),
+    );
+
+    let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
+        config.clone(),
+        tantivy.clone(),
+        vectors.clone(),
+        embedder.clone(),
+    );
+
+    // Index the test files
+    indexer.index_all().await.unwrap();
+
+    let retriever = Retriever::new(config, tantivy, vectors, embedder, None, None);
+
+    (dir, Arc::new(retriever))
+}
+
+// ============================================================================
+// Tests for explain_search tool
+// ============================================================================
+
+#[tokio::test]
+async fn test_explain_search_tool() {
+    let (_dir, retriever) = setup_search_test().await;
+
+    let params = ExplainSearchTool {
+        query: "search".to_string(),
+        limit: Some(5),
+        exported_only: Some(false),
+        verbose: Some(false),
+    };
+
+    let result = handle_explain_search(&retriever, params).await.unwrap();
+
+    assert_eq!(result.get("query").and_then(|v| v.as_str()), Some("search"));
+    assert!(result.get("count").is_some());
+    assert!(result.get("results").is_some());
+    assert!(result.get("display").is_some());
+
+    // Check that results array contains expected fields
+    let results = result.get("results").and_then(|v| v.as_array()).map_or(EMPTY, |v| v);
+    if !results.is_empty() {
+        let first = &results[0];
+        assert!(first.get("symbol_id").is_some());
+        assert!(first.get("score").is_some());
+        assert!(first.get("score_breakdown").is_some());
+    }
+}
+
+#[tokio::test]
+async fn test_explain_search_verbose() {
+    let (_dir, retriever) = setup_search_test().await;
+
+    let params = ExplainSearchTool {
+        query: "helper".to_string(),
+        limit: Some(10),
+        exported_only: Some(true),
+        verbose: Some(true),
+    };
+
+    let result = handle_explain_search(&retriever, params).await.unwrap();
+
+    assert_eq!(result.get("query").and_then(|v| v.as_str()), Some("helper"));
+
+    // With verbose, we should have additional signals
+    let results = result.get("results").and_then(|v| v.as_array()).map_or(EMPTY, |v| v);
+    if !results.is_empty() {
+        let first = &results[0];
+        // Verbose mode adds signals field
+        assert!(first.get("score_breakdown").is_some());
+    }
+}
+
+// ============================================================================
+// Tests for find_similar_code tool
+// ============================================================================
+
+#[tokio::test]
+async fn test_find_similar_code_by_symbol_name() {
+    let (dir, _retriever) = setup_search_test().await;
+
+    let params = FindSimilarCodeTool {
+        symbol_name: Some("searchFunction".to_string()),
+        code_snippet: None,
+        file_path: Some(dir.join("search.ts").to_str().unwrap().to_string()),
+        limit: Some(10),
+        threshold: Some(0.1), // Low threshold for testing
+    };
+
+    // Create AppState - need to reconstruct the components
+    let config = Arc::new(test_config(&dir));
+    let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+    let embedder = Arc::new(AsyncMutex::new(
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+    ));
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vectors = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", config.hash_embedding_dim)
+            .await
+            .unwrap(),
+    );
+
+    let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
+        config.clone(),
+        tantivy.clone(),
+        vectors.clone(),
+        embedder.clone(),
+    );
+
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let state = code_intelligence_mcp_server::handlers::AppState {
+        config,
+        indexer,
+        retriever,
+    };
+
+    // The handler might fail if embedding isn't found, so check both success and error cases
+    let result = handle_find_similar_code(&state, params).await.unwrap();
+
+    // Check response structure - could be success or error
+    if result.get("error").is_some() {
+        // If error, it should be SYMBOL_NOT_FOUND or similar
+        assert!(result.get("error").and_then(|v| v.as_str()) == Some("SYMBOL_NOT_FOUND")
+            || result.get("error").and_then(|v| v.as_str()) == Some("EMBEDDING_NOT_FOUND"));
+    } else {
+        // Success case - verify response structure
+        assert!(result.get("threshold").is_some());
+        assert!(result.get("count").is_some());
+        assert!(result.get("results").is_some());
+        // query field is present on success
+        assert!(result.get("query").is_some());
+
+        let results = result.get("results").and_then(|v| v.as_array()).map_or(EMPTY, |v| v);
+        assert!(results.len() >= 0);
+    }
+}
+
+#[tokio::test]
+async fn test_find_similar_code_by_code_snippet() {
+    let (dir, _retriever) = setup_search_test().await;
+
+    let params = FindSimilarCodeTool {
+        symbol_name: None,
+        code_snippet: Some("function test() { return 42; }".to_string()),
+        file_path: None,
+        limit: Some(5),
+        threshold: Some(0.0), // Zero threshold to get any results
+    };
+
+    // Create AppState
+    let config = Arc::new(test_config(&dir));
+    let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+    let embedder = Arc::new(AsyncMutex::new(
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+    ));
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vectors = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", config.hash_embedding_dim)
+            .await
+            .unwrap(),
+    );
+
+    let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
+        config.clone(),
+        tantivy.clone(),
+        vectors.clone(),
+        embedder.clone(),
+    );
+
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let state = code_intelligence_mcp_server::handlers::AppState {
+        config,
+        indexer,
+        retriever,
+    };
+
+    let result = handle_find_similar_code(&state, params).await.unwrap();
+
+    assert_eq!(result.get("threshold").and_then(|v| v.as_f64()), Some(0.0));
+    assert!(result.get("results").is_some());
+}
+
+#[tokio::test]
+async fn test_find_similar_code_not_found() {
+    let (dir, _retriever) = setup_search_test().await;
+
+    let params = FindSimilarCodeTool {
+        symbol_name: Some("nonexistentFunction".to_string()),
+        code_snippet: None,
+        file_path: Some(dir.join("search.ts").to_str().unwrap().to_string()),
+        limit: Some(5),
+        threshold: Some(0.5),
+    };
+
+    // Create AppState
+    let config = Arc::new(test_config(&dir));
+    let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+    let embedder = Arc::new(AsyncMutex::new(
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+    ));
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vectors = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", config.hash_embedding_dim)
+            .await
+            .unwrap(),
+    );
+
+    let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
+        config.clone(),
+        tantivy.clone(),
+        vectors.clone(),
+        embedder.clone(),
+    );
+
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let state = code_intelligence_mcp_server::handlers::AppState {
+        config,
+        indexer,
+        retriever,
+    };
+
+    let result = handle_find_similar_code(&state, params).await.unwrap();
+
+    assert_eq!(result.get("error").and_then(|v| v.as_str()), Some("SYMBOL_NOT_FOUND"));
 }

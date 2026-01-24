@@ -239,3 +239,17 @@ pub struct FindTestsForSymbolTool {
     /// Maximum number of test files to return
     pub limit: Option<u32>,
 }
+
+#[macros::mcp_tool(
+    name = "search_decorators",
+    description = "Search for TypeScript/JavaScript decorators in the codebase (e.g., @Component, @Controller, @Injectable, @Get, @Post). Returns decorator metadata including symbol ID, decorator name, arguments, and location."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct SearchDecoratorsTool {
+    /// Decorator name to search for (e.g., 'Component', 'Controller', 'Get'). Exact or prefix match.
+    pub name: Option<String>,
+    /// Filter by decorator type (e.g., 'component', 'injectable', 'controller', 'get')
+    pub decorator_type: Option<String>,
+    /// Maximum number of results to return (default: 50)
+    pub limit: Option<u32>,
+}

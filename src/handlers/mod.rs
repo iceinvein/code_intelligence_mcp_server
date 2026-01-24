@@ -427,6 +427,32 @@ pub fn handle_get_type_graph(
     Ok(graph)
 }
 
+/// Handle report_selection tool
+pub async fn handle_report_selection(
+    db_path: &std::path::Path,
+    tool: ReportSelectionTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    // Normalize query (reuse logic from retrieval/query.rs)
+    let normalized = tool.query.to_lowercase().trim().to_string();
+
+    let row_id = sqlite.insert_query_selection(
+        &tool.query,
+        &normalized,
+        &tool.selected_symbol_id,
+        tool.position,
+    )?;
+
+    Ok(json!({
+        "ok": true,
+        "recorded": true,
+        "selection_id": row_id,
+        "query_normalized": normalized,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -38,6 +38,7 @@ impl ServerHandler for CodeIntelligenceHandler {
                 GetUsageExamplesTool::tool(),
                 GetIndexStatsTool::tool(),
                 HydrateSymbolsTool::tool(),
+                ReportSelectionTool::tool(),
             ],
             meta: None,
             next_cursor: None,
@@ -170,6 +171,17 @@ impl ServerHandler for CodeIntelligenceHandler {
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
                         .unwrap_or_else(|_| "{}".to_string())
+                        .into(),
+                ]))
+            }
+            "report_selection" => {
+                let tool: ReportSelectionTool = parse_tool_args(&params)?;
+                let result = handle_report_selection(&self.state.config.db_path, tool)
+                    .await
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{\"ok\":true}".to_string())
                         .into(),
                 ]))
             }

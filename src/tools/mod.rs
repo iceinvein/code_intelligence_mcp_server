@@ -126,3 +126,14 @@ pub struct HydrateSymbolsTool {
     pub ids: Vec<String>,
     pub mode: Option<String>,
 }
+
+#[macros::mcp_tool(
+    name = "report_selection",
+    description = "Record user selection feedback for learning. Call this when a user selects a search result."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct ReportSelectionTool {
+    pub query: String,
+    pub selected_symbol_id: String,
+    pub position: u32,
+}

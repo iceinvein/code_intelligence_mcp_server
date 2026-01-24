@@ -67,6 +67,9 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         imports,
         type_edges: Vec::new(),
         dataflow_edges: Vec::new(),
+        todos: Vec::new(),
+        jsdoc_entries: Vec::new(),
+        decorators: Vec::new(),
     })
 }
 

@@ -186,3 +186,16 @@ pub struct SummarizeFileTool {
     pub include_signatures: Option<bool>,
     pub verbose: Option<bool>,
 }
+
+#[macros::mcp_tool(
+    name = "find_affected_code",
+    description = "Find code that would be affected if the given symbol changes (reverse dependencies)."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct FindAffectedCodeTool {
+    pub symbol_name: String,
+    pub file_path: Option<String>,
+    pub depth: Option<u32>,
+    pub limit: Option<u32>,
+    pub include_tests: Option<bool>,
+}

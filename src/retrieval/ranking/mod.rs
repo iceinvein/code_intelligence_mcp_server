@@ -11,4 +11,4 @@ pub use reranker::{apply_reranker_scores, prepare_rerank_docs, should_rerank};
 #[cfg(test)]
 pub use diversify::is_definition_kind;
 #[cfg(test)]
-pub use score::{apply_popularity_boost, rank_hits};
+pub use score::{apply_popularity_boost_with_signals, rank_hits_with_signals};

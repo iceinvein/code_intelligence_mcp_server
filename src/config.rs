@@ -491,7 +491,7 @@ fn parse_embeddings_backend(value: &str) -> Result<EmbeddingsBackend> {
     match value.trim().to_lowercase().as_str() {
         "fastembed" => Ok(EmbeddingsBackend::FastEmbed),
         "hash" => Ok(EmbeddingsBackend::Hash),
-        "jinacode" | "jina-code" | "jina" | "jinacode" => Ok(EmbeddingsBackend::JinaCode),
+        "jinacode" | "jina-code" | "jina" => Ok(EmbeddingsBackend::JinaCode),
         other => Err(anyhow!("Invalid EMBEDDINGS_BACKEND: {other}")),
     }
 }

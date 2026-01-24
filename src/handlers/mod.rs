@@ -1367,6 +1367,147 @@ fn format_affected_code(root: &SymbolRow, affected: &[serde_json::Value], affect
     out
 }
 
+/// Handle search_todos tool
+pub fn handle_search_todos(
+    db_path: &std::path::Path,
+    tool: SearchTodosTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    let todos = sqlite.search_todos(
+        tool.query.as_deref(),
+        tool.file_path.as_deref(),
+        tool.kind.as_deref(),
+        limit,
+    )?;
+
+    // Build display
+    let display = format_todos(&todos);
+
+    Ok(json!({
+        "count": todos.len(),
+        "todos": todos,
+        "display": display,
+    }))
+}
+
+/// Handle find_tests_for_symbol tool
+pub fn handle_find_tests_for_symbol(
+    db_path: &std::path::Path,
+    tool: FindTestsForSymbolTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(20).max(1) as usize;
+
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    // Find the symbol
+    let roots = sqlite.search_symbols_by_exact_name(
+        &tool.symbol_name,
+        tool.file_path.as_deref(),
+        1
+    )?;
+    let Some(root) = roots.first() else {
+        return Ok(json!({
+            "symbol_name": tool.symbol_name,
+            "error": "SYMBOL_NOT_FOUND",
+            "message": format!("Symbol '{}' not found", tool.symbol_name),
+            "test_files": [],
+        }));
+    };
+
+    // Get test files for this symbol's source file
+    let test_files = sqlite.get_tests_for_source(&root.file_path)?;
+
+    // Get symbols with tests for more detail
+    let symbols_with_tests = sqlite.get_symbols_with_tests(&root.file_path)?;
+
+    // Build display
+    let display = format_test_results(&root, &test_files, &symbols_with_tests);
+
+    Ok(json!({
+        "symbol_name": root.name,
+        "symbol_kind": root.kind,
+        "source_file": root.file_path,
+        "test_file_count": test_files.len(),
+        "test_files": test_files,
+        "symbols_with_tests": symbols_with_tests,
+        "display": display,
+    }))
+}
+
+fn format_todos(todos: &[crate::storage::sqlite::schema::TodoRow]) -> String {
+    let mut out = String::from("# TODO Comments\n\n");
+
+    if todos.is_empty() {
+        out.push_str("*No TODOs found*\n");
+        return out;
+    }
+
+    let mut by_file: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
+    for todo in todos {
+        by_file.entry(&todo.file_path).or_default().push(todo);
+    }
+
+    for (file, file_todos) in by_file {
+        let file_name = file.split('/').last().unwrap_or(file);
+        out.push_str(&format!("## {}\n\n", file_name));
+
+        for todo in file_todos {
+            let icon = match todo.kind.as_str() {
+                "fixme" => "[FIXME]",
+                _ => "[TODO]",
+            };
+            out.push_str(&format!(
+                "{} {}:{} - {}\n",
+                icon,
+                file_name,
+                todo.line,
+                todo.text
+            ));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+fn format_test_results(
+    symbol: &SymbolRow,
+    test_files: &[String],
+    symbols_with_tests: &[(String, String)],
+) -> String {
+    let mut out = format!("# Tests for: {}\n\n", symbol.name);
+    out.push_str(&format!("**Kind:** {}\n", symbol.kind));
+    out.push_str(&format!("**File:** `{}`\n\n", symbol.file_path));
+
+    if test_files.is_empty() {
+        out.push_str("*No test files found*\n");
+        return out;
+    }
+
+    out.push_str(&format!("**Test Files:** {}\n\n", test_files.len()));
+
+    out.push_str("## Test Files\n\n");
+    for (i, test_file) in test_files.iter().enumerate() {
+        let file_short = test_file.split('/').last().unwrap_or(test_file);
+        out.push_str(&format!("{}. `{}`\n", i + 1, file_short));
+    }
+
+    if !symbols_with_tests.is_empty() {
+        out.push_str("\n## Tested Symbols\n\n");
+        for (symbol_name, test_path) in symbols_with_tests {
+            let test_short = test_path.split('/').last().unwrap_or(test_path);
+            out.push_str(&format!("- `{}` ({})\n", symbol_name, test_short));
+        }
+    }
+
+    out
+}
+
 
 #[cfg(test)]
 mod tests {

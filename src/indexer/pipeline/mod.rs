@@ -412,12 +412,14 @@ impl IndexPipeline {
         }
 
         // Compute PageRank scores after all indexing is complete
-        // This runs once per full index run, not per-file
-        {
+        // Only run if the graph structure changed (files indexed or deleted)
+        if stats.files_indexed > 0 || stats.files_deleted > 0 {
             let sqlite = SqliteStore::open(&self.db_path)?;
             sqlite.init()?;
             pagerank::compute_and_store_pagerank(&sqlite, &self.config)
                 .context("Failed to compute PageRank scores")?;
+        } else {
+            tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
         }
 
         tracing::debug!(?stats, "Index run completed");

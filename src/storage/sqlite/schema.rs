@@ -411,4 +411,18 @@ CREATE TABLE IF NOT EXISTS test_links (
 );
 CREATE INDEX IF NOT EXISTS idx_test_links_test ON test_links(test_file_path);
 CREATE INDEX IF NOT EXISTS idx_test_links_source ON test_links(source_file_path);
+
+-- Decorators for framework metadata (LANG-02)
+CREATE TABLE IF NOT EXISTS decorators (
+  symbol_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  arguments TEXT,
+  target_line INTEGER NOT NULL,
+  decorator_type TEXT NOT NULL DEFAULT 'unknown',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (symbol_id, name),
+  FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_decorators_name ON decorators(name);
+CREATE INDEX IF NOT EXISTS idx_decorators_type ON decorators(decorator_type);
 "#;

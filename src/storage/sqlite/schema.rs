@@ -159,6 +159,38 @@ pub struct DocstringRow {
     pub updated_at: i64,
 }
 
+/// TODO/FIXME comment row for technical debt tracking (LANG-03)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoRow {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    pub file_path: String,
+    pub line: u32,
+    pub associated_symbol: Option<String>,
+    pub created_at: i64,
+}
+
+/// Test-to-source file link for test coverage awareness (LANG-04)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestLinkRow {
+    pub test_file_path: String,
+    pub source_file_path: String,
+    pub link_direction: String,  // "bidirectional", "test_to_source", "source_to_test"
+    pub created_at: i64,
+}
+
+/// Decorator row for framework metadata (LANG-02)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecoratorRow {
+    pub symbol_id: String,
+    pub name: String,
+    pub arguments: Option<String>,
+    pub target_line: u32,
+    pub decorator_type: String,
+    pub updated_at: i64,
+}
+
 pub const SCHEMA_SQL: &str = r#"
 PRAGMA foreign_keys = ON;
 
@@ -352,4 +384,31 @@ CREATE TABLE IF NOT EXISTS docstrings (
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
   FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
 );
+
+-- TODO/FIXME comments for technical debt tracking (LANG-03)
+CREATE TABLE IF NOT EXISTS todos (
+  id TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  associated_symbol TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_todos_file ON todos(file_path);
+CREATE INDEX IF NOT EXISTS idx_todos_kind ON todos(kind);
+CREATE INDEX IF NOT EXISTS idx_todos_symbol ON todos(associated_symbol);
+
+-- Test-to-source file links for test coverage awareness (LANG-04)
+CREATE TABLE IF NOT EXISTS test_links (
+  test_file_path TEXT NOT NULL,
+  source_file_path TEXT NOT NULL,
+  link_direction TEXT NOT NULL DEFAULT 'bidirectional',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (test_file_path, source_file_path),
+  FOREIGN KEY(test_file_path) REFERENCES symbols(file_path) ON DELETE CASCADE,
+  FOREIGN KEY(source_file_path) REFERENCES symbols(file_path) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_test_links_test ON test_links(test_file_path);
+CREATE INDEX IF NOT EXISTS idx_test_links_source ON test_links(source_file_path);
 "#;

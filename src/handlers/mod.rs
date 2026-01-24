@@ -3,7 +3,7 @@
 use crate::graph::{build_call_hierarchy, build_dependency_graph, build_type_graph};
 use crate::retrieval::assembler::FormatMode;
 use crate::retrieval::Retriever;
-use crate::storage::sqlite::SqliteStore;
+use crate::storage::sqlite::{SqliteStore, SymbolRow};
 use crate::tools::*;
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams};
 use serde::de::DeserializeOwned;
@@ -673,6 +673,203 @@ fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> Strin
     }
 
     out.push_str("\n*Scores: keyword, vector, popularity, learning boosts*\n");
+    out
+}
+
+/// Handle trace_data_flow tool - trace variable reads/writes through the codebase
+pub fn handle_trace_data_flow(
+    db_path: &std::path::Path,
+    tool: TraceDataFlowTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let depth = tool.depth.unwrap_or(3) as usize;
+    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let direction = tool.direction.unwrap_or_else(|| "both".to_string());
+
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    // Find the root symbol
+    let roots = sqlite.search_symbols_by_exact_name(
+        &tool.symbol_name,
+        tool.file_path.as_deref(),
+        1
+    )?;
+    let Some(root) = roots.first() else {
+        return Ok(json!({
+            "symbol_name": tool.symbol_name,
+            "error": "SYMBOL_NOT_FOUND",
+            "message": format!("Symbol '{}' not found", tool.symbol_name),
+            "flows": [],
+        }));
+    };
+
+    // Trace data flow using edge traversal
+    let (reads, writes) = trace_data_flow_edges(&sqlite, &root.id, depth, limit, &direction)?;
+
+    // Build flow items
+    let mut flows = Vec::new();
+    for (sym_id, flow_type, path) in &reads {
+        if let Some(sym) = sqlite.get_symbol_by_id(sym_id)? {
+            flows.push(json!({
+                "symbol_id": sym.id,
+                "symbol_name": sym.name,
+                "kind": sym.kind,
+                "file_path": sym.file_path,
+                "line": sym.start_line,
+                "flow_type": flow_type,
+                "path": path,
+            }));
+        }
+    }
+    for (sym_id, flow_type, path) in &writes {
+        if let Some(sym) = sqlite.get_symbol_by_id(sym_id)? {
+            flows.push(json!({
+                "symbol_id": sym.id,
+                "symbol_name": sym.name,
+                "kind": sym.kind,
+                "file_path": sym.file_path,
+                "line": sym.start_line,
+                "flow_type": flow_type,
+                "path": path,
+            }));
+        }
+    }
+
+    // Sort: writes first, then reads, each by file path
+    flows.sort_by(|a, b| {
+        let fa = a.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
+        let fb = b.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
+        match (fa, fb) {
+            ("write", "read") => std::cmp::Ordering::Less,
+            ("read", "write") => std::cmp::Ordering::Greater,
+            _ => {
+                let fa_path = a.get("file_path").and_then(|v| v.as_str());
+                let fb_path = b.get("file_path").and_then(|v| v.as_str());
+                fa_path.cmp(&fb_path)
+            }
+        }
+    });
+    flows.truncate(limit);
+
+    // Build display
+    let display = format_data_flow(&root, &flows);
+
+    Ok(json!({
+        "symbol_name": root.name,
+        "symbol_kind": root.kind,
+        "file_path": root.file_path,
+        "direction": direction,
+        "depth": depth,
+        "read_count": reads.len(),
+        "write_count": writes.len(),
+        "flows": flows,
+        "display": display,
+    }))
+}
+
+fn trace_data_flow_edges(
+    sqlite: &SqliteStore,
+    root_id: &str,
+    depth: usize,
+    limit: usize,
+    direction: &str,
+) -> Result<(Vec<(String, String, Vec<String>)>, Vec<(String, String, Vec<String>)>), anyhow::Error> {
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut queue = Vec::new();
+
+    // Start with root symbol
+    queue.push((root_id.to_string(), vec![]));
+    visited.insert(root_id.to_string());
+
+    for _level in 0..depth {
+        if reads.len() + writes.len() >= limit {
+            break;
+        }
+        let mut next_queue = Vec::new();
+
+        for (current_id, path) in queue.drain(..) {
+            // Get outgoing edges
+            let outgoing = sqlite.list_edges_from(&current_id, limit)?;
+
+            for edge in outgoing {
+                if reads.len() + writes.len() >= limit {
+                    break;
+                }
+
+                // Infer data flow from edge type
+                let flow_type = match edge.edge_type.as_str() {
+                    "call" => "read",
+                    "reference" => "read",
+                    "extends" | "implements" => "read",
+                    _ => continue,
+                };
+
+                let match_direction = match direction.as_ref() {
+                    "reads" => flow_type == "read",
+                    "writes" => flow_type == "write",
+                    _ => true,
+                };
+
+                if !match_direction {
+                    continue;
+                }
+
+                if visited.insert(edge.to_symbol_id.clone()) {
+                    let mut new_path = path.clone();
+                    new_path.push(edge.to_symbol_id.clone());
+
+                    let target = (flow_type == "read").then(|| &mut reads)
+                        .unwrap_or(&mut writes);
+                    target.push((edge.to_symbol_id.clone(), flow_type.to_string(), new_path.clone()));
+                    next_queue.push((edge.to_symbol_id, new_path));
+                }
+            }
+        }
+        queue = next_queue;
+    }
+
+    Ok((reads, writes))
+}
+
+fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
+    let mut out = format!("# Data Flow Trace: {}\n\n", root.name);
+    out.push_str(&format!("**Kind:** {}\n", root.kind));
+    out.push_str(&format!("**File:** `{}`\n\n", root.file_path));
+
+    let read_count = flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("read")).count();
+    let write_count = flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write")).count();
+
+    out.push_str(&format!("**Reads:** {} | **Writes:** {}\n\n", read_count, write_count));
+
+    if flows.is_empty() {
+        out.push_str("*No data flow found*\n");
+        return out;
+    }
+
+    out.push_str("## Flow\n\n");
+    for (i, flow) in flows.iter().enumerate() {
+        let name = flow.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+        let kind = flow.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let file = flow.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+        let file_short = file.split('/').last().unwrap_or(file);
+        let flow_type = flow.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
+
+        let icon = match flow_type {
+            "write" => "[WRITE]",
+            "read" => "[READ]",
+            _ => "[?]",
+        };
+
+        out.push_str(&format!(
+            "{}. {} **{}** ({})\n   - {}:{}\n",
+            i + 1, icon, name, kind, file_short,
+            flow.get("line").and_then(|v| v.as_i64()).unwrap_or(0)
+        ));
+        out.push('\n');
+    }
+
     out
 }
 

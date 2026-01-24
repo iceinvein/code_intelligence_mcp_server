@@ -175,3 +175,14 @@ pub struct TraceDataFlowTool {
     pub depth: Option<u32>,
     pub limit: Option<u32>,
 }
+
+#[macros::mcp_tool(
+    name = "summarize_file",
+    description = "Generate a summary of file contents including symbol counts, structure overview, and key exports."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct SummarizeFileTool {
+    pub file_path: String,
+    pub include_signatures: Option<bool>,
+    pub verbose: Option<bool>,
+}

@@ -25,6 +25,7 @@ use ranking::{
     rank_hits_with_signals, apply_reranker_scores, prepare_rerank_docs, should_rerank,
     reciprocal_rank_fusion, get_graph_ranked_hits,
 };
+use crate::retrieval::hyde::HypotheticalCodeGenerator;
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -73,6 +74,7 @@ pub struct Retriever {
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
     reranker: Option<Arc<dyn Reranker>>,
+    hyde_generator: Option<HypotheticalCodeGenerator>,
     cache: Arc<Mutex<RetrieverCaches>>,
     cache_config_key: String,
 }
@@ -84,6 +86,7 @@ impl Retriever {
         vectors: Arc<LanceVectorTable>,
         embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
         reranker: Option<Arc<dyn Reranker>>,
+        hyde_generator: Option<HypotheticalCodeGenerator>,
     ) -> Self {
         let cache = RetrieverCaches::new();
         let cache_config_key = format!(
@@ -106,6 +109,7 @@ impl Retriever {
             vectors,
             embedder,
             reranker,
+            hyde_generator,
             cache: Arc::new(Mutex::new(cache)),
             cache_config_key,
         }
@@ -303,7 +307,29 @@ impl Retriever {
 
         let vector_t = Instant::now();
         let query_vector = self.get_query_vector_cached(search_query).await?;
-        let vector_hits = self.vectors.search(&query_vector, k).await?;
+        let mut vector_hits = self.vectors.search(&query_vector, k).await?;
+
+        // HyDE: Add hypothetical document retrieval
+        if self.config.hyde_enabled {
+            if let Some(generator) = &self.hyde_generator {
+                // Detect language from query or default to TypeScript
+                let language = detect_language_from_query(search_query);
+
+                if let Ok(hyde_result) = generator.generate(search_query, language).await {
+                    // Embed hypothetical code and search
+                    let mut embedder = self.embedder.lock().await;
+                    if let Ok(hyde_embeddings) = embedder.embed(&[hyde_result.hypothetical_code]) {
+                        if let Some(hyde_vector) = hyde_embeddings.first() {
+                            if let Ok(mut hyde_hits) = self.vectors.search(hyde_vector, k / 2).await {
+                                // Combine HyDE hits with direct vector hits
+                                vector_hits.append(&mut hyde_hits);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let merge_t = Instant::now();
@@ -608,6 +634,22 @@ impl Retriever {
             }
         }
         Ok(out)
+    }
+}
+
+/// Detect programming language from query text for HyDE
+fn detect_language_from_query(query: &str) -> &'static str {
+    let q = query.to_lowercase();
+    if q.contains("rust") || q.contains("fn ") || q.contains("impl") {
+        "rust"
+    } else if q.contains("typescript") || q.contains("interface") || q.contains("type ") {
+        "typescript"
+    } else if q.contains("python") || q.contains("def ") || q.contains("class ") {
+        "python"
+    } else if q.contains("go") || q.contains("func ") {
+        "go"
+    } else {
+        "typescript" // Default
     }
 }
 

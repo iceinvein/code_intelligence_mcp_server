@@ -137,3 +137,25 @@ pub struct ReportSelectionTool {
     pub selected_symbol_id: String,
     pub position: u32,
 }
+
+#[macros::mcp_tool(
+    name = "explain_search",
+    description = "Return detailed scoring breakdown for search results to understand why results ranked the way they did."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct ExplainSearchTool {
+    pub query: String,
+    pub limit: Option<u32>,
+    pub exported_only: Option<bool>,
+    pub verbose: Option<bool>,
+}
+
+#[macros::mcp_tool(
+    name = "find_similar_code",
+    description = "Find semantically similar code using vector embeddings. Returns code that is similar in meaning or structure to the given symbol."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct FindSimilarCodeTool {
+    pub symbol_id: String,
+    pub limit: Option<u32>,
+}

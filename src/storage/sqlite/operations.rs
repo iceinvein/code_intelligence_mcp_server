@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::Path;
 
 use super::schema::SCHEMA_SQL;
@@ -58,6 +59,17 @@ DELETE FROM repositories;
             )
             .context("Failed to clear sqlite index")?;
         Ok(())
+    }
+
+    /// Batch query file affinity boost scores for multiple file paths
+    ///
+    /// Wrapper around queries::affinity::batch_get_affinity_boosts
+    /// Returns HashMap mapping file_path to affinity_score (0.0-1.0)
+    pub fn batch_get_affinity_boosts(
+        &self,
+        file_paths: &[&str],
+    ) -> Result<HashMap<String, f32>> {
+        super::queries::affinity::batch_get_affinity_boosts(&self.conn, file_paths)
     }
 }
 

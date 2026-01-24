@@ -83,3 +83,59 @@ pub fn delete_file_affinity(conn: &Connection, file_path: &str) -> Result<()> {
     .context("Failed to delete file affinity")?;
     Ok(())
 }
+
+/// Batch query file affinity boost scores for multiple file paths
+///
+/// Returns a HashMap mapping file_path to affinity_score (0.0-1.0).
+/// The affinity score combines view_count and edit_count with time decay:
+/// - access_score = (view_count + edit_count * 2) / max_score (normalized)
+/// - edit_count weighted 2x (edits indicate stronger engagement)
+/// - time_decay = exp(-0.05 * age_in_days) with lambda=0.05 (slower decay than selections)
+/// - Returns 0.0 for files not found in user_file_affinity table
+pub fn batch_get_affinity_boosts(
+    conn: &Connection,
+    file_paths: &[&str],
+) -> Result<std::collections::HashMap<String, f32>> {
+    use std::collections::HashMap;
+
+    if file_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Build IN clause placeholders using VALUES approach
+    let placeholders: Vec<String> = (0..file_paths.len())
+        .map(|i| format!("(?{})", i + 1))
+        .collect();
+
+    let query = format!(
+        r#"
+SELECT file_path,
+       (view_count + edit_count * 2.0) * exp(-0.05 * ((unixepoch() - last_accessed_at) / 86400.0)) as affinity_score
+FROM user_file_affinity
+WHERE file_path IN ({})
+"#,
+        placeholders.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&query).context("Failed to prepare batch_get_affinity_boosts")?;
+
+    // Build params as owned strings for rusqlite compatibility
+    let params: Vec<rusqlite::types::Value> = file_paths
+        .iter()
+        .map(|s| rusqlite::types::Value::Text(s.to_string()))
+        .collect();
+
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(params))
+        .context("Failed to query affinity boosts")?;
+
+    let mut result = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let file_path: String = row.get(0)?;
+        let affinity_score: f64 = row.get(1)?;
+        result.insert(file_path, affinity_score as f32);
+    }
+
+    // Fill in 0.0 for files not found (implicitly via HashMap::get returning None)
+    Ok(result)
+}

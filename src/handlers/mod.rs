@@ -1508,6 +1508,103 @@ fn format_test_results(
     out
 }
 
+/// Handle search_decorators tool
+pub fn handle_search_decorators(
+    db_path: &std::path::Path,
+    tool: SearchDecoratorsTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(50).max(1).min(500) as usize;
+
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    let decorators = sqlite.search_decorators_by_name(
+        tool.name.as_deref(),
+        tool.decorator_type.as_deref(),
+        limit,
+    )?;
+
+    let mut results = Vec::new();
+    for dec in decorators {
+        // Get symbol details for context
+        let symbol = sqlite.get_symbol_by_id(&dec.symbol_id)?.ok_or_else(|| {
+            anyhow::anyhow!("Symbol not found: {}", dec.symbol_id)
+        })?;
+
+        results.push(serde_json::json!({
+            "symbol_id": dec.symbol_id,
+            "symbol_name": symbol.name,
+            "decorator_name": dec.name,
+            "decorator_type": dec.decorator_type,
+            "arguments": dec.arguments,
+            "file_path": symbol.file_path,
+            "line": dec.target_line,
+            "language": symbol.language,
+            "symbol_kind": symbol.kind,
+        }));
+    }
+
+    // Build display
+    let display = format_decorators(&results);
+
+    Ok(serde_json::json!({
+        "count": results.len(),
+        "decorators": results,
+        "display": display,
+    }))
+}
+
+/// Format decorator search results as markdown
+fn format_decorators(decorators: &[serde_json::Value]) -> String {
+    let mut out = String::from("# Decorator Search Results\n\n");
+
+    if decorators.is_empty() {
+        out.push_str("*No decorators found*\n");
+        return out;
+    }
+
+    // Group by decorator name
+    let mut by_name: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
+    for dec in decorators {
+        let name = dec.get("decorator_name").and_then(|v| v.as_str()).unwrap_or("?");
+        by_name.entry(name).or_default().push(dec);
+    }
+
+    for (decorator_name, items) in by_name {
+        out.push_str(&format!("## @{}\n\n", decorator_name));
+        out.push_str(&format!("**Found:** {} times\n\n", items.len()));
+
+        for dec in items.iter().take(20) {
+            let symbol_name = dec.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let file_path = dec.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let file_short = file_path.split('/').last().unwrap_or(file_path);
+            let line = dec.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+            let decorator_type = dec.get("decorator_type").and_then(|v| v.as_str()).unwrap_or("");
+            let arguments = dec.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
+
+            out.push_str(&format!(
+                "- **{}** - `{}`:{}\n",
+                symbol_name, file_short, line
+            ));
+
+            if !decorator_type.is_empty() {
+                out.push_str(&format!("  - Type: `{}`\n", decorator_type));
+            }
+            if !arguments.is_empty() {
+                let args_preview = if arguments.len() > 60 {
+                    format!("{}...", &arguments[..60])
+                } else {
+                    arguments.to_string()
+                };
+                out.push_str(&format!("  - Args: `{}`\n", args_preview));
+            }
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
 
 #[cfg(test)]
 mod tests {

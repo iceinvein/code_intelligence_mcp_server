@@ -7,6 +7,9 @@ use anyhow::Result;
 pub use operations::SqliteStore;
 pub use schema::*;
 
+// Re-export types used in the API
+pub use crate::indexer::extract::symbol::TodoEntry;
+
 impl SqliteStore {
     pub fn upsert_symbol(&self, symbol: &SymbolRow) -> Result<()> {
         queries::symbols::upsert_symbol(&self.conn, symbol)
@@ -230,5 +233,46 @@ impl SqliteStore {
         pairs: &[(String, String)],
     ) -> Result<std::collections::HashMap<String, f32>> {
         queries::selections::batch_get_selection_boosts(&self.conn, pairs)
+    }
+
+    pub fn search_todos(
+        &self,
+        keyword: Option<&str>,
+        file_path: Option<&str>,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<schema::TodoRow>> {
+        queries::todos::search_todos(&self.conn, keyword, file_path, kind, limit)
+    }
+
+    pub fn batch_upsert_todos(&self, todos: &[TodoEntry]) -> Result<()> {
+        queries::todos::batch_upsert_todos(&self.conn, todos)
+    }
+
+    pub fn delete_todos_by_file(&self, file_path: &str) -> Result<()> {
+        queries::todos::delete_todos_by_file(&self.conn, file_path)
+    }
+
+    pub fn is_test_file(&self, path: &str) -> bool {
+        queries::tests::is_test_file(path)
+    }
+
+    pub fn create_test_links_for_file(&self, test_file_path: &str) -> Result<()> {
+        queries::tests::create_test_links_for_file(&self.conn, test_file_path)
+    }
+
+    pub fn delete_test_links_for_file(&self, file_path: &str) -> Result<()> {
+        queries::tests::delete_test_links_for_file(&self.conn, file_path)
+    }
+
+    pub fn get_tests_for_source(&self, source_path: &str) -> Result<Vec<String>> {
+        queries::tests::get_tests_for_source(&self.conn, source_path)
+    }
+
+    pub fn get_symbols_with_tests(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<(String, String)>> {
+        queries::tests::get_symbols_with_tests(&self.conn, file_path)
     }
 }

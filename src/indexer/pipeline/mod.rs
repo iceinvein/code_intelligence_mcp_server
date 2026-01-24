@@ -17,7 +17,7 @@ use crate::{
         extract::javascript::extract_javascript_symbols,
         extract::python::extract_python_symbols,
         extract::rust::extract_rust_symbols,
-        extract::typescript::extract_typescript_symbols,
+        extract::typescript::extract_typescript_symbols_with_path,
         parser::{language_id_for_path, LanguageId},
     },
     storage::{
@@ -180,6 +180,8 @@ impl IndexPipeline {
                     sqlite.init()?;
                     sqlite.delete_symbols_by_file(&file_path)?;
                     sqlite.delete_usage_examples_by_file(&file_path)?;
+                    sqlite.delete_todos_by_file(&file_path)?;
+                    sqlite.delete_test_links_for_file(&file_path)?;
                     sqlite.delete_file_fingerprint(&file_path)?;
                 }
 
@@ -245,7 +247,7 @@ impl IndexPipeline {
 
             let extracted = match language_id {
                 LanguageId::Typescript | LanguageId::Tsx => {
-                    extract_typescript_symbols(language_id, &source)
+                    extract_typescript_symbols_with_path(language_id, &source, &rel)
                 }
                 LanguageId::Rust => extract_rust_symbols(&source),
                 LanguageId::Python => extract_python_symbols(&source),
@@ -283,6 +285,12 @@ impl IndexPipeline {
                 sqlite
                     .delete_usage_examples_by_file(&rel)
                     .with_context(|| format!("Failed to delete old usage examples for {rel}"))?;
+                sqlite
+                    .delete_todos_by_file(&rel)
+                    .with_context(|| format!("Failed to delete old todos for {rel}"))?;
+                sqlite
+                    .delete_test_links_for_file(&rel)
+                    .with_context(|| format!("Failed to delete old test links for {rel}"))?;
             }
 
             let mut symbol_rows = Vec::new();
@@ -390,6 +398,16 @@ impl IndexPipeline {
                             symbol_id: rec.id.clone(),
                             cluster_key: cluster_key_from_vector(&rec.vector),
                         });
+                    }
+
+                    // Store TODO entries extracted from this file
+                    if !extracted.todos.is_empty() {
+                        let _ = sqlite.batch_upsert_todos(&extracted.todos);
+                    }
+
+                    // Create test links if this is a test file
+                    if sqlite.is_test_file(&rel) {
+                        let _ = sqlite.create_test_links_for_file(&rel);
                     }
 
                     sqlite.upsert_file_fingerprint(&rel, fp.mtime_ns, fp.size_bytes)?;

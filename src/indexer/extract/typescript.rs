@@ -8,12 +8,20 @@ use super::symbol::{
 };
 
 pub fn extract_typescript_symbols(language_id: LanguageId, source: &str) -> Result<ExtractedFile> {
+    extract_typescript_symbols_with_path(language_id, source, "<unknown>")
+}
+
+pub fn extract_typescript_symbols_with_path(
+    language_id: LanguageId,
+    source: &str,
+    file_path: &str,
+) -> Result<ExtractedFile> {
     if !matches!(language_id, LanguageId::Typescript | LanguageId::Tsx) {
         return Err(anyhow!("LanguageId must be Typescript or Tsx"));
     }
 
     let mut parser = parser_for_id(language_id)?;
-    extract_symbols_with_parser(&mut parser, source, "<unknown>", language_id)
+    extract_symbols_with_parser(&mut parser, source, file_path, language_id)
 }
 
 fn extract_symbols_with_parser(
@@ -142,6 +150,9 @@ fn extract_symbols_with_parser(
 
     symbols.sort_by_key(|s| s.bytes.start);
 
+    // Create a new cursor from root for later extractions
+    let cursor = root.walk();
+
     // Extract TODO/FIXME comments
     let todos = extract_todo_comments(cursor, source, file_path);
 
@@ -149,6 +160,7 @@ fn extract_symbols_with_parser(
     let jsdoc_entries = extract_jsdoc_entries(&symbols, source, file_path, language_id);
 
     // Extract decorators
+    let cursor = root.walk();
     let decorators = extract_decorators_for_symbols(&symbols, source, cursor);
 
     Ok(ExtractedFile {
@@ -1005,7 +1017,7 @@ fn extract_todo_comments(cursor: TreeCursor, source: &str, file_path: &str) -> V
     // First pass: find all comment nodes
     let mut comment_nodes = Vec::new();
 
-    fn collect_comments(node: Node, comments: &mut Vec<Node>) {
+    fn collect_comments<'a>(node: Node<'a>, comments: &mut Vec<Node<'a>>) {
         if node.kind() == "comment" || node.kind() == "block_comment" {
             comments.push(node);
         }
@@ -1072,6 +1084,309 @@ fn extract_todo_comments(cursor: TreeCursor, source: &str, file_path: &str) -> V
     }
 
     todos
+}
+
+/// Find JSDoc comment immediately preceding a node
+fn find_jsdoc_for_node(node: Node, source: &str) -> Option<String> {
+    let mut current = node.prev_sibling();
+    while let Some(sibling) = current {
+        match sibling.kind() {
+            "comment" | "block_comment" => {
+                let text = text_for_node(sibling, source);
+                // Check if it looks like JSDoc (starts with /**)
+                if text.trim_start().starts_with("/**") {
+                    return Some(text);
+                }
+                // For non-JSDoc comments, continue searching
+                current = sibling.prev_sibling();
+            }
+            // Whitespace and unnamed nodes are OK to skip
+            "" if sibling.is_named() == false => {
+                current = sibling.prev_sibling();
+            }
+            // Any other named node means no JSDoc attached
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Parse JSDoc tags from raw comment text
+fn parse_jsdoc(raw: &str, symbol_id: &str) -> JSDocEntry {
+    let mut params = Vec::new();
+    let mut returns = None;
+    let mut examples = Vec::new();
+    let mut throws = Vec::new();
+    let mut see_also = Vec::new();
+    let mut since = None;
+    let mut deprecated = false;
+    let mut summary_lines = Vec::new();
+
+    let mut current_example = None;
+
+    for line in raw.lines() {
+        let trimmed = line.trim_start_matches("/**").trim_start_matches("*").trim();
+
+        // Skip empty lines during summary collection
+        if trimmed.is_empty() && summary_lines.is_empty() && current_example.is_none() {
+            continue;
+        }
+
+        // Check for tags
+        if let Some(rest) = trimmed.strip_prefix("@") {
+            // Flush summary if we hit first tag
+            if !summary_lines.is_empty() && current_example.is_none() {
+                // Summary done
+            }
+
+            if let Some(param_str) = rest.strip_prefix("param ") {
+                // Parse @param {type} name description
+                let parts: Vec<&str> = param_str.splitn(3, ' ').collect();
+                if parts.len() >= 2 {
+                    let type_anno = if parts[0].starts_with('{') {
+                        parts[0].trim_start_matches('{').trim_end_matches('}')
+                    } else {
+                        ""
+                    };
+                    let name = if !type_anno.is_empty() { parts[1] } else { parts[0] };
+                    let desc = if parts.len() > 2 { parts[2] } else { "" };
+                    params.push(JSDocParam {
+                        name: name.to_string(),
+                        type_annotation: if !type_anno.is_empty() {
+                            Some(type_anno.to_string())
+                        } else {
+                            None
+                        },
+                        description: if desc.is_empty() { None } else { Some(desc.to_string()) },
+                    });
+                }
+            } else if let Some(ret) = rest.strip_prefix("returns ") {
+                returns = Some(ret.trim().to_string());
+            } else if rest.starts_with("example") {
+                current_example = Some(String::new());
+            } else if rest.starts_with("deprecated") {
+                deprecated = true;
+            } else if let Some(thrown) = rest.strip_prefix("throws ") {
+                throws.push(thrown.trim().to_string());
+            } else if let Some(see) = rest.strip_prefix("see ") {
+                see_also.push(see.trim().to_string());
+            } else if let Some(ver) = rest.strip_prefix("since ") {
+                since = Some(ver.trim().to_string());
+            }
+        } else if let Some(example) = &mut current_example {
+            // Accumulate example lines
+            if !trimmed.is_empty() {
+                example.push_str(trimmed);
+                example.push('\n');
+            }
+        } else if !trimmed.is_empty() && current_example.is_none() {
+            // Accumulate summary
+            summary_lines.push(trimmed);
+        }
+    }
+
+    if let Some(example) = current_example {
+        examples.push(example.trim().to_string());
+    }
+
+    let summary = if summary_lines.is_empty() {
+        None
+    } else {
+        Some(summary_lines.join(" "))
+    };
+
+    JSDocEntry {
+        symbol_id: symbol_id.to_string(),
+        raw_text: raw.to_string(),
+        summary,
+        params,
+        returns,
+        examples,
+        deprecated,
+        throws,
+        see_also,
+        since,
+    }
+}
+
+/// Extract JSDoc entries for all symbols in the file
+fn extract_jsdoc_entries(
+    symbols: &[ExtractedSymbol],
+    source: &str,
+    file_path: &str,
+    language_id: LanguageId,
+) -> Vec<JSDocEntry> {
+    let mut jsdoc_entries = Vec::new();
+
+    let tree = {
+        let mut parser = parser_for_id(language_id).unwrap_or_else(|_| {
+            // Fallback for parsing failure - try to get a parser
+            let mut p = tree_sitter::Parser::new();
+            let lang = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+            p.set_language(&lang).ok();
+            p
+        });
+        parser.parse(source, None)
+    };
+
+    let tree = match tree {
+        Some(t) => t,
+        None => return jsdoc_entries,
+    };
+
+    let root = tree.root_node();
+
+    for sym in symbols {
+        // Find the node for this symbol by position
+        let sym_node = find_node_at_position(root, sym.bytes.start);
+        if let Some(node) = sym_node {
+            if let Some(jsdoc_raw) = find_jsdoc_for_node(node, source) {
+                let symbol_id = format!("{}:{}:{}", file_path, sym.lines.start, sym.name);
+                let entry = parse_jsdoc(&jsdoc_raw, &symbol_id);
+                jsdoc_entries.push(entry);
+            }
+        }
+    }
+
+    jsdoc_entries
+}
+
+/// Find a node at a specific byte offset
+fn find_node_at_position(root: Node, offset: usize) -> Option<Node> {
+    let mut cursor = root.walk();
+
+    // Navigate to the position
+    loop {
+        let node = cursor.node();
+        if node.start_byte() <= offset && node.end_byte() > offset {
+            // This node contains the offset
+            if cursor.goto_first_child() {
+                continue;
+            }
+            return Some(node);
+        }
+
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+
+    None
+}
+
+/// Recognize well-known framework decorators
+fn classify_decorator(name: &str) -> DecoratorType {
+    match name {
+        // Angular decorators
+        "Component" | "Input" | "Output" | "HostListener" | "HostBinding" => DecoratorType::Component,
+        "Injectable" | "Inject" | "Optional" | "Self" => DecoratorType::Injectable,
+        "NgModule" | "Module" => DecoratorType::Module,
+        "Directive" | "Pipe" => DecoratorType::Directive,
+        // NestJS decorators
+        "Controller" => DecoratorType::Controller,
+        "Get" | "Post" | "Put" | "Delete" | "Patch" | "Options" | "Head" | "All" => {
+            DecoratorType::Get
+        }
+        "Param" | "Body" | "Query" | "Headers" | "Session" | "Ip" | "Req" | "Res" => {
+            DecoratorType::Param
+        }
+        "UseGuards" | "UseInterceptors" | "UsePipes" => DecoratorType::Unknown,
+        _ => DecoratorType::Unknown,
+    }
+}
+
+/// Extract decorator name (identifier or call expression target)
+fn extract_decorator_name(node: Node, source: &str) -> String {
+    // @Decorator or @Decorator()
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" | "property_identifier" => {
+                return text_for_node(child, source);
+            }
+            "call_expression" => {
+                // @Decorator() - find the function being called
+                if let Some(func) = child.child_by_field_name("function") {
+                    if func.kind() == "identifier" || func.kind() == "member_expression" {
+                        return text_for_node(func, source);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    String::new()
+}
+
+/// Extract decorator arguments as raw text
+fn extract_decorator_arguments(node: Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(args) = child.child_by_field_name("arguments") {
+                let raw = text_for_node(args, source);
+                let trimmed = raw.trim();
+                if !trimmed.is_empty() && trimmed != "()" {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract decorators from a class or method declaration
+fn extract_decorators_from_node(
+    node: Node,
+    source: &str,
+    symbol_id: &str,
+) -> Vec<DecoratorEntry> {
+    let mut decorators = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.children(&mut cursor) {
+        if child.kind() == "decorator" {
+            let name = extract_decorator_name(child, source);
+            let args = extract_decorator_arguments(child, source);
+            let dec_type = classify_decorator(&name);
+
+            decorators.push(DecoratorEntry {
+                symbol_id: symbol_id.to_string(),
+                name: name.clone(),
+                arguments: args,
+                target_line: node.start_position().row as u32,
+                decorator_type: dec_type,
+            });
+        }
+    }
+
+    decorators
+}
+
+/// Extract decorators for all symbols in the file
+fn extract_decorators_for_symbols(
+    symbols: &[ExtractedSymbol],
+    source: &str,
+    root_cursor: TreeCursor,
+) -> Vec<DecoratorEntry> {
+    let mut decorators = Vec::new();
+
+    let root = root_cursor.node();
+
+    for sym in symbols {
+        // Only classes and methods can have decorators in TypeScript
+        if !matches!(sym.kind, SymbolKind::Class | SymbolKind::Function) {
+            continue;
+        }
+
+        if let Some(node) = find_node_at_position(root, sym.bytes.start) {
+            let symbol_id = format!("<unknown>:{}:{}", sym.lines.start, sym.name);
+            let sym_decorators = extract_decorators_from_node(node, source, &symbol_id);
+            decorators.extend(sym_decorators);
+        }
+    }
+
+    decorators
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::reranker::create_reranker;
+use code_intelligence_mcp_server::retrieval::hyde::HypotheticalCodeGenerator;
 use code_intelligence_mcp_server::retrieval::Retriever;
 use code_intelligence_mcp_server::server::CodeIntelligenceHandler;
 use code_intelligence_mcp_server::storage::sqlite::SqliteStore;
@@ -138,6 +139,17 @@ async fn run() -> SdkResult<()> {
         description: format!("Failed to create reranker: {}", err),
     })?;
 
+    // Create HyDE generator if enabled
+    let hyde_generator = if config.hyde_enabled {
+        Some(HypotheticalCodeGenerator::new(
+            config.hyde_llm_backend.clone(),
+            config.hyde_api_key.clone(),
+            config.hyde_max_tokens,
+        ))
+    } else {
+        None
+    };
+
     let indexer = IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
@@ -150,6 +162,7 @@ async fn run() -> SdkResult<()> {
         vectors.clone(),
         embedder.clone(),
         reranker,
+        hyde_generator,
     );
 
     let state = Arc::new(AppState {

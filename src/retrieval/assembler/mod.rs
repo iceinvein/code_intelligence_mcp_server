@@ -8,7 +8,7 @@ use crate::storage::sqlite::SymbolRow;
 use anyhow::{anyhow, Context, Result};
 use formatting::{
     fingerprint_text, format_section_header, format_symbol_section, format_structured_output,
-    role_for_symbol, simplify_code, symbol_row_from_usage_example,
+    format_symbol_with_docstring, role_for_symbol, simplify_code, symbol_row_from_usage_example,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -136,8 +136,22 @@ impl ContextAssembler {
             let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
             let cluster_key = store.get_similarity_cluster_key(&sym.id).ok().flatten();
 
-            // Count tokens for the formatted symbol (approximate with text)
-            let text_tokens = counter.count(&text);
+            // For root symbols, fetch docstring to enhance formatting
+            let docstring = if is_root {
+                store.get_docstring_by_symbol(&sym.id).ok().flatten()
+            } else {
+                None
+            };
+
+            // Format with docstring if available (affects token count for roots)
+            let formatted_text = if is_root && docstring.is_some() {
+                format_symbol_with_docstring(sym, &text, &role, docstring.as_ref())
+            } else {
+                text.clone()
+            };
+
+            // Count tokens for the formatted symbol
+            let text_tokens = counter.count(&formatted_text);
 
             let role_cluster_limit = match role.as_str() {
                 "root" => 2usize,
@@ -180,7 +194,7 @@ impl ContextAssembler {
                     let tail = &lines[lines.len().saturating_sub(tail_count)..];
                     vec![head.join("\n"), "... (truncated) ...".to_string(), tail.join("\n")].join("\n")
                 } else {
-                    text.clone()
+                    formatted_text.clone()
                 };
                 let truncated_tokens = counter.count(&truncated_text);
 
@@ -239,7 +253,7 @@ impl ContextAssembler {
 
             // Add to appropriate section
             match role.as_str() {
-                "root" => definitions.push((sym.clone(), text.clone())),
+                "root" => definitions.push((sym.clone(), formatted_text.clone())),
                 "extra" if sym.kind.starts_with("usage_") => examples.push((sym.clone(), text.clone())),
                 _ => related.push((sym.clone(), text.clone())),
             }

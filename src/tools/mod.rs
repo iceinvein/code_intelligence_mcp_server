@@ -152,10 +152,13 @@ pub struct ExplainSearchTool {
 
 #[macros::mcp_tool(
     name = "find_similar_code",
-    description = "Find semantically similar code using vector embeddings. Returns code that is similar in meaning or structure to the given symbol."
+    description = "Find code semantically similar to a given symbol or code snippet."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindSimilarCodeTool {
-    pub symbol_id: String,
+    pub symbol_name: Option<String>,
+    pub code_snippet: Option<String>,
+    pub file_path: Option<String>,
     pub limit: Option<u32>,
+    pub threshold: Option<f32>,
 }

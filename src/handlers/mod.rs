@@ -873,6 +873,153 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
     out
 }
 
+/// Handle get_module_summary tool - list exported symbols with signatures
+pub fn handle_get_module_summary(
+    db_path: &std::path::Path,
+    tool: GetModuleSummaryTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let group_by_kind = tool.group_by_kind.unwrap_or(false);
+
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+
+    // Get exported symbols only
+    let symbols = sqlite.list_symbol_headers_by_file(&tool.file_path, true)?;
+
+    if symbols.is_empty() {
+        return Ok(json!({
+            "file_path": tool.file_path,
+            "error": "NO_EXPORTS",
+            "message": format!("No exported symbols found for '{}'", tool.file_path),
+            "exports": [],
+            "groups": [],
+        }));
+    }
+
+    // Build export list with signatures
+    let mut exports = Vec::new();
+    for sym in &symbols {
+        // Get full symbol for signature extraction
+        if let Some(full) = sqlite.get_symbol_by_id(&sym.id)? {
+            let sig = extract_signature(&full.text, &full.kind);
+            exports.push(json!({
+                "id": full.id,
+                "name": full.name,
+                "kind": full.kind,
+                "signature": sig,
+                "line": full.start_line,
+                "language": full.language,
+            }));
+        }
+    }
+
+    // Group by kind if requested
+    let groups = if group_by_kind {
+        let mut grouped: std::collections::HashMap<String, Vec<serde_json::Value>> =
+            std::collections::HashMap::new();
+        for exp in &exports {
+            let kind = exp.get("kind").and_then(|k| k.as_str()).unwrap_or("unknown");
+            grouped.entry(kind.to_string()).or_default().push(exp.clone());
+        }
+        let mut group_vec: Vec<serde_json::Value> = grouped
+            .into_iter()
+            .map(|(k, v)| json!({ "kind": k, "exports": v, "count": v.len() }))
+            .collect();
+        group_vec.sort_by(|a, b| {
+            let ka = a.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            let kb = b.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            ka.cmp(kb)
+        });
+        group_vec
+    } else {
+        vec![]
+    };
+
+    // Build display
+    let display = format_module_summary(&tool.file_path, &exports, &groups);
+
+    Ok(json!({
+        "file_path": tool.file_path,
+        "export_count": exports.len(),
+        "exports": exports,
+        "groups": groups,
+        "display": display,
+    }))
+}
+
+/// Extract a clean signature from symbol text
+fn extract_signature(text: &str, kind: &str) -> String {
+    // Take first few lines, up to a reasonable length
+    let mut sig_lines = Vec::new();
+    let max_lines = match kind {
+        "class" | "interface" | "struct" => 3,
+        "function" | "method" => 2,
+        _ => 1,
+    };
+
+    for (i, line) in text.lines().enumerate() {
+        if i >= max_lines {
+            break;
+        }
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            sig_lines.push(trimmed.to_string());
+        }
+    }
+
+    let sig = sig_lines.join(" ");
+    // Limit signature length
+    if sig.len() > 200 {
+        format!("{}...", &sig[..200])
+    } else {
+        sig
+    }
+}
+
+/// Format module summary as markdown
+fn format_module_summary(
+    file_path: &str,
+    exports: &[serde_json::Value],
+    groups: &[serde_json::Value],
+) -> String {
+    let file_name = file_path.split('/').last().unwrap_or(file_path);
+    let mut out = format!("# Module Summary: {}\n\n", file_name);
+    out.push_str(&format!("**Exports:** {}\n\n", exports.len()));
+
+    if !groups.is_empty() {
+        // Grouped display
+        for g in groups {
+            let kind = g.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            let count = g.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
+            out.push_str(&format!("## {} ({})\n\n", kind, count));
+
+            if let Some(arr) = g.get("exports").and_then(|v| v.as_array()) {
+                for exp in arr.iter().take(50) {
+                    let name = exp.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                    let sig = exp.get("signature").and_then(|s| s.as_str()).unwrap_or("");
+                    out.push_str(&format!("- `{}`: {}\n", name, sig));
+                }
+            }
+            out.push('\n');
+        }
+    } else {
+        // Flat display
+        out.push_str("## Exports\n\n");
+        for exp in exports.iter().take(50) {
+            let name = exp.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+            let kind = exp.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+            let sig = exp.get("signature").and_then(|s| s.as_str()).unwrap_or("");
+            out.push_str(&format!("- **{}** ({})\n  - `{}`\n", name, kind, sig));
+        }
+    }
+
+    if exports.len() > 50 {
+        out.push_str(&format!("\n*... and {} more exports*\n", exports.len() - 50));
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

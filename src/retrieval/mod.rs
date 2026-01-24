@@ -638,6 +638,20 @@ impl Retriever {
         }
     }
 
+    /// Get reference to vector store for vector queries
+    pub fn get_vector_store(&self) -> &LanceVectorTable {
+        &self.vectors
+    }
+
+    /// Get embedding for a single text string
+    pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
+        let mut embedder = self.embedder.lock().await;
+        let mut results = embedder.embed(&[text.to_string()])?;
+        results
+            .pop()
+            .ok_or_else(|| anyhow!("Embedder returned no vector"))
+    }
+
     pub fn assemble_definitions(&self, symbols: &[SymbolRow]) -> Result<String> {
         let sqlite = SqliteStore::open(&self.db_path)?;
         sqlite.init()?;

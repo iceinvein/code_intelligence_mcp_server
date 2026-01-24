@@ -6,7 +6,10 @@ use crate::config::Config;
 use crate::storage::sqlite::SqliteStore;
 use crate::storage::sqlite::SymbolRow;
 use anyhow::{anyhow, Context, Result};
-use formatting::{fingerprint_text, role_for_symbol, simplify_code, symbol_row_from_usage_example};
+use formatting::{
+    fingerprint_text, format_section_header, format_symbol_section, format_structured_output,
+    role_for_symbol, simplify_code, symbol_row_from_usage_example,
+};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -90,7 +93,6 @@ impl ContextAssembler {
         expanded: &[SymbolRow],
         mode: FormatMode,
     ) -> Result<(String, Vec<ContextItem>)> {
-        let mut out = String::new();
         let mut used_tokens = 0usize;
         let mut seen = HashSet::<String>::new();
         let root_ids: HashSet<&String> = roots.iter().map(|r| &r.id).collect();
@@ -108,6 +110,11 @@ impl ContextAssembler {
         let mut count_by_role = HashMap::<String, usize>::new();
         let mut count_by_cluster_key = HashMap::<String, usize>::new();
         let mut count_by_fingerprint = HashMap::<u64, usize>::new();
+
+        // Collect symbols by role for structured output
+        let mut definitions: Vec<(SymbolRow, String)> = Vec::new();
+        let mut examples: Vec<(SymbolRow, String)> = Vec::new();
+        let mut related: Vec<(SymbolRow, String)> = Vec::new();
 
         // Prioritize roots, then explicit_extra, then expanded
         for sym in roots
@@ -129,25 +136,8 @@ impl ContextAssembler {
             let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
             let cluster_key = store.get_similarity_cluster_key(&sym.id).ok().flatten();
 
-            let header = format!(
-                "=== {}:{}-{} ({} {}) id={} ===\n",
-                sym.file_path, sym.start_line, sym.end_line, sym.kind, sym.name, sym.id
-            );
-
-            // ... check limits using token count ...
-            let header_tokens = counter.count(&header);
-            if used_tokens + header_tokens >= max_tokens {
-                break;
-            }
-
-            let mut block = header;
-            block.push_str(&text);
-            if !block.ends_with('\n') {
-                block.push('\n');
-            }
-            block.push('\n');
-
-            let block_tokens = counter.count(&block);
+            // Count tokens for the formatted symbol (approximate with text)
+            let text_tokens = counter.count(&text);
 
             let role_cluster_limit = match role.as_str() {
                 "root" => 2usize,
@@ -174,21 +164,26 @@ impl ContextAssembler {
             };
             let role_used = used_by_role.get(&role).copied().unwrap_or(0);
             let role_count = count_by_role.get(&role).copied().unwrap_or(0);
-            if role_count > 0 && role_used.saturating_add(block_tokens) > role_cap {
+            if role_count > 0 && role_used.saturating_add(text_tokens) > role_cap {
                 continue;
             }
 
-            if used_tokens + block_tokens > max_tokens {
-                // ... truncate logic ...
-                // For truncation, we use UTF-8 byte boundaries for safety
-                let remaining_bytes = (max_tokens.saturating_sub(used_tokens) * 4).min(block.len());
-                let bytes = block.as_bytes();
-                let mut cut = remaining_bytes.min(bytes.len());
-                while cut > 0 && !block.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                out.push_str(&block[..cut]);
-                let truncated_tokens = counter.count(&block[..cut]);
+            if used_tokens + text_tokens > max_tokens {
+                // Truncate if needed
+                let remaining = max_tokens.saturating_sub(used_tokens);
+                let truncated_text = if remaining < text_tokens {
+                    // Simple truncation - in real usage would use smart_truncate with query
+                    let lines: Vec<&str> = text.lines().collect();
+                    let head_count = (remaining / 2).min(lines.len());
+                    let tail_count = (remaining / 2).min(lines.len().saturating_sub(head_count));
+                    let head = &lines[..head_count];
+                    let tail = &lines[lines.len().saturating_sub(tail_count)..];
+                    vec![head.join("\n"), "... (truncated) ...".to_string(), tail.join("\n")].join("\n")
+                } else {
+                    text.clone()
+                };
+                let truncated_tokens = counter.count(&truncated_text);
+
                 let mut reasons = vec![format!("role:{role}")];
                 if let Some(key) = &cluster_key {
                     reasons.push(format!("cluster:{key}"));
@@ -199,6 +194,14 @@ impl ContextAssembler {
                     reasons.push("simplified".to_string());
                 }
                 reasons.push("truncated".to_string());
+
+                // Add to appropriate section
+                match role.as_str() {
+                    "root" => definitions.push((sym.clone(), truncated_text.clone())),
+                    "extra" if sym.kind.starts_with("usage_") => examples.push((sym.clone(), truncated_text.clone())),
+                    _ => related.push((sym.clone(), truncated_text.clone())),
+                }
+
                 items.push(ContextItem {
                     id: sym.id.clone(),
                     file_path: sym.file_path.clone(),
@@ -222,8 +225,7 @@ impl ContextAssembler {
                 break;
             }
 
-            out.push_str(&block);
-            used_tokens += block_tokens;
+            used_tokens += text_tokens;
 
             let mut reasons = vec![format!("role:{role}")];
             if let Some(key) = &cluster_key {
@@ -234,6 +236,14 @@ impl ContextAssembler {
             if simplified {
                 reasons.push("simplified".to_string());
             }
+
+            // Add to appropriate section
+            match role.as_str() {
+                "root" => definitions.push((sym.clone(), text.clone())),
+                "extra" if sym.kind.starts_with("usage_") => examples.push((sym.clone(), text.clone())),
+                _ => related.push((sym.clone(), text.clone())),
+            }
+
             items.push(ContextItem {
                 id: sym.id.clone(),
                 file_path: sym.file_path.clone(),
@@ -244,9 +254,9 @@ impl ContextAssembler {
                 role: role.clone(),
                 reasons,
                 truncated: simplified,
-                tokens: block_tokens,
+                tokens: text_tokens,
             });
-            *used_by_role.entry(role.clone()).or_insert(0) += block_tokens;
+            *used_by_role.entry(role.clone()).or_insert(0) += text_tokens;
             *count_by_role.entry(role).or_insert(0) += 1;
             if let Some(key) = &cluster_key {
                 *count_by_cluster_key.entry(key.clone()).or_insert(0) += 1;
@@ -255,6 +265,9 @@ impl ContextAssembler {
                 *count_by_fingerprint.entry(fp).or_insert(0) += 1;
             }
         }
+
+        // Format with structured output
+        let out = format_structured_output(&definitions, &examples, &related);
 
         Ok((out, items))
     }

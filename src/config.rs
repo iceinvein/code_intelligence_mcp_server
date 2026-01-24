@@ -79,6 +79,19 @@ pub struct Config {
     // Query expansion config (FNDN-02)
     pub synonym_expansion_enabled: bool,
     pub acronym_expansion_enabled: bool,
+
+    // RRF config (RETR-05)
+    pub rrf_enabled: bool,
+    pub rrf_k: f32,
+    pub rrf_keyword_weight: f32,
+    pub rrf_vector_weight: f32,
+    pub rrf_graph_weight: f32,
+
+    // HyDE config (RETR-06, RETR-07)
+    pub hyde_enabled: bool,
+    pub hyde_llm_backend: String,
+    pub hyde_api_key: Option<String>,
+    pub hyde_max_tokens: usize,
 }
 
 impl Config {
@@ -338,6 +351,48 @@ impl Config {
             .transpose()?
             .unwrap_or(true);
 
+        // RRF config (RETR-05)
+        let rrf_enabled = optional_env("RRF_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true); // Default enabled
+        let rrf_k = optional_env("RRF_K")
+            .as_deref()
+            .map(parse_f32)
+            .transpose()?
+            .unwrap_or(60.0); // Standard RRF constant
+        let rrf_keyword_weight = optional_env("RRF_KEYWORD_WEIGHT")
+            .as_deref()
+            .map(parse_f32)
+            .transpose()?
+            .unwrap_or(1.0);
+        let rrf_vector_weight = optional_env("RRF_VECTOR_WEIGHT")
+            .as_deref()
+            .map(parse_f32)
+            .transpose()?
+            .unwrap_or(1.0);
+        let rrf_graph_weight = optional_env("RRF_GRAPH_WEIGHT")
+            .as_deref()
+            .map(parse_f32)
+            .transpose()?
+            .unwrap_or(0.5); // Lower weight for graph
+
+        // HyDE config (RETR-06, RETR-07)
+        let hyde_enabled = optional_env("HYDE_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(false); // Default disabled (requires LLM)
+        let hyde_llm_backend = optional_env("HYDE_LLM_BACKEND")
+            .unwrap_or_else(|| "openai".to_string());
+        let hyde_api_key = optional_env("HYDE_API_KEY");
+        let hyde_max_tokens = optional_env("HYDE_MAX_TOKENS")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(512);
+
         Ok(Self {
             base_dir,
             db_path,
@@ -397,6 +452,19 @@ impl Config {
             // Query expansion config (FNDN-02)
             synonym_expansion_enabled,
             acronym_expansion_enabled,
+
+            // RRF config (RETR-05)
+            rrf_enabled,
+            rrf_k,
+            rrf_keyword_weight,
+            rrf_vector_weight,
+            rrf_graph_weight,
+
+            // HyDE config (RETR-06, RETR-07)
+            hyde_enabled,
+            hyde_llm_backend,
+            hyde_api_key,
+            hyde_max_tokens,
         })
     }
 
@@ -610,6 +678,17 @@ mod tests {
             // Query expansion config (FNDN-02)
             "SYNONYM_EXPANSION_ENABLED",
             "ACRONYM_EXPANSION_ENABLED",
+            // RRF config (RETR-05)
+            "RRF_ENABLED",
+            "RRF_K",
+            "RRF_KEYWORD_WEIGHT",
+            "RRF_VECTOR_WEIGHT",
+            "RRF_GRAPH_WEIGHT",
+            // HyDE config (RETR-06, RETR-07)
+            "HYDE_ENABLED",
+            "HYDE_LLM_BACKEND",
+            "HYDE_API_KEY",
+            "HYDE_MAX_TOKENS",
         ] {
             std::env::remove_var(k);
         }

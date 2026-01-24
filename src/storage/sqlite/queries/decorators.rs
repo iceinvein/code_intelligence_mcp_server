@@ -110,3 +110,73 @@ pub fn delete_decorators_by_file(conn: &Connection, file_path: &str) -> Result<(
     .context("Failed to delete decorators for file")?;
     Ok(())
 }
+
+/// Search for decorators by name and/or type (exact or prefix match).
+pub fn search_decorators_by_name_filtered(
+    conn: &Connection,
+    name: Option<&str>,
+    decorator_type: Option<&str>,
+    limit: usize,
+) -> Result<Vec<DecoratorRow>> {
+    let (mut sql, params) = build_decorator_query(name, decorator_type);
+    sql.push_str(" ORDER BY s.file_path ASC, d.target_line ASC LIMIT ?");
+    let limit_param = limit as i64;
+
+    let mut stmt = conn.prepare(&sql)
+        .context("Failed to prepare search_decorators_by_name_filtered")?;
+
+    // Build parameter references
+    let mut param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+    param_refs.push(&limit_param);
+
+    let mut rows = stmt.query(param_refs.as_slice())?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(DecoratorRow {
+            symbol_id: row.get(0)?,
+            name: row.get(1)?,
+            arguments: row.get(2)?,
+            target_line: row.get::<_, i64>(3)? as u32,
+            decorator_type: row.get(4)?,
+            updated_at: 0,
+        });
+    }
+    Ok(out)
+}
+
+/// Build SQL query for decorator search with optional filters.
+fn build_decorator_query(
+    name: Option<&str>,
+    decorator_type: Option<&str>,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut conditions = Vec::new();
+    let mut params = Vec::new();
+
+    if let Some(n) = name {
+        conditions.push("(d.name = ? OR d.name LIKE (? || '%'))");
+        params.push(Box::new(n.to_string()) as Box<dyn rusqlite::ToSql>);
+        params.push(Box::new(n.to_string()) as Box<dyn rusqlite::ToSql>);
+    }
+
+    if let Some(dt) = decorator_type {
+        conditions.push("d.decorator_type = ?");
+        params.push(Box::new(dt.to_string()) as Box<dyn rusqlite::ToSql>);
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    (
+        format!(
+            "SELECT d.symbol_id, d.name, d.arguments, d.target_line, d.decorator_type
+             FROM decorators d
+             JOIN symbols s ON d.symbol_id = s.id
+             {}",
+            where_clause
+        ),
+        params,
+    )
+}

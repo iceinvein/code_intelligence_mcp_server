@@ -405,9 +405,7 @@ CREATE TABLE IF NOT EXISTS test_links (
   source_file_path TEXT NOT NULL,
   link_direction TEXT NOT NULL DEFAULT 'bidirectional',
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  PRIMARY KEY (test_file_path, source_file_path),
-  FOREIGN KEY(test_file_path) REFERENCES symbols(file_path) ON DELETE CASCADE,
-  FOREIGN KEY(source_file_path) REFERENCES symbols(file_path) ON DELETE CASCADE
+  PRIMARY KEY (test_file_path, source_file_path)
 );
 CREATE INDEX IF NOT EXISTS idx_test_links_test ON test_links(test_file_path);
 CREATE INDEX IF NOT EXISTS idx_test_links_source ON test_links(source_file_path);

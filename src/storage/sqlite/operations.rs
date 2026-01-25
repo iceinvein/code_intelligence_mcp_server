@@ -45,7 +45,10 @@ impl SqliteStore {
         }).ok(); // Silently ignore if WAL fails
         // Enable foreign key constraints (required for ON DELETE CASCADE to work)
         // This MUST be set on every connection as it's connection-specific, not database-wide
-        let _ = conn.execute("PRAGMA foreign_keys = ON", []).ok();
+        match conn.execute("PRAGMA foreign_keys = ON", []) {
+            Ok(_) => tracing::info!("Foreign keys enabled on connection"),
+            Err(e) => tracing::error!("Failed to enable foreign keys: {}", e),
+        }
 
 
         // synchronous and busy_timeout don't return values, use execute

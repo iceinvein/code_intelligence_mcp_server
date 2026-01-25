@@ -149,7 +149,7 @@ fn extract_import(node: Node, source: &str, imports: &mut Vec<Import>) {
             // derive from source path
             source_path
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or(&source_path)
                 .to_string()
         };

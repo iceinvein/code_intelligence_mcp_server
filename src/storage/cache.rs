@@ -92,7 +92,7 @@ impl EmbeddingCache {
 
         // Lazy cleanup on put (every 1000 puts)
         let misses = self.misses.load(Ordering::Relaxed);
-        if misses % 1000 == 0 {
+        if misses.is_multiple_of(1000) {
             let _ = self.db.cleanup_cache(self.max_size_bytes);
         }
 

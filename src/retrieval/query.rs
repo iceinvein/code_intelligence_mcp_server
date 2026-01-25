@@ -24,13 +24,14 @@ pub enum Intent {
     Implementation,  // "how is X implemented", "implementation of"
     Config,          // "configuration", "settings", "env", "config"
     Error,           // "error handling", "exception", "error"
-    API,             // "endpoint", "route", "handler", "api"
+    Api,             // "endpoint", "route", "handler", "api"
     Hook,            // "useEffect", "hook", "lifecycle"
     Middleware,      // "middleware", "interceptor"
     Migration,       // "migration", "schema change", "migrate"
 }
 
 /// Normalize query text for better search results
+#[allow(dead_code)]
 pub fn normalize_query(query: &str) -> String {
     let out = text_module::normalize_query_text(query);
     let mut final_parts = Vec::new();
@@ -115,7 +116,7 @@ pub fn detect_intent(query: &str) -> Option<Intent> {
         || q.contains("handler")
         || q.split_whitespace().any(|w| w == "api")
     {
-        return Some(Intent::API);
+        return Some(Intent::Api);
     }
 
     // NEW: Hook intent
@@ -324,6 +325,7 @@ pub fn decompose_query(query: &str, max_depth: usize) -> Vec<String> {
 ///
 /// Returns true if the query appears to contain actual code rather than
 /// natural language description. Used to switch between embedding strategies.
+#[allow(dead_code)]
 pub fn contains_code_snippet(query: &str) -> bool {
     let q = query.trim();
 
@@ -447,7 +449,7 @@ mod tests {
             Some(Intent::Config)
         ));
         assert!(matches!(detect_intent("error handling"), Some(Intent::Error)));
-        assert!(matches!(detect_intent("api endpoint"), Some(Intent::API)));
+        assert!(matches!(detect_intent("api endpoint"), Some(Intent::Api)));
         assert!(matches!(detect_intent("useEffect hook"), Some(Intent::Hook)));
         assert!(matches!(
             detect_intent("middleware"),

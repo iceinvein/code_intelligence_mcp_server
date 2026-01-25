@@ -470,7 +470,7 @@ impl Retriever {
                             let mut embedder = self.embedder.lock().await;
                             if let Ok(hyde_embeddings) = embedder.embed(&[hyde_result.hypothetical_code]) {
                                 if let Some(hyde_vector) = hyde_embeddings.first() {
-                                    if let Ok(mut hyde_hits) = self.vectors.search(hyde_vector, k / 2).await {
+                                    if let Ok(hyde_hits) = self.vectors.search(hyde_vector, k / 2).await {
                                         sub_vector_hits.extend(hyde_hits);
                                     }
                                 }

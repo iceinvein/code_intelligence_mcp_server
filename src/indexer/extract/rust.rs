@@ -147,16 +147,7 @@ fn extract_struct_fields(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "field_declaration_list" {
-            let mut f_cursor = child.walk();
-            for field in child.children(&mut f_cursor) {
-                if field.kind() == "field_declaration" {
-                    if let Some(type_node) = field.child_by_field_name("type") {
-                        extract_type_ref(type_node, source, parent_name, out);
-                    }
-                }
-            }
-        } else if child.kind() == "ordered_field_declaration_list" {
+        if child.kind() == "field_declaration_list" || child.kind() == "ordered_field_declaration_list" {
             let mut f_cursor = child.walk();
             for field in child.children(&mut f_cursor) {
                 if field.kind() == "field_declaration" {

@@ -13,6 +13,9 @@ pub use state::AppState;
 
 mod state;
 
+/// Type alias for data flow trace results
+type DataFlowTraceResult = Result<(Vec<(String, String, Vec<String>)>, Vec<(String, String, Vec<String>)>), anyhow::Error>;
+
 /// Parse tool arguments from MCP request
 pub fn parse_tool_args<T: DeserializeOwned>(
     params: &CallToolRequestParams,
@@ -458,7 +461,7 @@ pub async fn handle_explain_search(
     retriever: &Retriever,
     tool: ExplainSearchTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    use crate::retrieval::HitSignals;
+    
 
     let limit = tool.limit.unwrap_or(10).max(1) as usize;
     let exported_only = tool.exported_only.unwrap_or(false);
@@ -523,9 +526,9 @@ pub async fn handle_find_similar_code(
     state: &AppState,
     tool: FindSimilarCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    use crate::storage::vector::LanceVectorTable;
+    
 
-    let limit = tool.limit.unwrap_or(20).max(1).min(100) as usize;
+    let limit = tool.limit.unwrap_or(20).clamp(1, 100) as usize;
     let threshold = tool.threshold.unwrap_or(0.5);
 
     let sqlite = SqliteStore::open(&state.config.db_path)?;
@@ -631,7 +634,7 @@ fn format_similar_results(query: &str, threshold: f32, results: &[serde_json::Va
     for (i, r) in results.iter().enumerate() {
         let name = r.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
         let file = r.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
-        let file_short = file.split('/').last().unwrap_or(file);
+        let file_short = file.split('/').next_back().unwrap_or(file);
         let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
         let sim = r.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
@@ -653,7 +656,7 @@ fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> Strin
         let score = r.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let name = r.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
         let file = r.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
-        let file_short = file.split('/').last().unwrap_or(file);
+        let file_short = file.split('/').next_back().unwrap_or(file);
 
         let (kw, vec, pop, lrn) = if let Some(bd) = r.get("score_breakdown") {
             (
@@ -752,7 +755,7 @@ pub fn handle_trace_data_flow(
     flows.truncate(limit);
 
     // Build display
-    let display = format_data_flow(&root, &flows);
+    let display = format_data_flow(root, &flows);
 
     Ok(json!({
         "symbol_name": root.name,
@@ -773,7 +776,7 @@ fn trace_data_flow_edges(
     depth: usize,
     limit: usize,
     direction: &str,
-) -> Result<(Vec<(String, String, Vec<String>)>, Vec<(String, String, Vec<String>)>), anyhow::Error> {
+) -> DataFlowTraceResult {
     let mut reads = Vec::new();
     let mut writes = Vec::new();
     let mut visited = std::collections::HashSet::new();
@@ -806,7 +809,7 @@ fn trace_data_flow_edges(
                     _ => continue,
                 };
 
-                let match_direction = match direction.as_ref() {
+                let match_direction = match direction {
                     "reads" => flow_type == "read",
                     "writes" => flow_type == "write",
                     _ => true,
@@ -820,8 +823,7 @@ fn trace_data_flow_edges(
                     let mut new_path = path.clone();
                     new_path.push(edge.to_symbol_id.clone());
 
-                    let target = (flow_type == "read").then(|| &mut reads)
-                        .unwrap_or(&mut writes);
+                    let target = if flow_type == "read" { &mut reads } else { &mut writes };
                     target.push((edge.to_symbol_id.clone(), flow_type.to_string(), new_path.clone()));
                     next_queue.push((edge.to_symbol_id, new_path));
                 }
@@ -853,7 +855,7 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
         let name = flow.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
         let kind = flow.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let file = flow.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-        let file_short = file.split('/').last().unwrap_or(file);
+        let file_short = file.split('/').next_back().unwrap_or(file);
         let flow_type = flow.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
 
         let icon = match flow_type {
@@ -982,7 +984,7 @@ fn format_module_summary(
     exports: &[serde_json::Value],
     groups: &[serde_json::Value],
 ) -> String {
-    let file_name = file_path.split('/').last().unwrap_or(file_path);
+    let file_name = file_path.split('/').next_back().unwrap_or(file_path);
     let mut out = format!("# Module Summary: {}\n\n", file_name);
     out.push_str(&format!("**Exports:** {}\n\n", exports.len()));
 
@@ -1162,7 +1164,7 @@ fn format_file_summary(
     export_count: usize,
     purpose: &str,
 ) -> String {
-    let file_name = file_path.split('/').last().unwrap_or(file_path);
+    let file_name = file_path.split('/').next_back().unwrap_or(file_path);
     let mut out = format!("# File Summary: {}\n\n", file_name);
     out.push_str(&format!("**Path:** `{}`\n", file_path));
     out.push_str(&format!("**Total Symbols:** {}\n", symbols.len()));
@@ -1341,7 +1343,7 @@ fn format_affected_code(root: &SymbolRow, affected: &[serde_json::Value], affect
             let name = a.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
             let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            let file_short = file.split('/').last().unwrap_or(file);
+            let file_short = file.split('/').next_back().unwrap_or(file);
             out.push_str(&format!("- **{}** ({}) - `{}`\n", name, kind, file_short));
         }
         if high_impact.len() > 20 {
@@ -1356,7 +1358,7 @@ fn format_affected_code(root: &SymbolRow, affected: &[serde_json::Value], affect
             let name = a.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
             let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            let file_short = file.split('/').last().unwrap_or(file);
+            let file_short = file.split('/').next_back().unwrap_or(file);
             out.push_str(&format!("- **{}** ({}) - `{}`\n", name, kind, file_short));
         }
         if medium_impact.len() > 20 {
@@ -1399,7 +1401,7 @@ pub fn handle_find_tests_for_symbol(
     db_path: &std::path::Path,
     tool: FindTestsForSymbolTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let _limit = tool.limit.unwrap_or(20).max(1) as usize;
 
     let sqlite = SqliteStore::open(db_path)?;
     sqlite.init()?;
@@ -1426,7 +1428,7 @@ pub fn handle_find_tests_for_symbol(
     let symbols_with_tests = sqlite.get_symbols_with_tests(&root.file_path)?;
 
     // Build display
-    let display = format_test_results(&root, &test_files, &symbols_with_tests);
+    let display = format_test_results(root, &test_files, &symbols_with_tests);
 
     Ok(json!({
         "symbol_name": root.name,
@@ -1453,7 +1455,7 @@ fn format_todos(todos: &[crate::storage::sqlite::schema::TodoRow]) -> String {
     }
 
     for (file, file_todos) in by_file {
-        let file_name = file.split('/').last().unwrap_or(file);
+        let file_name = file.split('/').next_back().unwrap_or(file);
         out.push_str(&format!("## {}\n\n", file_name));
 
         for todo in file_todos {
@@ -1493,14 +1495,14 @@ fn format_test_results(
 
     out.push_str("## Test Files\n\n");
     for (i, test_file) in test_files.iter().enumerate() {
-        let file_short = test_file.split('/').last().unwrap_or(test_file);
+        let file_short = test_file.split('/').next_back().unwrap_or(test_file);
         out.push_str(&format!("{}. `{}`\n", i + 1, file_short));
     }
 
     if !symbols_with_tests.is_empty() {
         out.push_str("\n## Tested Symbols\n\n");
         for (symbol_name, test_path) in symbols_with_tests {
-            let test_short = test_path.split('/').last().unwrap_or(test_path);
+            let test_short = test_path.split('/').next_back().unwrap_or(test_path);
             out.push_str(&format!("- `{}` ({})\n", symbol_name, test_short));
         }
     }
@@ -1577,7 +1579,7 @@ fn format_decorators(decorators: &[serde_json::Value]) -> String {
         for dec in items.iter().take(20) {
             let symbol_name = dec.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
             let file_path = dec.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            let file_short = file_path.split('/').last().unwrap_or(file_path);
+            let file_short = file_path.split('/').next_back().unwrap_or(file_path);
             let line = dec.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
             let decorator_type = dec.get("decorator_type").and_then(|v| v.as_str()).unwrap_or("");
             let arguments = dec.get("arguments").and_then(|v| v.as_str()).unwrap_or("");

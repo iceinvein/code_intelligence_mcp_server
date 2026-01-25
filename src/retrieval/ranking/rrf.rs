@@ -12,6 +12,7 @@ const DEFAULT_RRF_K: f32 = 60.0;
 
 /// RRF source for tracking where a rank came from
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum RankSource {
     Keyword,
     Vector,

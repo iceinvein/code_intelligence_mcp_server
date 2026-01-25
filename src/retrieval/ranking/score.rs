@@ -649,7 +649,7 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
         Intent::Implementation => 1.0,
         Intent::Config => 1.0,
         Intent::Error => 1.0,
-        Intent::API => 1.0,
+        Intent::Api => 1.0,
         Intent::Hook => 1.0,
         Intent::Middleware => 1.0,
         Intent::Migration => 1.0,

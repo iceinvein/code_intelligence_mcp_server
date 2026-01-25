@@ -15,18 +15,18 @@ use crate::{
             stats::IndexRunStats,
             usage::extract_usage_examples_for_file,
             utils::{
-                cluster_key_from_vector, file_fingerprint, file_key, language_string,
+                file_fingerprint, file_key, language_string,
                 stable_symbol_id,
             },
         },
     },
     storage::{
         sqlite::{
-            SimilarityClusterRow, SqliteStore, SymbolRow,
+            SqliteStore, SymbolRow,
             schema::DecoratorRow,
         },
         tantivy::TantivyIndex,
-        vector::{LanceVectorTable, VectorRecord},
+        vector::LanceVectorTable,
     },
 };
 use anyhow::{Context, Result};
@@ -34,7 +34,7 @@ use rayon::prelude::*;
 use std::{
     collections::HashMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -114,9 +114,9 @@ fn index_file_with_retry(
 /// - Updates SQLite, Tantivy indexes
 /// - Does NOT update vectors (done in a separate batch step)
 fn index_file_single(
-    file: &PathBuf,
+    file: &Path,
     config: &Config,
-    db_path: &PathBuf,
+    db_path: &Path,
     tantivy: &TantivyIndex,
     _vectors: &LanceVectorTable,
 ) -> Result<usize> {
@@ -272,7 +272,7 @@ fn index_file_single(
 
     for row in &symbol_rows {
         // Create package lookup function for cross-package edge resolution
-        let db_path_for_lookup = db_path.clone();
+        let db_path_for_lookup = db_path.to_path_buf();
         let package_lookup_fn: super::edges::PackageLookupFn = Box::new(move |file_path: &str| -> Option<String> {
             if let Ok(sqlite) = SqliteStore::open(&db_path_for_lookup) {
                 if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
@@ -409,7 +409,7 @@ pub fn index_files_parallel(
             drop(stats_guard);
 
             let count = processed.fetch_add(1, Ordering::Relaxed);
-            if count % 100 == 0 {
+            if count.is_multiple_of(100) {
                 tracing::info!("Progress: {}/{} files", count + 1, files.len());
             }
         });

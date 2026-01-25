@@ -286,14 +286,14 @@ impl Config {
 
         // Reranker config (FNDN-03)
         let reranker_model_path = optional_env("RERANKER_MODEL_PATH")
-            .map(|s| PathBuf::from(s));
+            .map(PathBuf::from);
         let reranker_top_k = optional_env("RERANKER_TOP_K")
             .as_deref()
             .map(parse_usize)
             .transpose()?
             .unwrap_or(20);
         let reranker_cache_dir = optional_env("RERANKER_CACHE_DIR")
-            .map(|s| PathBuf::from(s))
+            .map(PathBuf::from)
             .or_else(|| Some(base_dir.join(".cimcp/reranker-cache")));
 
         // Learning config (FNDN-04)

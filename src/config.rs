@@ -154,12 +154,10 @@ impl Config {
 
         // We don't strictly need model_url/sha256/revision for FastEmbed as it manages it,
         // but we DO need the repo name (model name).
-        let embeddings_model_repo = optional_env("EMBEDDINGS_MODEL_REPO")
-            .unwrap_or_else(|| {
-                match embeddings_backend {
-                    EmbeddingsBackend::JinaCode => "jinaai/jina-embeddings-v2-base-code".to_string(),
-                    _ => "BAAI/bge-base-en-v1.5".to_string(),
-                }
+        let embeddings_model_repo =
+            optional_env("EMBEDDINGS_MODEL_REPO").unwrap_or_else(|| match embeddings_backend {
+                EmbeddingsBackend::JinaCode => "jinaai/jina-embeddings-v2-base-code".to_string(),
+                _ => "BAAI/bge-base-en-v1.5".to_string(),
             });
 
         let db_path = default_path(&base_dir, "DB_PATH", "./.cimcp/code-intelligence.db")?;
@@ -285,8 +283,7 @@ impl Config {
         }
 
         // Reranker config (FNDN-03)
-        let reranker_model_path = optional_env("RERANKER_MODEL_PATH")
-            .map(PathBuf::from);
+        let reranker_model_path = optional_env("RERANKER_MODEL_PATH").map(PathBuf::from);
         let reranker_top_k = optional_env("RERANKER_TOP_K")
             .as_deref()
             .map(parse_usize)
@@ -319,8 +316,8 @@ impl Config {
             .map(parse_usize)
             .transpose()?
             .unwrap_or(8192);
-        let token_encoding = optional_env("TOKEN_ENCODING")
-            .unwrap_or_else(|| "o200k_base".to_string());
+        let token_encoding =
+            optional_env("TOKEN_ENCODING").unwrap_or_else(|| "o200k_base".to_string());
 
         // Performance config (FNDN-06)
         // Default to sequential indexing (1 worker) to avoid SQLite write contention
@@ -394,8 +391,8 @@ impl Config {
             .map(parse_bool)
             .transpose()?
             .unwrap_or(false); // Default disabled (requires LLM)
-        let hyde_llm_backend = optional_env("HYDE_LLM_BACKEND")
-            .unwrap_or_else(|| "openai".to_string());
+        let hyde_llm_backend =
+            optional_env("HYDE_LLM_BACKEND").unwrap_or_else(|| "openai".to_string());
         let hyde_api_key = optional_env("HYDE_API_KEY");
         let hyde_max_tokens = optional_env("HYDE_MAX_TOKENS")
             .as_deref()

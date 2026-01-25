@@ -43,7 +43,10 @@ impl FastEmbedder {
         let model = TextEmbedding::try_new(options)
             .map_err(|e| anyhow!("Failed to initialize FastEmbed: {}", e))?;
 
-        Ok(Self { model, model_name: model_name.to_string() })
+        Ok(Self {
+            model,
+            model_name: model_name.to_string(),
+        })
     }
 }
 

@@ -14,7 +14,13 @@ pub use state::AppState;
 mod state;
 
 /// Type alias for data flow trace results
-type DataFlowTraceResult = Result<(Vec<(String, String, Vec<String>)>, Vec<(String, String, Vec<String>)>), anyhow::Error>;
+type DataFlowTraceResult = Result<
+    (
+        Vec<(String, String, Vec<String>)>,
+        Vec<(String, String, Vec<String>)>,
+    ),
+    anyhow::Error,
+>;
 
 /// Parse tool arguments from MCP request
 pub fn parse_tool_args<T: DeserializeOwned>(
@@ -92,7 +98,8 @@ pub async fn handle_get_definition(
     let sqlite = SqliteStore::open(&state.config.db_path)?;
     sqlite.init()?;
 
-    let rows = sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file.as_deref(), limit)?;
+    let rows =
+        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file.as_deref(), limit)?;
 
     let context = state.retriever.assemble_definitions(&rows)?;
 
@@ -124,9 +131,7 @@ pub fn handle_get_file_symbols(
 }
 
 /// Handle get_index_stats tool
-pub fn handle_get_index_stats(
-    state: &AppState,
-) -> Result<serde_json::Value, anyhow::Error> {
+pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, anyhow::Error> {
     let sqlite = SqliteStore::open(&state.config.db_path)?;
     sqlite.init()?;
 
@@ -169,7 +174,8 @@ pub fn handle_hydrate_symbols(
     };
 
     let assembler = crate::retrieval::assembler::ContextAssembler::new(state.config.clone());
-    let (context, context_items) = assembler.format_context_with_mode(&sqlite, &rows, &[], &[], mode, None)?;
+    let (context, context_items) =
+        assembler.format_context_with_mode(&sqlite, &rows, &[], &[], mode, None)?;
 
     Ok(json!({
         "count": rows.len(),
@@ -461,8 +467,6 @@ pub async fn handle_explain_search(
     retriever: &Retriever,
     tool: ExplainSearchTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    
-
     let limit = tool.limit.unwrap_or(10).max(1) as usize;
     let exported_only = tool.exported_only.unwrap_or(false);
     let verbose = tool.verbose.unwrap_or(false);
@@ -526,8 +530,6 @@ pub async fn handle_find_similar_code(
     state: &AppState,
     tool: FindSimilarCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    
-
     let limit = tool.limit.unwrap_or(20).clamp(1, 100) as usize;
     let threshold = tool.threshold.unwrap_or(0.5);
 
@@ -537,11 +539,7 @@ pub async fn handle_find_similar_code(
     // Determine search vector: either from symbol_name or code_snippet
     let (query_vector, query_description) = if let Some(name) = &tool.symbol_name {
         // Find symbol and get its embedding
-        let roots = sqlite.search_symbols_by_exact_name(
-            name,
-            tool.file_path.as_deref(),
-            1
-        )?;
+        let roots = sqlite.search_symbols_by_exact_name(name, tool.file_path.as_deref(), 1)?;
         let Some(root) = roots.first() else {
             return Ok(json!({
                 "error": "SYMBOL_NOT_FOUND",
@@ -551,7 +549,11 @@ pub async fn handle_find_similar_code(
         };
 
         // Get embedding from LanceDB by symbol ID
-        let vector = state.retriever.get_vector_store().get_embedding_by_id(&root.id).await?;
+        let vector = state
+            .retriever
+            .get_vector_store()
+            .get_embedding_by_id(&root.id)
+            .await?;
         (vector, name.clone())
     } else if let Some(snippet) = &tool.code_snippet {
         // Embed the code snippet
@@ -621,7 +623,11 @@ pub async fn handle_find_similar_code(
 }
 
 fn format_similar_results(query: &str, threshold: f32, results: &[serde_json::Value]) -> String {
-    let mut out = format!("# Similar Code Results\n\n**Query:** `{}`\n**Threshold:** {:.0}%\n\n", query, threshold * 100.0);
+    let mut out = format!(
+        "# Similar Code Results\n\n**Query:** `{}`\n**Threshold:** {:.0}%\n\n",
+        query,
+        threshold * 100.0
+    );
 
     if results.is_empty() {
         out.push_str("*No similar code found above threshold*\n");
@@ -640,7 +646,11 @@ fn format_similar_results(query: &str, threshold: f32, results: &[serde_json::Va
 
         out.push_str(&format!(
             "| {} | **{}** | {} | {} | {:.1}% |\n",
-            i + 1, name, file_short, kind, sim * 100.0
+            i + 1,
+            name,
+            file_short,
+            kind,
+            sim * 100.0
         ));
     }
 
@@ -660,10 +670,18 @@ fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> Strin
 
         let (kw, vec, pop, lrn) = if let Some(bd) = r.get("score_breakdown") {
             (
-                bd.get("keyword_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                bd.get("vector_score").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                bd.get("popularity_boost").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                bd.get("learning_boost").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                bd.get("keyword_score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                bd.get("vector_score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                bd.get("popularity_boost")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                bd.get("learning_boost")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
             )
         } else {
             (0.0, 0.0, 0.0, 0.0)
@@ -671,7 +689,14 @@ fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> Strin
 
         out.push_str(&format!(
             "| {} | **{}** | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |\n",
-            i + 1, name, file_short, score, kw, vec, pop, lrn
+            i + 1,
+            name,
+            file_short,
+            score,
+            kw,
+            vec,
+            pop,
+            lrn
         ));
     }
 
@@ -692,11 +717,8 @@ pub fn handle_trace_data_flow(
     sqlite.init()?;
 
     // Find the root symbol
-    let roots = sqlite.search_symbols_by_exact_name(
-        &tool.symbol_name,
-        tool.file_path.as_deref(),
-        1
-    )?;
+    let roots =
+        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file_path.as_deref(), 1)?;
     let Some(root) = roots.first() else {
         return Ok(json!({
             "symbol_name": tool.symbol_name,
@@ -823,8 +845,16 @@ fn trace_data_flow_edges(
                     let mut new_path = path.clone();
                     new_path.push(edge.to_symbol_id.clone());
 
-                    let target = if flow_type == "read" { &mut reads } else { &mut writes };
-                    target.push((edge.to_symbol_id.clone(), flow_type.to_string(), new_path.clone()));
+                    let target = if flow_type == "read" {
+                        &mut reads
+                    } else {
+                        &mut writes
+                    };
+                    target.push((
+                        edge.to_symbol_id.clone(),
+                        flow_type.to_string(),
+                        new_path.clone(),
+                    ));
                     next_queue.push((edge.to_symbol_id, new_path));
                 }
             }
@@ -840,10 +870,19 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
     out.push_str(&format!("**Kind:** {}\n", root.kind));
     out.push_str(&format!("**File:** `{}`\n\n", root.file_path));
 
-    let read_count = flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("read")).count();
-    let write_count = flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write")).count();
+    let read_count = flows
+        .iter()
+        .filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("read"))
+        .count();
+    let write_count = flows
+        .iter()
+        .filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write"))
+        .count();
 
-    out.push_str(&format!("**Reads:** {} | **Writes:** {}\n\n", read_count, write_count));
+    out.push_str(&format!(
+        "**Reads:** {} | **Writes:** {}\n\n",
+        read_count, write_count
+    ));
 
     if flows.is_empty() {
         out.push_str("*No data flow found*\n");
@@ -852,7 +891,10 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
 
     out.push_str("## Flow\n\n");
     for (i, flow) in flows.iter().enumerate() {
-        let name = flow.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+        let name = flow
+            .get("symbol_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         let kind = flow.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let file = flow.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
         let file_short = file.split('/').next_back().unwrap_or(file);
@@ -866,7 +908,11 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
 
         out.push_str(&format!(
             "{}. {} **{}** ({})\n   - {}:{}\n",
-            i + 1, icon, name, kind, file_short,
+            i + 1,
+            icon,
+            name,
+            kind,
+            file_short,
             flow.get("line").and_then(|v| v.as_i64()).unwrap_or(0)
         ));
         out.push('\n');
@@ -920,8 +966,14 @@ pub fn handle_get_module_summary(
         let mut grouped: std::collections::HashMap<String, Vec<serde_json::Value>> =
             std::collections::HashMap::new();
         for exp in &exports {
-            let kind = exp.get("kind").and_then(|k| k.as_str()).unwrap_or("unknown");
-            grouped.entry(kind.to_string()).or_default().push(exp.clone());
+            let kind = exp
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .unwrap_or("unknown");
+            grouped
+                .entry(kind.to_string())
+                .or_default()
+                .push(exp.clone());
         }
         let mut group_vec: Vec<serde_json::Value> = grouped
             .into_iter()
@@ -1016,7 +1068,10 @@ fn format_module_summary(
     }
 
     if exports.len() > 50 {
-        out.push_str(&format!("\n*... and {} more exports*\n", exports.len() - 50));
+        out.push_str(&format!(
+            "\n*... and {} more exports*\n",
+            exports.len() - 50
+        ));
     }
 
     out
@@ -1056,7 +1111,10 @@ pub fn handle_summarize_file(
     let internal_count = symbols.len() - export_count;
 
     // Detect language
-    let language = symbols.first().map(|s| s.language.clone()).unwrap_or_default();
+    let language = symbols
+        .first()
+        .map(|s| s.language.clone())
+        .unwrap_or_default();
 
     // Build export list if include_signatures
     let exports = if include_signatures {
@@ -1082,8 +1140,13 @@ pub fn handle_summarize_file(
     let purpose = infer_file_purpose_for_summary(&symbols);
 
     // Build display
-    let display =
-        format_file_summary(&tool.file_path, &symbols, &counts_by_kind, export_count, &purpose);
+    let display = format_file_summary(
+        &tool.file_path,
+        &symbols,
+        &counts_by_kind,
+        export_count,
+        &purpose,
+    );
 
     Ok(json!({
         "file_path": tool.file_path,
@@ -1104,7 +1167,6 @@ fn extract_signature_for_summary(text: &str, kind: &str) -> String {
     let sig = match kind {
         "function" | "method" => first_line
             .trim_start_matches("export ")
-            
             .trim_start_matches("pub ")
             .trim()
             .to_string(),
@@ -1128,10 +1190,8 @@ fn infer_file_purpose_for_summary(symbols: &[SymbolRow]) -> String {
         return "Empty or unknown".to_string();
     }
 
-    let kinds: std::collections::HashSet<_> =
-        symbols.iter().map(|s| s.kind.as_str()).collect();
-    let export_ratio =
-        symbols.iter().filter(|s| s.exported).count() as f64 / symbols.len() as f64;
+    let kinds: std::collections::HashSet<_> = symbols.iter().map(|s| s.kind.as_str()).collect();
+    let export_ratio = symbols.iter().filter(|s| s.exported).count() as f64 / symbols.len() as f64;
 
     let mut tags = Vec::new();
 
@@ -1201,11 +1261,8 @@ pub fn handle_find_affected_code(
     sqlite.init()?;
 
     // Find the root symbol
-    let roots = sqlite.search_symbols_by_exact_name(
-        &tool.symbol_name,
-        tool.file_path.as_deref(),
-        1
-    )?;
+    let roots =
+        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file_path.as_deref(), 1)?;
     let Some(root) = roots.first() else {
         return Ok(json!({
             "symbol_name": tool.symbol_name,
@@ -1221,7 +1278,10 @@ pub fn handle_find_affected_code(
     let (affected, warning) = match graph_result {
         Ok(graph) => {
             let empty_nodes: Vec<serde_json::Value> = vec![];
-            let nodes = graph.get("nodes").and_then(|v| v.as_array()).unwrap_or(&empty_nodes);
+            let nodes = graph
+                .get("nodes")
+                .and_then(|v| v.as_array())
+                .unwrap_or(&empty_nodes);
 
             // Build affected list with impact info
             let mut affected_list = Vec::new();
@@ -1235,7 +1295,10 @@ pub fn handle_find_affected_code(
                 }
 
                 let file_path = node.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-                let exported = node.get("exported").and_then(|v| v.as_bool()).unwrap_or(false);
+                let exported = node
+                    .get("exported")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 // Filter out tests if requested
                 if !include_tests && is_test_file_for_affected(file_path) {
@@ -1271,16 +1334,18 @@ pub fn handle_find_affected_code(
 
             (affected_list, None)
         }
-        Err(e) => {
-            (vec![], Some(format!("Could not complete full trace: {}", e)))
-        }
+        Err(e) => (
+            vec![],
+            Some(format!("Could not complete full trace: {}", e)),
+        ),
     };
 
     // Truncate to limit
     let affected = affected.into_iter().take(limit).collect::<Vec<_>>();
 
     // Build summary stats
-    let affected_files = affected.iter()
+    let affected_files = affected
+        .iter()
         .map(|f| f.get("file_path").and_then(|v| v.as_str()).unwrap_or(""))
         .collect::<std::collections::HashSet<_>>()
         .len();
@@ -1317,12 +1382,20 @@ fn is_test_file_for_affected(path: &str) -> bool {
 }
 
 /// Format affected code results as markdown
-fn format_affected_code(root: &SymbolRow, affected: &[serde_json::Value], affected_files: usize) -> String {
+fn format_affected_code(
+    root: &SymbolRow,
+    affected: &[serde_json::Value],
+    affected_files: usize,
+) -> String {
     let mut out = format!("# Affected Code: {}\n\n", root.name);
     out.push_str(&format!("**Kind:** {}\n", root.kind));
     out.push_str(&format!("**File:** `{}`\n\n", root.file_path));
 
-    out.push_str(&format!("**Affected:** {} symbols in {} files\n\n", affected.len(), affected_files));
+    out.push_str(&format!(
+        "**Affected:** {} symbols in {} files\n\n",
+        affected.len(),
+        affected_files
+    ));
 
     if affected.is_empty() {
         out.push_str("*No reverse dependencies found*\n");
@@ -1330,10 +1403,12 @@ fn format_affected_code(root: &SymbolRow, affected: &[serde_json::Value], affect
     }
 
     // Group by impact level
-    let high_impact: Vec<_> = affected.iter()
+    let high_impact: Vec<_> = affected
+        .iter()
         .filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("high"))
         .collect();
-    let medium_impact: Vec<_> = affected.iter()
+    let medium_impact: Vec<_> = affected
+        .iter()
         .filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("medium"))
         .collect();
 
@@ -1407,11 +1482,8 @@ pub fn handle_find_tests_for_symbol(
     sqlite.init()?;
 
     // Find the symbol
-    let roots = sqlite.search_symbols_by_exact_name(
-        &tool.symbol_name,
-        tool.file_path.as_deref(),
-        1
-    )?;
+    let roots =
+        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file_path.as_deref(), 1)?;
     let Some(root) = roots.first() else {
         return Ok(json!({
             "symbol_name": tool.symbol_name,
@@ -1465,10 +1537,7 @@ fn format_todos(todos: &[crate::storage::sqlite::schema::TodoRow]) -> String {
             };
             out.push_str(&format!(
                 "{} {}:{} - {}\n",
-                icon,
-                file_name,
-                todo.line,
-                todo.text
+                icon, file_name, todo.line, todo.text
             ));
         }
         out.push('\n');
@@ -1529,9 +1598,9 @@ pub fn handle_search_decorators(
     let mut results = Vec::new();
     for dec in decorators {
         // Get symbol details for context
-        let symbol = sqlite.get_symbol_by_id(&dec.symbol_id)?.ok_or_else(|| {
-            anyhow::anyhow!("Symbol not found: {}", dec.symbol_id)
-        })?;
+        let symbol = sqlite
+            .get_symbol_by_id(&dec.symbol_id)?
+            .ok_or_else(|| anyhow::anyhow!("Symbol not found: {}", dec.symbol_id))?;
 
         results.push(serde_json::json!({
             "symbol_id": dec.symbol_id,
@@ -1568,7 +1637,10 @@ fn format_decorators(decorators: &[serde_json::Value]) -> String {
     // Group by decorator name
     let mut by_name: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
     for dec in decorators {
-        let name = dec.get("decorator_name").and_then(|v| v.as_str()).unwrap_or("?");
+        let name = dec
+            .get("decorator_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         by_name.entry(name).or_default().push(dec);
     }
 
@@ -1577,11 +1649,17 @@ fn format_decorators(decorators: &[serde_json::Value]) -> String {
         out.push_str(&format!("**Found:** {} times\n\n", items.len()));
 
         for dec in items.iter().take(20) {
-            let symbol_name = dec.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let symbol_name = dec
+                .get("symbol_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let file_path = dec.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let file_short = file_path.split('/').next_back().unwrap_or(file_path);
             let line = dec.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
-            let decorator_type = dec.get("decorator_type").and_then(|v| v.as_str()).unwrap_or("");
+            let decorator_type = dec
+                .get("decorator_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let arguments = dec.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
 
             out.push_str(&format!(
@@ -1606,7 +1684,6 @@ fn format_decorators(decorators: &[serde_json::Value]) -> String {
 
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1638,7 +1715,10 @@ mod tests {
         let text = "export function this_is_a_very_long_function_name_that_exceeds_limit() {\n  return true;\n}";
         let sig = extract_signature_for_summary(text, "function");
         // First line is 82 chars, well under 100
-        assert_eq!(sig, "function this_is_a_very_long_function_name_that_exceeds_limit() {");
+        assert_eq!(
+            sig,
+            "function this_is_a_very_long_function_name_that_exceeds_limit() {"
+        );
     }
 
     #[test]

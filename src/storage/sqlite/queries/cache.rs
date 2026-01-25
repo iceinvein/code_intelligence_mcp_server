@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::time::UNIX_EPOCH;
 
 pub struct EmbeddingCacheEntry {
@@ -15,13 +15,10 @@ pub struct EmbeddingCacheEntry {
 
 /// Get cached embedding by cache key
 pub fn get_cached_embedding(conn: &Connection, cache_key: &str) -> Result<Option<Vec<u8>>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT embedding FROM embedding_cache WHERE cache_key = ?1"
-    )?;
+    let mut stmt =
+        conn.prepare_cached("SELECT embedding FROM embedding_cache WHERE cache_key = ?1")?;
 
-    let result = stmt.query_row(params![cache_key], |row| {
-        row.get(0)
-    });
+    let result = stmt.query_row(params![cache_key], |row| row.get(0));
 
     match result {
         Ok(blob) => {
@@ -51,10 +48,12 @@ pub fn put_cached_embedding(
     let mut stmt = conn.prepare_cached(
         "INSERT OR REPLACE INTO embedding_cache
          (cache_key, model_name, text_hash, embedding, vector_dim, created_at, last_accessed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
 
-    stmt.execute(params![cache_key, model_name, text_hash, embedding, vector_dim, now, now])?;
+    stmt.execute(params![
+        cache_key, model_name, text_hash, embedding, vector_dim, now, now
+    ])?;
     Ok(())
 }
 
@@ -66,17 +65,16 @@ pub struct CacheStats {
 }
 
 pub fn get_cache_stats(conn: &Connection) -> Result<CacheStats> {
-    let total_entries: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM embedding_cache",
-        [],
-        |row| row.get(0)
-    )?;
+    let total_entries: i64 =
+        conn.query_row("SELECT COUNT(*) FROM embedding_cache", [], |row| row.get(0))?;
 
-    let total_size_bytes: i64 = conn.query_row(
-        "SELECT SUM(LENGTH(embedding)) FROM embedding_cache",
-        [],
-        |row| row.get(0)
-    ).unwrap_or(0);
+    let total_size_bytes: i64 = conn
+        .query_row(
+            "SELECT SUM(LENGTH(embedding)) FROM embedding_cache",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // Note: hit_rate requires external tracking
     Ok(CacheStats {
@@ -88,11 +86,13 @@ pub fn get_cache_stats(conn: &Connection) -> Result<CacheStats> {
 
 /// Lazy LRU cleanup: remove entries beyond size limit
 pub fn cleanup_cache(conn: &Connection, max_size_bytes: i64) -> Result<i64> {
-    let current_size: i64 = conn.query_row(
-        "SELECT SUM(LENGTH(embedding)) FROM embedding_cache",
-        [],
-        |row| row.get(0)
-    ).unwrap_or(0);
+    let current_size: i64 = conn
+        .query_row(
+            "SELECT SUM(LENGTH(embedding)) FROM embedding_cache",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     if current_size <= max_size_bytes {
         return Ok(0);
@@ -106,7 +106,7 @@ pub fn cleanup_cache(conn: &Connection, max_size_bytes: i64) -> Result<i64> {
              ORDER BY last_accessed_at ASC
              LIMIT (SELECT COUNT(*) / 10 FROM embedding_cache)
          )",
-        []
+        [],
     )?;
 
     Ok(deleted as i64)

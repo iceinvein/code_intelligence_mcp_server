@@ -151,13 +151,10 @@ fn discover_single_root(manifest_path: &PathBuf) -> Result<Option<RepositoryInfo
     let root_path = workdir.to_path_buf();
 
     // Try to get the remote URL from "origin"
-    let remote_url = repo
-        .find_remote("origin")
-        .ok()
-        .and_then(|remote| {
-            let bytes = remote.url_bytes();
-            std::str::from_utf8(bytes).ok().map(|s| s.to_string())
-        });
+    let remote_url = repo.find_remote("origin").ok().and_then(|remote| {
+        let bytes = remote.url_bytes();
+        std::str::from_utf8(bytes).ok().map(|s| s.to_string())
+    });
 
     Ok(Some(RepositoryInfo::from_root_path(root_path, remote_url)))
 }

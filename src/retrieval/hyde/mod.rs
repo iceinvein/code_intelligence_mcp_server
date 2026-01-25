@@ -5,4 +5,4 @@
 
 pub mod generator;
 
-pub use generator::{HypotheticalCodeGenerator, HyDEQuery};
+pub use generator::{HyDEQuery, HypotheticalCodeGenerator};

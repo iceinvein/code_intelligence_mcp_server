@@ -131,22 +131,18 @@ mod tests {
     #[test]
     fn test_parse_package_json_detects_workspaces() {
         // Array-style workspaces
-        let json_array: Value = serde_json::from_str(
-            r#"{"name": "mono", "workspaces": ["packages/*"]}"#,
-        )
-        .unwrap();
+        let json_array: Value =
+            serde_json::from_str(r#"{"name": "mono", "workspaces": ["packages/*"]}"#).unwrap();
         assert!(has_workspaces(&json_array));
 
         // Object-style workspaces
-        let json_object: Value = serde_json::from_str(
-            r#"{"name": "mono", "workspaces": {"packages": ["packages/*"]}}"#,
-        )
-        .unwrap();
+        let json_object: Value =
+            serde_json::from_str(r#"{"name": "mono", "workspaces": {"packages": ["packages/*"]}}"#)
+                .unwrap();
         assert!(has_workspaces(&json_object));
 
         // No workspaces
-        let json_none: Value =
-            serde_json::from_str(r#"{"name": "single"}"#).unwrap();
+        let json_none: Value = serde_json::from_str(r#"{"name": "single"}"#).unwrap();
         assert!(!has_workspaces(&json_none));
     }
 
@@ -169,10 +165,8 @@ mod tests {
 
     #[test]
     fn test_has_workspaces_yarn_v1() {
-        let json: Value = serde_json::from_str(
-            r#"{"name": "yarn-mono", "packages": ["packages/*"]}"#,
-        )
-        .unwrap();
+        let json: Value =
+            serde_json::from_str(r#"{"name": "yarn-mono", "packages": ["packages/*"]}"#).unwrap();
         assert!(has_workspaces(&json));
     }
 }

@@ -1,6 +1,6 @@
 //! Caching layer for reranker results
 
-use super::{Reranker, RerankDocument};
+use super::{RerankDocument, Reranker};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

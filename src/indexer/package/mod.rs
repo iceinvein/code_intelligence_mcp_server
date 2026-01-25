@@ -253,7 +253,10 @@ impl fmt::Display for VcsType {
 /// # Ok(())
 /// # }
 /// ```
-pub fn discover_packages(config: &Config, repo_roots: &[PathBuf]) -> anyhow::Result<Vec<PackageInfo>> {
+pub fn discover_packages(
+    config: &Config,
+    repo_roots: &[PathBuf],
+) -> anyhow::Result<Vec<PackageInfo>> {
     let mut packages = Vec::new();
 
     // Discover all manifest files from all repo roots
@@ -287,10 +290,7 @@ pub fn discover_packages(config: &Config, repo_roots: &[PathBuf]) -> anyhow::Res
         }
     }
 
-    tracing::debug!(
-        count = packages.len(),
-        "Discovered packages"
-    );
+    tracing::debug!(count = packages.len(), "Discovered packages");
 
     Ok(packages)
 }
@@ -378,7 +378,10 @@ pub fn detect_repositories(packages: &mut [PackageInfo]) -> anyhow::Result<Vec<R
 
     tracing::debug!(
         repositories = repositories.len(),
-        packages_assigned = packages.iter().filter(|p| p.repository_id.is_some()).count(),
+        packages_assigned = packages
+            .iter()
+            .filter(|p| p.repository_id.is_some())
+            .count(),
         "Detected repositories and assigned packages"
     );
 
@@ -394,13 +397,19 @@ mod tests {
         assert_eq!(PackageType::from_filename("package.json"), PackageType::Npm);
         assert_eq!(PackageType::from_filename("Cargo.toml"), PackageType::Cargo);
         assert_eq!(PackageType::from_filename("go.mod"), PackageType::Go);
-        assert_eq!(PackageType::from_filename("pyproject.toml"), PackageType::Python);
+        assert_eq!(
+            PackageType::from_filename("pyproject.toml"),
+            PackageType::Python
+        );
         assert_eq!(
             PackageType::from_filename("requirements.txt"),
             PackageType::Python
         );
         assert_eq!(PackageType::from_filename("pom.xml"), PackageType::Maven);
-        assert_eq!(PackageType::from_filename("unknown.txt"), PackageType::Unknown);
+        assert_eq!(
+            PackageType::from_filename("unknown.txt"),
+            PackageType::Unknown
+        );
     }
 
     #[test]

@@ -6,18 +6,18 @@
 //! - Go (go.mod)
 //! - Python (pyproject.toml)
 
-pub mod npm;
 pub mod cargo;
 pub mod go;
+pub mod npm;
 pub mod python;
 
 // Re-export types from parent module
 pub use crate::indexer::package::{PackageInfo, PackageType};
 
 // Re-export parser functions for public use
-pub use npm::parse_package_json;
 pub use cargo::parse_cargo_toml;
 pub use go::parse_go_mod;
+pub use npm::parse_package_json;
 pub use python::parse_pyproject_toml;
 
 use std::path::Path;
@@ -77,14 +77,8 @@ mod tests {
     #[test]
     fn test_parse_manifest_dispatches_correctly() {
         // Test that PackageType::from_filename works correctly
-        assert_eq!(
-            PackageType::from_filename("package.json"),
-            PackageType::Npm
-        );
-        assert_eq!(
-            PackageType::from_filename("Cargo.toml"),
-            PackageType::Cargo
-        );
+        assert_eq!(PackageType::from_filename("package.json"), PackageType::Npm);
+        assert_eq!(PackageType::from_filename("Cargo.toml"), PackageType::Cargo);
         assert_eq!(PackageType::from_filename("go.mod"), PackageType::Go);
         assert_eq!(
             PackageType::from_filename("pyproject.toml"),

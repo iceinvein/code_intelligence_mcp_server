@@ -2,7 +2,7 @@
 
 use crate::{
     config::Config,
-    storage::sqlite::{SymbolMetricsRow, SqliteStore},
+    storage::sqlite::{SqliteStore, SymbolMetricsRow},
 };
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -52,9 +52,7 @@ pub fn compute_and_store_pagerank(sqlite: &SqliteStore, config: &Config) -> Resu
         symbols.iter().map(|(id, _)| id.clone()).collect();
 
     // Load all edges and build adjacency list
-    let edges = sqlite
-        .list_all_edges()
-        .context("Failed to load edges")?;
+    let edges = sqlite.list_all_edges().context("Failed to load edges")?;
 
     // Build adjacency list: symbol_id -> Vec<target_symbol_id>
     // Only include edges where both endpoints are valid (non-file) symbols
@@ -63,10 +61,7 @@ pub fn compute_and_store_pagerank(sqlite: &SqliteStore, config: &Config) -> Resu
     for (from_id, to_id) in edges {
         // Only include edges between valid symbols
         if valid_symbol_ids.contains(&from_id) && valid_symbol_ids.contains(&to_id) {
-            adjacency
-                .entry(from_id.clone())
-                .or_default()
-                .push(to_id);
+            adjacency.entry(from_id.clone()).or_default().push(to_id);
         }
     }
 
@@ -409,7 +404,10 @@ mod tests {
 
         // File root should not have metrics
         let file_metrics = sqlite.get_symbol_metrics("file_root").unwrap();
-        assert!(file_metrics.is_none(), "FILE_ROOT symbols should not have PageRank");
+        assert!(
+            file_metrics.is_none(),
+            "FILE_ROOT symbols should not have PageRank"
+        );
 
         // Function should have metrics
         let func_metrics = sqlite

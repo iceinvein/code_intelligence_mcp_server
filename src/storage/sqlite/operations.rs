@@ -40,26 +40,29 @@ impl SqliteStore {
 
         // Enable WAL mode for better concurrent access (optional)
         // Use query_row for PRAGMA journal_mode as it returns a value
-        let _ = conn.query_row("PRAGMA journal_mode=WAL", [], |row| {
-            row.get::<_, String>(0)
-        }).ok(); // Silently ignore if WAL fails
-        // Enable foreign key constraints (required for ON DELETE CASCADE to work)
-        // This MUST be set on every connection as it's connection-specific, not database-wide
+        let _ = conn
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get::<_, String>(0))
+            .ok(); // Silently ignore if WAL fails
+                   // Enable foreign key constraints (required for ON DELETE CASCADE to work)
+                   // This MUST be set on every connection as it's connection-specific, not database-wide
         match conn.execute("PRAGMA foreign_keys = ON", []) {
             Ok(_) => tracing::info!("Foreign keys enabled on connection"),
             Err(e) => tracing::error!("Failed to enable foreign keys: {}", e),
         }
 
-
         // synchronous and busy_timeout don't return values, use execute
         let _ = conn.execute("PRAGMA synchronous=NORMAL", []).ok();
         let _ = conn.execute("PRAGMA busy_timeout=5000", []).ok();
 
-        Ok(Self { conn: RwLock::new(conn) })
+        Ok(Self {
+            conn: RwLock::new(conn),
+        })
     }
 
     pub fn from_connection(conn: Connection) -> Self {
-        Self { conn: RwLock::new(conn) }
+        Self {
+            conn: RwLock::new(conn),
+        }
     }
 
     pub fn init(&self) -> Result<()> {
@@ -108,10 +111,7 @@ DELETE FROM repositories;
     ///
     /// Wrapper around queries::affinity::batch_get_affinity_boosts
     /// Returns HashMap mapping file_path to affinity_score (0.0-1.0)
-    pub fn batch_get_affinity_boosts(
-        &self,
-        file_paths: &[&str],
-    ) -> Result<HashMap<String, f32>> {
+    pub fn batch_get_affinity_boosts(&self, file_paths: &[&str]) -> Result<HashMap<String, f32>> {
         super::queries::affinity::batch_get_affinity_boosts(&self.read(), file_paths)
     }
 }

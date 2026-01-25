@@ -85,9 +85,10 @@ pub fn get_token_counter() -> &'static TokenCounter {
 /// return the first-initialized encoding (for now, to keep singleton simple).
 pub fn get_token_counter_with_encoding(encoding: &str) -> &'static TokenCounter {
     TOKEN_COUNTER.get_or_init(|| {
-        TokenCounter::new(encoding)
-            .unwrap_or_else(|_| TokenCounter::new("o200k_base")
-                .expect("Failed to initialize tokenizer with fallback encoding 'o200k_base'"))
+        TokenCounter::new(encoding).unwrap_or_else(|_| {
+            TokenCounter::new("o200k_base")
+                .expect("Failed to initialize tokenizer with fallback encoding 'o200k_base'")
+        })
     })
 }
 
@@ -112,9 +113,8 @@ mod tests {
         let counter = TokenCounter::new("o200k_base").unwrap();
         let texts = vec!["hello", "world", "function test() {}"];
         let batch_count = counter.count_batch(&texts);
-        let individual_count = counter.count("hello")
-            + counter.count("world")
-            + counter.count("function test() {}");
+        let individual_count =
+            counter.count("hello") + counter.count("world") + counter.count("function test() {}");
         assert_eq!(batch_count, individual_count);
     }
 

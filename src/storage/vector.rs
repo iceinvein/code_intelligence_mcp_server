@@ -161,7 +161,9 @@ impl LanceDbStore {
 
         tracing::info!(
             "Dropped table '{}' due to dimension migration ({} -> {}). Full re-index required.",
-            table_name, current_dim, expected_dim
+            table_name,
+            current_dim,
+            expected_dim
         );
 
         Ok(())

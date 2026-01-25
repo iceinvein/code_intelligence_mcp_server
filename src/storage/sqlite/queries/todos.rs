@@ -61,33 +61,41 @@ pub fn search_todos(
     limit: usize,
 ) -> Result<Vec<TodoRow>> {
     let sql = match (keyword.is_some(), file_path.is_some()) {
-        (true, true) => r#"
+        (true, true) => {
+            r#"
             SELECT id, kind, text, file_path, line, associated_symbol
             FROM todos
             WHERE text LIKE ?1 AND file_path = ?2
             ORDER BY file_path ASC, line ASC
             LIMIT ?3
-        "#,
-        (true, false) => r#"
+        "#
+        }
+        (true, false) => {
+            r#"
             SELECT id, kind, text, file_path, line, associated_symbol
             FROM todos
             WHERE text LIKE ?1
             ORDER BY file_path ASC, line ASC
             LIMIT ?2
-        "#,
-        (false, true) => r#"
+        "#
+        }
+        (false, true) => {
+            r#"
             SELECT id, kind, text, file_path, line, associated_symbol
             FROM todos
             WHERE file_path = ?1
             ORDER BY line ASC
             LIMIT ?2
-        "#,
-        (false, false) => r#"
+        "#
+        }
+        (false, false) => {
+            r#"
             SELECT id, kind, text, file_path, line, associated_symbol
             FROM todos
             ORDER BY file_path ASC, line ASC
             LIMIT ?1
-        "#,
+        "#
+        }
     };
 
     let mut stmt = conn.prepare(sql)?;
@@ -141,25 +149,26 @@ pub fn search_todos(
 
 /// Delete all TODOs for a specific file
 pub fn delete_todos_by_file(conn: &Connection, file_path: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM todos WHERE file_path = ?1",
-        params![file_path],
-    )
-    .context("Failed to delete todos for file")?;
+    conn.execute("DELETE FROM todos WHERE file_path = ?1", params![file_path])
+        .context("Failed to delete todos for file")?;
     Ok(())
 }
 
 /// Count TODOs by kind
 pub fn count_todos(conn: &Connection) -> Result<(usize, usize)> {
     let todo_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM todos WHERE kind = 'todo'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM todos WHERE kind = 'todo'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     let fixme_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM todos WHERE kind = 'fixme'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM todos WHERE kind = 'fixme'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     Ok((todo_count.max(0) as usize, fixme_count.max(0) as usize))
 }

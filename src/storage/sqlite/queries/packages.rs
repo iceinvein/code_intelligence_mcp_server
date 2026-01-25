@@ -378,10 +378,7 @@ WHERE s.id IN ({})
 /// * `Ok(Some(String))` - Package ID containing the file
 /// * `Ok(None)` - No package found containing the file
 /// * `Err(anyhow::Error)` - Database operation failed
-pub fn get_package_id_for_file(
-    conn: &Connection,
-    file_path: &str,
-) -> Result<Option<String>> {
+pub fn get_package_id_for_file(conn: &Connection, file_path: &str) -> Result<Option<String>> {
     conn.query_row(
         r#"
 SELECT id

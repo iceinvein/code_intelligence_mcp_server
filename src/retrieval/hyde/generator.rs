@@ -66,7 +66,9 @@ Respond ONLY with the code snippet, no explanation."#,
     }
 
     async fn generate_openai(&self, prompt: &str, language: &str) -> Result<HyDEQuery> {
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("OpenAI API key not set"))?;
 
         let client = reqwest::Client::new();
@@ -90,7 +92,8 @@ Respond ONLY with the code snippet, no explanation."#,
 
         let hypothetical = response_text
             .choices
-            .first().map(|c| c.message.content.trim().to_string())
+            .first()
+            .map(|c| c.message.content.trim().to_string())
             .unwrap_or_else(|| prompt.to_string());
 
         // Extract code from markdown code blocks if present
@@ -104,7 +107,9 @@ Respond ONLY with the code snippet, no explanation."#,
     }
 
     async fn generate_anthropic(&self, prompt: &str, language: &str) -> Result<HyDEQuery> {
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Anthropic API key not set"))?;
 
         let client = reqwest::Client::new();
@@ -128,7 +133,8 @@ Respond ONLY with the code snippet, no explanation."#,
 
         let hypothetical = response_text
             .content
-            .first().map(|c| c.text.trim().to_string())
+            .first()
+            .map(|c| c.text.trim().to_string())
             .unwrap_or_else(|| prompt.to_string());
 
         let hypothetical = extract_code_from_markdown(&hypothetical);
@@ -200,16 +206,10 @@ mod tests {
 
     #[test]
     fn test_mock_generation() {
-        let generator = HypotheticalCodeGenerator::new(
-            "mock".to_string(),
-            None,
-            512,
-        );
+        let generator = HypotheticalCodeGenerator::new("mock".to_string(), None, 512);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(async {
-            generator.generate("how to parse JSON", "rust").await
-        });
+        let result = rt.block_on(async { generator.generate("how to parse JSON", "rust").await });
 
         assert!(result.is_ok());
         let hyde = result.unwrap();
@@ -254,11 +254,7 @@ mod tests {
 
     #[test]
     fn test_generator_creation() {
-        let gen = HypotheticalCodeGenerator::new(
-            "mock".to_string(),
-            Some("key".to_string()),
-            256,
-        );
+        let gen = HypotheticalCodeGenerator::new("mock".to_string(), Some("key".to_string()), 256);
 
         assert_eq!(gen.backend, "mock");
         assert_eq!(gen.api_key, Some("key".to_string()));

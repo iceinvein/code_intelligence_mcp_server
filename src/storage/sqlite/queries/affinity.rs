@@ -27,7 +27,10 @@ ON CONFLICT(file_path) DO UPDATE SET
     Ok(())
 }
 
-pub fn get_file_affinity(conn: &Connection, file_path: &str) -> Result<Option<UserFileAffinityRow>> {
+pub fn get_file_affinity(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Option<UserFileAffinityRow>> {
     conn.query_row(
         r#"
 SELECT file_path, view_count, edit_count, last_accessed_at, updated_at
@@ -117,7 +120,9 @@ WHERE file_path IN ({})
         placeholders.join(", ")
     );
 
-    let mut stmt = conn.prepare(&query).context("Failed to prepare batch_get_affinity_boosts")?;
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_get_affinity_boosts")?;
 
     // Build params as owned strings for rusqlite compatibility
     let params: Vec<rusqlite::types::Value> = file_paths

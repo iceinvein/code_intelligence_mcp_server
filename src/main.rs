@@ -5,7 +5,10 @@
 use rust_mcp_sdk::{
     error::{McpSdkError, SdkResult},
     mcp_server::{server_runtime, McpServerOptions, ToMcpServerHandler},
-    schema::{Implementation, InitializeResult, ProtocolVersion, ServerCapabilities, ServerCapabilitiesTools},
+    schema::{
+        Implementation, InitializeResult, ProtocolVersion, ServerCapabilities,
+        ServerCapabilitiesTools,
+    },
     McpServer, StdioTransport, TransportOptions,
 };
 use std::sync::Arc;
@@ -17,7 +20,7 @@ use code_intelligence_mcp_server::config::Config;
 use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
-use code_intelligence_mcp_server::metrics::{MetricsRegistry, spawn_metrics_server};
+use code_intelligence_mcp_server::metrics::{spawn_metrics_server, MetricsRegistry};
 use code_intelligence_mcp_server::reranker::create_reranker;
 use code_intelligence_mcp_server::retrieval::hyde::HypotheticalCodeGenerator;
 use code_intelligence_mcp_server::retrieval::Retriever;
@@ -93,10 +96,7 @@ async fn run() -> SdkResult<()> {
         description: format!("Failed to create embedder: {}", err),
     })?;
 
-    info!(
-        "Created embedder with dimension: {}",
-        embedder.dim()
-    );
+    info!("Created embedder with dimension: {}", embedder.dim());
 
     let tantivy = TantivyIndex::open_or_create(&config.tantivy_index_path).map_err(|err| {
         McpSdkError::Internal {
@@ -133,12 +133,9 @@ async fn run() -> SdkResult<()> {
     let vectors = Arc::new(vectors);
 
     // Create metrics registry
-    let metrics = Arc::new(
-        MetricsRegistry::new()
-            .map_err(|err| McpSdkError::Internal {
-                description: format!("Failed to create metrics registry: {}", err),
-            })?
-    );
+    let metrics = Arc::new(MetricsRegistry::new().map_err(|err| McpSdkError::Internal {
+        description: format!("Failed to create metrics registry: {}", err),
+    })?);
 
     // Spawn metrics server if enabled
     let _metrics_handle = if config.metrics_enabled {

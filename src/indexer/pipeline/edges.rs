@@ -28,11 +28,7 @@ struct ResolutionContext<'a> {
 }
 
 /// Compute resolution for an edge to a target symbol
-fn compute_resolution_for_target(
-    ctx: &ResolutionContext,
-    to_id: &str,
-    was_import: bool,
-) -> String {
+fn compute_resolution_for_target(ctx: &ResolutionContext, to_id: &str, was_import: bool) -> String {
     if let Some(to_symbol) = ctx.id_to_symbol.get(to_id) {
         let to_package_id = get_package_for_symbol(ctx.get_package_fn, &to_symbol.file_path);
 
@@ -96,7 +92,10 @@ pub fn no_package_lookup(_: &str) -> Option<String> {
 ///
 /// * `Some(package_id)` if the file belongs to a package
 /// * `None` if the file is not in any package
-fn get_package_for_symbol(get_package_fn: Option<&PackageLookupFn>, symbol_file_path: &str) -> Option<String> {
+fn get_package_for_symbol(
+    get_package_fn: Option<&PackageLookupFn>,
+    symbol_file_path: &str,
+) -> Option<String> {
     get_package_fn.and_then(|f| f(symbol_file_path))
 }
 
@@ -260,7 +259,8 @@ pub fn extract_edges_for_symbol(
 
             if let Some(id) = to_id {
                 if used_edges.insert(("extends".to_string(), id.clone())) {
-                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+                    let resolution =
+                        compute_resolution_for_target(&resolution_ctx, &id, was_import);
                     let (count, at_line, evidence_rows) = evidence_for(&name);
                     out.push((
                         EdgeRow {
@@ -303,7 +303,8 @@ pub fn extract_edges_for_symbol(
 
             if let Some(id) = to_id {
                 if used_edges.insert(("implements".to_string(), id.clone())) {
-                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+                    let resolution =
+                        compute_resolution_for_target(&resolution_ctx, &id, was_import);
                     let (count, at_line, evidence_rows) = evidence_for(&name);
                     out.push((
                         EdgeRow {
@@ -346,7 +347,8 @@ pub fn extract_edges_for_symbol(
 
             if let Some(id) = to_id {
                 if used_edges.insert(("alias".to_string(), id.clone())) {
-                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+                    let resolution =
+                        compute_resolution_for_target(&resolution_ctx, &id, was_import);
                     let (count, at_line, evidence_rows) = evidence_for(&name);
                     out.push((
                         EdgeRow {
@@ -446,7 +448,8 @@ pub fn extract_edges_for_symbol(
 
             if let Some(id) = to_id {
                 if used_edges.insert(("type".to_string(), id.clone())) {
-                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+                    let resolution =
+                        compute_resolution_for_target(&resolution_ctx, &id, was_import);
                     let (count, at_line, evidence_rows) = evidence_for(type_name);
                     out.push((
                         EdgeRow {
@@ -516,7 +519,7 @@ pub fn extract_edges_for_symbol(
                     evidence_count: 1,
                     resolution,
                 },
-                vec![],  // No evidence for data flow edges yet
+                vec![], // No evidence for data flow edges yet
             ));
         }
     }
@@ -608,8 +611,13 @@ mod tests {
         name_to_id.insert("c".to_string(), "id_c".to_string());
 
         // Symbol c is in the same package (also in packages/core)
-        let symbol_c =
-            symbol("id_c", "c", "function", "function c(){}", "packages/core/src/c.ts");
+        let symbol_c = symbol(
+            "id_c",
+            "c",
+            "function",
+            "function c(){}",
+            "packages/core/src/c.ts",
+        );
         let mut id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
         id_to_symbol.insert("id_c".to_string(), &symbol_c);
 

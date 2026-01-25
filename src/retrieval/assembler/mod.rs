@@ -7,8 +7,8 @@ use crate::storage::sqlite::SqliteStore;
 use crate::storage::sqlite::SymbolRow;
 use anyhow::{anyhow, Context, Result};
 use formatting::{
-    fingerprint_text, format_structured_output,
-    format_symbol_with_docstring, role_for_symbol, simplify_code_with_query, symbol_row_from_usage_example,
+    fingerprint_text, format_structured_output, format_symbol_with_docstring, role_for_symbol,
+    simplify_code_with_query, symbol_row_from_usage_example,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -33,7 +33,9 @@ impl ContextAssembler {
         extra: &[SymbolRow],
         query: Option<&str>,
     ) -> Result<String> {
-        Ok(self.assemble_context_with_items(store, roots, extra, query)?.0)
+        Ok(self
+            .assemble_context_with_items(store, roots, extra, query)?
+            .0)
     }
 
     pub fn assemble_context_with_items(
@@ -86,7 +88,14 @@ impl ContextAssembler {
         expanded: &[SymbolRow],
         query: Option<&str>,
     ) -> Result<(String, Vec<ContextItem>)> {
-        self.format_context_with_mode(store, roots, explicit_extra, expanded, FormatMode::Default, query)
+        self.format_context_with_mode(
+            store,
+            roots,
+            explicit_extra,
+            expanded,
+            FormatMode::Default,
+            query,
+        )
     }
 
     pub fn format_context_with_mode(
@@ -139,14 +148,9 @@ impl ContextAssembler {
 
             let (text, simplified) = match mode {
                 FormatMode::Full => (text, false),
-                FormatMode::Default => simplify_code_with_query(
-                    &text,
-                    &sym.kind,
-                    is_root,
-                    query,
-                    counter,
-                    remaining,
-                ),
+                FormatMode::Default => {
+                    simplify_code_with_query(&text, &sym.kind, is_root, query, counter, remaining)
+                }
             };
             let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
             let cluster_key = store.get_similarity_cluster_key(&sym.id).ok().flatten();
@@ -214,7 +218,9 @@ impl ContextAssembler {
                 // Add to appropriate section
                 match role.as_str() {
                     "root" => definitions.push((sym.clone(), formatted_text.clone())),
-                    "extra" if sym.kind.starts_with("usage_") => examples.push((sym.clone(), formatted_text.clone())),
+                    "extra" if sym.kind.starts_with("usage_") => {
+                        examples.push((sym.clone(), formatted_text.clone()))
+                    }
                     _ => related.push((sym.clone(), formatted_text.clone())),
                 }
 
@@ -256,7 +262,9 @@ impl ContextAssembler {
             // Add to appropriate section
             match role.as_str() {
                 "root" => definitions.push((sym.clone(), formatted_text.clone())),
-                "extra" if sym.kind.starts_with("usage_") => examples.push((sym.clone(), text.clone())),
+                "extra" if sym.kind.starts_with("usage_") => {
+                    examples.push((sym.clone(), text.clone()))
+                }
                 _ => related.push((sym.clone(), text.clone())),
             }
 
@@ -523,15 +531,21 @@ mod tests {
             .unwrap();
 
         // Both should produce some output
-        assert!(!output_with_query.is_empty(), "Output with query should not be empty");
-        assert!(!output_no_query.is_empty(), "Output without query should not be empty");
+        assert!(
+            !output_with_query.is_empty(),
+            "Output with query should not be empty"
+        );
+        assert!(
+            !output_no_query.is_empty(),
+            "Output without query should not be empty"
+        );
     }
 
     #[test]
     fn format_context_with_query_truncates_differently_than_without() {
         // This test verifies that providing a query vs not providing one
         // can produce different truncation behavior for large symbols
-        let config = make_config(500);  // Small budget to force truncation
+        let config = make_config(500); // Small budget to force truncation
         let assembler = ContextAssembler::new(config);
         let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
         store.init().unwrap();
@@ -567,8 +581,14 @@ mod tests {
             .unwrap();
 
         // Both should produce some output
-        assert!(!with_query.is_empty(), "Output with query should not be empty");
-        assert!(!without_query.is_empty(), "Output without query should not be empty");
+        assert!(
+            !with_query.is_empty(),
+            "Output with query should not be empty"
+        );
+        assert!(
+            !without_query.is_empty(),
+            "Output without query should not be empty"
+        );
     }
 
     #[test]
@@ -598,8 +618,17 @@ mod tests {
             .unwrap();
 
         // Small symbols should be returned as-is
-        assert!(output.contains("let x = 1"), "Small function should not be truncated");
-        assert!(output.contains("return x"), "Small function should include return statement");
-        assert!(!items[0].truncated, "Small symbol should not be marked as truncated");
+        assert!(
+            output.contains("let x = 1"),
+            "Small function should not be truncated"
+        );
+        assert!(
+            output.contains("return x"),
+            "Small function should include return statement"
+        );
+        assert!(
+            !items[0].truncated,
+            "Small symbol should not be marked as truncated"
+        );
     }
 }

@@ -52,11 +52,9 @@ pub fn parse_go_mod(path: &Path) -> Result<PackageInfo> {
         .map(|m| m.as_str().to_string());
 
     // Derive package name from module path (last component after "/")
-    let name = module_path.as_ref().and_then(|path| {
-        path.split('/')
-            .next_back()
-            .map(|s| s.to_string())
-    });
+    let name = module_path
+        .as_ref()
+        .and_then(|path| path.split('/').next_back().map(|s| s.to_string()));
 
     let info = PackageInfo::new(manifest_path, root_path, PackageType::Go, name, version);
 

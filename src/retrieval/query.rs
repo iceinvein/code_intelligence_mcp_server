@@ -21,13 +21,13 @@ pub enum Intent {
     Test,
 
     // New intents (FNDN-15)
-    Implementation,  // "how is X implemented", "implementation of"
-    Config,          // "configuration", "settings", "env", "config"
-    Error,           // "error handling", "exception", "error"
-    Api,             // "endpoint", "route", "handler", "api"
-    Hook,            // "useEffect", "hook", "lifecycle"
-    Middleware,      // "middleware", "interceptor"
-    Migration,       // "migration", "schema change", "migrate"
+    Implementation, // "how is X implemented", "implementation of"
+    Config,         // "configuration", "settings", "env", "config"
+    Error,          // "error handling", "exception", "error"
+    Api,            // "endpoint", "route", "handler", "api"
+    Hook,           // "useEffect", "hook", "lifecycle"
+    Middleware,     // "middleware", "interceptor"
+    Migration,      // "migration", "schema change", "migrate"
 }
 
 /// Normalize query text for better search results
@@ -335,25 +335,25 @@ pub fn contains_code_snippet(query: &str) -> bool {
 
     // Strong code indicators - any one of these means it's code
     let strong_indicators = [
-        "()",     // Function call
-        "{}",     // Block
-        "[]",     // Array access
-        "=>",     // Arrow function
-        "->",     // Rust/C++ return type or pointer
-        "::",     // Rust/C++ path separator
-        "fn ",    // Rust function
-        "let ",   // Variable declaration
-        "const ", // Constant
-        "import ",// Import statement
-        "export ",// Export statement
-        "async ", // Async
-        "await ", // Await
-        "pub ",   // Rust public
-        "struct ",// Struct definition
-        "impl ",  // Rust impl
-        "class ", // Class definition
-        "def ",   // Python function
-        "func ",  // Go function
+        "()",      // Function call
+        "{}",      // Block
+        "[]",      // Array access
+        "=>",      // Arrow function
+        "->",      // Rust/C++ return type or pointer
+        "::",      // Rust/C++ path separator
+        "fn ",     // Rust function
+        "let ",    // Variable declaration
+        "const ",  // Constant
+        "import ", // Import statement
+        "export ", // Export statement
+        "async ",  // Async
+        "await ",  // Await
+        "pub ",    // Rust public
+        "struct ", // Struct definition
+        "impl ",   // Rust impl
+        "class ",  // Class definition
+        "def ",    // Python function
+        "func ",   // Go function
     ];
 
     for indicator in &strong_indicators {
@@ -364,15 +364,15 @@ pub fn contains_code_snippet(query: &str) -> bool {
 
     // Check for multiple weaker indicators
     let weak_indicators = [
-        ".",  // Method call
-        ";",  // Statement terminator
-        "=",  // Assignment
-        "<",  // Generic or comparison
-        ">",  // Generic or comparison
-        "(",  // Parenthesis
-        ")",  // Parenthesis
-        "{",  // Brace
-        "}",  // Brace
+        ".", // Method call
+        ";", // Statement terminator
+        "=", // Assignment
+        "<", // Generic or comparison
+        ">", // Generic or comparison
+        "(", // Parenthesis
+        ")", // Parenthesis
+        "{", // Brace
+        "}", // Brace
     ];
 
     let weak_count = weak_indicators
@@ -396,10 +396,7 @@ pub fn contains_code_snippet(query: &str) -> bool {
     }
 
     // Check for snake_case identifiers (not in a sentence)
-    if !q.contains(' ')
-        && q.contains('_')
-        && q.chars().all(|c| c.is_alphanumeric() || c == '_')
-    {
+    if !q.contains(' ') && q.contains('_') && q.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return true;
     }
 
@@ -448,9 +445,15 @@ mod tests {
             detect_intent("configuration settings"),
             Some(Intent::Config)
         ));
-        assert!(matches!(detect_intent("error handling"), Some(Intent::Error)));
+        assert!(matches!(
+            detect_intent("error handling"),
+            Some(Intent::Error)
+        ));
         assert!(matches!(detect_intent("api endpoint"), Some(Intent::Api)));
-        assert!(matches!(detect_intent("useEffect hook"), Some(Intent::Hook)));
+        assert!(matches!(
+            detect_intent("useEffect hook"),
+            Some(Intent::Hook)
+        ));
         assert!(matches!(
             detect_intent("middleware"),
             Some(Intent::Middleware)
@@ -532,10 +535,7 @@ mod tests {
         assert!(result.contains("User"));
         assert!(result.contains("By") || result.contains("by"));
         assert!(result.contains("Id") || result.contains("id"));
-        assert!(
-            result.contains("application programming interface")
-                || result.contains("api")
-        );
+        assert!(result.contains("application programming interface") || result.contains("api"));
     }
 
     #[test]
@@ -544,9 +544,7 @@ mod tests {
         let without_synonym = normalize_and_expand_query("auth function", false, false);
 
         // With synonym enabled, should have "authentication" or "method"
-        assert!(
-            with_synonym.contains("authentication") || with_synonym.contains("method")
-        );
+        assert!(with_synonym.contains("authentication") || with_synonym.contains("method"));
 
         // Without synonym, should NOT have these extras
         assert!(!without_synonym.contains("authentication"));

@@ -6,12 +6,13 @@ pub mod hyde;
 mod query;
 mod ranking;
 
+use crate::retrieval::hyde::HypotheticalCodeGenerator;
 use crate::{
     config::Config,
     embeddings::Embedder,
     metrics::MetricsRegistry,
-    retrieval::assembler::{ContextAssembler, ContextItem},
     reranker::Reranker,
+    retrieval::assembler::{ContextAssembler, ContextItem},
     storage::{
         sqlite::{SqliteStore, SymbolRow},
         tantivy::TantivyIndex,
@@ -20,13 +21,17 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use cache::RetrieverCaches;
-use query::{decompose_query, detect_intent, normalize_and_expand_query, parse_query_controls, trim_query, Intent, QueryControls};
-use ranking::{
-    apply_docstring_boost_with_signals, apply_file_affinity_boost_with_signals, apply_package_boost_with_signals, apply_popularity_boost_with_signals, apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
-    rank_hits_with_signals, apply_reranker_scores, prepare_rerank_docs, should_rerank,
-    reciprocal_rank_fusion, get_graph_ranked_hits,
+use query::{
+    decompose_query, detect_intent, normalize_and_expand_query, parse_query_controls, trim_query,
+    Intent, QueryControls,
 };
-use crate::retrieval::hyde::HypotheticalCodeGenerator;
+use ranking::{
+    apply_docstring_boost_with_signals, apply_file_affinity_boost_with_signals,
+    apply_package_boost_with_signals, apply_popularity_boost_with_signals, apply_reranker_scores,
+    apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
+    get_graph_ranked_hits, prepare_rerank_docs, rank_hits_with_signals, reciprocal_rank_fusion,
+    should_rerank,
+};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -191,8 +196,12 @@ impl Retriever {
                     language: row.language.clone(),
                 }];
 
-                let (context, context_items) =
-                    self.assemble_context_cached(&sqlite, std::slice::from_ref(&row), &[], Some(query_without_controls.as_str()))?;
+                let (context, context_items) = self.assemble_context_cached(
+                    &sqlite,
+                    std::slice::from_ref(&row),
+                    &[],
+                    Some(query_without_controls.as_str()),
+                )?;
 
                 let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 let run = crate::storage::sqlite::SearchRunRow {
@@ -297,8 +306,12 @@ impl Retriever {
                         .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
                         .collect::<Vec<_>>();
 
-                    let (context, context_items) =
-                        self.assemble_context_cached(&sqlite, &rows, &[], Some(query_without_controls.as_str()))?;
+                    let (context, context_items) = self.assemble_context_cached(
+                        &sqlite,
+                        &rows,
+                        &[],
+                        Some(query_without_controls.as_str()),
+                    )?;
 
                     let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     let run = crate::storage::sqlite::SearchRunRow {
@@ -330,42 +343,172 @@ impl Retriever {
 
         // Conditional: single-query path vs multi-query path based on decomposition
         // Single query preserves existing behavior; multi-query uses unified RRF
-        let (ranked, mut hit_signals): (Vec<RankedHit>, HashMap<String, HitSignals>) = if sub_queries.len() == 1 {
-            // SINGLE-QUERY PATH: Use existing logic unchanged
-            let search_query = &sub_queries[0];
+        let (ranked, mut hit_signals): (Vec<RankedHit>, HashMap<String, HitSignals>) =
+            if sub_queries.len() == 1 {
+                // SINGLE-QUERY PATH: Use existing logic unchanged
+                let search_query = &sub_queries[0];
 
-            let k = self.config.vector_search_limit.max(limit).max(5);
-            let keyword_t = Instant::now();
-            let keyword_hits = self.tantivy.search(search_query, k)?;
-            let _keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let k = self.config.vector_search_limit.max(limit).max(5);
+                let keyword_t = Instant::now();
+                let keyword_hits = self.tantivy.search(search_query, k)?;
+                let _keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
-            let vector_t = Instant::now();
-            let query_vector = self.get_query_vector_cached(search_query).await?;
-            let mut vector_hits = self.vectors.search(&query_vector, k).await?;
+                let vector_t = Instant::now();
+                let query_vector = self.get_query_vector_cached(search_query).await?;
+                let mut vector_hits = self.vectors.search(&query_vector, k).await?;
 
-            // HyDE: Add hypothetical document retrieval
-            if self.config.hyde_enabled {
-                if let Some(generator) = &self.hyde_generator {
-                    let language = detect_language_from_query(search_query);
-                    if let Ok(hyde_result) = generator.generate(search_query, language).await {
-                        let mut embedder = self.embedder.lock().await;
-                        if let Ok(hyde_embeddings) = embedder.embed(&[hyde_result.hypothetical_code]) {
-                            if let Some(hyde_vector) = hyde_embeddings.first() {
-                                if let Ok(mut hyde_hits) = self.vectors.search(hyde_vector, k / 2).await {
-                                    vector_hits.append(&mut hyde_hits);
+                // HyDE: Add hypothetical document retrieval
+                if self.config.hyde_enabled {
+                    if let Some(generator) = &self.hyde_generator {
+                        let language = detect_language_from_query(search_query);
+                        if let Ok(hyde_result) = generator.generate(search_query, language).await {
+                            let mut embedder = self.embedder.lock().await;
+                            if let Ok(hyde_embeddings) =
+                                embedder.embed(&[hyde_result.hypothetical_code])
+                            {
+                                if let Some(hyde_vector) = hyde_embeddings.first() {
+                                    if let Ok(mut hyde_hits) =
+                                        self.vectors.search(hyde_vector, k / 2).await
+                                    {
+                                        vector_hits.append(&mut hyde_hits);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            let _vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let _vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
-            // Use RRF if enabled, otherwise use existing score fusion
-            if self.config.rrf_enabled {
-                // Convert keyword_hits to RankedHit for RRF
-                let keyword_ranked: Vec<RankedHit> = keyword_hits
+                // Use RRF if enabled, otherwise use existing score fusion
+                if self.config.rrf_enabled {
+                    // Convert keyword_hits to RankedHit for RRF
+                    let keyword_ranked: Vec<RankedHit> = keyword_hits
+                        .iter()
+                        .map(|h| RankedHit {
+                            id: h.id.clone(),
+                            score: h.score,
+                            name: h.name.clone(),
+                            kind: h.kind.clone(),
+                            file_path: h.file_path.clone(),
+                            exported: h.exported,
+                            language: String::new(), // Will be filled from DB if needed
+                        })
+                        .collect();
+
+                    // Convert vector_hits to RankedHit for RRF
+                    let vector_ranked: Vec<RankedHit> = vector_hits
+                        .iter()
+                        .map(|h| RankedHit {
+                            id: h.id.clone(),
+                            score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)), // Convert distance to score
+                            name: h.name.clone(),
+                            kind: h.kind.clone(),
+                            file_path: h.file_path.clone(),
+                            exported: h.exported,
+                            language: h.language.clone(),
+                        })
+                        .collect();
+
+                    // Get graph-ranked hits
+                    let graph_hits =
+                        if let Ok(graph) = get_graph_ranked_hits(&keyword_ranked, &sqlite) {
+                            graph
+                        } else {
+                            keyword_ranked.clone()
+                        };
+
+                    // Apply RRF
+                    let weights = (
+                        self.config.rrf_keyword_weight,
+                        self.config.rrf_vector_weight,
+                        self.config.rrf_graph_weight,
+                    );
+
+                    let rrf_results = reciprocal_rank_fusion(
+                        &keyword_ranked,
+                        &vector_ranked,
+                        &graph_hits,
+                        weights,
+                    );
+
+                    // Generate signals for RRF results
+                    let mut signals = HashMap::new();
+                    for hit in &rrf_results {
+                        signals.insert(
+                            hit.id.clone(),
+                            HitSignals {
+                                keyword_score: 0.0, // RRF doesn't preserve raw scores
+                                vector_score: 0.0,
+                                base_score: hit.score,
+                                structural_adjust: 0.0,
+                                intent_mult: 1.0,
+                                definition_bias: 0.0,
+                                popularity_boost: 0.0,
+                                learning_boost: 0.0,
+                                affinity_boost: 0.0,
+                                docstring_boost: 0.0,
+                                package_boost: 0.0,
+                            },
+                        );
+                    }
+
+                    (rrf_results, signals)
+                } else {
+                    // Use existing score fusion
+                    rank_hits_with_signals(
+                        &keyword_hits,
+                        &vector_hits,
+                        &self.config,
+                        &intent,
+                        search_query,
+                    )
+                }
+            } else {
+                // MULTI-QUERY PATH: Loop over sub-queries and collect combined hits
+                let k = self.config.vector_search_limit.max(limit).max(5);
+
+                // Combined accumulators for ALL sub-queries
+                let mut combined_keyword_hits: Vec<crate::storage::tantivy::SearchHit> = Vec::new();
+                let mut combined_vector_hits: Vec<crate::storage::vector::VectorHit> = Vec::new();
+
+                for sub_query in &sub_queries {
+                    // Keyword search for this sub-query
+                    let sub_keyword_hits = self.tantivy.search(sub_query, k)?;
+                    combined_keyword_hits.extend(sub_keyword_hits);
+
+                    // Vector search for this sub-query
+                    let query_vector = self.get_query_vector_cached(sub_query).await?;
+                    let mut sub_vector_hits = self.vectors.search(&query_vector, k).await?;
+
+                    // HyDE for this sub-query
+                    if self.config.hyde_enabled {
+                        if let Some(generator) = &self.hyde_generator {
+                            let language = detect_language_from_query(sub_query);
+                            if let Ok(hyde_result) = generator.generate(sub_query, language).await {
+                                let mut embedder = self.embedder.lock().await;
+                                if let Ok(hyde_embeddings) =
+                                    embedder.embed(&[hyde_result.hypothetical_code])
+                                {
+                                    if let Some(hyde_vector) = hyde_embeddings.first() {
+                                        if let Ok(hyde_hits) =
+                                            self.vectors.search(hyde_vector, k / 2).await
+                                        {
+                                            sub_vector_hits.extend(hyde_hits);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    combined_vector_hits.extend(sub_vector_hits);
+                }
+
+                // UNIFIED RRF: Single RRF pass over combined hits from all sub-queries
+                // This avoids nested RRF layers
+
+                let keyword_ranked: Vec<RankedHit> = combined_keyword_hits
                     .iter()
                     .map(|h| RankedHit {
                         id: h.id.clone(),
@@ -374,16 +517,15 @@ impl Retriever {
                         kind: h.kind.clone(),
                         file_path: h.file_path.clone(),
                         exported: h.exported,
-                        language: String::new(), // Will be filled from DB if needed
+                        language: String::new(),
                     })
                     .collect();
 
-                // Convert vector_hits to RankedHit for RRF
-                let vector_ranked: Vec<RankedHit> = vector_hits
+                let vector_ranked: Vec<RankedHit> = combined_vector_hits
                     .iter()
                     .map(|h| RankedHit {
                         id: h.id.clone(),
-                        score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)), // Convert distance to score
+                        score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)),
                         name: h.name.clone(),
                         kind: h.kind.clone(),
                         file_path: h.file_path.clone(),
@@ -392,34 +534,29 @@ impl Retriever {
                     })
                     .collect();
 
-                // Get graph-ranked hits
-                let graph_hits = if let Ok(graph) = get_graph_ranked_hits(&keyword_ranked, &sqlite) {
+                let graph_hits = if let Ok(graph) = get_graph_ranked_hits(&keyword_ranked, &sqlite)
+                {
                     graph
                 } else {
                     keyword_ranked.clone()
                 };
 
-                // Apply RRF
+                // Single RRF pass over combined results
                 let weights = (
                     self.config.rrf_keyword_weight,
                     self.config.rrf_vector_weight,
                     self.config.rrf_graph_weight,
                 );
 
-                let rrf_results = reciprocal_rank_fusion(
-                    &keyword_ranked,
-                    &vector_ranked,
-                    &graph_hits,
-                    weights,
-                );
+                let ranked =
+                    reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
 
-                // Generate signals for RRF results
-                let mut signals = HashMap::new();
-                for hit in &rrf_results {
-                    signals.insert(
+                let mut hit_signals = HashMap::new();
+                for hit in &ranked {
+                    hit_signals.insert(
                         hit.id.clone(),
                         HitSignals {
-                            keyword_score: 0.0,  // RRF doesn't preserve raw scores
+                            keyword_score: 0.0,
                             vector_score: 0.0,
                             base_score: hit.score,
                             structural_adjust: 0.0,
@@ -434,125 +571,8 @@ impl Retriever {
                     );
                 }
 
-                (rrf_results, signals)
-            } else {
-                // Use existing score fusion
-                rank_hits_with_signals(
-                    &keyword_hits,
-                    &vector_hits,
-                    &self.config,
-                    &intent,
-                    search_query,
-                )
-            }
-        } else {
-            // MULTI-QUERY PATH: Loop over sub-queries and collect combined hits
-            let k = self.config.vector_search_limit.max(limit).max(5);
-
-            // Combined accumulators for ALL sub-queries
-            let mut combined_keyword_hits: Vec<crate::storage::tantivy::SearchHit> = Vec::new();
-            let mut combined_vector_hits: Vec<crate::storage::vector::VectorHit> = Vec::new();
-
-            for sub_query in &sub_queries {
-                // Keyword search for this sub-query
-                let sub_keyword_hits = self.tantivy.search(sub_query, k)?;
-                combined_keyword_hits.extend(sub_keyword_hits);
-
-                // Vector search for this sub-query
-                let query_vector = self.get_query_vector_cached(sub_query).await?;
-                let mut sub_vector_hits = self.vectors.search(&query_vector, k).await?;
-
-                // HyDE for this sub-query
-                if self.config.hyde_enabled {
-                    if let Some(generator) = &self.hyde_generator {
-                        let language = detect_language_from_query(sub_query);
-                        if let Ok(hyde_result) = generator.generate(sub_query, language).await {
-                            let mut embedder = self.embedder.lock().await;
-                            if let Ok(hyde_embeddings) = embedder.embed(&[hyde_result.hypothetical_code]) {
-                                if let Some(hyde_vector) = hyde_embeddings.first() {
-                                    if let Ok(hyde_hits) = self.vectors.search(hyde_vector, k / 2).await {
-                                        sub_vector_hits.extend(hyde_hits);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                combined_vector_hits.extend(sub_vector_hits);
-            }
-
-            // UNIFIED RRF: Single RRF pass over combined hits from all sub-queries
-            // This avoids nested RRF layers
-
-            let keyword_ranked: Vec<RankedHit> = combined_keyword_hits
-                .iter()
-                .map(|h| RankedHit {
-                    id: h.id.clone(),
-                    score: h.score,
-                    name: h.name.clone(),
-                    kind: h.kind.clone(),
-                    file_path: h.file_path.clone(),
-                    exported: h.exported,
-                    language: String::new(),
-                })
-                .collect();
-
-            let vector_ranked: Vec<RankedHit> = combined_vector_hits
-                .iter()
-                .map(|h| RankedHit {
-                    id: h.id.clone(),
-                    score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)),
-                    name: h.name.clone(),
-                    kind: h.kind.clone(),
-                    file_path: h.file_path.clone(),
-                    exported: h.exported,
-                    language: h.language.clone(),
-                })
-                .collect();
-
-            let graph_hits = if let Ok(graph) = get_graph_ranked_hits(&keyword_ranked, &sqlite) {
-                graph
-            } else {
-                keyword_ranked.clone()
+                (ranked, hit_signals)
             };
-
-            // Single RRF pass over combined results
-            let weights = (
-                self.config.rrf_keyword_weight,
-                self.config.rrf_vector_weight,
-                self.config.rrf_graph_weight,
-            );
-
-            let ranked = reciprocal_rank_fusion(
-                &keyword_ranked,
-                &vector_ranked,
-                &graph_hits,
-                weights,
-            );
-
-            let mut hit_signals = HashMap::new();
-            for hit in &ranked {
-                hit_signals.insert(
-                    hit.id.clone(),
-                    HitSignals {
-                        keyword_score: 0.0,
-                        vector_score: 0.0,
-                        base_score: hit.score,
-                        structural_adjust: 0.0,
-                        intent_mult: 1.0,
-                        definition_bias: 0.0,
-                        popularity_boost: 0.0,
-                        learning_boost: 0.0,
-                        affinity_boost: 0.0,
-                        docstring_boost: 0.0,
-                        package_boost: 0.0,
-                    },
-                );
-            }
-
-            (ranked, hit_signals)
-        };
 
         // Start merge timing after search completes
         // Note: keyword_ms and vector_ms timing are lost in multi-query path
@@ -597,12 +617,8 @@ impl Retriever {
             &self.config,
         )?;
 
-        let hits = apply_file_affinity_boost_with_signals(
-            &sqlite,
-            hits,
-            &mut hit_signals,
-            &self.config,
-        )?;
+        let hits =
+            apply_file_affinity_boost_with_signals(&sqlite, hits, &mut hit_signals, &self.config)?;
 
         // Apply package boost for same-package prioritization
         let query_package_id = controls.package.as_deref();
@@ -660,7 +676,8 @@ impl Retriever {
             }
         }
 
-        let (context, context_items) = self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?;
+        let (context, context_items) =
+            self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -696,7 +713,12 @@ impl Retriever {
     }
 
     fn cache_insert_response(&self, key: String, resp: SearchResponse) {
-        let size = resp.context.len() + resp.context_items.iter().map(|i| i.tokens * 4).sum::<usize>();
+        let size = resp.context.len()
+            + resp
+                .context_items
+                .iter()
+                .map(|i| i.tokens * 4)
+                .sum::<usize>();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.responses.insert(key, resp, size);
     }
@@ -736,13 +758,15 @@ impl Retriever {
         extra_ids.sort_unstable();
 
         // Include query hash in cache key to prevent stale cached results for different queries
-        let query_hash = query.map(|q| {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            q.hash(&mut h);
-            format!("{:x}", h.finish())
-        }).unwrap_or_else(|| "none".to_string());
+        let query_hash = query
+            .map(|q| {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut h = DefaultHasher::new();
+                q.hash(&mut h);
+                format!("{:x}", h.finish())
+            })
+            .unwrap_or_else(|| "none".to_string());
 
         let key = format!(
             "m=default|q={}|t={}|r={}|x={}",
@@ -836,7 +860,9 @@ impl Retriever {
         let sqlite = SqliteStore::open(&self.db_path)?;
         sqlite.init()?;
         let assembler = ContextAssembler::new(self.config.clone());
-        Ok(assembler.format_context(&sqlite, symbols, &[], &[], None)?.0)
+        Ok(assembler
+            .format_context(&sqlite, symbols, &[], &[], None)?
+            .0)
     }
 
     pub fn load_symbol_rows_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {

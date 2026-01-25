@@ -51,12 +51,7 @@ fn extract_symbols_with_parser(
                         symbol_from_node(name.clone(), SymbolKind::Function, exported, def_node);
                     symbols.push(sym);
                     extract_function_signature_types(node, source, &name, &mut type_edges);
-                    extract_dataflow_from_function_body(
-                        node,
-                        source,
-                        &name,
-                        &mut dataflow_edges,
-                    );
+                    extract_dataflow_from_function_body(node, source, &name, &mut dataflow_edges);
                 }
             }
             "method_definition" => {
@@ -70,12 +65,7 @@ fn extract_symbols_with_parser(
                         node,
                     ));
                     extract_function_signature_types(node, source, &name, &mut type_edges);
-                    extract_dataflow_from_function_body(
-                        node,
-                        source,
-                        &name,
-                        &mut dataflow_edges,
-                    );
+                    extract_dataflow_from_function_body(node, source, &name, &mut dataflow_edges);
                 }
             }
             "arrow_function" => {
@@ -690,7 +680,10 @@ fn extract_dataflow_from_node(
             // Handle control flow bodies
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind().ends_with("body") || child.kind() == "consequence" || child.kind() == "alternative" {
+                if child.kind().ends_with("body")
+                    || child.kind() == "consequence"
+                    || child.kind() == "alternative"
+                {
                     extract_dataflow_from_node(child, source, context_name, out);
                 }
             }
@@ -861,7 +854,11 @@ fn extract_identifiers_from_expression(node: Node<'_>, source: &str) -> Vec<Stri
             }
             // Extract property if it's a computed property
             if let Some(prop_node) = node.child_by_field_name("property") {
-                if prop_node.kind() == "identifier" && node.child_by_field_name("object").is_some_and(|o| o.kind() != "member_expression") {
+                if prop_node.kind() == "identifier"
+                    && node
+                        .child_by_field_name("object")
+                        .is_some_and(|o| o.kind() != "member_expression")
+                {
                     // Only add property if it's not part of a chain
                 }
                 identifiers.extend(extract_identifiers_from_expression(prop_node, source));
@@ -1125,7 +1122,10 @@ fn parse_jsdoc(raw: &str, symbol_id: &str) -> JSDocEntry {
     let mut current_example = None;
 
     for line in raw.lines() {
-        let trimmed = line.trim_start_matches("/**").trim_start_matches("*").trim();
+        let trimmed = line
+            .trim_start_matches("/**")
+            .trim_start_matches("*")
+            .trim();
 
         // Skip empty lines during summary collection
         if trimmed.is_empty() && summary_lines.is_empty() && current_example.is_none() {
@@ -1148,7 +1148,11 @@ fn parse_jsdoc(raw: &str, symbol_id: &str) -> JSDocEntry {
                     } else {
                         ""
                     };
-                    let name = if !type_anno.is_empty() { parts[1] } else { parts[0] };
+                    let name = if !type_anno.is_empty() {
+                        parts[1]
+                    } else {
+                        parts[0]
+                    };
                     let desc = if parts.len() > 2 { parts[2] } else { "" };
                     params.push(JSDocParam {
                         name: name.to_string(),
@@ -1157,7 +1161,11 @@ fn parse_jsdoc(raw: &str, symbol_id: &str) -> JSDocEntry {
                         } else {
                             None
                         },
-                        description: if desc.is_empty() { None } else { Some(desc.to_string()) },
+                        description: if desc.is_empty() {
+                            None
+                        } else {
+                            Some(desc.to_string())
+                        },
                     });
                 }
             } else if let Some(ret) = rest.strip_prefix("returns ") {
@@ -1278,7 +1286,9 @@ fn find_node_at_position(root: Node, offset: usize) -> Option<Node> {
 fn classify_decorator(name: &str) -> DecoratorType {
     match name {
         // Angular decorators
-        "Component" | "Input" | "Output" | "HostListener" | "HostBinding" => DecoratorType::Component,
+        "Component" | "Input" | "Output" | "HostListener" | "HostBinding" => {
+            DecoratorType::Component
+        }
         "Injectable" | "Inject" | "Optional" | "Self" => DecoratorType::Injectable,
         "NgModule" | "Module" => DecoratorType::Module,
         "Directive" | "Pipe" => DecoratorType::Directive,
@@ -1336,11 +1346,7 @@ fn extract_decorator_arguments(node: Node, source: &str) -> Option<String> {
 }
 
 /// Extract decorators from a class or method declaration
-fn extract_decorators_from_node(
-    node: Node,
-    source: &str,
-    symbol_id: &str,
-) -> Vec<DecoratorEntry> {
+fn extract_decorators_from_node(node: Node, source: &str, symbol_id: &str) -> Vec<DecoratorEntry> {
     let mut decorators = Vec::new();
     let mut cursor = node.walk();
 
@@ -1503,22 +1509,25 @@ const arrowFunc = (input: string) => {
         let df_edges = &extracted.dataflow_edges;
 
         // Check for writes to x
-        assert!(df_edges.iter().any(|e| {
-            e.from_symbol == "x" && matches!(e.flow_type, DataFlowType::Writes)
-        }));
+        assert!(df_edges
+            .iter()
+            .any(|e| { e.from_symbol == "x" && matches!(e.flow_type, DataFlowType::Writes) }));
 
         // Check for reads of foo (function call on right side of assignment)
-        assert!(df_edges.iter().any(|e| {
-            e.from_symbol == "foo" && matches!(e.flow_type, DataFlowType::Reads)
-        }));
+        assert!(df_edges
+            .iter()
+            .any(|e| { e.from_symbol == "foo" && matches!(e.flow_type, DataFlowType::Reads) }));
 
         // Check for reads of x (used in bar(x))
-        assert!(df_edges.iter().any(|e| {
-            e.from_symbol == "x" && matches!(e.flow_type, DataFlowType::Reads)
-        }));
+        assert!(df_edges
+            .iter()
+            .any(|e| { e.from_symbol == "x" && matches!(e.flow_type, DataFlowType::Reads) }));
 
         // Check that dataflow_edges is populated
-        assert!(!df_edges.is_empty(), "Should have extracted data flow edges");
+        assert!(
+            !df_edges.is_empty(),
+            "Should have extracted data flow edges"
+        );
     }
 
     #[test]
@@ -1535,13 +1544,13 @@ export function processUser(user: any) {
         let df_edges = &extracted.dataflow_edges;
 
         // Check for reads of user (from user.name, user.age)
-        assert!(df_edges.iter().any(|e| {
-            e.from_symbol == "user" && matches!(e.flow_type, DataFlowType::Reads)
-        }));
+        assert!(df_edges
+            .iter()
+            .any(|e| { e.from_symbol == "user" && matches!(e.flow_type, DataFlowType::Reads) }));
 
         // Check for writes to name
-        assert!(df_edges.iter().any(|e| {
-            e.from_symbol == "name" && matches!(e.flow_type, DataFlowType::Writes)
-        }));
+        assert!(df_edges
+            .iter()
+            .any(|e| { e.from_symbol == "name" && matches!(e.flow_type, DataFlowType::Writes) }));
     }
 }

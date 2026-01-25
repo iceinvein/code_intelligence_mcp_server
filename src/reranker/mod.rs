@@ -1,7 +1,7 @@
 //! Cross-encoder reranking for improved search result precision
 
-pub mod onnx;
 pub mod cache;
+pub mod onnx;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -13,11 +13,7 @@ use std::sync::Arc;
 pub trait Reranker: Send + Sync {
     /// Rerank documents based on relevance to query
     /// Returns scores for each document (higher = more relevant)
-    async fn rerank(
-        &self,
-        query: &str,
-        documents: &[RerankDocument],
-    ) -> Result<Vec<f32>>;
+    async fn rerank(&self, query: &str, documents: &[RerankDocument]) -> Result<Vec<f32>>;
 
     /// Get the top-k limit for this reranker
     fn top_k(&self) -> usize;
@@ -40,7 +36,10 @@ pub fn create_reranker(
     let model_path = match model_path {
         Some(p) if p.exists() => p.to_path_buf(),
         Some(p) => {
-            tracing::warn!("Reranker model path not found: {}, reranking disabled", p.display());
+            tracing::warn!(
+                "Reranker model path not found: {}, reranking disabled",
+                p.display()
+            );
             return Ok(None);
         }
         None => {

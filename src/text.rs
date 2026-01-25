@@ -5,16 +5,31 @@ use std::collections::HashMap;
 /// Maps a term to its synonyms - all terms that mean similar things in code
 static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::new(|| {
     let mut m = HashMap::new();
-    m.insert("function", &["fn", "method", "procedure", "func", "subroutine"][..]);
+    m.insert(
+        "function",
+        &["fn", "method", "procedure", "func", "subroutine"][..],
+    );
     m.insert("variable", &["var", "let", "const", "binding", "field"][..]);
     m.insert("class", &["struct", "type", "interface", "object"][..]);
     m.insert("error", &["exception", "failure", "err", "fault"][..]);
     m.insert("async", &["asynchronous", "concurrent", "parallel"][..]);
     m.insert("callback", &["handler", "listener", "hook", "delegate"][..]);
-    m.insert("database", &["db", "storage", "persistence", "datastore"][..]);
-    m.insert("authentication", &["auth", "login", "signin", "authenticate"][..]);
-    m.insert("authorization", &["authz", "permissions", "access", "acl"][..]);
-    m.insert("configuration", &["config", "settings", "options", "preferences"][..]);
+    m.insert(
+        "database",
+        &["db", "storage", "persistence", "datastore"][..],
+    );
+    m.insert(
+        "authentication",
+        &["auth", "login", "signin", "authenticate"][..],
+    );
+    m.insert(
+        "authorization",
+        &["authz", "permissions", "access", "acl"][..],
+    );
+    m.insert(
+        "configuration",
+        &["config", "settings", "options", "preferences"][..],
+    );
     m.insert("component", &["widget", "element", "view", "control"][..]);
     m.insert("request", &["req", "http", "call"][..]);
     m.insert("response", &["res", "reply", "result"][..]);

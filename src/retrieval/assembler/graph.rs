@@ -94,10 +94,7 @@ pub fn expand_with_scoring(
 ///
 /// Resolves type and reference edges to find parameter types, return types,
 /// and other type dependencies of a symbol.
-pub fn resolve_parameter_types(
-    store: &SqliteStore,
-    symbol_id: &str,
-) -> Result<Vec<SymbolRow>> {
+pub fn resolve_parameter_types(store: &SqliteStore, symbol_id: &str) -> Result<Vec<SymbolRow>> {
     let edges = store.list_edges_from(symbol_id, 20)?;
 
     let mut related = Vec::new();
@@ -115,10 +112,7 @@ pub fn resolve_parameter_types(
 ///
 /// Resolves extends and implements edges to find the class hierarchy
 /// for a given symbol. Useful for understanding type relationships.
-pub fn resolve_parent_classes(
-    store: &SqliteStore,
-    symbol_id: &str,
-) -> Result<Vec<SymbolRow>> {
+pub fn resolve_parent_classes(store: &SqliteStore, symbol_id: &str) -> Result<Vec<SymbolRow>> {
     let edges = store.list_edges_from(symbol_id, 20)?;
 
     let mut parents = Vec::new();

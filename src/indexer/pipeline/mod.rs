@@ -124,15 +124,27 @@ impl IndexPipeline {
         let stats = self.index_files(files, true).await?;
 
         // Record Prometheus metrics
-        self.metrics.index_files_total.inc_by(stats.files_indexed as f64);
-        self.metrics.index_symbols_total.inc_by(stats.symbols_indexed as f64);
-        self.metrics.index_files_skipped.inc_by(stats.files_skipped as f64);
-        self.metrics.index_files_unchanged.inc_by(stats.files_unchanged as f64);
+        self.metrics
+            .index_files_total
+            .inc_by(stats.files_indexed as f64);
+        self.metrics
+            .index_symbols_total
+            .inc_by(stats.symbols_indexed as f64);
+        self.metrics
+            .index_files_skipped
+            .inc_by(stats.files_skipped as f64);
+        self.metrics
+            .index_files_unchanged
+            .inc_by(stats.files_unchanged as f64);
 
         // Cache metrics
         let cache_stats = self.cache.stats();
-        self.metrics.index_cache_hits.inc_by(cache_stats.hits as f64);
-        self.metrics.index_cache_misses.inc_by(cache_stats.misses as f64);
+        self.metrics
+            .index_cache_hits
+            .inc_by(cache_stats.hits as f64);
+        self.metrics
+            .index_cache_misses
+            .inc_by(cache_stats.misses as f64);
 
         self.persist_index_run_metrics(started_at_unix_s, started_at.elapsed(), &stats)?;
 
@@ -153,7 +165,9 @@ impl IndexPipeline {
         let tantivy_size = Self::dir_size(&self.config.tantivy_index_path)?;
         let db_size = std::fs::metadata(&self.db_path)?.len() as u64;
 
-        self.metrics.index_size_bytes.set((tantivy_size + db_size) as f64);
+        self.metrics
+            .index_size_bytes
+            .set((tantivy_size + db_size) as f64);
 
         Ok(())
     }
@@ -210,8 +224,8 @@ impl IndexPipeline {
         // Upsert all packages
         for pkg in packages {
             // Convert absolute manifest_path to relative for consistency with symbol file_paths
-            let manifest_path = if let Ok(rel) = PathBuf::from(&pkg.manifest_path)
-                .strip_prefix(&self.config.base_dir)
+            let manifest_path = if let Ok(rel) =
+                PathBuf::from(&pkg.manifest_path).strip_prefix(&self.config.base_dir)
             {
                 rel.to_string_lossy().to_string()
             } else {
@@ -277,7 +291,8 @@ impl IndexPipeline {
                 sleep(Duration::from_millis(interval_ms)).await;
                 if let Err(err) = pipeline.index_all().await {
                     consecutive_failures += 1;
-                    let backoff_ms = (interval_ms * (1 << consecutive_failures.min(8))).min(max_backoff_ms);
+                    let backoff_ms =
+                        (interval_ms * (1 << consecutive_failures.min(8))).min(max_backoff_ms);
                     tracing::warn!(
                         error = %err,
                         consecutive_failures = consecutive_failures,
@@ -392,7 +407,8 @@ impl IndexPipeline {
             tracing::info!("Using sequential indexing");
             // For now, keep the original logic inline
             // TODO: Refactor into index_files_sequential helper
-            self.index_files_sequential_internal(&uniq, &mut stats).await?
+            self.index_files_sequential_internal(&uniq, &mut stats)
+                .await?
         };
 
         stats.files_indexed = indexing_stats.files_indexed;
@@ -430,7 +446,6 @@ impl IndexPipeline {
         uniq: &[PathBuf],
         stats: &mut IndexRunStats,
     ) -> Result<IndexRunStats> {
-
         let mut name_to_id: HashMap<String, String> = HashMap::new();
 
         for file in uniq {
@@ -551,7 +566,8 @@ impl IndexPipeline {
                         error_chain = %err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join(" -> "),
                         "Failed to delete old symbols (full error chain)"
                     );
-                    return Err(err).with_context(|| format!("Failed to delete old symbols for {rel}"));
+                    return Err(err)
+                        .with_context(|| format!("Failed to delete old symbols for {rel}"));
                 }
                 sqlite
                     .delete_usage_examples_by_file(&rel)
@@ -631,10 +647,8 @@ impl IndexPipeline {
                 }
 
                 // Build id_to_symbol HashMap for edge extraction
-                let id_to_symbol: HashMap<String, &SymbolRow> = symbol_rows
-                    .iter()
-                    .map(|r| (r.id.clone(), r))
-                    .collect();
+                let id_to_symbol: HashMap<String, &SymbolRow> =
+                    symbol_rows.iter().map(|r| (r.id.clone(), r)).collect();
 
                 // Commit Tantivy changes immediately to ensure they are persisted
                 // even if vector indexing panics (which has been observed with lance).
@@ -649,17 +663,19 @@ impl IndexPipeline {
 
                     // Create package lookup function for cross-package edge resolution
                     let db_path_for_lookup = self.db_path.clone();
-                    let package_lookup_fn: edges::PackageLookupFn = Box::new(move |file_path: &str| -> Option<String> {
-                        if let Ok(sqlite) = SqliteStore::open(&db_path_for_lookup) {
-                            if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
-                                return Some(pkg.id);
+                    let package_lookup_fn: edges::PackageLookupFn =
+                        Box::new(move |file_path: &str| -> Option<String> {
+                            if let Ok(sqlite) = SqliteStore::open(&db_path_for_lookup) {
+                                if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
+                                    return Some(pkg.id);
+                                }
                             }
-                        }
-                        None
-                    });
+                            None
+                        });
 
                     // Use a reference to the package lookup function for multiple calls
-                    let package_lookup_ref: Option<&edges::PackageLookupFn> = Some(&package_lookup_fn);
+                    let package_lookup_ref: Option<&edges::PackageLookupFn> =
+                        Some(&package_lookup_fn);
 
                     for row in &symbol_rows {
                         let edges = extract_edges_for_symbol(
@@ -719,7 +735,8 @@ impl IndexPipeline {
                                 name: d.name.clone(),
                                 arguments: d.arguments.clone(),
                                 target_line: d.target_line,
-                                decorator_type: serde_json::to_string(&d.decorator_type).unwrap_or_else(|_| "unknown".to_string()),
+                                decorator_type: serde_json::to_string(&d.decorator_type)
+                                    .unwrap_or_else(|_| "unknown".to_string()),
                                 updated_at: 0,
                             })
                             .collect();

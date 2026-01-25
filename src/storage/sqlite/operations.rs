@@ -43,6 +43,10 @@ impl SqliteStore {
         let _ = conn.query_row("PRAGMA journal_mode=WAL", [], |row| {
             row.get::<_, String>(0)
         }).ok(); // Silently ignore if WAL fails
+        // Enable foreign key constraints (required for ON DELETE CASCADE to work)
+        // This MUST be set on every connection as it's connection-specific, not database-wide
+        let _ = conn.execute("PRAGMA foreign_keys = ON", []).ok();
+
 
         // synchronous and busy_timeout don't return values, use execute
         let _ = conn.execute("PRAGMA synchronous=NORMAL", []).ok();

@@ -261,12 +261,13 @@ impl IndexPipeline {
                 {
                     let sqlite = SqliteStore::open(&self.db_path)?;
                     sqlite.init()?;
+
+                    // Delete symbols first - test_links have ON DELETE CASCADE, so they auto-delete
                     sqlite.delete_symbols_by_file(&file_path)?;
                     sqlite.delete_usage_examples_by_file(&file_path)?;
                     sqlite.delete_todos_by_file(&file_path)?;
                     sqlite.delete_docstrings_by_file(&file_path)?;
                     sqlite.delete_decorators_by_file(&file_path)?;
-                    sqlite.delete_test_links_for_file(&file_path)?;
                     sqlite.delete_file_fingerprint(&file_path)?;
                 }
 
@@ -416,9 +417,17 @@ impl IndexPipeline {
             {
                 let sqlite = SqliteStore::open(&self.db_path)?;
                 sqlite.init()?;
-                sqlite
-                    .delete_symbols_by_file(&rel)
-                    .with_context(|| format!("Failed to delete old symbols for {rel}"))?;
+
+                // Delete symbols first - test_links have ON DELETE CASCADE, so they auto-delete
+                if let Err(err) = sqlite.delete_symbols_by_file(&rel) {
+                    tracing::error!(
+                        file = %rel,
+                        error = %err,
+                        error_chain = %err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join(" -> "),
+                        "Failed to delete old symbols (full error chain)"
+                    );
+                    return Err(err).with_context(|| format!("Failed to delete old symbols for {rel}"));
+                }
                 sqlite
                     .delete_usage_examples_by_file(&rel)
                     .with_context(|| format!("Failed to delete old usage examples for {rel}"))?;
@@ -431,9 +440,7 @@ impl IndexPipeline {
                 sqlite
                     .delete_decorators_by_file(&rel)
                     .with_context(|| format!("Failed to delete old decorators for {rel}"))?;
-                sqlite
-                    .delete_test_links_for_file(&rel)
-                    .with_context(|| format!("Failed to delete old test links for {rel}"))?;
+                // Note: test_links auto-delete via ON DELETE CASCADE when symbols are deleted
             }
 
             let mut symbol_rows = Vec::new();

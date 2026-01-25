@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-01-22)
 ## Current Position
 
 Phase: 9 of 9 (Multi-Repo Support) -> IN PROGRESS
-Plan: 06 of 7 in current phase -> COMPLETE
-Status: Plan complete, 5/7 done in Phase 9 (09-05 documented)
-Last activity: 2026-01-25 - Completed 09-05 (batch package lookup and package-aware ranking)
+Plan: 07 of 7 in current phase -> COMPLETE
+Status: Plan complete, 6/7 done in Phase 9 (09-07 documented)
+Last activity: 2026-01-25 - Completed 09-07 (cross-package edge resolution)
 
-Progress: [██████████] 99% (37 of 37 plans)
+Progress: [██████████] 99% (38 of 37 plans)
 
 Phase breakdown:
 - Phase 1 (Foundation): [██████████] 100% (3/3)
@@ -25,14 +25,14 @@ Phase breakdown:
 - Phase 6 (New MCP Tools): [██████████] 100% (10/10)
 - Phase 7 (Language Enhancements): [██████████] 100% (7/7)
 - Phase 8 (Performance & Scale): [██████████] 100% (3/3)
-- Phase 9 (Multi-Repo Support): [█████████░] 71% (5/7)
+- Phase 9 (Multi-Repo Support): [██████████] 86% (6/7)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 37
-- Average duration: 6.4min
-- Total execution time: 4.0 hours
+- Total plans completed: 38
+- Average duration: 6.5min
+- Total execution time: 4.1 hours
 
 **By Phase:**
 
@@ -46,11 +46,11 @@ Phase breakdown:
 | 6     | 10    | 10       | 5.6min   |
 | 7     | 7     | 7        | 4.6min   |
 | 8     | 3     | 3        | 12.3min  |
-| 9     | 5     | 5        | 7.8min   |
+| 9     | 6     | 6        | 8.3min   |
 
 **Recent Trend:**
-- Last 5 plans: 09-06 (13min), 09-04 (7min), 09-03 (~8min), 09-02 (14min), 09-01 (7min)
-- Trend: Phase 9 progressing - package boost integrated with query controls
+- Last 5 plans: 09-07 (12min), 09-06 (13min), 09-04 (7min), 09-03 (~8min), 09-02 (14min)
+- Trend: Phase 9 nearly complete - cross-package edge resolution implemented
 
 *Updated after each plan completion*
 
@@ -189,6 +189,10 @@ Recent decisions affecting current work:
 - **Intent-based package boost multipliers:** Navigation intents (Definition, Implementation, Callers) get 1.2x, Error gets 1.1x, others get 1.15x for same-package results. (09-05)
 - **Auto-detect package context from first hit:** When query_package_id is None, package context is detected from first hit's file path for zero-configuration usage. (09-05)
 - **HashMap<String, HitSignals> for ranking signals:** Package boost follows existing pattern using HashMap instead of slice for hit_signals tracking. (09-05)
+- **Refactored PackageLookupFn to Box<dyn Fn> for closure capture:** Changed from fn pointer to boxed trait object to enable capturing db_path for package lookup during indexing. (09-07)
+- **ResolutionContext struct for edge extraction:** Created struct to pass package context through edge extraction without FnOnce move issues in loops. (09-07)
+- **Reference-based function passing for package lookup:** Uses Option<&PackageLookupFn> to avoid move issues when calling extract_edges_for_symbol multiple times. (09-07)
+- **Cross-package edge resolution marking:** Edges marked as local (same file), package (same package), cross-package (different packages), or import/unknown based on package membership. (09-07)
 
 ### Pending Todos
 
@@ -201,6 +205,6 @@ None remaining.
 ## Session Continuity
 
 Last session: 2026-01-25
-Stopped at: Completed 09-05 (batch package lookup and package-aware ranking), created SUMMARY.md
+Stopped at: Completed 09-07 (cross-package edge resolution), created SUMMARY.md
 Resume file: None
-Next: Phase 9 Plan 07 - Cross-package symbol resolution
+Next: Phase 9 Plan 08 - Final phase 9 plan

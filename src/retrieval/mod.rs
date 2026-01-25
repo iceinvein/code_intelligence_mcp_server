@@ -476,6 +476,7 @@ impl Retriever {
             &mut hit_signals,
             query_package_id,
             &self.config,
+            intent.clone().unwrap_or(Intent::Definition),
         )?;
 
         // Apply cross-encoder reranking if available

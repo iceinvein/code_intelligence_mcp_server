@@ -122,14 +122,12 @@ pub fn extract_edges_for_symbol(
     let import_map = build_import_map(imports);
 
     // Get package for source symbol
-    let from_package_id = get_package_fn
-        .and_then(|f| get_package_for_symbol(f, &row.file_path));
+    let from_package_id = get_package_for_symbol(get_package_fn, &row.file_path);
 
     // Helper to compute resolution based on target symbol ID and whether it was an import
     let compute_resolution = |to_id: &str, was_import: bool| -> String {
         if let Some(to_symbol) = id_to_symbol.get(to_id) {
-            let to_package_id = get_package_fn
-                .and_then(|f| get_package_for_symbol(f, &to_symbol.file_path));
+            let to_package_id = get_package_for_symbol(get_package_fn, &to_symbol.file_path);
 
             let resolution = determine_edge_resolution(
                 &row.file_path,

@@ -164,12 +164,13 @@ fn index_file_single(
     // Note: We skip vector deletion here to avoid async in sync context
     // Vectors will be updated in batch later
 
+    // Delete symbols first - test_links have ON DELETE CASCADE, so they auto-delete
     sqlite.delete_symbols_by_file(&rel)?;
     sqlite.delete_usage_examples_by_file(&rel)?;
     sqlite.delete_todos_by_file(&rel)?;
     sqlite.delete_docstrings_by_file(&rel)?;
     sqlite.delete_decorators_by_file(&rel)?;
-    sqlite.delete_test_links_for_file(&rel)?;
+    // Note: test_links auto-delete via ON DELETE CASCADE when symbols are deleted
 
     let mut name_to_id: HashMap<String, String> = HashMap::new();
     let mut symbol_rows = Vec::new();

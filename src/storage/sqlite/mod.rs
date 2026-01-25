@@ -181,6 +181,13 @@ impl SqliteStore {
         queries::misc::list_symbols_in_cluster(&self.read(), cluster_key, limit)
     }
 
+    pub fn list_symbols_without_similarity_clusters(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SymbolRow>> {
+        queries::misc::list_symbols_without_similarity_clusters(&self.read(), limit)
+    }
+
     pub fn delete_usage_examples_by_file(&self, file_path: &str) -> Result<()> {
         queries::misc::delete_usage_examples_by_file(&self.write(), file_path)
     }

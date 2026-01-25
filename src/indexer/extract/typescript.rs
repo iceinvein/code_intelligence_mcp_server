@@ -861,7 +861,7 @@ fn extract_identifiers_from_expression(node: Node<'_>, source: &str) -> Vec<Stri
             }
             // Extract property if it's a computed property
             if let Some(prop_node) = node.child_by_field_name("property") {
-                if prop_node.kind() == "identifier" && node.child_by_field_name("object").map_or(false, |o| o.kind() != "member_expression") {
+                if prop_node.kind() == "identifier" && node.child_by_field_name("object").is_some_and(|o| o.kind() != "member_expression") {
                     // Only add property if it's not part of a chain
                 }
                 identifiers.extend(extract_identifiers_from_expression(prop_node, source));
@@ -1101,7 +1101,7 @@ fn find_jsdoc_for_node(node: Node, source: &str) -> Option<String> {
                 current = sibling.prev_sibling();
             }
             // Whitespace and unnamed nodes are OK to skip
-            "" if sibling.is_named() == false => {
+            "" if !sibling.is_named() => {
                 current = sibling.prev_sibling();
             }
             // Any other named node means no JSDoc attached

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 
 use crate::indexer::extract::symbol::JSDocEntry;
 use crate::storage::sqlite::schema::DocstringRow;

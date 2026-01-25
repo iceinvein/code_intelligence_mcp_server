@@ -54,7 +54,7 @@ pub fn parse_go_mod(path: &Path) -> Result<PackageInfo> {
     // Derive package name from module path (last component after "/")
     let name = module_path.as_ref().and_then(|path| {
         path.split('/')
-            .last()
+            .next_back()
             .map(|s| s.to_string())
     });
 

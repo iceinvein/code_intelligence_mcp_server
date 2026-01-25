@@ -434,9 +434,9 @@ impl IndexPipeline {
         let mut name_to_id: HashMap<String, String> = HashMap::new();
 
         for file in uniq {
-            let rel = file_key(&self.config, &file);
+            let rel = file_key(&self.config, file);
 
-            let language_id = match language_id_for_path(&file) {
+            let language_id = match language_id_for_path(file) {
                 Some(id) => id,
                 None => {
                     stats.files_skipped += 1;
@@ -444,7 +444,7 @@ impl IndexPipeline {
                 }
             };
 
-            let fp = match file_fingerprint(&file) {
+            let fp = match file_fingerprint(file) {
                 Ok(fp) => fp,
                 Err(err) => {
                     tracing::warn!(
@@ -499,7 +499,7 @@ impl IndexPipeline {
                 }
             }
 
-            let source = match fs::read_to_string(&file) {
+            let source = match fs::read_to_string(file) {
                 Ok(s) => s,
                 Err(err) => {
                     tracing::warn!(file = %file.display(), error = %err, "Failed to read file");
@@ -777,6 +777,7 @@ impl IndexPipeline {
     /// - File cleanup
     /// - Symbol extraction with embeddings
     /// - Vector storage
+    ///
     /// Note: Currently using index_files_sequential_internal instead
     #[allow(dead_code)]
     async fn index_files_sequential(&self, _files: Vec<PathBuf>) -> Result<IndexRunStats> {

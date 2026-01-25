@@ -4,7 +4,7 @@
 //! that can be embedded for better semantic retrieval.
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// HyDE (Hypothetical Document Embeddings) query result
 #[derive(Debug, Clone)]
@@ -90,8 +90,7 @@ Respond ONLY with the code snippet, no explanation."#,
 
         let hypothetical = response_text
             .choices
-            .first()
-            .and_then(|c| Some(c.message.content.trim().to_string()))
+            .first().map(|c| c.message.content.trim().to_string())
             .unwrap_or_else(|| prompt.to_string());
 
         // Extract code from markdown code blocks if present
@@ -129,8 +128,7 @@ Respond ONLY with the code snippet, no explanation."#,
 
         let hypothetical = response_text
             .content
-            .first()
-            .and_then(|c| Some(c.text.trim().to_string()))
+            .first().map(|c| c.text.trim().to_string())
             .unwrap_or_else(|| prompt.to_string());
 
         let hypothetical = extract_code_from_markdown(&hypothetical);

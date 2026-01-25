@@ -7,7 +7,7 @@ use crate::storage::sqlite::SqliteStore;
 use crate::storage::sqlite::SymbolRow;
 use anyhow::{anyhow, Context, Result};
 use formatting::{
-    fingerprint_text, format_section_header, format_symbol_section, format_structured_output,
+    fingerprint_text, format_structured_output,
     format_symbol_with_docstring, role_for_symbol, simplify_code_with_query, symbol_row_from_usage_example,
 };
 use std::collections::{HashMap, HashSet};
@@ -144,7 +144,7 @@ impl ContextAssembler {
                     &sym.kind,
                     is_root,
                     query,
-                    &counter,
+                    counter,
                     remaining,
                 ),
             };

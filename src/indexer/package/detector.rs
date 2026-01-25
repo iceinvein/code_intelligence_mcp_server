@@ -227,11 +227,10 @@ fn pattern_matches_path(pattern: &str, path: &str) -> bool {
     }
 
     // Pattern contains directory separator - check as prefix
-    if pattern.contains('/') {
-        if path.starts_with(&format!("{}/", pattern)) {
+    if pattern.contains('/')
+        && path.starts_with(&format!("{}/", pattern)) {
             return true;
         }
-    }
 
     false
 }

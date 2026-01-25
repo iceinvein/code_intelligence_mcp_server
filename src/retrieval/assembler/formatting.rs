@@ -338,7 +338,7 @@ pub fn format_section_header(name: &str) -> String {
 ///
 /// Creates a markdown code block with symbol metadata header including
 /// file path, line range, symbol name, kind, and language.
-pub fn format_symbol_section(sym: &SymbolRow, text: &str, role: &str) -> String {
+pub fn format_symbol_section(sym: &SymbolRow, text: &str, _role: &str) -> String {
     format!(
         "### {}:{}-{} `{}` ({})\n```{}\n{}\n```\n\n",
         sym.file_path, sym.start_line, sym.end_line, sym.name, sym.kind, sym.language, text

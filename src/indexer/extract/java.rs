@@ -143,7 +143,7 @@ fn extract_import(node: Node, source: &str, imports: &mut Vec<Import>) {
             // We can treat the full path as source
             // And the last part as name (unless it's import static or *)
 
-            let last_part = name.split('.').last().unwrap_or(&name).to_string();
+            let last_part = name.split('.').next_back().unwrap_or(&name).to_string();
 
             imports.push(Import {
                 name: last_part,

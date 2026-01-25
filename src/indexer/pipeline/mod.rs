@@ -39,6 +39,7 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 use self::edges::{extract_edges_for_symbol, upsert_name_mapping};
+use self::parallel::index_files_parallel;
 use self::parsing::symbol_kind_to_string;
 use self::scan::{scan_files, should_index_file};
 use self::stats::IndexRunStats;
@@ -156,6 +157,7 @@ impl IndexPipeline {
             ..Default::default()
         };
 
+        // Cleanup deleted files first
         if cleanup_deleted {
             let mut scanned_rel: HashSet<String> = HashSet::new();
             for file in &uniq {
@@ -199,6 +201,49 @@ impl IndexPipeline {
                 self.tantivy.commit()?;
             }
         }
+
+        // Choose parallel or sequential indexing based on config
+        let indexing_stats = if self.config.parallel_workers > 1 {
+            // Parallel path (no embeddings/vectors in parallel mode)
+            tracing::info!(
+                "Using parallel indexing with {} workers",
+                self.config.parallel_workers
+            );
+            self.index_files_parallel_async(uniq.clone()).await?
+        } else {
+            // Sequential path (includes embeddings/vectors)
+            tracing::info!("Using sequential indexing");
+            // For now, keep the original logic inline
+            // TODO: Refactor into index_files_sequential helper
+            self.index_files_sequential_internal(&uniq, &mut stats).await?
+        };
+
+        stats.files_indexed = indexing_stats.files_indexed;
+        stats.files_skipped = indexing_stats.files_skipped;
+        stats.files_unchanged = indexing_stats.files_unchanged;
+        stats.symbols_indexed = indexing_stats.symbols_indexed;
+
+        // Compute PageRank scores after all indexing is complete
+        // Only run if the graph structure changed (files indexed or deleted)
+        if stats.files_indexed > 0 || stats.files_deleted > 0 {
+            let sqlite = SqliteStore::open(&self.db_path)?;
+            sqlite.init()?;
+            pagerank::compute_and_store_pagerank(&sqlite, &self.config)
+                .context("Failed to compute PageRank scores")?;
+        } else {
+            tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
+        }
+
+        tracing::debug!(?stats, "Index run completed");
+        Ok(stats)
+    }
+
+    /// Internal sequential indexing implementation (original logic)
+    async fn index_files_sequential_internal(
+        &self,
+        uniq: &[PathBuf],
+        stats: &mut IndexRunStats,
+    ) -> Result<IndexRunStats> {
 
         let mut name_to_id: HashMap<String, String> = HashMap::new();
 
@@ -461,18 +506,38 @@ impl IndexPipeline {
             self.tantivy.commit()?;
         }
 
-        // Compute PageRank scores after all indexing is complete
-        // Only run if the graph structure changed (files indexed or deleted)
-        if stats.files_indexed > 0 || stats.files_deleted > 0 {
-            let sqlite = SqliteStore::open(&self.db_path)?;
-            sqlite.init()?;
-            pagerank::compute_and_store_pagerank(&sqlite, &self.config)
-                .context("Failed to compute PageRank scores")?;
-        } else {
-            tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
-        }
+        Ok(stats.clone())
+    }
 
-        tracing::debug!(?stats, "Index run completed");
+    /// Async wrapper for parallel indexing
+    ///
+    /// Calls the synchronous rayon-based parallel indexing in a blocking task
+    /// to avoid blocking the tokio runtime.
+    async fn index_files_parallel_async(&self, files: Vec<PathBuf>) -> Result<IndexRunStats> {
+        let config = self.config.clone();
+        let db_path = self.db_path.clone();
+        let tantivy = self.tantivy.clone();
+        let vectors = self.vectors.clone();
+
+        // Run parallel indexing in blocking task
+        tokio::task::spawn_blocking(move || {
+            index_files_parallel(config, db_path, tantivy, vectors, files)
+        })
+        .await
+        .context("Join error in parallel indexing")?
+    }
+
+    /// Index files sequentially (original logic with embeddings)
+    ///
+    /// This is the original indexing logic that includes:
+    /// - File cleanup
+    /// - Symbol extraction with embeddings
+    /// - Vector storage
+    /// Note: Currently using index_files_sequential_internal instead
+    #[allow(dead_code)]
+    async fn index_files_sequential(&self, _files: Vec<PathBuf>) -> Result<IndexRunStats> {
+        // Placeholder - logic moved to index_files_sequential_internal
+        let stats = IndexRunStats::default();
         Ok(stats)
     }
 

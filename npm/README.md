@@ -14,10 +14,10 @@ This server indexes your codebase locally to provide **fast, semantic, and struc
 
 Unlike basic text search, this server builds a local knowledge graph to understand your code.
 
-*   🔍 **Hybrid Search**: Combines **Tantivy** (keyword) + **LanceDB** (semantic vector) + **FastEmbed** (local embedding model).
-*   🚀 **Production First**: Ranking heuristics prioritize implementation code over tests and glue code (`index.ts`).
-*   🧠 **Developer Aware**: Handles common acronyms and casing (e.g., "db" matches "database" and "DBConnection").
-*   ⚡ **Fast & Local**: Written in **Rust**. Uses Metal GPU acceleration on macOS. Indexes are stored locally within your project.
+* 🔍 **Hybrid Search V2**: Combines **Tantivy** (keyword) + **LanceDB** (semantic vector) + **FastEmbed** (local embedding model) with normalized scoring fusion.
+* 🚀 **Production First**: Ranking heuristics prioritize implementation code over tests and glue code (`index.ts`).
+* 🧠 **Developer Aware**: Handles common acronyms and casing (e.g., "db" matches "database" and "DBConnection").
+* ⚡ **Fast & Local**: Written in **Rust**. Uses Metal GPU acceleration on macOS. Indexes are stored locally within your project.
 
 ---
 
@@ -49,14 +49,17 @@ Add to your `opencode.json` (or global config):
 
 Available tools for the agent:
 
-| Tool | Description |
-| :--- | :--- |
-| `search_code` | **Primary Search.** Finds code by meaning ("how does auth work?") or structure ("class User"). |
-| `get_definition` | Retrieves the definition of a specific symbol. |
-| `find_references` | Finds all usages of a function, class, or variable. |
-| `get_call_hierarchy` | specifices upstream callers and downstream callees. |
-| `get_type_graph` | Explores inheritance and interface implementations. |
-| `get_usage_examples` | Returns real-world examples of how a symbol is used in the codebase. |
+| Tool                       | Description                                                                                    |
+| :------------------------- | :--------------------------------------------------------------------------------------------- |
+| `search_code`              | **Primary Search.** Finds code by meaning ("how does auth work?") or structure ("class User"). |
+| `get_definition`           | Retrieves the full definition of a specific symbol.                                            |
+| `find_references`          | Finds all usages of a function, class, or variable.                                            |
+| `get_call_hierarchy`       | specifices upstream callers and downstream callees.                                            |
+| `get_type_graph`           | Explores inheritance (extends/implements) and type aliases.                                    |
+| `explore_dependency_graph` | Explores module-level dependencies upstream or downstream.                                     |
+| `get_file_symbols`         | Lists all symbols defined in a specific file.                                                  |
+| `get_usage_examples`       | Returns real-world examples of how a symbol is used in the codebase.                           |
+| `refresh_index`            | Manually triggers a re-index of the codebase.                                                  |
 
 ---
 
@@ -64,28 +67,32 @@ Available tools for the agent:
 
 The server supports semantic navigation and symbol extraction for the following languages:
 
-*   **Rust**
-*   **TypeScript / TSX**
-*   **JavaScript**
-*   **Python**
-*   **Go**
-*   **Java**
-*   **C**
-*   **C++**
+* **Rust**
+* **TypeScript / TSX**
+* **JavaScript**
+* **Python**
+* **Go**
+* **Java**
+* **C**
+* **C++**
 
 ---
 
-## Smart Ranking
+## Smart Ranking & Context Enhancement
 
-The ranking engine optimizes results for relevance using several heuristics:
+The ranking engine optimizes results for relevance using sophisticated signals:
 
-1.  **Test Penalty**: Test files (`*.test.ts`, `__tests__`) are ranked lower by default, but are boosted if the query intent implies testing (e.g. "verify login").
-2.  **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
-3.  **Acronym Expansion**: Queries are normalized so "nav bar" matches `NavBar`, `Navigation`, and `NavigationBar`.
-4.  **Intent Detection**:
-    *   "struct User" → Boosts definitions.
-    *   "who calls login" → Triggers graph lookup.
-    *   "verify login" → Boosts test files.
+1. **Graph Popularity**: Symbols that are heavily referenced by other code receive a score boost, prioritizing "central" components.
+2. **Directory Semantics**: Implementation directories (`src`, `lib`, `app`) are boosted, while build artifacts (`dist`, `build`) and `node_modules` are penalized.
+3. **Test Penalty**: Test files (`*.test.ts`, `__tests__`) are ranked lower by default, but are boosted if the query intent implies testing.
+4. **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
+5. **Intent Detection**:
+    * "struct User" → Boosts definitions.
+    * "who calls login" → Triggers graph lookup.
+    * "verify login" → Boosts test files.
+    * "User schema" → Boosts files with "schema" or "model" in the path.
+
+For a deep dive into the system's design, see [System Architecture](system_architecture.md).
 
 ---
 
@@ -127,6 +134,13 @@ flowchart LR
       Tantivy[(Tantivy)]
       Lance[(LanceDB)]
     end
+    
+    subgraph Retrieval [Retrieval Engine]
+      direction TB
+      Hybrid[Hybrid Search]
+      Ranking[Smart Ranking]
+      Graph[Graph Traversal]
+    end
 
     %% Data Flow
     Tools -- Index --> Scan
@@ -134,9 +148,10 @@ flowchart LR
     Embed --> Tantivy
     Embed --> Lance
     
-    Tools -- Query --> SQLite
-    Tools -- Query --> Tantivy
-    Tools -- Query --> Lance
+    Tools -- Query --> Hybrid
+    Hybrid --> Ranking
+    Ranking --> Graph
+    Graph --> Tools
   end
 ```
 
@@ -144,6 +159,6 @@ flowchart LR
 
 ## Development
 
-1.  **Prerequisites**: Rust (stable), `protobuf`.
-2.  **Build**: `cargo build --release`
-3.  **Run**: `./scripts/start_mcp.sh`
+1. **Prerequisites**: Rust (stable), `protobuf`.
+2. **Build**: `cargo build --release`
+3. **Run**: `./scripts/start_mcp.sh`

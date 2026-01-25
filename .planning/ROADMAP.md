@@ -27,11 +27,12 @@
 
 </details>
 
-### 🚧 v1.1 Integration Polish (Planned)
+### 🚧 v1.1 Integration Polish (In Progress)
 
-- [ ] Phase 10: Query Understanding Integration (1/1 plans)
-  - [ ] 10-01-PLAN.md — Wire query expansion and decomposition into search flow
+- [x] Phase 10: Query Understanding Integration (1/1 plans) — completed 2026-01-25
+  - [x] 10-01-PLAN.md — Wire query expansion and decomposition into search flow
 - [ ] Phase 11: Context Assembly Enhancement (1/1 plans)
+  - [ ] 11-01-PLAN.md — Wire smart truncation into search flow
 
 ## Progress
 
@@ -46,11 +47,11 @@
 | 7. Language Enhancements | v1 | 7/7 | Complete | 2026-01-24 |
 | 8. Performance & Scale | v1 | 3/3 | Complete | 2026-01-25 |
 | 9. Multi-Repo Support | v1 | 7/7 | Complete | 2026-01-25 |
-| 10. Query Understanding Integration | v1.1 | 0/1 | Planned | - |
+| 10. Query Understanding Integration | v1.1 | 1/1 | Complete | 2026-01-25 |
 | 11. Context Assembly Enhancement | v1.1 | 0/1 | Pending | - |
 
-**Total:** 40/42 plans complete (95%)
+**Total:** 41/42 plans complete (98%)
 
 ---
 *Roadmap created: 2026-01-22*
-*Last updated: 2026-01-25 (Phase 10 planned)*
+*Last updated: 2026-01-25 (Phase 11 planned)*

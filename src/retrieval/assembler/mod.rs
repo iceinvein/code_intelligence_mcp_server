@@ -8,7 +8,7 @@ use crate::storage::sqlite::SymbolRow;
 use anyhow::{anyhow, Context, Result};
 use formatting::{
     fingerprint_text, format_section_header, format_symbol_section, format_structured_output,
-    format_symbol_with_docstring, role_for_symbol, simplify_code, symbol_row_from_usage_example,
+    format_symbol_with_docstring, role_for_symbol, simplify_code_with_query, symbol_row_from_usage_example,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -40,8 +40,9 @@ impl ContextAssembler {
         store: &SqliteStore,
         roots: &[SymbolRow],
         extra: &[SymbolRow],
+        query: Option<&str>,
     ) -> Result<(String, Vec<ContextItem>)> {
-        self.assemble_context_with_items_mode(store, roots, extra, FormatMode::Default)
+        self.assemble_context_with_items_mode(store, roots, extra, query, FormatMode::Default)
     }
 
     pub fn assemble_context_with_items_mode(
@@ -49,6 +50,7 @@ impl ContextAssembler {
         store: &SqliteStore,
         roots: &[SymbolRow],
         extra: &[SymbolRow],
+        query: Option<&str>,
         mode: FormatMode,
     ) -> Result<(String, Vec<ContextItem>)> {
         // 1. Expand context using graph with scoring
@@ -72,7 +74,7 @@ impl ContextAssembler {
 
         // 2. Format output
         // Roots are full text. Extra and Expanded are simplified.
-        self.format_context_with_mode(store, roots, &combined_extra, &expanded, mode)
+        self.format_context_with_mode(store, roots, &combined_extra, &expanded, mode, query)
     }
 
     pub fn format_context(
@@ -81,8 +83,9 @@ impl ContextAssembler {
         roots: &[SymbolRow],
         explicit_extra: &[SymbolRow],
         expanded: &[SymbolRow],
+        query: Option<&str>,
     ) -> Result<(String, Vec<ContextItem>)> {
-        self.format_context_with_mode(store, roots, explicit_extra, expanded, FormatMode::Default)
+        self.format_context_with_mode(store, roots, explicit_extra, expanded, FormatMode::Default, query)
     }
 
     pub fn format_context_with_mode(
@@ -92,6 +95,7 @@ impl ContextAssembler {
         explicit_extra: &[SymbolRow],
         expanded: &[SymbolRow],
         mode: FormatMode,
+        query: Option<&str>,
     ) -> Result<(String, Vec<ContextItem>)> {
         let mut used_tokens = 0usize;
         let mut seen = HashSet::<String>::new();
@@ -129,9 +133,19 @@ impl ContextAssembler {
             let is_root = root_ids.contains(&sym.id);
             let text = self.read_or_get_text(sym)?;
 
+            // Compute remaining budget for this symbol
+            let remaining = max_tokens.saturating_sub(used_tokens);
+
             let (text, simplified) = match mode {
                 FormatMode::Full => (text, false),
-                FormatMode::Default => simplify_code(&text, &sym.kind, is_root),
+                FormatMode::Default => simplify_code_with_query(
+                    &text,
+                    &sym.kind,
+                    is_root,
+                    query,
+                    &counter,
+                    remaining,
+                ),
             };
             let role = role_for_symbol(is_root, extra_ids.contains(&sym.id));
             let cluster_key = store.get_similarity_cluster_key(&sym.id).ok().flatten();
@@ -183,21 +197,8 @@ impl ContextAssembler {
             }
 
             if used_tokens + text_tokens > max_tokens {
-                // Truncate if needed
-                let remaining = max_tokens.saturating_sub(used_tokens);
-                let truncated_text = if remaining < text_tokens {
-                    // Simple truncation - in real usage would use smart_truncate with query
-                    let lines: Vec<&str> = text.lines().collect();
-                    let head_count = (remaining / 2).min(lines.len());
-                    let tail_count = (remaining / 2).min(lines.len().saturating_sub(head_count));
-                    let head = &lines[..head_count];
-                    let tail = &lines[lines.len().saturating_sub(tail_count)..];
-                    vec![head.join("\n"), "... (truncated) ...".to_string(), tail.join("\n")].join("\n")
-                } else {
-                    formatted_text.clone()
-                };
-                let truncated_tokens = counter.count(&truncated_text);
-
+                // simplify_code_with_query already handled truncation based on remaining budget
+                // Just add the truncated symbol to context and stop processing more
                 let mut reasons = vec![format!("role:{role}")];
                 if let Some(key) = &cluster_key {
                     reasons.push(format!("cluster:{key}"));
@@ -211,9 +212,9 @@ impl ContextAssembler {
 
                 // Add to appropriate section
                 match role.as_str() {
-                    "root" => definitions.push((sym.clone(), truncated_text.clone())),
-                    "extra" if sym.kind.starts_with("usage_") => examples.push((sym.clone(), truncated_text.clone())),
-                    _ => related.push((sym.clone(), truncated_text.clone())),
+                    "root" => definitions.push((sym.clone(), formatted_text.clone())),
+                    "extra" if sym.kind.starts_with("usage_") => examples.push((sym.clone(), formatted_text.clone())),
+                    _ => related.push((sym.clone(), formatted_text.clone())),
                 }
 
                 items.push(ContextItem {
@@ -226,9 +227,9 @@ impl ContextAssembler {
                     role: role.clone(),
                     reasons,
                     truncated: true,
-                    tokens: truncated_tokens,
+                    tokens: text_tokens,
                 });
-                *used_by_role.entry(role.clone()).or_insert(0) += truncated_tokens;
+                *used_by_role.entry(role.clone()).or_insert(0) += text_tokens;
                 *count_by_role.entry(role).or_insert(0) += 1;
                 if let Some(key) = &cluster_key {
                     *count_by_cluster_key.entry(key.clone()).or_insert(0) += 1;

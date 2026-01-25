@@ -11,8 +11,8 @@ See: .planning/PROJECT.md (updated 2026-01-22)
 
 Phase: 9 of 9 (Multi-Repo Support) -> IN PROGRESS
 Plan: 06 of 7 in current phase -> COMPLETE
-Status: Plan complete, 5/7 done in Phase 9
-Last activity: 2026-01-25 - Completed 09-06 (package boost integration)
+Status: Plan complete, 5/7 done in Phase 9 (09-05 documented)
+Last activity: 2026-01-25 - Completed 09-05 (batch package lookup and package-aware ranking)
 
 Progress: [██████████] 99% (37 of 37 plans)
 
@@ -184,6 +184,11 @@ Recent decisions affecting current work:
 - **Query control parameter for package context:** Users can specify "package:name" or "pkg:name" in queries to filter results to specific packages. (09-06)
 - **Package boost integrated into search pipeline:** apply_package_boost_with_signals called after file affinity, with 1.15x default multiplier. (09-06)
 - **HitSignals.package_boost for debugging:** package_boost field added to track applied boost amount in hit_signals. (09-06)
+- **Batch package lookup with SQL IN clause:** batch_get_symbol_packages uses params_from_iter for efficient symbol-to-package mapping in O(1) query. (09-05)
+- **File-to-package lookup via LIKE prefix:** get_package_id_for_file uses LIKE with manifest_path || '%' and ORDER BY LENGTH DESC to find deepest containing package. (09-05)
+- **Intent-based package boost multipliers:** Navigation intents (Definition, Implementation, Callers) get 1.2x, Error gets 1.1x, others get 1.15x for same-package results. (09-05)
+- **Auto-detect package context from first hit:** When query_package_id is None, package context is detected from first hit's file path for zero-configuration usage. (09-05)
+- **HashMap<String, HitSignals> for ranking signals:** Package boost follows existing pattern using HashMap instead of slice for hit_signals tracking. (09-05)
 
 ### Pending Todos
 
@@ -196,6 +201,6 @@ None remaining.
 ## Session Continuity
 
 Last session: 2026-01-25
-Stopped at: Completed 09-06 (package boost integration)
+Stopped at: Completed 09-05 (batch package lookup and package-aware ranking), created SUMMARY.md
 Resume file: None
 Next: Phase 9 Plan 07 - Cross-package symbol resolution

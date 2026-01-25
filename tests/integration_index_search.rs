@@ -447,3 +447,83 @@ export function callerOne() { targetFunc(); }
     // The hits should include callerOne
     assert!(resp.hits.iter().any(|h| h.name == "callerOne"));
 }
+
+#[tokio::test]
+async fn symbol_to_package_association() {
+    let dir = tmp_dir();
+
+    // Create a package structure
+    let pkg_dir = dir.join("packages").join("mypackage");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+
+    // Create package.json
+    std::fs::write(
+        pkg_dir.join("package.json"),
+        r#"
+{
+  "name": "mypackage",
+  "version": "1.0.0"
+}
+"#,
+    ).unwrap();
+
+    // Create a source file
+    std::fs::write(
+        pkg_dir.join("utils.ts"),
+        r#"
+export function myFunction() { return 42; }
+export const myConstant = 123;
+"#,
+    ).unwrap();
+
+    let mut config = test_config(&dir);
+    config.package_detection_enabled = true;
+    let config = Arc::new(config);
+
+    let sqlite = SqliteStore::open(&config.db_path).unwrap();
+    sqlite.init().unwrap();
+
+    let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+
+    let embedder = Arc::new(Mutex::new(
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
+    ));
+    let vector_dim = config.hash_embedding_dim;
+
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vectors = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", vector_dim)
+            .await
+            .unwrap(),
+    );
+
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
+    let indexer = IndexPipeline::new(
+        config.clone(),
+        tantivy.clone(),
+        vectors.clone(),
+        embedder.clone(),
+        metrics,
+    );
+
+    // Index the files
+    let stats = indexer.index_all().await.unwrap();
+    assert!(stats.files_indexed >= 1);
+
+    // Verify symbols were indexed with file_path
+    let symbols = sqlite.search_symbols_by_exact_name("myFunction", None, 10).unwrap();
+    assert!(!symbols.is_empty());
+
+    let my_function = symbols.iter().find(|s| s.name == "myFunction").expect("myFunction not found");
+    assert_eq!(my_function.file_path, "packages/mypackage/utils.ts");
+
+    // Verify symbol can be associated with its package via file_path
+    let package = sqlite.get_package_for_file(&my_function.file_path).unwrap();
+    assert!(package.is_some(), "Package should be found for symbol's file_path");
+
+    let pkg = package.unwrap();
+    assert_eq!(pkg.name, "mypackage");
+    assert!(pkg.manifest_path.contains("package.json"));
+}

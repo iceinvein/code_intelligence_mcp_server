@@ -461,6 +461,35 @@ impl IndexPipeline {
                 continue;
             }
 
+            // Log package membership for this file
+            {
+                let sqlite = SqliteStore::open(&self.db_path)?;
+                sqlite.init()?;
+                match sqlite.get_package_for_file(&rel) {
+                    Ok(Some(pkg)) => {
+                        tracing::debug!(
+                            file = %rel,
+                            package_id = %pkg.id,
+                            package_name = %pkg.name,
+                            "Indexing file with package"
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::trace!(
+                            file = %rel,
+                            "No package found for file during indexing"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            file = %rel,
+                            error = %err,
+                            "Failed to look up package for file"
+                        );
+                    }
+                }
+            }
+
             let source = match fs::read_to_string(&file) {
                 Ok(s) => s,
                 Err(err) => {

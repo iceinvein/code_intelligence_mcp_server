@@ -18,6 +18,16 @@ impl SqliteStore {
 
         let conn = Connection::open(db_path)
             .with_context(|| format!("Failed to open sqlite db: {}", db_path.display()))?;
+
+        // Enable WAL mode for better concurrent access
+        // WAL allows multiple readers and one writer
+        conn.execute("PRAGMA journal_mode=WAL", [])
+            .context("Failed to enable WAL mode")?;
+        conn.execute("PRAGMA synchronous=NORMAL", [])
+            .context("Failed to set synchronous mode")?;
+        conn.execute("PRAGMA busy_timeout=5000", []) // 5 second timeout
+            .context("Failed to set busy timeout")?;
+
         Ok(Self { conn })
     }
 

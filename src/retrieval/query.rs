@@ -9,6 +9,7 @@ pub struct QueryControls {
     pub path: Option<String>,
     pub lang: Option<String>,
     pub kind: Option<String>,
+    pub package: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +186,7 @@ pub fn parse_query_controls(query: &str) -> (String, QueryControls) {
             "path" => controls.path = Some(value.to_string()),
             "lang" | "language" => controls.lang = Some(normalize_lang(value)),
             "kind" => controls.kind = Some(value.to_string()),
+            "package" | "pkg" => controls.package = Some(value.to_string()),
             _ => kept.push(token),
         }
     }
@@ -570,5 +572,29 @@ mod tests {
         assert!(result.contains("get") || result.contains("Get"));
         assert!(result.contains("user") || result.contains("User"));
         assert!(!result.contains("authentication")); // synonym not added
+    }
+
+    #[test]
+    fn test_parse_package_control() {
+        // Test "package:" prefix
+        let (query, controls) = parse_query_controls("myFunction package:my-npm-package");
+        assert_eq!(query, "myFunction");
+        assert_eq!(controls.package, Some("my-npm-package".to_string()));
+
+        // Test "pkg:" prefix
+        let (query, controls) = parse_query_controls("myFunction pkg:core-utils");
+        assert_eq!(query, "myFunction");
+        assert_eq!(controls.package, Some("core-utils".to_string()));
+
+        // Test with other controls
+        let (query, controls) = parse_query_controls("search package:my-lib lang:typescript");
+        assert_eq!(query, "search");
+        assert_eq!(controls.package, Some("my-lib".to_string()));
+        assert_eq!(controls.lang, Some("typescript".to_string()));
+
+        // Test no package control
+        let (query, controls) = parse_query_controls("myFunction");
+        assert_eq!(query, "myFunction");
+        assert_eq!(controls.package, None);
     }
 }

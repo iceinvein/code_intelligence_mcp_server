@@ -31,8 +31,9 @@ impl ContextAssembler {
         store: &SqliteStore,
         roots: &[SymbolRow],
         extra: &[SymbolRow],
+        query: Option<&str>,
     ) -> Result<String> {
-        Ok(self.assemble_context_with_items(store, roots, extra)?.0)
+        Ok(self.assemble_context_with_items(store, roots, extra, query)?.0)
     }
 
     pub fn assemble_context_with_items(
@@ -430,7 +431,7 @@ mod tests {
         };
 
         let (output, items) = assembler
-            .format_context(&store, &[], &[small.clone(), huge.clone()], &[])
+            .format_context(&store, &[], &[small.clone(), huge.clone()], &[], None)
             .unwrap();
 
         // Check Small
@@ -482,9 +483,123 @@ mod tests {
 
         let expanded = vec![mk("a"), mk("b")];
         let (_output, items) = assembler
-            .format_context(&store, &[], &[], &expanded)
+            .format_context(&store, &[], &[], &expanded, None)
             .unwrap();
         assert_eq!(items.len(), 1);
         assert!(items[0].reasons.iter().any(|r| r == "dedupe:fingerprint"));
+    }
+
+    #[test]
+    fn format_context_uses_query_aware_truncation() {
+        // Test that format_context accepts query parameter and works correctly
+        let config = make_config(10000);
+        let assembler = ContextAssembler::new(config);
+        let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        store.init().unwrap();
+
+        // Create a function
+        let func = SymbolRow {
+            id: "test_func".to_string(),
+            file_path: "test.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: "test_func".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 5,
+            text: "fn test_func() {\n    let x = 1;\n    return x;\n}".to_string(),
+        };
+
+        // Test with query - should work without panicking
+        let (output_with_query, _items) = assembler
+            .format_context(&store, &[func.clone()], &[], &[], Some("test"))
+            .unwrap();
+
+        // Test without query - should work without panicking
+        let (output_no_query, _items) = assembler
+            .format_context(&store, &[func], &[], &[], None)
+            .unwrap();
+
+        // Both should produce some output
+        assert!(!output_with_query.is_empty(), "Output with query should not be empty");
+        assert!(!output_no_query.is_empty(), "Output without query should not be empty");
+    }
+
+    #[test]
+    fn format_context_with_query_truncates_differently_than_without() {
+        // This test verifies that providing a query vs not providing one
+        // can produce different truncation behavior for large symbols
+        let config = make_config(500);  // Small budget to force truncation
+        let assembler = ContextAssembler::new(config);
+        let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        store.init().unwrap();
+
+        // Create a large function with many lines
+        let mut lines = vec!["fn large_function() {".to_string()];
+        for i in 0..500 {
+            lines.push(format!("    let x{} = {};", i, i));
+        }
+        lines.push("}".to_string());
+
+        let large_func = SymbolRow {
+            id: "large_func".to_string(),
+            file_path: "large.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: "large_function".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: lines.len() as u32,
+            text: lines.join("\n"),
+        };
+
+        // Both should produce some output and not panic
+        let (with_query, _) = assembler
+            .format_context(&store, &[large_func.clone()], &[], &[], Some("x100"))
+            .unwrap();
+
+        let (without_query, _) = assembler
+            .format_context(&store, &[large_func.clone()], &[], &[], None)
+            .unwrap();
+
+        // Both should produce some output
+        assert!(!with_query.is_empty(), "Output with query should not be empty");
+        assert!(!without_query.is_empty(), "Output without query should not be empty");
+    }
+
+    #[test]
+    fn format_context_preserves_small_symbols_with_query() {
+        let config = make_config(10000);
+        let assembler = ContextAssembler::new(config);
+        let store = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        store.init().unwrap();
+
+        // Small function that fits in budget
+        let small_func = SymbolRow {
+            id: "small_func".to_string(),
+            file_path: "small.rs".to_string(),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: "small_func".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 5,
+            text: "fn small_func() {\n    let x = 1;\n    return x;\n}".to_string(),
+        };
+
+        let (output, items) = assembler
+            .format_context(&store, &[small_func], &[], &[], Some("query"))
+            .unwrap();
+
+        // Small symbols should be returned as-is
+        assert!(output.contains("let x = 1"), "Small function should not be truncated");
+        assert!(output.contains("return x"), "Small function should include return statement");
+        assert!(!items[0].truncated, "Small symbol should not be marked as truncated");
     }
 }

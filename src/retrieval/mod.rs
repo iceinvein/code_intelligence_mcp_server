@@ -192,7 +192,7 @@ impl Retriever {
                 }];
 
                 let (context, context_items) =
-                    self.assemble_context_cached(&sqlite, std::slice::from_ref(&row), &[])?;
+                    self.assemble_context_cached(&sqlite, std::slice::from_ref(&row), &[], Some(query_without_controls.as_str()))?;
 
                 let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                 let run = crate::storage::sqlite::SearchRunRow {
@@ -252,6 +252,14 @@ impl Retriever {
         // Decompose compound queries (e.g., "auth and database") into sub-queries
         let sub_queries = decompose_query(&expanded_query, 3); // max_depth=3
 
+        // Determine query for smart truncation
+        // Use first sub-query for relevance scoring (primary user intent)
+        let smart_truncation_query = if sub_queries.len() == 1 {
+            Some(query_without_controls.as_str())
+        } else {
+            Some(sub_queries[0].as_str())
+        };
+
         if let Some(Intent::Callers(name)) = &intent {
             let targets = sqlite.search_symbols_by_exact_name(name, None, 5)?;
             if let Some(target) = targets.first() {
@@ -290,7 +298,7 @@ impl Retriever {
                         .collect::<Vec<_>>();
 
                     let (context, context_items) =
-                        self.assemble_context_cached(&sqlite, &rows, &[])?;
+                        self.assemble_context_cached(&sqlite, &rows, &[], Some(query_without_controls.as_str()))?;
 
                     let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                     let run = crate::storage::sqlite::SearchRunRow {
@@ -652,7 +660,7 @@ impl Retriever {
             }
         }
 
-        let (context, context_items) = self.assemble_context_cached(&sqlite, &roots, &extra)?;
+        let (context, context_items) = self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -720,14 +728,25 @@ impl Retriever {
         store: &SqliteStore,
         roots: &[SymbolRow],
         extra: &[SymbolRow],
+        query: Option<&str>,
     ) -> Result<(String, Vec<ContextItem>)> {
         let mut root_ids = roots.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
         root_ids.sort_unstable();
         let mut extra_ids = extra.iter().map(|r| r.id.as_str()).collect::<Vec<_>>();
         extra_ids.sort_unstable();
 
+        // Include query hash in cache key to prevent stale cached results for different queries
+        let query_hash = query.map(|q| {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            q.hash(&mut h);
+            format!("{:x}", h.finish())
+        }).unwrap_or_else(|| "none".to_string());
+
         let key = format!(
-            "m=default|t={}|r={}|x={}",
+            "m=default|q={}|t={}|r={}|x={}",
+            query_hash,
             self.config.max_context_tokens,
             root_ids.join(","),
             extra_ids.join(",")
@@ -740,7 +759,7 @@ impl Retriever {
         }
 
         let assembler = ContextAssembler::new(self.config.clone());
-        let v = assembler.assemble_context_with_items(store, roots, extra)?;
+        let v = assembler.assemble_context_with_items(store, roots, extra, query)?;
         let size = v.0.len() + v.1.iter().map(|i| i.tokens * 4).sum::<usize>();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.contexts.insert(key, v.clone(), size);

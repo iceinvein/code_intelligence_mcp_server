@@ -277,6 +277,7 @@ mod tests {
             // Metrics config (PERF-04)
             metrics_enabled: true,
             metrics_port: 9090,
+            package_detection_enabled: true,
         };
 
         let k1 = file_key(&config, &inner);

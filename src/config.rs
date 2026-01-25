@@ -96,6 +96,9 @@ pub struct Config {
     // Metrics config (PERF-04)
     pub metrics_enabled: bool,
     pub metrics_port: u16,
+
+    // Package detection config (09-04)
+    pub package_detection_enabled: bool,
 }
 
 impl Config {
@@ -412,6 +415,13 @@ impl Config {
             .transpose()?
             .unwrap_or(9090);
 
+        // Package detection config (09-04)
+        let package_detection_enabled = optional_env("PACKAGE_DETECTION_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true); // Default enabled
+
         Ok(Self {
             base_dir,
             db_path,
@@ -488,6 +498,9 @@ impl Config {
             // Metrics config (PERF-04)
             metrics_enabled,
             metrics_port,
+
+            // Package detection config (09-04)
+            package_detection_enabled,
         })
     }
 
@@ -722,6 +735,8 @@ mod tests {
             // Metrics config (PERF-04)
             "METRICS_ENABLED",
             "METRICS_PORT",
+            // Package detection config (09-04)
+            "PACKAGE_DETECTION_ENABLED",
         ] {
             std::env::remove_var(k);
         }

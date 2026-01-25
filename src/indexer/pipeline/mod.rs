@@ -592,6 +592,12 @@ impl IndexPipeline {
                     upsert_name_mapping(&mut name_to_id, row);
                 }
 
+                // Build id_to_symbol HashMap for edge extraction
+                let id_to_symbol: HashMap<String, &SymbolRow> = symbol_rows
+                    .iter()
+                    .map(|r| (r.id.clone(), r))
+                    .collect();
+
                 // Commit Tantivy changes immediately to ensure they are persisted
                 // even if vector indexing panics (which has been observed with lance).
                 self.tantivy.commit()?;
@@ -606,9 +612,11 @@ impl IndexPipeline {
                         let edges = extract_edges_for_symbol(
                             row,
                             &name_to_id,
+                            &id_to_symbol,
                             &extracted.imports,
                             &extracted.type_edges,
                             &extracted.dataflow_edges,
+                            None,
                         );
                         for (edge, evidence) in edges {
                             let _ = sqlite.upsert_edge(&edge);

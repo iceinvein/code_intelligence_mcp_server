@@ -234,6 +234,12 @@ fn index_file_single(
     }
     tantivy.commit()?;
 
+    // Build id_to_symbol HashMap for edge extraction
+    let id_to_symbol: HashMap<String, &SymbolRow> = symbol_rows
+        .iter()
+        .map(|r| (r.id.clone(), r))
+        .collect();
+
     // Update SQLite
     for row in &symbol_rows {
         sqlite.upsert_symbol(row)?;
@@ -243,9 +249,11 @@ fn index_file_single(
         let edges = extract_edges_for_symbol(
             row,
             &name_to_id,
+            &id_to_symbol,
             &extracted.imports,
             &extracted.type_edges,
             &extracted.dataflow_edges,
+            None,
         );
         for (edge, evidence) in edges {
             let _ = sqlite.upsert_edge(&edge);

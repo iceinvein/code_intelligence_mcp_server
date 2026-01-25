@@ -288,6 +288,115 @@ pub fn count_packages_in_repository(conn: &Connection, repository_id: &str) -> R
     Ok(count.max(0) as u64)
 }
 
+/// Batch lookup package IDs for multiple symbols.
+///
+/// This function efficiently looks up which package each symbol belongs to
+/// by joining the symbols table with the packages table. For each symbol,
+/// it finds the package whose manifest_path is a prefix of the symbol's file_path.
+///
+/// # Arguments
+///
+/// * `conn` - SQLite connection
+/// * `symbol_ids` - Slice of symbol IDs to look up
+///
+/// # Returns
+///
+/// * `Ok(HashMap<String, String>)` - Map of symbol_id to package_id
+/// * `Err(anyhow::Error)` - Database operation failed
+///
+/// # Example
+///
+/// ```ignore
+/// let symbol_ids = vec!["symbol1".to_string(), "symbol2".to_string()];
+/// let packages = batch_get_symbol_packages(&conn, &symbol_ids)?;
+/// // packages.get("symbol1") -> Some("pkg-123")
+/// ```
+pub fn batch_get_symbol_packages(
+    conn: &Connection,
+    symbol_ids: &[&str],
+) -> Result<std::collections::HashMap<String, String>> {
+    use std::collections::HashMap;
+
+    if symbol_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Build IN clause placeholders dynamically
+    let placeholders = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Query joins symbols with packages using LIKE to find containing package
+    // Uses LENGTH(manifest_path) DESC to find the deepest (most specific) package
+    let query = format!(
+        r#"
+SELECT s.id, p.id
+FROM symbols s
+JOIN packages p ON s.file_path LIKE p.manifest_path || '%'
+WHERE s.id IN ({})
+"#,
+        placeholders
+    );
+
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_get_symbol_packages statement")?;
+
+    // Convert symbol_ids to params for rusqlite
+    let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut rows = stmt.query(params.as_slice())?;
+    let mut out = HashMap::new();
+
+    while let Some(row) = rows.next()? {
+        let symbol_id: String = row.get(0)?;
+        let package_id: String = row.get(1)?;
+        out.insert(symbol_id, package_id);
+    }
+
+    Ok(out)
+}
+
+/// Get the package ID for a given file path.
+///
+/// This is a convenience function that reuses get_package_for_file logic
+/// but returns only the package_id as a String, rather than the full PackageRow.
+///
+/// # Arguments
+///
+/// * `conn` - SQLite connection
+/// * `file_path` - Path to the file to look up
+///
+/// # Returns
+///
+/// * `Ok(Some(String))` - Package ID containing the file
+/// * `Ok(None)` - No package found containing the file
+/// * `Err(anyhow::Error)` - Database operation failed
+pub fn get_package_id_for_file(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        r#"
+SELECT id
+FROM packages
+WHERE ?1 LIKE manifest_path || '%'
+ORDER BY LENGTH(manifest_path) DESC
+LIMIT 1
+"#,
+        params![file_path],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .context("Failed to query package_id for file")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,5 +705,174 @@ mod tests {
 
         // Now should have 3 packages
         assert_eq!(count_packages_in_repository(&conn, "repo-123").unwrap(), 3);
+    }
+
+    #[test]
+    fn test_batch_get_symbol_packages_returns_map() {
+        let conn = setup_test_db();
+
+        // Create repository and package
+        let repo = RepositoryRow {
+            id: "repo-123".to_string(),
+            name: "test-repo".to_string(),
+            root_path: "/path/to/repo".to_string(),
+            vcs_type: Some("git".to_string()),
+            remote_url: None,
+            created_at: 1234567890,
+        };
+        upsert_repository(&conn, &repo).unwrap();
+
+        let pkg = PackageRow {
+            id: "pkg-456".to_string(),
+            repository_id: "repo-123".to_string(),
+            name: "test-package".to_string(),
+            version: Some("1.0.0".to_string()),
+            manifest_path: "/path/to/repo".to_string(),
+            package_type: "npm".to_string(),
+            created_at: 1234567891,
+        };
+        upsert_package(&conn, &pkg).unwrap();
+
+        // Insert test symbols
+        conn.execute(
+            r#"
+            INSERT INTO symbols (id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text)
+            VALUES
+                ('symbol1', '/path/to/repo/src/file1.ts', 'typescript', 'function', 'foo', 1, 0, 100, 1, 5, 'fn foo() {}'),
+                ('symbol2', '/path/to/repo/src/file2.ts', 'typescript', 'class', 'Bar', 1, 0, 200, 1, 10, 'class Bar {}'),
+                ('symbol3', '/other/path/file3.ts', 'typescript', 'function', 'baz', 1, 0, 100, 1, 5, 'fn baz() {}')
+        "#,
+            [],
+        )
+        .unwrap();
+
+        // Query for symbol1 and symbol2 (both in the package)
+        let symbol_ids: Vec<&str> = vec!["symbol1", "symbol2"];
+        let result = batch_get_symbol_packages(&conn, &symbol_ids).unwrap();
+
+        // Both should map to pkg-456
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("symbol1"), Some(&"pkg-456".to_string()));
+        assert_eq!(result.get("symbol2"), Some(&"pkg-456".to_string()));
+        assert_eq!(result.get("symbol3"), None); // Not in query
+    }
+
+    #[test]
+    fn test_batch_get_symbol_packages_empty() {
+        let conn = setup_test_db();
+
+        // Query with empty input
+        let symbol_ids: Vec<&str> = vec![];
+        let result = batch_get_symbol_packages(&conn, &symbol_ids).unwrap();
+
+        // Verify empty result
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_batch_get_symbol_packages_no_match() {
+        let conn = setup_test_db();
+
+        // Insert a symbol but no packages
+        conn.execute(
+            r#"
+            INSERT INTO symbols (id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text)
+            VALUES ('symbol1', '/path/to/file.ts', 'typescript', 'function', 'foo', 1, 0, 100, 1, 5, 'fn foo() {}')
+        "#,
+            [],
+        )
+        .unwrap();
+
+        // Query for symbol with no matching package
+        let symbol_ids: Vec<&str> = vec!["symbol1"];
+        let result = batch_get_symbol_packages(&conn, &symbol_ids).unwrap();
+
+        // Should return empty map (no package found)
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_package_id_for_file_finds_containing_package() {
+        let conn = setup_test_db();
+
+        // Create repository and package
+        let repo = RepositoryRow {
+            id: "repo-123".to_string(),
+            name: "test-repo".to_string(),
+            root_path: "/path/to/repo".to_string(),
+            vcs_type: Some("git".to_string()),
+            remote_url: None,
+            created_at: 1234567890,
+        };
+        upsert_repository(&conn, &repo).unwrap();
+
+        let pkg = PackageRow {
+            id: "pkg-456".to_string(),
+            repository_id: "repo-123".to_string(),
+            name: "test-package".to_string(),
+            version: Some("1.0.0".to_string()),
+            manifest_path: "/path/to/repo/packages/subpackage".to_string(),
+            package_type: "npm".to_string(),
+            created_at: 1234567891,
+        };
+        upsert_package(&conn, &pkg).unwrap();
+
+        // File in the package should return the package ID
+        let file_path = "/path/to/repo/packages/subpackage/src/index.ts";
+        let result = get_package_id_for_file(&conn, file_path).unwrap();
+        assert_eq!(result, Some("pkg-456".to_string()));
+    }
+
+    #[test]
+    fn test_get_package_id_for_file_no_match() {
+        let conn = setup_test_db();
+
+        // No packages in database
+        let result = get_package_id_for_file(&conn, "/some/unknown/file.ts").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_package_id_for_file_deepest_match() {
+        let conn = setup_test_db();
+
+        // Create repository
+        let repo = RepositoryRow {
+            id: "repo-123".to_string(),
+            name: "test-repo".to_string(),
+            root_path: "/path/to/repo".to_string(),
+            vcs_type: Some("git".to_string()),
+            remote_url: None,
+            created_at: 1234567890,
+        };
+        upsert_repository(&conn, &repo).unwrap();
+
+        // Create nested packages (root package and nested package)
+        let root_pkg = PackageRow {
+            id: "pkg-root".to_string(),
+            repository_id: "repo-123".to_string(),
+            name: "root-package".to_string(),
+            version: Some("1.0.0".to_string()),
+            manifest_path: "/path/to/repo".to_string(),
+            package_type: "npm".to_string(),
+            created_at: 1234567891,
+        };
+        upsert_package(&conn, &root_pkg).unwrap();
+
+        let nested_pkg = PackageRow {
+            id: "pkg-nested".to_string(),
+            repository_id: "repo-123".to_string(),
+            name: "nested-package".to_string(),
+            version: Some("1.0.0".to_string()),
+            manifest_path: "/path/to/repo/packages/nested".to_string(),
+            package_type: "npm".to_string(),
+            created_at: 1234567892,
+        };
+        upsert_package(&conn, &nested_pkg).unwrap();
+
+        // File in nested package should match nested package (deeper match)
+        let file_path = "/path/to/repo/packages/nested/src/file.ts";
+        let result = get_package_id_for_file(&conn, file_path).unwrap();
+        assert_eq!(result, Some("pkg-nested".to_string()));
     }
 }

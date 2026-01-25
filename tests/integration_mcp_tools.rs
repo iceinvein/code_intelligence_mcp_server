@@ -653,6 +653,7 @@ fn test_config(base_dir: &PathBuf) -> Config {
         token_encoding: "o200k_base".to_string(),
         parallel_workers: 4,
         embedding_cache_enabled: true,
+        embedding_max_threads: 0,
         pagerank_damping: 0.85,
         pagerank_iterations: 20,
         synonym_expansion_enabled: true,

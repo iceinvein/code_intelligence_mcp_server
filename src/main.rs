@@ -1,5 +1,7 @@
 //! Code Intelligence MCP Server - Main entry point
 
+#![allow(unexpected_cfgs)]
+
 use rust_mcp_sdk::{
     error::{McpSdkError, SdkResult},
     mcp_server::{server_runtime, McpServerOptions, ToMcpServerHandler},
@@ -139,7 +141,7 @@ async fn run() -> SdkResult<()> {
     );
 
     // Spawn metrics server if enabled
-    let metrics_handle = if config.metrics_enabled {
+    let _metrics_handle = if config.metrics_enabled {
         let handle = spawn_metrics_server(Arc::clone(&metrics), config.metrics_port)
             .await
             .map_err(|err| McpSdkError::Internal {

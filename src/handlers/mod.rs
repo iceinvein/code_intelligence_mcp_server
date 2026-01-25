@@ -1515,7 +1515,7 @@ pub fn handle_search_decorators(
     db_path: &std::path::Path,
     tool: SearchDecoratorsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(50).max(1).min(500) as usize;
+    let limit = tool.limit.unwrap_or(50).clamp(1, 500) as usize;
 
     let sqlite = SqliteStore::open(db_path)?;
     sqlite.init()?;

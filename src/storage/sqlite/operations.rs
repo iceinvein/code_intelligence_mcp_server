@@ -18,12 +18,12 @@ unsafe impl Sync for SqliteStore {}
 
 impl SqliteStore {
     /// Get read access to the connection
-    pub fn read(&self) -> RwLockReadGuard<Connection> {
+    pub fn read(&self) -> RwLockReadGuard<'_, Connection> {
         self.conn.read().unwrap()
     }
 
     /// Get write access to the connection
-    pub fn write(&self) -> RwLockWriteGuard<Connection> {
+    pub fn write(&self) -> RwLockWriteGuard<'_, Connection> {
         self.conn.write().unwrap()
     }
 }
@@ -64,6 +64,8 @@ impl SqliteStore {
 
     pub fn init(&self) -> Result<()> {
         {
+            // Write lock needed for migration functions that modify schema
+            #[allow(clippy::readonly_write_lock)]
             let conn = self.conn.write().unwrap();
             conn.execute_batch(SCHEMA_SQL)
                 .context("Failed to initialize sqlite schema")?;

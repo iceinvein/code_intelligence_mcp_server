@@ -1389,6 +1389,7 @@ dependencies = [
  "rust-mcp-sdk",
  "serde",
  "serde_json",
+ "sha2",
  "tantivy 0.25.0",
  "tiktoken-rs",
  "tokenizers",

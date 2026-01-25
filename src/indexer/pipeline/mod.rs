@@ -22,6 +22,7 @@ use crate::{
         parser::{language_id_for_path, LanguageId},
     },
     storage::{
+        cache::EmbeddingCache,
         sqlite::{SimilarityClusterRow, SqliteStore, SymbolRow},
         tantivy::TantivyIndex,
         vector::{LanceVectorTable, VectorRecord},
@@ -56,6 +57,7 @@ pub struct IndexPipeline {
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+    cache: Arc<EmbeddingCache>,
 }
 
 impl IndexPipeline {
@@ -66,12 +68,30 @@ impl IndexPipeline {
         embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
     ) -> Self {
         let db_path = config.db_path.clone();
+
+        // Initialize cache
+        let sqlite = SqliteStore::open(&db_path).expect("Failed to open SQLite database");
+        let model_name = match config.embeddings_backend {
+            crate::config::EmbeddingsBackend::JinaCode => "jinaai/jina-embeddings-v2-base-code",
+            crate::config::EmbeddingsBackend::FastEmbed => {
+                config.embeddings_model_repo.as_deref().unwrap_or("unknown")
+            }
+            crate::config::EmbeddingsBackend::Hash => "hash",
+        };
+        let cache = Arc::new(EmbeddingCache::new(
+            Arc::new(sqlite),
+            model_name,
+            config.embedding_cache_enabled,
+            1024 * 1024 * 1024, // 1GB max
+        ));
+
         Self {
             config,
             db_path,
             tantivy,
             vectors,
             embedder,
+            cache,
         }
     }
 
@@ -233,6 +253,15 @@ impl IndexPipeline {
         } else {
             tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
         }
+
+        // Log cache statistics
+        let cache_stats = self.cache.stats();
+        tracing::info!(
+            hits = cache_stats.hits,
+            misses = cache_stats.misses,
+            hit_rate = %format!("{:.1}%", cache_stats.hit_rate * 100.0),
+            "Embedding cache statistics"
+        );
 
         tracing::debug!(?stats, "Index run completed");
         Ok(stats)
@@ -545,14 +574,45 @@ impl IndexPipeline {
         &self,
         rows: &[SymbolRow],
     ) -> Result<Vec<VectorRecord>> {
-        let texts = rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
-        let vectors = {
+        let mut vectors = Vec::with_capacity(rows.len());
+        let mut uncached_texts = Vec::new();
+        let mut uncached_indices = Vec::new();
+
+        // Check cache for each text
+        for (i, row) in rows.iter().enumerate() {
+            if let Some(cached) = self.cache.get(&row.text) {
+                vectors.push((i, cached));
+            } else {
+                uncached_texts.push(row.text.clone());
+                uncached_indices.push(i);
+            }
+        }
+
+        // Embed uncached texts in batch
+        let new_embeddings = if !uncached_texts.is_empty() {
             let mut embedder = self.embedder.lock().await;
-            embedder.embed(&texts)?
+            embedder.embed(&uncached_texts)?
+        } else {
+            Vec::new()
         };
 
+        // Store new embeddings in cache
+        for (text, embedding) in uncached_texts.iter().zip(&new_embeddings) {
+            let _ = self.cache.put(text, embedding);
+        }
+
+        // Merge cached and new embeddings
+        let mut result = vec![Vec::new(); rows.len()];
+        for (i, vec) in vectors {
+            result[i] = vec;
+        }
+        for (i, emb) in uncached_indices.iter().zip(new_embeddings) {
+            result[*i] = emb;
+        }
+
+        // Build VectorRecords
         let mut out = Vec::with_capacity(rows.len());
-        for (row, vector) in rows.iter().zip(vectors) {
+        for (row, vector) in rows.iter().zip(result) {
             out.push(VectorRecord {
                 id: row.id.clone(),
                 vector,

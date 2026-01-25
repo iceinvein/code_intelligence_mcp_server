@@ -77,7 +77,9 @@ impl EmbeddingCache {
 
         let text_hash = content_hash(text);
         let key = cache_key(&self.model_name, &text_hash);
-        let encoded = postcard::to_vec(embedding)
+
+        // Use alloc::format to serialize with postcard (dynamic buffer)
+        let encoded = postcard::to_allocvec(embedding)
             .context("Failed to serialize embedding")?;
 
         self.db.put_cached_embedding(
@@ -120,4 +122,31 @@ pub struct CacheStats {
     pub hits: u64,
     pub misses: u64,
     pub hit_rate: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_content_hash() {
+        let text1 = "function foo() {}";
+        let text2 = "function foo() {}";
+        let text3 = "function bar() {}";
+
+        assert_eq!(content_hash(text1), content_hash(text2));
+        assert_ne!(content_hash(text1), content_hash(text3));
+    }
+
+    #[test]
+    fn test_cache_key() {
+        let key1 = cache_key("model1", "hash1");
+        let key2 = cache_key("model1", "hash1");
+        let key3 = cache_key("model2", "hash1");
+        let key4 = cache_key("model1", "hash2");
+
+        assert_eq!(key1, key2);
+        assert_ne!(key1, key3);
+        assert_ne!(key1, key4);
+    }
 }

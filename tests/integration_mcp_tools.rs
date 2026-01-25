@@ -11,6 +11,7 @@ use code_intelligence_mcp_server::{
         handle_get_module_summary, handle_report_selection, handle_summarize_file,
         handle_trace_data_flow,
     },
+    metrics::MetricsRegistry,
     retrieval::Retriever,
     storage::{sqlite::{SqliteStore, SymbolRow}, tantivy::TantivyIndex, vector::LanceDbStore},
     tools::{ExplainSearchTool, FindAffectedCodeTool, FindSimilarCodeTool, GetModuleSummaryTool, ReportSelectionTool, SummarizeFileTool, TraceDataFlowTool},
@@ -470,6 +471,9 @@ fn test_config(base_dir: &PathBuf) -> Config {
         hyde_llm_backend: "openai".to_string(),
         hyde_api_key: None,
         hyde_max_tokens: 512,
+        metrics_enabled: false,
+        metrics_port: 9090,
+        package_detection_enabled: false,
     }
 }
 
@@ -505,17 +509,20 @@ export function helperFunction(value: number): number {
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
 
     // Index the test files
     indexer.index_all().await.unwrap();
 
-    let retriever = Retriever::new(config, tantivy, vectors, embedder, None, None);
+    let retriever = Retriever::new(config, tantivy, vectors, embedder, None, None, metrics);
 
     (dir, Arc::new(retriever))
 }
@@ -606,14 +613,17 @@ async fn test_find_similar_code_by_symbol_name() {
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
 
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
     let state = code_intelligence_mcp_server::handlers::AppState {
         config,
         indexer,
@@ -667,14 +677,17 @@ async fn test_find_similar_code_by_code_snippet() {
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
 
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
     let state = code_intelligence_mcp_server::handlers::AppState {
         config,
         indexer,
@@ -713,14 +726,17 @@ async fn test_find_similar_code_not_found() {
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
 
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
     let state = code_intelligence_mcp_server::handlers::AppState {
         config,
         indexer,

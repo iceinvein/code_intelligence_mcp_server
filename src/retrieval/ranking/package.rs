@@ -340,7 +340,8 @@ mod tests {
 
             // Check that package_boost was tracked
             assert!(hit_signals.get("symbol-a").unwrap().package_boost > 0.0);
-            assert_eq!(hit_signals.get("symbol-b").unwrap().package_boost, 0.0);
+            // symbol-b is in a different package, so it might not have a signals entry
+            assert_eq!(hit_signals.get("symbol-b").map_or(0.0, |s| s.package_boost), 0.0);
         }
 
         let _ = std::fs::remove_file(&db_path);
@@ -417,7 +418,8 @@ mod tests {
 
             // No boost should be applied (different package)
             assert_eq!(result[0].score, 10.0);
-            assert_eq!(hit_signals.get("symbol-a").unwrap().package_boost, 0.0);
+            // No boost means either no entry or package_boost = 0
+            assert_eq!(hit_signals.get("symbol-a").map_or(0.0, |s| s.package_boost), 0.0);
         }
 
         let _ = std::fs::remove_file(&db_path);

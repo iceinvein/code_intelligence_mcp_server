@@ -24,8 +24,8 @@ arrow-schema = "56"
 futures = "0.3"
 fastembed = "4"
 
-axum = { version = "0.8", optional = true }
-tower-http = { version = "0.6", features = ["cors"], optional = true }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
 tree-sitter-python = "0.25.0"
 tree-sitter-go = "0.25.0"
 tree-sitter-java = "0.23.5"
@@ -50,11 +50,6 @@ tokenizers = "0.21"
 
 # Phase 3 HyDE dependencies (03-03) - LLM API client
 reqwest = { version = "0.12", features = ["json"] }
-
-[features]
-default = []
-
-web-ui = ["axum", "tower-http"]
 
 [dev-dependencies]
 bytes = "1"

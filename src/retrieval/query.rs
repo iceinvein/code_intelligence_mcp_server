@@ -597,4 +597,11 @@ mod tests {
         assert_eq!(query, "myFunction");
         assert_eq!(controls.package, None);
     }
+
+    #[test]
+    fn test_decompose_query_preserves_spaces() {
+        // Ensure trimming works correctly
+        let parts = decompose_query("  auth  and  database  ", 2);
+        assert_eq!(parts, vec!["auth", "database"]);
+    }
 }

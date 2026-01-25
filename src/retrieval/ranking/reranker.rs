@@ -109,10 +109,7 @@ mod tests {
 
     #[test]
     fn test_prepare_rerank_docs() {
-        let hits = vec![
-            make_hit("a", 0.5, true),
-            make_hit("b", 0.4, false),
-        ];
+        let hits = vec![make_hit("a", 0.5, true), make_hit("b", 0.4, false)];
         let mut texts = HashMap::new();
         texts.insert("a".to_string(), "text for a".to_string());
 

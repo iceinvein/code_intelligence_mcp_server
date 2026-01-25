@@ -49,7 +49,10 @@ WHERE symbol_id = ?1
     .context("Failed to query symbol metrics")
 }
 
-pub fn get_top_symbols_by_pagerank(conn: &Connection, limit: usize) -> Result<Vec<SymbolMetricsRow>> {
+pub fn get_top_symbols_by_pagerank(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<SymbolMetricsRow>> {
     let mut stmt = conn
         .prepare(
             r#"

@@ -41,9 +41,7 @@ pub fn create_embedder(
             let cache_dir = model_dir;
 
             Ok(Box::new(fastembed::FastEmbedder::new(
-                model_repo,
-                cache_dir,
-                device,
+                model_repo, cache_dir, device,
             )?))
         }
         crate::config::EmbeddingsBackend::Hash => Ok(Box::new(hash::HashEmbedder::new(hash_dim))),
@@ -54,9 +52,7 @@ pub fn create_embedder(
             let cache_dir = model_dir;
 
             Ok(Box::new(fastembed::FastEmbedder::new(
-                model_repo,
-                cache_dir,
-                device,
+                model_repo, cache_dir, device,
             )?))
         }
     }

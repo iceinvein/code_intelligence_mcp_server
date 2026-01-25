@@ -106,9 +106,7 @@ async fn api_search(
         .await
     {
         Ok(resp) => Json(resp).into_response(),
-        Err(err) => {
-            Json(json!({ "error": tool_internal_error(err).to_string() })).into_response()
-        }
+        Err(err) => Json(json!({ "error": tool_internal_error(err).to_string() })).into_response(),
     }
 }
 
@@ -117,7 +115,7 @@ async fn api_definition(
     Query(params): Query<NameParam>,
 ) -> impl IntoResponse {
     use crate::storage::sqlite::SqliteStore;
-    
+
     let sqlite = match SqliteStore::open(&state.config.db_path) {
         Ok(s) => s,
         Err(err) => return Json(json!({ "error": err.to_string() })).into_response(),
@@ -142,7 +140,7 @@ async fn api_edges(
     Query(params): Query<NameParam>,
 ) -> impl IntoResponse {
     use crate::storage::sqlite::SqliteStore;
-    
+
     let sqlite = match SqliteStore::open(&state.config.db_path) {
         Ok(s) => s,
         Err(err) => return Json(json!({ "error": err.to_string() })).into_response(),
@@ -156,9 +154,7 @@ async fn api_edges(
     };
     let root = match roots.first() {
         Some(r) => r,
-        None => {
-            return Json(json!({ "symbol_name": params.name, "edges": [] })).into_response()
-        }
+        None => return Json(json!({ "symbol_name": params.name, "edges": [] })).into_response(),
     };
     let edges = sqlite.list_edges_from(&root.id, 500).unwrap_or_default();
     Json(json!({ "symbol_name": root.name, "edges": edges })).into_response()
@@ -249,8 +245,7 @@ export function beta() { return alpha() }
         config.repo_roots = vec![config.base_dir.clone()];
         let config = Arc::new(config);
 
-        let tantivy =
-            Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+        let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
         let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
         let vectors = Arc::new(
             lancedb
@@ -258,9 +253,9 @@ export function beta() { return alpha() }
                 .await
                 .unwrap(),
         );
-        let embedder = Arc::new(Mutex::new(Box::new(HashEmbedder::new(
-            config.hash_embedding_dim,
-        )) as _));
+        let embedder = Arc::new(Mutex::new(
+            Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
+        ));
 
         // No reranker for web UI tests (keep it simple)
         let reranker: Option<Arc<dyn code_intelligence_mcp_server::reranker::Reranker>> = None;

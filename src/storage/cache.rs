@@ -79,8 +79,7 @@ impl EmbeddingCache {
         let key = cache_key(&self.model_name, &text_hash);
 
         // Use alloc::format to serialize with postcard (dynamic buffer)
-        let encoded = postcard::to_allocvec(embedding)
-            .context("Failed to serialize embedding")?;
+        let encoded = postcard::to_allocvec(embedding).context("Failed to serialize embedding")?;
 
         self.db.put_cached_embedding(
             &key,

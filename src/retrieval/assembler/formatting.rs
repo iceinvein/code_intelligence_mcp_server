@@ -118,9 +118,7 @@ fn stable_usage_id(root_id: &str, ex: &crate::storage::sqlite::UsageExampleRow) 
 /// Higher scores indicate more relevant lines.
 pub fn rank_lines_by_relevance(lines: &[&str], query: &str) -> Vec<(usize, f32)> {
     let query_lower = query.to_lowercase();
-    let query_terms: HashSet<&str> = query_lower
-        .split_whitespace()
-        .collect();
+    let query_terms: HashSet<&str> = query_lower.split_whitespace().collect();
 
     let mut line_scores: Vec<(usize, f32)> = lines
         .iter()
@@ -154,7 +152,10 @@ pub fn rank_lines_by_relevance(lines: &[&str], query: &str) -> Vec<(usize, f32)>
             {
                 score += 0.5;
             }
-            if line_lower.contains("return ") || line_lower.contains("pub ") || line_lower.contains("export ") {
+            if line_lower.contains("return ")
+                || line_lower.contains("pub ")
+                || line_lower.contains("export ")
+            {
                 score += 0.3;
             }
 
@@ -171,7 +172,12 @@ pub fn rank_lines_by_relevance(lines: &[&str], query: &str) -> Vec<(usize, f32)>
 /// Preserves header and footer lines while selecting the most query-relevant
 /// lines from the middle section. Lines are ranked by relevance to the query
 /// using `rank_lines_by_relevance`.
-pub fn smart_truncate(text: &str, query: &str, max_tokens: usize, counter: &TokenCounter) -> String {
+pub fn smart_truncate(
+    text: &str,
+    query: &str,
+    max_tokens: usize,
+    counter: &TokenCounter,
+) -> String {
     let lines: Vec<&str> = text.lines().collect();
 
     // If within budget, return as-is
@@ -377,12 +383,11 @@ pub fn format_symbol_with_docstring(
                     out.push_str("**Parameters:**\n");
                     for param in params {
                         if let Some(name) = param.get("name").and_then(|v| v.as_str()) {
-                            let desc = param.get("description")
+                            let desc = param
+                                .get("description")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
-                            let type_str = param.get("type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let type_str = param.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             if type_str.is_empty() {
                                 out.push_str(&format!("- `{}`: {}\n", name, desc));
                             } else {
@@ -479,11 +484,7 @@ mod tests {
 
     #[test]
     fn test_rank_lines_by_relevance_case_insensitive() {
-        let lines = vec![
-            "function processData() {",
-            "    const x = 1;",
-            "}",
-        ];
+        let lines = vec!["function processData() {", "    const x = 1;", "}"];
         let result = rank_lines_by_relevance(&lines, "PROCESSDATA");
         assert!(result[0].1 > 0.0);
     }
@@ -521,7 +522,8 @@ mod tests {
     fn test_simplify_code_with_query_no_query() {
         let counter = TokenCounter::new("o200k_base").unwrap();
         let text = "fn test() {\n    let x = 1;\n    return x;\n}";
-        let (result, simplified) = simplify_code_with_query(text, "function", true, None, &counter, 1000);
+        let (result, simplified) =
+            simplify_code_with_query(text, "function", true, None, &counter, 1000);
         assert_eq!(result, text);
         assert!(!simplified);
     }

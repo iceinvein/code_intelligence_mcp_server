@@ -122,11 +122,13 @@ pub fn search_decorators_by_name_filtered(
     sql.push_str(" ORDER BY s.file_path ASC, d.target_line ASC LIMIT ?");
     let limit_param = limit as i64;
 
-    let mut stmt = conn.prepare(&sql)
+    let mut stmt = conn
+        .prepare(&sql)
         .context("Failed to prepare search_decorators_by_name_filtered")?;
 
     // Build parameter references
-    let mut param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+    let mut param_refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
     param_refs.push(&limit_param);
 
     let mut rows = stmt.query(param_refs.as_slice())?;

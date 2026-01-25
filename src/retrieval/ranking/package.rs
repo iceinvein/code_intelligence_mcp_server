@@ -66,7 +66,7 @@ pub fn apply_package_boost_with_signals(
         match sqlite.get_package_id_for_file(first_path) {
             Ok(Some(pkg_id)) => pkg_id,
             Ok(None) => return Ok(hits), // No package found, no boost possible
-            Err(_) => return Ok(hits), // Error looking up package, skip boost
+            Err(_) => return Ok(hits),   // Error looking up package, skip boost
         }
     };
 
@@ -315,8 +315,18 @@ mod tests {
 
             // Create hits with equal initial scores
             let hits = vec![
-                make_hit("symbol-a", "helper", "/path/to/repo/packages/a/src/util.ts", 10.0),
-                make_hit("symbol-b", "helper", "/path/to/repo/packages/b/src/util.ts", 10.0),
+                make_hit(
+                    "symbol-a",
+                    "helper",
+                    "/path/to/repo/packages/a/src/util.ts",
+                    10.0,
+                ),
+                make_hit(
+                    "symbol-b",
+                    "helper",
+                    "/path/to/repo/packages/b/src/util.ts",
+                    10.0,
+                ),
             ];
 
             let mut hit_signals = make_signals();
@@ -341,7 +351,10 @@ mod tests {
             // Check that package_boost was tracked
             assert!(hit_signals.get("symbol-a").unwrap().package_boost > 0.0);
             // symbol-b is in a different package, so it might not have a signals entry
-            assert_eq!(hit_signals.get("symbol-b").map_or(0.0, |s| s.package_boost), 0.0);
+            assert_eq!(
+                hit_signals.get("symbol-b").map_or(0.0, |s| s.package_boost),
+                0.0
+            );
         }
 
         let _ = std::fs::remove_file(&db_path);
@@ -419,7 +432,10 @@ mod tests {
             // No boost should be applied (different package)
             assert_eq!(result[0].score, 10.0);
             // No boost means either no entry or package_boost = 0
-            assert_eq!(hit_signals.get("symbol-a").map_or(0.0, |s| s.package_boost), 0.0);
+            assert_eq!(
+                hit_signals.get("symbol-a").map_or(0.0, |s| s.package_boost),
+                0.0
+            );
         }
 
         let _ = std::fs::remove_file(&db_path);
@@ -519,7 +535,8 @@ mod tests {
 
             // Error intent: 1.1x boost, so score should be 11.0
             assert!((result2[0].score - 11.0).abs() < 0.01);
-            assert!((signals2.get("symbol-a").unwrap().package_boost - 1.0).abs() < 0.01); // 11.0 - 10.0
+            assert!((signals2.get("symbol-a").unwrap().package_boost - 1.0).abs() < 0.01);
+            // 11.0 - 10.0
         }
 
         let _ = std::fs::remove_file(&db_path);

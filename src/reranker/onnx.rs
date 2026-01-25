@@ -1,6 +1,6 @@
 //! ONNX-based cross-encoder reranker using ort runtime
 
-use super::{Reranker, RerankDocument};
+use super::{RerankDocument, Reranker};
 use anyhow::{Context, Result};
 use ndarray::Array;
 use ort::session::Session;
@@ -18,12 +18,11 @@ pub struct CrossEncoderReranker {
 
 impl CrossEncoderReranker {
     /// Create a new cross-encoder reranker from an ONNX model file
-    pub fn new(
-        model_path: &Path,
-        _cache_dir: Option<&Path>,
-        top_k: usize,
-    ) -> Result<Self> {
-        tracing::info!("Loading cross-encoder reranker from: {}", model_path.display());
+    pub fn new(model_path: &Path, _cache_dir: Option<&Path>, top_k: usize) -> Result<Self> {
+        tracing::info!(
+            "Loading cross-encoder reranker from: {}",
+            model_path.display()
+        );
 
         let session = Session::builder()?
             .with_execution_providers([
@@ -39,16 +38,14 @@ impl CrossEncoderReranker {
             .filter(|p| p.exists());
 
         let tokenizer = match tokenizer_path {
-            Some(path) => {
-                Tokenizer::from_file(&path)
-                    .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?
-            }
+            Some(path) => Tokenizer::from_file(&path)
+                .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?,
             None => {
                 // Fallback: use a basic BERT tokenizer if available
                 tracing::warn!("No tokenizer.json found, reranking may not work correctly");
                 // Return a minimal tokenizer that will fail gracefully
                 Tokenizer::new(tokenizers::ModelWrapper::BPE(
-                    tokenizers::models::bpe::BPE::default()
+                    tokenizers::models::bpe::BPE::default(),
                 ))
             }
         };

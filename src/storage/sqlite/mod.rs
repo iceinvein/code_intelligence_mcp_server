@@ -253,7 +253,10 @@ impl SqliteStore {
         queries::todos::delete_todos_by_file(&self.write(), file_path)
     }
 
-    pub fn batch_upsert_docstrings(&self, entries: &[crate::indexer::extract::symbol::JSDocEntry]) -> Result<()> {
+    pub fn batch_upsert_docstrings(
+        &self,
+        entries: &[crate::indexer::extract::symbol::JSDocEntry],
+    ) -> Result<()> {
         queries::docstrings::batch_upsert_docstrings(&self.write(), entries)
     }
 
@@ -269,7 +272,10 @@ impl SqliteStore {
         queries::docstrings::delete_docstrings_by_file(&self.write(), file_path)
     }
 
-    pub fn batch_upsert_decorators(&self, decorators: &[crate::storage::sqlite::schema::DecoratorRow]) -> Result<()> {
+    pub fn batch_upsert_decorators(
+        &self,
+        decorators: &[crate::storage::sqlite::schema::DecoratorRow],
+    ) -> Result<()> {
         queries::decorators::batch_upsert_decorators(&self.write(), decorators)
     }
 
@@ -307,10 +313,7 @@ impl SqliteStore {
         queries::tests::get_tests_for_source(&self.read(), source_path)
     }
 
-    pub fn get_symbols_with_tests(
-        &self,
-        file_path: &str,
-    ) -> Result<Vec<(String, String)>> {
+    pub fn get_symbols_with_tests(&self, file_path: &str) -> Result<Vec<(String, String)>> {
         queries::tests::get_symbols_with_tests(&self.read(), file_path)
     }
 

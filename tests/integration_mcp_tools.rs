@@ -13,12 +13,22 @@ use code_intelligence_mcp_server::{
     },
     metrics::MetricsRegistry,
     retrieval::Retriever,
-    storage::{sqlite::{SqliteStore, SymbolRow}, tantivy::TantivyIndex, vector::LanceDbStore},
-    tools::{ExplainSearchTool, FindAffectedCodeTool, FindSimilarCodeTool, GetModuleSummaryTool, ReportSelectionTool, SummarizeFileTool, TraceDataFlowTool},
+    storage::{
+        sqlite::{SqliteStore, SymbolRow},
+        tantivy::TantivyIndex,
+        vector::LanceDbStore,
+    },
+    tools::{
+        ExplainSearchTool, FindAffectedCodeTool, FindSimilarCodeTool, GetModuleSummaryTool,
+        ReportSelectionTool, SummarizeFileTool, TraceDataFlowTool,
+    },
 };
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use std::sync::Arc;
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Empty JSON array for default values
@@ -74,9 +84,33 @@ fn create_test_symbol(
 fn test_summarize_file_tool() {
     let db_path = tmp_db_path();
 
-    create_test_symbol(&db_path, "test-1", "testFunction", "function", "src/test.rs", true).unwrap();
-    create_test_symbol(&db_path, "test-2", "internalFunc", "function", "src/test.rs", false).unwrap();
-    create_test_symbol(&db_path, "test-3", "TestClass", "class", "src/test.rs", true).unwrap();
+    create_test_symbol(
+        &db_path,
+        "test-1",
+        "testFunction",
+        "function",
+        "src/test.rs",
+        true,
+    )
+    .unwrap();
+    create_test_symbol(
+        &db_path,
+        "test-2",
+        "internalFunc",
+        "function",
+        "src/test.rs",
+        false,
+    )
+    .unwrap();
+    create_test_symbol(
+        &db_path,
+        "test-3",
+        "TestClass",
+        "class",
+        "src/test.rs",
+        true,
+    )
+    .unwrap();
 
     let params = SummarizeFileTool {
         file_path: "src/test.rs".to_string(),
@@ -86,9 +120,18 @@ fn test_summarize_file_tool() {
 
     let result = handle_summarize_file(&db_path, params).unwrap();
 
-    assert_eq!(result.get("file_path").and_then(|v| v.as_str()), Some("src/test.rs"));
-    assert_eq!(result.get("total_symbols").and_then(|v| v.as_u64()), Some(3));
-    assert_eq!(result.get("exported_symbols").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(
+        result.get("file_path").and_then(|v| v.as_str()),
+        Some("src/test.rs")
+    );
+    assert_eq!(
+        result.get("total_symbols").and_then(|v| v.as_u64()),
+        Some(3)
+    );
+    assert_eq!(
+        result.get("exported_symbols").and_then(|v| v.as_u64()),
+        Some(2)
+    );
     assert!(result.get("counts_by_kind").is_some());
     assert!(result.get("purpose").is_some());
 }
@@ -97,8 +140,24 @@ fn test_summarize_file_tool() {
 fn test_summarize_file_with_signatures() {
     let db_path = tmp_db_path();
 
-    create_test_symbol(&db_path, "test-1", "exportedFunc", "function", "src/module.ts", true).unwrap();
-    create_test_symbol(&db_path, "test-2", "internalFunc", "function", "src/module.ts", false).unwrap();
+    create_test_symbol(
+        &db_path,
+        "test-1",
+        "exportedFunc",
+        "function",
+        "src/module.ts",
+        true,
+    )
+    .unwrap();
+    create_test_symbol(
+        &db_path,
+        "test-2",
+        "internalFunc",
+        "function",
+        "src/module.ts",
+        false,
+    )
+    .unwrap();
 
     let params = SummarizeFileTool {
         file_path: "src/module.ts".to_string(),
@@ -108,14 +167,26 @@ fn test_summarize_file_with_signatures() {
 
     let result = handle_summarize_file(&db_path, params).unwrap();
 
-    assert_eq!(result.get("file_path").and_then(|v| v.as_str()), Some("src/module.ts"));
-    assert_eq!(result.get("total_symbols").and_then(|v| v.as_u64()), Some(2));
+    assert_eq!(
+        result.get("file_path").and_then(|v| v.as_str()),
+        Some("src/module.ts")
+    );
+    assert_eq!(
+        result.get("total_symbols").and_then(|v| v.as_u64()),
+        Some(2)
+    );
 
     // Check exports list is populated when include_signatures=true
     let empty = Vec::new();
-    let exports = result.get("exports").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let exports = result
+        .get("exports")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     assert_eq!(exports.len(), 1); // Only exported symbol included by default
-    assert_eq!(exports[0].get("name").and_then(|v| v.as_str()), Some("exportedFunc"));
+    assert_eq!(
+        exports[0].get("name").and_then(|v| v.as_str()),
+        Some("exportedFunc")
+    );
     assert!(exports[0].get("signature").is_some());
 }
 
@@ -123,8 +194,24 @@ fn test_summarize_file_with_signatures() {
 fn test_summarize_file_verbose_includes_internal() {
     let db_path = tmp_db_path();
 
-    create_test_symbol(&db_path, "test-1", "exportedFunc", "function", "src/module.ts", true).unwrap();
-    create_test_symbol(&db_path, "test-2", "internalFunc", "function", "src/module.ts", false).unwrap();
+    create_test_symbol(
+        &db_path,
+        "test-1",
+        "exportedFunc",
+        "function",
+        "src/module.ts",
+        true,
+    )
+    .unwrap();
+    create_test_symbol(
+        &db_path,
+        "test-2",
+        "internalFunc",
+        "function",
+        "src/module.ts",
+        false,
+    )
+    .unwrap();
 
     let params = SummarizeFileTool {
         file_path: "src/module.ts".to_string(),
@@ -135,7 +222,10 @@ fn test_summarize_file_verbose_includes_internal() {
     let result = handle_summarize_file(&db_path, params).unwrap();
 
     let empty = Vec::new();
-    let exports = result.get("exports").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let exports = result
+        .get("exports")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     // verbose=true includes both exported and internal
     assert_eq!(exports.len(), 2);
 }
@@ -152,7 +242,10 @@ fn test_summarize_file_not_found() {
 
     let result = handle_summarize_file(&db_path, params).unwrap();
 
-    assert_eq!(result.get("error").and_then(|v| v.as_str()), Some("FILE_NOT_FOUND"));
+    assert_eq!(
+        result.get("error").and_then(|v| v.as_str()),
+        Some("FILE_NOT_FOUND")
+    );
     assert!(result.get("message").is_some());
 }
 
@@ -164,8 +257,24 @@ fn test_summarize_file_not_found() {
 fn test_get_module_summary_tool() {
     let db_path = tmp_db_path();
 
-    create_test_symbol(&db_path, "export-1", "exportedFunction", "function", "src/module.ts", true).unwrap();
-    create_test_symbol(&db_path, "export-2", "exportedClass", "class", "src/module.ts", true).unwrap();
+    create_test_symbol(
+        &db_path,
+        "export-1",
+        "exportedFunction",
+        "function",
+        "src/module.ts",
+        true,
+    )
+    .unwrap();
+    create_test_symbol(
+        &db_path,
+        "export-2",
+        "exportedClass",
+        "class",
+        "src/module.ts",
+        true,
+    )
+    .unwrap();
 
     let params = GetModuleSummaryTool {
         file_path: "src/module.ts".to_string(),
@@ -180,11 +289,15 @@ fn test_get_module_summary_tool() {
 
     // Check grouping worked
     let empty = Vec::new();
-    let groups = result.get("groups").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let groups = result
+        .get("groups")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     assert!(!groups.is_empty());
 
     // Should have groups for function and class
-    let kinds: Vec<_> = groups.iter()
+    let kinds: Vec<_> = groups
+        .iter()
         .filter_map(|g| g.get("kind").and_then(|k| k.as_str()))
         .collect();
     assert!(kinds.contains(&"function"));
@@ -195,7 +308,15 @@ fn test_get_module_summary_tool() {
 fn test_get_module_summary_flat() {
     let db_path = tmp_db_path();
 
-    create_test_symbol(&db_path, "export-1", "myFunction", "function", "src/api.ts", true).unwrap();
+    create_test_symbol(
+        &db_path,
+        "export-1",
+        "myFunction",
+        "function",
+        "src/api.ts",
+        true,
+    )
+    .unwrap();
 
     let params = GetModuleSummaryTool {
         file_path: "src/api.ts".to_string(),
@@ -207,12 +328,21 @@ fn test_get_module_summary_flat() {
     assert_eq!(result.get("export_count").and_then(|v| v.as_u64()), Some(1));
 
     let empty = Vec::new();
-    let exports = result.get("exports").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let exports = result
+        .get("exports")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     assert_eq!(exports.len(), 1);
-    assert_eq!(exports[0].get("name").and_then(|v| v.as_str()), Some("myFunction"));
+    assert_eq!(
+        exports[0].get("name").and_then(|v| v.as_str()),
+        Some("myFunction")
+    );
 
     // groups should be empty when group_by_kind=false
-    let groups = result.get("groups").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let groups = result
+        .get("groups")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     assert!(groups.is_empty());
 }
 
@@ -221,7 +351,15 @@ fn test_get_module_summary_no_exports() {
     let db_path = tmp_db_path();
 
     // Only create internal symbols (exported=false)
-    create_test_symbol(&db_path, "internal-1", "internalFunc", "function", "src/internal.ts", false).unwrap();
+    create_test_symbol(
+        &db_path,
+        "internal-1",
+        "internalFunc",
+        "function",
+        "src/internal.ts",
+        false,
+    )
+    .unwrap();
 
     let params = GetModuleSummaryTool {
         file_path: "src/internal.ts".to_string(),
@@ -231,7 +369,10 @@ fn test_get_module_summary_no_exports() {
     let result = handle_get_module_summary(&db_path, params).unwrap();
 
     // Should return NO_EXPORTS error
-    assert_eq!(result.get("error").and_then(|v| v.as_str()), Some("NO_EXPORTS"));
+    assert_eq!(
+        result.get("error").and_then(|v| v.as_str()),
+        Some("NO_EXPORTS")
+    );
     assert!(result.get("message").is_some());
 }
 
@@ -239,7 +380,15 @@ fn test_get_module_summary_no_exports() {
 fn test_get_module_summary_signatures() {
     let db_path = tmp_db_path();
 
-    create_test_symbol(&db_path, "export-1", "myFunction", "function", "src/utils.ts", true).unwrap();
+    create_test_symbol(
+        &db_path,
+        "export-1",
+        "myFunction",
+        "function",
+        "src/utils.ts",
+        true,
+    )
+    .unwrap();
 
     let params = GetModuleSummaryTool {
         file_path: "src/utils.ts".to_string(),
@@ -249,14 +398,20 @@ fn test_get_module_summary_signatures() {
     let result = handle_get_module_summary(&db_path, params).unwrap();
 
     let empty = Vec::new();
-    let exports = result.get("exports").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let exports = result
+        .get("exports")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     assert_eq!(exports.len(), 1);
 
     // Check signature field exists
     assert!(exports[0].get("signature").is_some());
 
     // Signature should be a truncated version of the text
-    let sig = exports[0].get("signature").and_then(|v| v.as_str()).unwrap_or("");
+    let sig = exports[0]
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(!sig.is_empty());
 }
 
@@ -300,7 +455,10 @@ fn test_trace_data_flow_not_found() {
 
     let result = handle_trace_data_flow(&db_path, params).unwrap();
 
-    assert_eq!(result.get("error").and_then(|v| v.as_str()), Some("SYMBOL_NOT_FOUND"));
+    assert_eq!(
+        result.get("error").and_then(|v| v.as_str()),
+        Some("SYMBOL_NOT_FOUND")
+    );
 }
 
 // ============================================================================
@@ -311,7 +469,15 @@ fn test_trace_data_flow_not_found() {
 fn test_find_affected_code_tool() {
     let db_path = tmp_db_path();
 
-    create_test_symbol(&db_path, "root", "apiFunction", "function", "src/api.rs", true).unwrap();
+    create_test_symbol(
+        &db_path,
+        "root",
+        "apiFunction",
+        "function",
+        "src/api.rs",
+        true,
+    )
+    .unwrap();
 
     let params = FindAffectedCodeTool {
         symbol_name: "apiFunction".to_string(),
@@ -342,7 +508,10 @@ fn test_find_affected_code_not_found() {
 
     let result = handle_find_affected_code(&db_path, params).unwrap();
 
-    assert_eq!(result.get("error").and_then(|v| v.as_str()), Some("SYMBOL_NOT_FOUND"));
+    assert_eq!(
+        result.get("error").and_then(|v| v.as_str()),
+        Some("SYMBOL_NOT_FOUND")
+    );
 }
 
 // ============================================================================
@@ -354,7 +523,15 @@ fn test_report_selection_tool() {
     let db_path = tmp_db_path();
 
     // Create a symbol first (required for foreign key constraint)
-    create_test_symbol(&db_path, "sym-123", "myFunction", "function", "src/api.rs", true).unwrap();
+    create_test_symbol(
+        &db_path,
+        "sym-123",
+        "myFunction",
+        "function",
+        "src/api.rs",
+        true,
+    )
+    .unwrap();
 
     let params = ReportSelectionTool {
         query: "test search".to_string(),
@@ -364,12 +541,17 @@ fn test_report_selection_tool() {
 
     // report_selection is async
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(handle_report_selection(&db_path, params)).unwrap();
+    let result = rt
+        .block_on(handle_report_selection(&db_path, params))
+        .unwrap();
 
     assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(result.get("recorded").and_then(|v| v.as_bool()), Some(true));
     assert!(result.get("selection_id").is_some());
-    assert_eq!(result.get("query_normalized").and_then(|v| v.as_str()), Some("test search"));
+    assert_eq!(
+        result.get("query_normalized").and_then(|v| v.as_str()),
+        Some("test search")
+    );
 }
 
 #[test]
@@ -377,7 +559,15 @@ fn test_report_selection_normalizes_query() {
     let db_path = tmp_db_path();
 
     // Create a symbol first (required for foreign key constraint)
-    create_test_symbol(&db_path, "sym-456", "anotherFunction", "function", "src/utils.rs", true).unwrap();
+    create_test_symbol(
+        &db_path,
+        "sym-456",
+        "anotherFunction",
+        "function",
+        "src/utils.rs",
+        true,
+    )
+    .unwrap();
 
     let params = ReportSelectionTool {
         query: "  Test Search  ".to_string(), // Leading/trailing spaces and mixed case
@@ -386,10 +576,15 @@ fn test_report_selection_normalizes_query() {
     };
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(handle_report_selection(&db_path, params)).unwrap();
+    let result = rt
+        .block_on(handle_report_selection(&db_path, params))
+        .unwrap();
 
     // Query should be normalized (lowercased, trimmed)
-    assert_eq!(result.get("query_normalized").and_then(|v| v.as_str()), Some("test search"));
+    assert_eq!(
+        result.get("query_normalized").and_then(|v| v.as_str()),
+        Some("test search")
+    );
 }
 
 // ============================================================================
@@ -493,13 +688,14 @@ export function helperFunction(value: number): number {
     return value * 2;
 }
 "#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let config = Arc::new(test_config(&dir));
 
     let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
     let embedder = Arc::new(AsyncMutex::new(
-        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
     ));
     let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
     let vectors = Arc::new(
@@ -550,7 +746,10 @@ async fn test_explain_search_tool() {
     assert!(result.get("display").is_some());
 
     // Check that results array contains expected fields
-    let results = result.get("results").and_then(|v| v.as_array()).map_or(EMPTY, |v| v);
+    let results = result
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map_or(EMPTY, |v| v);
     if !results.is_empty() {
         let first = &results[0];
         assert!(first.get("symbol_id").is_some());
@@ -575,7 +774,10 @@ async fn test_explain_search_verbose() {
     assert_eq!(result.get("query").and_then(|v| v.as_str()), Some("helper"));
 
     // With verbose, we should have additional signals
-    let results = result.get("results").and_then(|v| v.as_array()).map_or(EMPTY, |v| v);
+    let results = result
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map_or(EMPTY, |v| v);
     if !results.is_empty() {
         let first = &results[0];
         // Verbose mode adds signals field
@@ -603,7 +805,7 @@ async fn test_find_similar_code_by_symbol_name() {
     let config = Arc::new(test_config(&dir));
     let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
     let embedder = Arc::new(AsyncMutex::new(
-        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
     ));
     let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
     let vectors = Arc::new(
@@ -623,7 +825,15 @@ async fn test_find_similar_code_by_symbol_name() {
         metrics.clone(),
     );
 
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
+    let retriever = Retriever::new(
+        config.clone(),
+        tantivy,
+        vectors,
+        embedder,
+        None,
+        None,
+        metrics,
+    );
     let state = code_intelligence_mcp_server::handlers::AppState {
         config,
         indexer,
@@ -636,8 +846,10 @@ async fn test_find_similar_code_by_symbol_name() {
     // Check response structure - could be success or error
     if result.get("error").is_some() {
         // If error, it should be SYMBOL_NOT_FOUND or similar
-        assert!(result.get("error").and_then(|v| v.as_str()) == Some("SYMBOL_NOT_FOUND")
-            || result.get("error").and_then(|v| v.as_str()) == Some("EMBEDDING_NOT_FOUND"));
+        assert!(
+            result.get("error").and_then(|v| v.as_str()) == Some("SYMBOL_NOT_FOUND")
+                || result.get("error").and_then(|v| v.as_str()) == Some("EMBEDDING_NOT_FOUND")
+        );
     } else {
         // Success case - verify response structure
         assert!(result.get("threshold").is_some());
@@ -646,7 +858,10 @@ async fn test_find_similar_code_by_symbol_name() {
         // query field is present on success
         assert!(result.get("query").is_some());
 
-        let results = result.get("results").and_then(|v| v.as_array()).map_or(EMPTY, |v| v);
+        let results = result
+            .get("results")
+            .and_then(|v| v.as_array())
+            .map_or(EMPTY, |v| v);
         assert!(results.len() >= 0);
     }
 }
@@ -667,7 +882,7 @@ async fn test_find_similar_code_by_code_snippet() {
     let config = Arc::new(test_config(&dir));
     let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
     let embedder = Arc::new(AsyncMutex::new(
-        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
     ));
     let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
     let vectors = Arc::new(
@@ -687,7 +902,15 @@ async fn test_find_similar_code_by_code_snippet() {
         metrics.clone(),
     );
 
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
+    let retriever = Retriever::new(
+        config.clone(),
+        tantivy,
+        vectors,
+        embedder,
+        None,
+        None,
+        metrics,
+    );
     let state = code_intelligence_mcp_server::handlers::AppState {
         config,
         indexer,
@@ -716,7 +939,7 @@ async fn test_find_similar_code_not_found() {
     let config = Arc::new(test_config(&dir));
     let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
     let embedder = Arc::new(AsyncMutex::new(
-        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
     ));
     let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
     let vectors = Arc::new(
@@ -736,7 +959,15 @@ async fn test_find_similar_code_not_found() {
         metrics.clone(),
     );
 
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
+    let retriever = Retriever::new(
+        config.clone(),
+        tantivy,
+        vectors,
+        embedder,
+        None,
+        None,
+        metrics,
+    );
     let state = code_intelligence_mcp_server::handlers::AppState {
         config,
         indexer,
@@ -745,5 +976,8 @@ async fn test_find_similar_code_not_found() {
 
     let result = handle_find_similar_code(&state, params).await.unwrap();
 
-    assert_eq!(result.get("error").and_then(|v| v.as_str()), Some("SYMBOL_NOT_FOUND"));
+    assert_eq!(
+        result.get("error").and_then(|v| v.as_str()),
+        Some("SYMBOL_NOT_FOUND")
+    );
 }

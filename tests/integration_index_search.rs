@@ -380,7 +380,15 @@ export function extraRoot() { return 42 }
         embedder.clone(),
         metrics.clone(),
     );
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
+    let retriever = Retriever::new(
+        config.clone(),
+        tantivy,
+        vectors,
+        embedder,
+        None,
+        None,
+        metrics,
+    );
 
     indexer.index_all().await.unwrap();
     let resp = retriever.search("extraRoot", 5, false).await.unwrap();
@@ -430,7 +438,15 @@ export function callerOne() { targetFunc(); }
         embedder.clone(),
         metrics.clone(),
     );
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
+    let retriever = Retriever::new(
+        config.clone(),
+        tantivy,
+        vectors,
+        embedder,
+        None,
+        None,
+        metrics,
+    );
 
     indexer.index_all().await.unwrap();
 
@@ -465,7 +481,8 @@ async fn symbol_to_package_association() {
   "version": "1.0.0"
 }
 "#,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create a source file
     std::fs::write(
@@ -474,7 +491,8 @@ async fn symbol_to_package_association() {
 export function myFunction() { return 42; }
 export const myConstant = 123;
 "#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let mut config = test_config(&dir);
     config.package_detection_enabled = true;
@@ -514,10 +532,15 @@ export const myConstant = 123;
     assert!(stats.files_indexed >= 1);
 
     // Verify symbols were indexed with file_path
-    let symbols = sqlite.search_symbols_by_exact_name("myFunction", None, 10).unwrap();
+    let symbols = sqlite
+        .search_symbols_by_exact_name("myFunction", None, 10)
+        .unwrap();
     assert!(!symbols.is_empty());
 
-    let my_function = symbols.iter().find(|s| s.name == "myFunction").expect("myFunction not found");
+    let my_function = symbols
+        .iter()
+        .find(|s| s.name == "myFunction")
+        .expect("myFunction not found");
     eprintln!("my_function.file_path: {}", my_function.file_path);
 
     // List all packages to debug
@@ -577,8 +600,14 @@ export const myConstant = 123;
 
     // Verify symbol can be associated with its package via file_path
     let package = sqlite.get_package_for_file(&my_function.file_path).unwrap();
-    eprintln!("Package for file: {:?}", package.as_ref().map(|p| (&p.name, &p.manifest_path)));
-    assert!(package.is_some(), "Package should be found for symbol's file_path");
+    eprintln!(
+        "Package for file: {:?}",
+        package.as_ref().map(|p| (&p.name, &p.manifest_path))
+    );
+    assert!(
+        package.is_some(),
+        "Package should be found for symbol's file_path"
+    );
 
     let pkg = package.unwrap();
     assert_eq!(pkg.name, "mypackage");

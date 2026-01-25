@@ -1,6 +1,4 @@
-use prometheus::{
-    Counter, Gauge, Histogram, Registry,
-};
+use prometheus::{Counter, Gauge, Histogram, Registry};
 
 pub mod server;
 
@@ -38,79 +36,72 @@ impl MetricsRegistry {
         let index_duration = Histogram::with_opts(
             prometheus::HistogramOpts::new(
                 "index_duration_seconds",
-                "Indexing operation duration in seconds"
+                "Indexing operation duration in seconds",
             )
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 60.0, 300.0, 600.0])
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 60.0, 300.0,
+                600.0,
+            ]),
         )?;
 
-        let index_files_total = Counter::new(
-            "index_files_total",
-            "Total number of files indexed"
-        )?;
+        let index_files_total = Counter::new("index_files_total", "Total number of files indexed")?;
 
-        let index_symbols_total = Counter::new(
-            "index_symbols_total",
-            "Total number of symbols indexed"
-        )?;
+        let index_symbols_total =
+            Counter::new("index_symbols_total", "Total number of symbols indexed")?;
 
         let index_files_skipped = Counter::new(
             "index_files_skipped_total",
-            "Total number of files skipped during indexing"
+            "Total number of files skipped during indexing",
         )?;
 
         let index_files_unchanged = Counter::new(
             "index_files_unchanged_total",
-            "Total number of unchanged files skipped"
+            "Total number of unchanged files skipped",
         )?;
 
         let index_cache_hits = Counter::new(
             "index_cache_hits_total",
-            "Total number of embedding cache hits"
+            "Total number of embedding cache hits",
         )?;
 
         let index_cache_misses = Counter::new(
             "index_cache_misses_total",
-            "Total number of embedding cache misses"
+            "Total number of embedding cache misses",
         )?;
 
         // Search duration histogram (1ms to 5 seconds)
         let search_duration = Histogram::with_opts(
             prometheus::HistogramOpts::new(
                 "search_duration_seconds",
-                "Search query duration in seconds"
+                "Search query duration in seconds",
             )
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0])
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
         )?;
 
         let search_results_total = Counter::new(
             "search_results_total",
-            "Total number of search results returned"
+            "Total number of search results returned",
         )?;
 
-        let search_errors_total = Counter::new(
-            "search_errors_total",
-            "Total number of search errors"
-        )?;
+        let search_errors_total =
+            Counter::new("search_errors_total", "Total number of search errors")?;
 
         // Resource gauges
-        let index_size_bytes = Gauge::new(
-            "index_size_bytes",
-            "Current size of the index in bytes"
-        )?;
+        let index_size_bytes =
+            Gauge::new("index_size_bytes", "Current size of the index in bytes")?;
 
-        let symbol_count = Gauge::new(
-            "symbol_count",
-            "Current number of indexed symbols"
-        )?;
+        let symbol_count = Gauge::new("symbol_count", "Current number of indexed symbols")?;
 
         let cache_size_bytes = Gauge::new(
             "cache_size_bytes",
-            "Current size of the embedding cache in bytes"
+            "Current size of the embedding cache in bytes",
         )?;
 
         let cache_entries = Gauge::new(
             "cache_entries",
-            "Current number of entries in the embedding cache"
+            "Current number of entries in the embedding cache",
         )?;
 
         // Register all metrics

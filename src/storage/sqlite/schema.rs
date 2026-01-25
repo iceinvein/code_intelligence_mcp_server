@@ -176,7 +176,7 @@ pub struct TodoRow {
 pub struct TestLinkRow {
     pub test_file_path: String,
     pub source_file_path: String,
-    pub link_direction: String,  // "bidirectional", "test_to_source", "source_to_test"
+    pub link_direction: String, // "bidirectional", "test_to_source", "source_to_test"
     pub created_at: i64,
 }
 

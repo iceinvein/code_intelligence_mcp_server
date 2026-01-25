@@ -1,12 +1,12 @@
+use anyhow::Result;
 use axum::{
     extract::State,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
-    response::{Response, IntoResponse},
-    http::{StatusCode, header},
 };
 use std::sync::Arc;
-use anyhow::Result;
 
 #[derive(Clone)]
 pub struct MetricsState {
@@ -20,7 +20,9 @@ pub async fn spawn_metrics_server(
 ) -> Result<tokio::task::JoinHandle<()>> {
     let app = Router::new()
         .route("/metrics", get(metrics_handler))
-        .with_state(MetricsState { registry: Arc::clone(&registry) });
+        .with_state(MetricsState {
+            registry: Arc::clone(&registry),
+        });
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port))
         .await
@@ -43,7 +45,10 @@ async fn metrics_handler(State(state): State<MetricsState>) -> Response {
             tracing::debug!("Served metrics, {} bytes", output.len());
             Response::builder()
                 .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")
+                .header(
+                    header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )
                 .body(output.into_response().into_body())
                 .unwrap()
         }

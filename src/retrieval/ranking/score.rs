@@ -660,8 +660,8 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::storage::sqlite::SqliteStore;
     use crate::storage::sqlite::schema::{SymbolMetricsRow, SymbolRow};
+    use crate::storage::sqlite::SqliteStore;
     use std::collections::HashMap;
 
     /// Create a minimal test config
@@ -776,17 +776,43 @@ mod tests {
 
             // Insert PageRank values: symbol3 > symbol2 > symbol1
             let metrics = vec![
-                SymbolMetricsRow { symbol_id: "symbol1".to_string(), pagerank: 0.01, in_degree: 1, out_degree: 0, updated_at: 0 },
-                SymbolMetricsRow { symbol_id: "symbol2".to_string(), pagerank: 0.05, in_degree: 5, out_degree: 2, updated_at: 0 },
-                SymbolMetricsRow { symbol_id: "symbol3".to_string(), pagerank: 0.1, in_degree: 10, out_degree: 5, updated_at: 0 },
+                SymbolMetricsRow {
+                    symbol_id: "symbol1".to_string(),
+                    pagerank: 0.01,
+                    in_degree: 1,
+                    out_degree: 0,
+                    updated_at: 0,
+                },
+                SymbolMetricsRow {
+                    symbol_id: "symbol2".to_string(),
+                    pagerank: 0.05,
+                    in_degree: 5,
+                    out_degree: 2,
+                    updated_at: 0,
+                },
+                SymbolMetricsRow {
+                    symbol_id: "symbol3".to_string(),
+                    pagerank: 0.1,
+                    in_degree: 10,
+                    out_degree: 5,
+                    updated_at: 0,
+                },
             ];
-            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+            for m in metrics {
+                sqlite.upsert_symbol_metrics(&m).unwrap();
+            }
 
-            let hits = vec![make_hit("symbol1", "symbol1", 10.0), make_hit("symbol2", "symbol2", 10.0), make_hit("symbol3", "symbol3", 10.0)];
+            let hits = vec![
+                make_hit("symbol1", "symbol1", 10.0),
+                make_hit("symbol2", "symbol2", 10.0),
+                make_hit("symbol3", "symbol3", 10.0),
+            ];
             let mut hit_signals = HashMap::new();
             let config = test_config(0.1);
 
-            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+            let result =
+                apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config)
+                    .unwrap();
 
             // After PageRank boost, symbol3 (highest PageRank) should be first
             assert_eq!(result[0].id, "symbol3");
@@ -811,16 +837,32 @@ mod tests {
             insert_test_symbol(&sqlite, "high", "high");
 
             let metrics = vec![
-                SymbolMetricsRow { symbol_id: "low".to_string(), pagerank: 0.01, in_degree: 1, out_degree: 0, updated_at: 0 },
-                SymbolMetricsRow { symbol_id: "high".to_string(), pagerank: 0.1, in_degree: 10, out_degree: 5, updated_at: 0 },
+                SymbolMetricsRow {
+                    symbol_id: "low".to_string(),
+                    pagerank: 0.01,
+                    in_degree: 1,
+                    out_degree: 0,
+                    updated_at: 0,
+                },
+                SymbolMetricsRow {
+                    symbol_id: "high".to_string(),
+                    pagerank: 0.1,
+                    in_degree: 10,
+                    out_degree: 5,
+                    updated_at: 0,
+                },
             ];
-            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+            for m in metrics {
+                sqlite.upsert_symbol_metrics(&m).unwrap();
+            }
 
             let hits = vec![make_hit("low", "low", 10.0), make_hit("high", "high", 10.0)];
             let mut hit_signals = HashMap::new();
             let config = test_config(0.1);
 
-            let _result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+            let _result =
+                apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config)
+                    .unwrap();
 
             let high_boost = hit_signals.get("high").unwrap().popularity_boost;
             let low_boost = hit_signals.get("low").unwrap().popularity_boost;
@@ -855,13 +897,20 @@ mod tests {
                 out_degree: 2,
                 updated_at: 0,
             }];
-            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+            for m in metrics {
+                sqlite.upsert_symbol_metrics(&m).unwrap();
+            }
 
-            let hits = vec![make_hit("has_metrics", "has_metrics", 10.0), make_hit("no_metrics", "no_metrics", 10.0)];
+            let hits = vec![
+                make_hit("has_metrics", "has_metrics", 10.0),
+                make_hit("no_metrics", "no_metrics", 10.0),
+            ];
             let mut hit_signals = HashMap::new();
             let config = test_config(0.1);
 
-            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+            let result =
+                apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config)
+                    .unwrap();
 
             assert!(hit_signals.get("has_metrics").unwrap().popularity_boost > 0.0);
             assert_eq!(hit_signals.get("no_metrics").unwrap().popularity_boost, 0.0);
@@ -881,16 +930,25 @@ mod tests {
             let sqlite = SqliteStore::open(&db_path).unwrap();
             sqlite.init().unwrap();
 
-            let hits = vec![make_hit("symbol1", "symbol1", 10.0), make_hit("symbol2", "symbol2", 5.0)];
+            let hits = vec![
+                make_hit("symbol1", "symbol1", 10.0),
+                make_hit("symbol2", "symbol2", 5.0),
+            ];
             let mut hit_signals = HashMap::new();
             let config = test_config(0.1);
 
-            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+            let result =
+                apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config)
+                    .unwrap();
 
             // No boost applied (no metrics in DB)
             // Note: hit_signals may not contain entries for symbols with no boost
-            assert!(hit_signals.get("symbol1").map_or(true, |s| s.popularity_boost == 0.0));
-            assert!(hit_signals.get("symbol2").map_or(true, |s| s.popularity_boost == 0.0));
+            assert!(hit_signals
+                .get("symbol1")
+                .map_or(true, |s| s.popularity_boost == 0.0));
+            assert!(hit_signals
+                .get("symbol2")
+                .map_or(true, |s| s.popularity_boost == 0.0));
             // Original scores unchanged
             assert_eq!(result[0].id, "symbol1");
             assert_eq!(result[0].score, 10.0);
@@ -914,7 +972,9 @@ mod tests {
             let mut hit_signals = HashMap::new();
             let config = test_config(0.1);
 
-            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+            let result =
+                apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config)
+                    .unwrap();
 
             assert!(result.is_empty());
             assert!(hit_signals.is_empty());
@@ -941,18 +1001,24 @@ mod tests {
                 out_degree: 5,
                 updated_at: 0,
             }];
-            for m in metrics { sqlite.upsert_symbol_metrics(&m).unwrap(); }
+            for m in metrics {
+                sqlite.upsert_symbol_metrics(&m).unwrap();
+            }
 
             let hits = vec![make_hit("symbol1", "symbol1", 10.0)];
             let mut hit_signals = HashMap::new();
             let config = test_config(0.0);
 
-            let result = apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config).unwrap();
+            let result =
+                apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config)
+                    .unwrap();
 
             // No boost applied when weight is 0
             assert_eq!(result[0].score, 10.0);
             // hit_signals may be empty when weight is 0 (early return)
-            assert!(hit_signals.get("symbol1").map_or(true, |s| s.popularity_boost == 0.0));
+            assert!(hit_signals
+                .get("symbol1")
+                .map_or(true, |s| s.popularity_boost == 0.0));
         }
 
         let _ = std::fs::remove_file(&db_path);

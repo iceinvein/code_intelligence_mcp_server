@@ -160,10 +160,7 @@ pub fn delete_test_links_for_file(conn: &Connection, file_path: &str) -> Result<
 }
 
 /// Get test links for symbols in a file (links test file to symbols)
-pub fn get_symbols_with_tests(
-    conn: &Connection,
-    file_path: &str,
-) -> Result<Vec<(String, String)>> {
+pub fn get_symbols_with_tests(conn: &Connection, file_path: &str) -> Result<Vec<(String, String)>> {
     // Returns list of (symbol_name, test_file_path)
     let mut stmt = conn
         .prepare(

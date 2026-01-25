@@ -49,21 +49,27 @@ pub fn reciprocal_rank_fusion(
     for (rank, hit) in keyword_hits.iter().enumerate() {
         let score = w_kw / (k + rank as f32 + 1.0);
         *rrf_scores.entry(hit.id.clone()).or_insert(0.0) += score;
-        hit_data.entry(hit.id.clone()).or_insert_with(|| hit.clone());
+        hit_data
+            .entry(hit.id.clone())
+            .or_insert_with(|| hit.clone());
     }
 
     // Process vector hits
     for (rank, hit) in vector_hits.iter().enumerate() {
         let score = w_vec / (k + rank as f32 + 1.0);
         *rrf_scores.entry(hit.id.clone()).or_insert(0.0) += score;
-        hit_data.entry(hit.id.clone()).or_insert_with(|| hit.clone());
+        hit_data
+            .entry(hit.id.clone())
+            .or_insert_with(|| hit.clone());
     }
 
     // Process graph hits (sorted by PageRank)
     for (rank, hit) in graph_hits.iter().enumerate() {
         let score = w_graph / (k + rank as f32 + 1.0);
         *rrf_scores.entry(hit.id.clone()).or_insert(0.0) += score;
-        hit_data.entry(hit.id.clone()).or_insert_with(|| hit.clone());
+        hit_data
+            .entry(hit.id.clone())
+            .or_insert_with(|| hit.clone());
     }
 
     // Convert to sorted results
@@ -96,10 +102,7 @@ pub fn reciprocal_rank_fusion(
 ///
 /// # Returns
 /// Hits sorted by PageRank (highest first)
-pub fn get_graph_ranked_hits(
-    hits: &[RankedHit],
-    sqlite: &SqliteStore,
-) -> Result<Vec<RankedHit>> {
+pub fn get_graph_ranked_hits(hits: &[RankedHit], sqlite: &SqliteStore) -> Result<Vec<RankedHit>> {
     if hits.is_empty() {
         return Ok(vec![]);
     }
@@ -153,12 +156,8 @@ mod tests {
             make_hit("b", 0.3, true),
         ];
 
-        let results = reciprocal_rank_fusion(
-            &keyword_hits,
-            &vector_hits,
-            &graph_hits,
-            (1.0, 1.0, 0.5),
-        );
+        let results =
+            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
 
         // Results should be sorted by RRF score
         assert!(!results.is_empty());
@@ -175,7 +174,8 @@ mod tests {
         let vector_hits: Vec<RankedHit> = vec![];
         let graph_hits: Vec<RankedHit> = vec![];
 
-        let results = reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
+        let results =
+            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "a");
@@ -187,7 +187,8 @@ mod tests {
         let vector_hits: Vec<RankedHit> = vec![];
         let graph_hits: Vec<RankedHit> = vec![];
 
-        let results = reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
+        let results =
+            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
 
         assert!(results.is_empty());
     }
@@ -199,21 +200,13 @@ mod tests {
         let graph_hits: Vec<RankedHit> = vec![];
 
         // With higher keyword weight, 'a' should win
-        let results_high_kw = reciprocal_rank_fusion(
-            &keyword_hits,
-            &vector_hits,
-            &graph_hits,
-            (2.0, 0.5, 0.0),
-        );
+        let results_high_kw =
+            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (2.0, 0.5, 0.0));
         assert_eq!(results_high_kw[0].id, "a");
 
         // With higher vector weight, 'b' should win
-        let results_high_vec = reciprocal_rank_fusion(
-            &keyword_hits,
-            &vector_hits,
-            &graph_hits,
-            (0.5, 2.0, 0.0),
-        );
+        let results_high_vec =
+            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (0.5, 2.0, 0.0));
         assert_eq!(results_high_vec[0].id, "b");
     }
 

@@ -227,10 +227,9 @@ fn pattern_matches_path(pattern: &str, path: &str) -> bool {
     }
 
     // Pattern contains directory separator - check as prefix
-    if pattern.contains('/')
-        && path.starts_with(&format!("{}/", pattern)) {
-            return true;
-        }
+    if pattern.contains('/') && path.starts_with(&format!("{}/", pattern)) {
+        return true;
+    }
 
     false
 }
@@ -404,17 +403,14 @@ mod tests {
     #[test]
     fn test_pattern_matches_path() {
         // Exact match (pattern, path)
-        assert!(pattern_matches_path("/path/to/file.txt", "/path/to/file.txt"));
-
-        // Wildcard patterns (pattern, path)
         assert!(pattern_matches_path(
-            "/path/to/*.txt",
+            "/path/to/file.txt",
             "/path/to/file.txt"
         ));
-        assert!(pattern_matches_path(
-            "**/*.json",
-            "/path/to/file.json"
-        ));
+
+        // Wildcard patterns (pattern, path)
+        assert!(pattern_matches_path("/path/to/*.txt", "/path/to/file.txt"));
+        assert!(pattern_matches_path("**/*.json", "/path/to/file.json"));
 
         // No match (pattern, path)
         assert!(!pattern_matches_path(

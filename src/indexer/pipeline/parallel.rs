@@ -1,30 +1,24 @@
 use crate::{
     config::Config,
     indexer::{
-        extract::{c::extract_c_symbols, cpp::extract_cpp_symbols},
         extract::go::extract_go_symbols,
         extract::java::extract_java_symbols,
         extract::javascript::extract_javascript_symbols,
         extract::python::extract_python_symbols,
         extract::rust::extract_rust_symbols,
         extract::typescript::extract_typescript_symbols_with_path,
+        extract::{c::extract_c_symbols, cpp::extract_cpp_symbols},
         parser::{language_id_for_path, LanguageId},
         pipeline::{
             edges::{extract_edges_for_symbol, upsert_name_mapping},
             parsing::symbol_kind_to_string,
             stats::IndexRunStats,
             usage::extract_usage_examples_for_file,
-            utils::{
-                file_fingerprint, file_key, language_string,
-                stable_symbol_id,
-            },
+            utils::{file_fingerprint, file_key, language_string, stable_symbol_id},
         },
     },
     storage::{
-        sqlite::{
-            SqliteStore, SymbolRow,
-            schema::DecoratorRow,
-        },
+        sqlite::{schema::DecoratorRow, SqliteStore, SymbolRow},
         tantivy::TantivyIndex,
         vector::LanceVectorTable,
     },
@@ -157,11 +151,9 @@ fn index_file_single(
     }
 
     // Check if unchanged
-    let is_unchanged = sqlite
-        .get_file_fingerprint(&rel)?
-        .is_some_and(|existing| {
-            existing.mtime_ns == fp.mtime_ns && existing.size_bytes == fp.size_bytes
-        });
+    let is_unchanged = sqlite.get_file_fingerprint(&rel)?.is_some_and(|existing| {
+        existing.mtime_ns == fp.mtime_ns && existing.size_bytes == fp.size_bytes
+    });
 
     if is_unchanged {
         return Ok(0); // File unchanged, skip
@@ -260,10 +252,8 @@ fn index_file_single(
     tantivy.commit()?;
 
     // Build id_to_symbol HashMap for edge extraction
-    let id_to_symbol: HashMap<String, &SymbolRow> = symbol_rows
-        .iter()
-        .map(|r| (r.id.clone(), r))
-        .collect();
+    let id_to_symbol: HashMap<String, &SymbolRow> =
+        symbol_rows.iter().map(|r| (r.id.clone(), r)).collect();
 
     // Update SQLite
     for row in &symbol_rows {
@@ -273,14 +263,15 @@ fn index_file_single(
     for row in &symbol_rows {
         // Create package lookup function for cross-package edge resolution
         let db_path_for_lookup = db_path.to_path_buf();
-        let package_lookup_fn: super::edges::PackageLookupFn = Box::new(move |file_path: &str| -> Option<String> {
-            if let Ok(sqlite) = SqliteStore::open(&db_path_for_lookup) {
-                if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
-                    return Some(pkg.id);
+        let package_lookup_fn: super::edges::PackageLookupFn =
+            Box::new(move |file_path: &str| -> Option<String> {
+                if let Ok(sqlite) = SqliteStore::open(&db_path_for_lookup) {
+                    if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
+                        return Some(pkg.id);
+                    }
                 }
-            }
-            None
-        });
+                None
+            });
 
         // Use a reference to the package lookup function
         let package_lookup_ref: Option<&super::edges::PackageLookupFn> = Some(&package_lookup_fn);

@@ -271,6 +271,20 @@ fn index_file_single(
     }
 
     for row in &symbol_rows {
+        // Create package lookup function for cross-package edge resolution
+        let db_path_for_lookup = db_path.clone();
+        let package_lookup_fn: super::edges::PackageLookupFn = Box::new(move |file_path: &str| -> Option<String> {
+            if let Ok(sqlite) = SqliteStore::open(&db_path_for_lookup) {
+                if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
+                    return Some(pkg.id);
+                }
+            }
+            None
+        });
+
+        // Use a reference to the package lookup function
+        let package_lookup_ref: Option<&super::edges::PackageLookupFn> = Some(&package_lookup_fn);
+
         let edges = extract_edges_for_symbol(
             row,
             &name_to_id,
@@ -278,7 +292,7 @@ fn index_file_single(
             &extracted.imports,
             &extracted.type_edges,
             &extracted.dataflow_edges,
-            None,
+            package_lookup_ref,
         );
         for (edge, evidence) in edges {
             let _ = sqlite.upsert_edge(&edge);

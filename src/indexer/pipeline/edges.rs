@@ -18,8 +18,64 @@ pub fn upsert_name_mapping(name_to_id: &mut HashMap<String, String>, row: &Symbo
     name_to_id.insert(row.name.clone(), row.id.clone());
 }
 
+/// Resolution context for edge creation
+struct ResolutionContext<'a> {
+    from_file_path: &'a str,
+    from_package_id: Option<String>,
+    row_name: &'a str,
+    get_package_fn: Option<&'a PackageLookupFn>,
+    id_to_symbol: &'a HashMap<String, &'a SymbolRow>,
+}
+
+/// Compute resolution for an edge to a target symbol
+fn compute_resolution_for_target(
+    ctx: &ResolutionContext,
+    to_id: &str,
+    was_import: bool,
+) -> String {
+    if let Some(to_symbol) = ctx.id_to_symbol.get(to_id) {
+        let to_package_id = get_package_for_symbol(ctx.get_package_fn, &to_symbol.file_path);
+
+        let resolution = determine_edge_resolution(
+            ctx.from_file_path,
+            &to_symbol.file_path,
+            &ctx.from_package_id,
+            &to_package_id,
+            was_import,
+        );
+
+        // Log cross-package edges at DEBUG level
+        if resolution == "cross-package" || resolution == "cross-package-import" {
+            if let (Some(from_pkg), Some(to_pkg)) = (&ctx.from_package_id, &to_package_id) {
+                tracing::debug!(
+                    from = %ctx.row_name,
+                    to = %to_symbol.name,
+                    from_package = %from_pkg,
+                    to_package = %to_pkg,
+                    from_file = %ctx.from_file_path,
+                    to_file = %to_symbol.file_path,
+                    resolution = %resolution,
+                    "Cross-package edge detected"
+                );
+            }
+        }
+
+        resolution
+    } else {
+        // Target symbol not in current batch (external import)
+        if was_import {
+            "import".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+}
+
 /// Package lookup function type for resolving symbol package membership
-pub type PackageLookupFn = fn(&str) -> Option<String>;
+///
+/// This is a boxed function pointer to allow capturing state (like db_path)
+/// in the closure for package lookup during edge extraction.
+pub type PackageLookupFn = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// Helper to create None package lookup
 pub fn no_package_lookup(_: &str) -> Option<String> {
@@ -33,14 +89,14 @@ pub fn no_package_lookup(_: &str) -> Option<String> {
 ///
 /// # Arguments
 ///
-/// * `get_package_fn` - Function that returns package_id for a file_path
+/// * `get_package_fn` - Optional reference to function that returns package_id for a file_path
 /// * `symbol_file_path` - The file path of the symbol
 ///
 /// # Returns
 ///
 /// * `Some(package_id)` if the file belongs to a package
 /// * `None` if the file is not in any package
-fn get_package_for_symbol(get_package_fn: Option<PackageLookupFn>, symbol_file_path: &str) -> Option<String> {
+fn get_package_for_symbol(get_package_fn: Option<&PackageLookupFn>, symbol_file_path: &str) -> Option<String> {
     get_package_fn.and_then(|f| f(symbol_file_path))
 }
 
@@ -109,7 +165,7 @@ pub fn extract_edges_for_symbol(
     imports: &[Import],
     type_edges: &[(String, String)],
     dataflow_edges: &[DataFlowEdge],
-    get_package_fn: Option<PackageLookupFn>,
+    get_package_fn: Option<&PackageLookupFn>,
 ) -> Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> {
     let mut out: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
@@ -129,44 +185,13 @@ pub fn extract_edges_for_symbol(
     // Get package for source symbol
     let from_package_id = get_package_for_symbol(get_package_fn, &row.file_path);
 
-    // Helper to compute resolution based on target symbol ID and whether it was an import
-    let compute_resolution = |to_id: &str, was_import: bool| -> String {
-        if let Some(to_symbol) = id_to_symbol.get(to_id) {
-            let to_package_id = get_package_for_symbol(get_package_fn, &to_symbol.file_path);
-
-            let resolution = determine_edge_resolution(
-                &row.file_path,
-                &to_symbol.file_path,
-                &from_package_id,
-                &to_package_id,
-                was_import,
-            );
-
-            // Log cross-package edges at DEBUG level
-            if resolution == "cross-package" || resolution == "cross-package-import" {
-                if let (Some(from_pkg), Some(to_pkg)) = (&from_package_id, &to_package_id) {
-                    tracing::debug!(
-                        from = %row.name,
-                        to = %to_symbol.name,
-                        from_package = %from_pkg,
-                        to_package = %to_pkg,
-                        from_file = %row.file_path,
-                        to_file = %to_symbol.file_path,
-                        resolution = %resolution,
-                        "Cross-package edge detected"
-                    );
-                }
-            }
-
-            resolution
-        } else {
-            // Target symbol not in current batch (external import)
-            if was_import {
-                "import".to_string()
-            } else {
-                "unknown".to_string()
-            }
-        }
+    // Create resolution context
+    let resolution_ctx = ResolutionContext {
+        from_file_path: &row.file_path,
+        from_package_id,
+        row_name: &row.name,
+        get_package_fn,
+        id_to_symbol,
     };
 
     for callee in extract_callee_names(&row.text) {
@@ -190,7 +215,7 @@ pub fn extract_edges_for_symbol(
             continue;
         }
 
-        let resolution = compute_resolution(&to_id, was_import);
+        let resolution = compute_resolution_for_target(&resolution_ctx, &to_id, was_import);
         let (count, at_line, evidence_rows) = evidence_for(&callee);
         out.push((
             EdgeRow {
@@ -221,10 +246,10 @@ pub fn extract_edges_for_symbol(
     if row.kind == "class" || row.kind == "interface" || row.kind == "type_alias" {
         let (extends, implements, aliases) = parse_type_relations(&row.text);
 
-        let mut handle_relation = |name: String, rel_type: &str| {
+        for name in extends {
             let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&name) {
                 if local_id == &row.id {
-                    return;
+                    continue;
                 }
                 (Some(local_id.clone()), false)
             } else if let Some(imp) = import_map.get(name.as_str()) {
@@ -234,17 +259,17 @@ pub fn extract_edges_for_symbol(
             };
 
             if let Some(id) = to_id {
-                if used_edges.insert((rel_type.to_string(), id.clone())) {
-                    let resolution = compute_resolution(&id, was_import);
+                if used_edges.insert(("extends".to_string(), id.clone())) {
+                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
                     let (count, at_line, evidence_rows) = evidence_for(&name);
                     out.push((
                         EdgeRow {
                             from_symbol_id: row.id.clone(),
                             to_symbol_id: id.clone(),
-                            edge_type: rel_type.to_string(),
+                            edge_type: "extends".to_string(),
                             at_file: Some(row.file_path.clone()),
                             at_line: Some(at_line),
-                            confidence: confidence_for(rel_type),
+                            confidence: confidence_for("extends"),
                             evidence_count: count,
                             resolution,
                         },
@@ -253,7 +278,7 @@ pub fn extract_edges_for_symbol(
                             .map(|(line, c)| EdgeEvidenceRow {
                                 from_symbol_id: row.id.clone(),
                                 to_symbol_id: id.clone(),
-                                edge_type: rel_type.to_string(),
+                                edge_type: "extends".to_string(),
                                 at_file: row.file_path.clone(),
                                 at_line: line,
                                 count: c,
@@ -262,16 +287,92 @@ pub fn extract_edges_for_symbol(
                     ));
                 }
             }
-        };
+        }
 
-        for name in extends {
-            handle_relation(name, "extends");
-        }
         for name in implements {
-            handle_relation(name, "implements");
+            let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&name) {
+                if local_id == &row.id {
+                    continue;
+                }
+                (Some(local_id.clone()), false)
+            } else if let Some(imp) = import_map.get(name.as_str()) {
+                (resolve_imported_symbol_id(&row.file_path, imp), true)
+            } else {
+                (None, false)
+            };
+
+            if let Some(id) = to_id {
+                if used_edges.insert(("implements".to_string(), id.clone())) {
+                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+                    let (count, at_line, evidence_rows) = evidence_for(&name);
+                    out.push((
+                        EdgeRow {
+                            from_symbol_id: row.id.clone(),
+                            to_symbol_id: id.clone(),
+                            edge_type: "implements".to_string(),
+                            at_file: Some(row.file_path.clone()),
+                            at_line: Some(at_line),
+                            confidence: confidence_for("implements"),
+                            evidence_count: count,
+                            resolution,
+                        },
+                        evidence_rows
+                            .into_iter()
+                            .map(|(line, c)| EdgeEvidenceRow {
+                                from_symbol_id: row.id.clone(),
+                                to_symbol_id: id.clone(),
+                                edge_type: "implements".to_string(),
+                                at_file: row.file_path.clone(),
+                                at_line: line,
+                                count: c,
+                            })
+                            .collect(),
+                    ));
+                }
+            }
         }
+
         for name in aliases {
-            handle_relation(name, "alias");
+            let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&name) {
+                if local_id == &row.id {
+                    continue;
+                }
+                (Some(local_id.clone()), false)
+            } else if let Some(imp) = import_map.get(name.as_str()) {
+                (resolve_imported_symbol_id(&row.file_path, imp), true)
+            } else {
+                (None, false)
+            };
+
+            if let Some(id) = to_id {
+                if used_edges.insert(("alias".to_string(), id.clone())) {
+                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+                    let (count, at_line, evidence_rows) = evidence_for(&name);
+                    out.push((
+                        EdgeRow {
+                            from_symbol_id: row.id.clone(),
+                            to_symbol_id: id.clone(),
+                            edge_type: "alias".to_string(),
+                            at_file: Some(row.file_path.clone()),
+                            at_line: Some(at_line),
+                            confidence: confidence_for("alias"),
+                            evidence_count: count,
+                            resolution,
+                        },
+                        evidence_rows
+                            .into_iter()
+                            .map(|(line, c)| EdgeEvidenceRow {
+                                from_symbol_id: row.id.clone(),
+                                to_symbol_id: id.clone(),
+                                edge_type: "alias".to_string(),
+                                at_file: row.file_path.clone(),
+                                at_line: line,
+                                count: c,
+                            })
+                            .collect(),
+                    ));
+                }
+            }
         }
     }
 
@@ -298,7 +399,7 @@ pub fn extract_edges_for_symbol(
 
         if let Some(id) = to_id {
             if used_edges.insert(("reference".to_string(), id.clone())) {
-                let resolution = compute_resolution(&id, was_import);
+                let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
                 let (count, at_line, evidence_rows) = evidence_for(&ident);
                 out.push((
                     EdgeRow {
@@ -345,7 +446,7 @@ pub fn extract_edges_for_symbol(
 
             if let Some(id) = to_id {
                 if used_edges.insert(("type".to_string(), id.clone())) {
-                    let resolution = compute_resolution(&id, was_import);
+                    let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
                     let (count, at_line, evidence_rows) = evidence_for(type_name);
                     out.push((
                         EdgeRow {
@@ -402,7 +503,7 @@ pub fn extract_edges_for_symbol(
                 continue;
             }
 
-            let resolution = compute_resolution(&id, was_import);
+            let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
 
             out.push((
                 EdgeRow {
@@ -532,7 +633,7 @@ mod tests {
                 None
             }
         }
-        let get_package_fn: PackageLookupFn = get_package_impl;
+        let get_package_fn: PackageLookupFn = Box::new(get_package_impl);
 
         let edges = extract_edges_for_symbol(
             &row,
@@ -541,7 +642,7 @@ mod tests {
             &imports,
             &type_edges,
             &dataflow_edges,
-            Some(get_package_fn),
+            Some(&get_package_fn),
         );
 
         // Find the edge to symbol c (same package, different file)
@@ -646,7 +747,7 @@ mod tests {
                 None
             }
         }
-        let get_package_fn: PackageLookupFn = get_package_impl2;
+        let get_package_fn: PackageLookupFn = Box::new(get_package_impl2);
 
         let edges = extract_edges_for_symbol(
             &row,
@@ -655,7 +756,7 @@ mod tests {
             &imports,
             &type_edges,
             &dataflow_edges,
-            Some(get_package_impl2),
+            Some(&get_package_fn),
         );
 
         let edge_to_b = edges

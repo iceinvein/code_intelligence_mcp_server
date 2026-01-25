@@ -13,4 +13,4 @@ target
 # Test workspace
 test_workspace
 opencode.json
-.planning*
+.planning

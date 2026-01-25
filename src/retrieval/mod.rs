@@ -68,6 +68,7 @@ pub struct HitSignals {
     pub learning_boost: f32,
     pub affinity_boost: f32,
     pub docstring_boost: f32,
+    pub package_boost: f32,
 }
 
 #[derive(Clone)]
@@ -221,6 +222,7 @@ impl Retriever {
                         learning_boost: 0.0,
                         affinity_boost: 0.0,
                         docstring_boost: 0.0,
+                        package_boost: 0.0,
                     },
                 );
 
@@ -413,6 +415,7 @@ impl Retriever {
                         learning_boost: 0.0,
                         affinity_boost: 0.0,
                         docstring_boost: 0.0,
+                        package_boost: 0.0,
                     },
                 );
             }

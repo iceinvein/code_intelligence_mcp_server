@@ -63,6 +63,7 @@ pub fn apply_selection_boost_with_signals(
                     learning_boost: final_boost,
                     affinity_boost: 0.0,
                     docstring_boost: 0.0,
+                    package_boost: 0.0,
                 });
         }
     }
@@ -148,6 +149,7 @@ pub fn apply_file_affinity_boost_with_signals(
                     learning_boost: 0.0,
                     affinity_boost: final_boost,
                     docstring_boost: 0.0,
+                    package_boost: 0.0,
                 });
         }
     }
@@ -256,6 +258,7 @@ pub fn rank_hits_with_signals(
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
+                package_boost: 0.0,
             },
         );
 
@@ -314,6 +317,7 @@ pub fn rank_hits_with_signals(
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
+                package_boost: 0.0,
             },
         );
 
@@ -453,6 +457,7 @@ pub fn apply_popularity_boost_with_signals(
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
+                package_boost: 0.0,
             });
     }
 
@@ -502,6 +507,7 @@ pub fn apply_docstring_boost_with_signals(
                     learning_boost: 0.0,
                     affinity_boost: 0.0,
                     docstring_boost: DOCSTRING_BOOST,
+                    package_boost: 0.0,
                 });
         }
     }

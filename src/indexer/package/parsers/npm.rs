@@ -21,7 +21,7 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```no_run
-/// use crate::indexer::package::parsers::npm::parse_package_json;
+/// use code_intelligence_mcp_server::indexer::package::parsers::npm::parse_package_json;
 /// use std::path::Path;
 ///
 /// let manifest = Path::new("/path/to/package.json");

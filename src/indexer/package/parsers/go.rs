@@ -21,7 +21,7 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```no_run
-/// use crate::indexer::package::parsers::go::parse_go_mod;
+/// use code_intelligence_mcp_server::indexer::package::parsers::go::parse_go_mod;
 /// use std::path::Path;
 ///
 /// let manifest = Path::new("/path/to/go.mod");

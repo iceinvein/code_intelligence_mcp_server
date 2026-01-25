@@ -39,7 +39,7 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```no_run
-/// use crate::indexer::package::parsers::parse_manifest;
+/// use code_intelligence_mcp_server::indexer::package::parsers::parse_manifest;
 /// use std::path::Path;
 ///
 /// let manifest = Path::new("/path/to/package.json");

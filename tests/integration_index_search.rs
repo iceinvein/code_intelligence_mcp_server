@@ -2,6 +2,7 @@ use code_intelligence_mcp_server::{
     config::{Config, EmbeddingsBackend, EmbeddingsDevice},
     embeddings::hash::HashEmbedder,
     indexer::pipeline::IndexPipeline,
+    metrics::MetricsRegistry,
     retrieval::Retriever,
     storage::{sqlite::SqliteStore, tantivy::TantivyIndex, vector::LanceDbStore},
 };
@@ -96,6 +97,10 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         hyde_llm_backend: "openai".to_string(),
         hyde_api_key: None,
         hyde_max_tokens: 512,
+        // Metrics config (PERF-04)
+        metrics_enabled: false,
+        metrics_port: 9090,
+        package_detection_enabled: false,
     }
 }
 
@@ -144,11 +149,14 @@ pub fn foo() -> Foo { Foo { a: 1 } }
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
     let retriever = Retriever::new(
         config.clone(),
@@ -157,6 +165,7 @@ pub fn foo() -> Foo { Foo { a: 1 } }
         embedder.clone(),
         None,
         None,
+        metrics,
     );
 
     let stats = indexer.index_all().await.unwrap();
@@ -219,11 +228,14 @@ pub fn gamma() -> i32 { 7 }
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
     let retriever = Retriever::new(
         config.clone(),
@@ -232,6 +244,7 @@ pub fn gamma() -> i32 { 7 }
         embedder.clone(),
         None,
         None,
+        metrics,
     );
 
     let stats1 = indexer.index_all().await.unwrap();
@@ -286,11 +299,15 @@ export function alpha() { return 1 }
             .await
             .unwrap(),
     );
+
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics,
     );
 
     let handle = indexer.spawn_watch_loop();
@@ -354,13 +371,16 @@ export function extraRoot() { return 42 }
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
 
     indexer.index_all().await.unwrap();
     let resp = retriever.search("extraRoot", 5, false).await.unwrap();
@@ -401,13 +421,16 @@ export function callerOne() { targetFunc(); }
             .unwrap(),
     );
 
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
     let indexer = IndexPipeline::new(
         config.clone(),
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        metrics.clone(),
     );
-    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None);
+    let retriever = Retriever::new(config.clone(), tantivy, vectors, embedder, None, None, metrics);
 
     indexer.index_all().await.unwrap();
 

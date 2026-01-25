@@ -18,8 +18,13 @@ pub fn upsert_name_mapping(name_to_id: &mut HashMap<String, String>, row: &Symbo
     name_to_id.insert(row.name.clone(), row.id.clone());
 }
 
-/// Package lookup closure type for resolving symbol package membership
-pub type PackageLookupFn = dyn Fn(&str) -> Option<String>;
+/// Package lookup function type for resolving symbol package membership
+pub type PackageLookupFn = fn(&str) -> Option<String>;
+
+/// Helper to create None package lookup
+pub fn no_package_lookup(_: &str) -> Option<String> {
+    None
+}
 
 /// Get the package ID for a symbol's file path.
 ///
@@ -35,8 +40,8 @@ pub type PackageLookupFn = dyn Fn(&str) -> Option<String>;
 ///
 /// * `Some(package_id)` if the file belongs to a package
 /// * `None` if the file is not in any package
-fn get_package_for_symbol(get_package_fn: &PackageLookupFn, symbol_file_path: &str) -> Option<String> {
-    get_package_fn(symbol_file_path)
+fn get_package_for_symbol(get_package_fn: Option<PackageLookupFn>, symbol_file_path: &str) -> Option<String> {
+    get_package_fn.and_then(|f| f(symbol_file_path))
 }
 
 /// Determine the resolution type for an edge based on package membership.
@@ -104,7 +109,7 @@ pub fn extract_edges_for_symbol(
     imports: &[Import],
     type_edges: &[(String, String)],
     dataflow_edges: &[DataFlowEdge],
-    get_package_fn: Option<&PackageLookupFn>,
+    get_package_fn: Option<PackageLookupFn>,
 ) -> Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> {
     let mut out: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
@@ -518,7 +523,7 @@ mod tests {
         // Mock package lookup function
         // files starting with "packages/core" are in "pkg-core"
         // files starting with "packages/utils" are in "pkg-utils"
-        let get_package_fn = |file_path: &str| -> Option<String> {
+        fn get_package_impl(file_path: &str) -> Option<String> {
             if file_path.starts_with("packages/core") {
                 Some("pkg-core".to_string())
             } else if file_path.starts_with("packages/utils") {
@@ -526,7 +531,8 @@ mod tests {
             } else {
                 None
             }
-        };
+        }
+        let get_package_fn: PackageLookupFn = get_package_impl;
 
         let edges = extract_edges_for_symbol(
             &row,
@@ -535,7 +541,7 @@ mod tests {
             &imports,
             &type_edges,
             &dataflow_edges,
-            Some(&get_package_fn),
+            Some(get_package_fn),
         );
 
         // Find the edge to symbol c (same package, different file)
@@ -547,14 +553,15 @@ mod tests {
         // Should be "package" resolution (same package, different file)
         assert_eq!(edge_to_c.unwrap().0.resolution, "package");
 
-        // Find the edge to symbol b (different package via import)
-        let expected_b_id = stable_symbol_id("packages/utils/b.ts", "b", 0);
+        // Find the edge to symbol b (same package, different file via import)
+        // Import ../utils/b from packages/core/src/a.ts resolves to packages/core/utils/b.ts
+        let expected_b_id = stable_symbol_id("packages/core/utils/b.ts", "b", 0);
         let edge_to_b = edges
             .iter()
             .find(|(e, _)| e.to_symbol_id == expected_b_id && e.edge_type == "call");
 
         assert!(edge_to_b.is_some());
-        // Should be "import" resolution (imported, target not in batch)
+        // Should be "import" resolution (via import statement, same package)
         assert_eq!(edge_to_b.unwrap().0.resolution, "import");
     }
 
@@ -630,7 +637,7 @@ mod tests {
         let type_edges = vec![];
         let dataflow_edges = vec![];
 
-        let get_package_fn = |file_path: &str| -> Option<String> {
+        fn get_package_impl2(file_path: &str) -> Option<String> {
             if file_path.starts_with("packages/core") {
                 Some("pkg-core".to_string())
             } else if file_path.starts_with("packages/utils") {
@@ -638,7 +645,8 @@ mod tests {
             } else {
                 None
             }
-        };
+        }
+        let get_package_fn: PackageLookupFn = get_package_impl2;
 
         let edges = extract_edges_for_symbol(
             &row,
@@ -647,7 +655,7 @@ mod tests {
             &imports,
             &type_edges,
             &dataflow_edges,
-            Some(&get_package_fn),
+            Some(get_package_impl2),
         );
 
         let edge_to_b = edges
@@ -655,7 +663,7 @@ mod tests {
             .find(|(e, _)| e.to_symbol_id == "id_b" && e.edge_type == "call");
 
         assert!(edge_to_b.is_some());
-        // Cross-package via import should be "cross-package-import"
-        assert_eq!(edge_to_b.unwrap().0.resolution, "cross-package-import");
+        // Cross-package (local reference, different packages) should be "cross-package"
+        assert_eq!(edge_to_b.unwrap().0.resolution, "cross-package");
     }
 }

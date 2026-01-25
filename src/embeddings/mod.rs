@@ -18,6 +18,7 @@ pub trait Embedder {
 /// * `model_dir` - Optional path to model directory (required for JinaCode and FastEmbed)
 /// * `model_repo` - Model repository name (e.g., "jinaai/jina-embeddings-v2-base-code")
 /// * `device` - Device to use for inference (CPU/Metal)
+/// * `max_threads` - Max CPU threads for ONNX Runtime (0 = auto, use all available CPUs)
 /// * `hash_dim` - Dimension for hash embedder (only used if backend is Hash)
 ///
 /// # Returns
@@ -33,6 +34,7 @@ pub fn create_embedder(
     model_dir: Option<&std::path::Path>,
     model_repo: Option<&str>,
     device: crate::config::EmbeddingsDevice,
+    max_threads: usize,
     hash_dim: usize,
 ) -> Result<Box<dyn Embedder + Send>> {
     match backend {
@@ -41,7 +43,7 @@ pub fn create_embedder(
             let cache_dir = model_dir;
 
             Ok(Box::new(fastembed::FastEmbedder::new(
-                model_repo, cache_dir, device,
+                model_repo, cache_dir, device, max_threads,
             )?))
         }
         crate::config::EmbeddingsBackend::Hash => Ok(Box::new(hash::HashEmbedder::new(hash_dim))),
@@ -52,7 +54,7 @@ pub fn create_embedder(
             let cache_dir = model_dir;
 
             Ok(Box::new(fastembed::FastEmbedder::new(
-                model_repo, cache_dir, device,
+                model_repo, cache_dir, device, max_threads,
             )?))
         }
     }

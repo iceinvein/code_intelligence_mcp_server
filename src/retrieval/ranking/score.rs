@@ -710,6 +710,7 @@ mod tests {
             token_encoding: "cl100k_base".to_string(),
             parallel_workers: 4,
             embedding_cache_enabled: true,
+            embedding_max_threads: 0,
             pagerank_damping: 0.85,
             pagerank_iterations: 20,
             synonym_expansion_enabled: true,

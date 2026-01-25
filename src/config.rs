@@ -5,6 +5,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Returns the global cimcp directory (~/.cimcp)
+fn get_global_cimcp_dir() -> PathBuf {
+    env::var("HOME")
+        .map(|home| PathBuf::from(home).join(".cimcp"))
+        .unwrap_or_else(|_| {
+            // Fallback to XDG_DATA_HOME or default to ~/.cimcp
+            env::var("XDG_DATA_HOME")
+                .map(|p| PathBuf::from(p).join("cimcp"))
+                .unwrap_or_else(|_| {
+                    env::current_dir()
+                        .unwrap()
+                        .join(".cimcp")
+                })
+        })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingsDevice {
@@ -126,8 +142,9 @@ impl Config {
                 let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
                     Some(raw) => Some(Path::new(raw).to_path_buf()),
                     None => {
-                        // Default to .cimcp/embeddings-cache
-                        Some(base_dir.join("./.cimcp/embeddings-cache"))
+                        // Default to ~/.cimcp/embeddings-cache
+                        let global_dir = get_global_cimcp_dir();
+                        Some(global_dir.join("embeddings-cache"))
                     }
                 };
                 (EmbeddingsBackend::FastEmbed, embeddings_model_dir)
@@ -137,17 +154,19 @@ impl Config {
                 let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
                     Some(raw) => Some(Path::new(raw).to_path_buf()),
                     None => {
-                        // Default to .cimcp/models/jina-code-onnx
-                        Some(base_dir.join("./.cimcp/models/jina-code-onnx"))
+                        // Default to ~/.cimcp/models/jina-code-onnx
+                        let global_dir = get_global_cimcp_dir();
+                        Some(global_dir.join("models/jina-code-onnx"))
                     }
                 };
                 (EmbeddingsBackend::JinaCode, embeddings_model_dir)
             }
             None => {
                 // Default to JinaCode for better code understanding
+                let global_dir = get_global_cimcp_dir();
                 (
                     EmbeddingsBackend::JinaCode,
-                    Some(base_dir.join("./.cimcp/models/jina-code-onnx")),
+                    Some(global_dir.join("models/jina-code-onnx")),
                 )
             }
         };
@@ -160,10 +179,19 @@ impl Config {
                 _ => "BAAI/bge-base-en-v1.5".to_string(),
             });
 
-        let db_path = default_path(&base_dir, "DB_PATH", "./.cimcp/code-intelligence.db")?;
-        let vector_db_path = default_path(&base_dir, "VECTOR_DB_PATH", "./.cimcp/vectors")?;
-        let tantivy_index_path =
-            default_path(&base_dir, "TANTIVY_INDEX_PATH", "./.cimcp/tantivy-index")?;
+        // Default to global ~/.cimcp directory
+        let global_dir = get_global_cimcp_dir();
+        let db_path = optional_env("DB_PATH")
+            .map(|p| Path::new(&p).to_path_buf())
+            .unwrap_or_else(|| global_dir.join("code-intelligence.db"));
+
+        let vector_db_path = optional_env("VECTOR_DB_PATH")
+            .map(|p| Path::new(&p).to_path_buf())
+            .unwrap_or_else(|| global_dir.join("vectors"));
+
+        let tantivy_index_path = optional_env("TANTIVY_INDEX_PATH")
+            .map(|p| Path::new(&p).to_path_buf())
+            .unwrap_or_else(|| global_dir.join("tantivy-index"));
 
         let embeddings_device = optional_env("EMBEDDINGS_DEVICE")
             .as_deref()
@@ -291,7 +319,7 @@ impl Config {
             .unwrap_or(20);
         let reranker_cache_dir = optional_env("RERANKER_CACHE_DIR")
             .map(PathBuf::from)
-            .or_else(|| Some(base_dir.join(".cimcp/reranker-cache")));
+            .or_else(|| Some(global_dir.join("reranker-cache")));
 
         // Learning config (FNDN-04)
         let learning_enabled = optional_env("LEARNING_ENABLED")
@@ -554,16 +582,6 @@ fn canonicalize_dir(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to canonicalize: {}", path.display()))
 }
 
-fn default_path(base_dir: &Path, key: &str, default_rel: &str) -> Result<PathBuf> {
-    let raw = optional_env(key).unwrap_or_else(|| default_rel.to_string());
-    let path = Path::new(&raw);
-    Ok(if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base_dir.join(path)
-    })
-}
-
 fn parse_csv_or_default(value: Option<&str>, default: &[&str]) -> Vec<String> {
     match value {
         Some(v) => parse_csv(v),
@@ -665,8 +683,21 @@ mod tests {
         dir
     }
 
+    fn tmp_home_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "code-intel-home-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     fn clear_env() {
         for k in [
+            "HOME", // Clear HOME for tests
             "BASE_DIR",
             "DB_PATH",
             "VECTOR_DB_PATH",
@@ -752,20 +783,19 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
+        let home = tmp_home_dir();
         std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("HOME", home.to_string_lossy().to_string());
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
         assert!(cfg.embeddings_model_dir.is_some());
-        assert_eq!(
-            cfg.db_path,
-            cfg.base_dir.join("./.cimcp/code-intelligence.db")
-        );
-        assert_eq!(cfg.vector_db_path, cfg.base_dir.join("./.cimcp/vectors"));
-        assert_eq!(
-            cfg.tantivy_index_path,
-            cfg.base_dir.join("./.cimcp/tantivy-index")
-        );
+
+        // Paths should now use global ~/.cimcp directory
+        let expected_global = home.join(".cimcp");
+        assert_eq!(cfg.db_path, expected_global.join("code-intelligence.db"));
+        assert_eq!(cfg.vector_db_path, expected_global.join("vectors"));
+        assert_eq!(cfg.tantivy_index_path, expected_global.join("tantivy-index"));
         assert_eq!(cfg.repo_roots, vec![cfg.base_dir.clone()]);
     }
 
@@ -774,14 +804,16 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
+        let home = tmp_home_dir();
         std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("HOME", home.to_string_lossy().to_string());
 
         // Default should be JinaCode
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
         assert_eq!(
             cfg.embeddings_model_dir,
-            Some(cfg.base_dir.join("./.cimcp/models/jina-code-onnx"))
+            Some(home.join(".cimcp/models/jina-code-onnx"))
         );
         assert_eq!(
             cfg.embeddings_model_repo.as_deref(),

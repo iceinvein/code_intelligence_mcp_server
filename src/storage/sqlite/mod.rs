@@ -372,4 +372,21 @@ impl SqliteStore {
     pub fn count_packages_in_repository(&self, repository_id: &str) -> Result<u64> {
         queries::packages::count_packages_in_repository(&self.read(), repository_id)
     }
+
+    /// Batch lookup package IDs for multiple symbols.
+    ///
+    /// Returns a HashMap mapping symbol_id to package_id.
+    pub fn batch_get_symbol_packages(
+        &self,
+        symbol_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        queries::packages::batch_get_symbol_packages(&self.read(), symbol_ids)
+    }
+
+    /// Get the package ID for a given file path.
+    ///
+    /// Returns Ok(Some(package_id)) if a package contains the file, Ok(None) otherwise.
+    pub fn get_package_id_for_file(&self, file_path: &str) -> Result<Option<String>> {
+        queries::packages::get_package_id_for_file(&self.read(), file_path)
+    }
 }

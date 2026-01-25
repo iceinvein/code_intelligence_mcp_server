@@ -14,6 +14,9 @@ pub use detector::{discover_manifests, should_skip_package_dir, MANIFEST_FILENAM
 // Re-export git module types
 pub use git::{discover_git_roots, RepositoryInfo as GitRepositoryInfo};
 
+// Re-export parser functions
+pub use parsers::parse_manifest;
+
 use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

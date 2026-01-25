@@ -6,6 +6,7 @@ pub mod edges;
 pub mod files;
 pub mod metrics;
 pub mod misc;
+pub mod packages;
 pub mod selections;
 pub mod stats;
 pub mod symbols;

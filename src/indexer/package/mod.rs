@@ -20,7 +20,7 @@ pub use parsers::parse_manifest;
 use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::Path, path::PathBuf};
+use std::{collections::HashMap, fmt, path::Path, path::PathBuf};
 
 /// Package ecosystem type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Copy, Hash)]
@@ -38,6 +38,19 @@ pub enum PackageType {
     Maven,
     /// Unknown package type
     Unknown,
+}
+
+impl fmt::Display for PackageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PackageType::Npm => write!(f, "npm"),
+            PackageType::Cargo => write!(f, "cargo"),
+            PackageType::Go => write!(f, "go"),
+            PackageType::Python => write!(f, "python"),
+            PackageType::Maven => write!(f, "maven"),
+            PackageType::Unknown => write!(f, "unknown"),
+        }
+    }
 }
 
 impl PackageType {
@@ -200,6 +213,16 @@ pub enum VcsType {
     None,
     /// Other VCS
     Other,
+}
+
+impl fmt::Display for VcsType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VcsType::Git => write!(f, "git"),
+            VcsType::None => write!(f, "none"),
+            VcsType::Other => write!(f, "other"),
+        }
+    }
 }
 
 /// Discover all packages in the workspace.

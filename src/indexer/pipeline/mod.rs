@@ -6,6 +6,8 @@ pub mod stats;
 pub mod usage;
 pub mod utils;
 
+use crate::indexer::package;
+
 use crate::{
     config::Config,
     embeddings::Embedder,
@@ -104,6 +106,17 @@ impl IndexPipeline {
 
         let started_at = Instant::now();
         let started_at_unix_s = unix_now_s();
+
+        // Discover and store packages if enabled
+        if self.config.package_detection_enabled {
+            if let Err(e) = self.index_packages_and_repositories() {
+                tracing::warn!(
+                    error = %e,
+                    "Package detection failed, continuing with indexing"
+                );
+            }
+        }
+
         let mut files = Vec::new();
         for root in &self.config.repo_roots {
             files.extend(scan_files(&self.config, root)?);
@@ -152,6 +165,80 @@ impl IndexPipeline {
             .filter(|m| m.is_file())
             .map(|m| m.len())
             .sum())
+    }
+
+    /// Discover packages and repositories and store them in SQLite.
+    ///
+    /// This function:
+    /// 1. Discovers all package manifests in the workspace
+    /// 2. Detects git repositories
+    /// 3. Stores repositories and packages in the database
+    fn index_packages_and_repositories(&self) -> Result<()> {
+        let sqlite = SqliteStore::open(&self.db_path)?;
+        sqlite.init()?;
+
+        // Discover packages from all repo roots
+        let mut packages = package::discover_packages(&self.config, &self.config.repo_roots)?;
+
+        if packages.is_empty() {
+            tracing::debug!("No packages discovered in workspace");
+            return Ok(());
+        }
+
+        // Detect repositories and assign repository_id to packages
+        let repositories = package::detect_repositories(&mut packages)?;
+
+        // Get current timestamp for created_at
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // Upsert all repositories
+        for repo in repositories {
+            let repo_row = crate::storage::sqlite::schema::RepositoryRow {
+                id: repo.id,
+                name: repo.name,
+                root_path: repo.root_path,
+                vcs_type: Some(repo.vcs_type.to_string()),
+                remote_url: repo.remote_url,
+                created_at,
+            };
+            sqlite.upsert_repository(&repo_row)?;
+        }
+
+        // Upsert all packages
+        for pkg in packages {
+            let pkg_row = crate::storage::sqlite::schema::PackageRow {
+                id: pkg.id,
+                repository_id: pkg.repository_id.unwrap_or_default(),
+                name: pkg.name.unwrap_or_else(|| {
+                    // Fallback name: use directory name
+                    PathBuf::from(&pkg.root_path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string()
+                }),
+                version: pkg.version,
+                manifest_path: pkg.manifest_path,
+                package_type: pkg.package_type.to_string(),
+                created_at,
+            };
+            sqlite.upsert_package(&pkg_row)?;
+        }
+
+        // Log summary
+        let repo_count = sqlite.list_all_repositories()?.len();
+        let pkg_count = sqlite.list_all_packages()?.len();
+
+        tracing::info!(
+            repositories = repo_count,
+            packages = pkg_count,
+            "Discovered packages and repositories"
+        );
+
+        Ok(())
     }
 
     pub async fn index_paths(&self, paths: &[PathBuf]) -> Result<IndexRunStats> {

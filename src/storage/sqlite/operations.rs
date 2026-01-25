@@ -2,11 +2,30 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::schema::SCHEMA_SQL;
 
 pub struct SqliteStore {
-    pub(crate) conn: Connection,
+    pub(crate) conn: RwLock<Connection>,
+}
+
+// SAFETY: rusqlite::Connection is Send but not Sync due to internal RefCell.
+// By wrapping it in RwLock, we provide synchronized access, making SqliteStore
+// safe to share across threads (Send + Sync).
+unsafe impl Send for SqliteStore {}
+unsafe impl Sync for SqliteStore {}
+
+impl SqliteStore {
+    /// Get read access to the connection
+    pub fn read(&self) -> RwLockReadGuard<Connection> {
+        self.conn.read().unwrap()
+    }
+
+    /// Get write access to the connection
+    pub fn write(&self) -> RwLockWriteGuard<Connection> {
+        self.conn.write().unwrap()
+    }
 }
 
 impl SqliteStore {
@@ -28,27 +47,31 @@ impl SqliteStore {
         conn.execute("PRAGMA busy_timeout=5000", []) // 5 second timeout
             .context("Failed to set busy timeout")?;
 
-        Ok(Self { conn })
+        Ok(Self { conn: RwLock::new(conn) })
     }
 
     pub fn from_connection(conn: Connection) -> Self {
-        Self { conn }
+        Self { conn: RwLock::new(conn) }
     }
 
     pub fn init(&self) -> Result<()> {
-        self.conn
-            .execute_batch(SCHEMA_SQL)
-            .context("Failed to initialize sqlite schema")?;
+        {
+            let conn = self.conn.write().unwrap();
+            conn.execute_batch(SCHEMA_SQL)
+                .context("Failed to initialize sqlite schema")?;
 
-        migrate_add_edges_location_columns(&self.conn)?;
-        migrate_add_edges_confidence_column(&self.conn)?;
-        migrate_add_edges_evidence_count_column(&self.conn)?;
-        migrate_add_edges_resolution_columns(&self.conn)?;
+            migrate_add_edges_location_columns(&conn)?;
+            migrate_add_edges_confidence_column(&conn)?;
+            migrate_add_edges_evidence_count_column(&conn)?;
+            migrate_add_edges_resolution_columns(&conn)?;
+        }
         Ok(())
     }
 
     pub fn clear_all(&self) -> Result<()> {
         self.conn
+            .write()
+            .unwrap()
             .execute_batch(
                 r#"
 DELETE FROM edges;
@@ -79,7 +102,7 @@ DELETE FROM repositories;
         &self,
         file_paths: &[&str],
     ) -> Result<HashMap<String, f32>> {
-        super::queries::affinity::batch_get_affinity_boosts(&self.conn, file_paths)
+        super::queries::affinity::batch_get_affinity_boosts(&self.read(), file_paths)
     }
 }
 

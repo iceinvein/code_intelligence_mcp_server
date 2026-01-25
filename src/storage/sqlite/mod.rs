@@ -12,19 +12,19 @@ pub use crate::indexer::extract::symbol::TodoEntry;
 
 impl SqliteStore {
     pub fn upsert_symbol(&self, symbol: &SymbolRow) -> Result<()> {
-        queries::symbols::upsert_symbol(&self.conn, symbol)
+        queries::symbols::upsert_symbol(&self.read(), symbol)
     }
 
     pub fn delete_symbols_by_file(&self, file_path: &str) -> Result<()> {
-        queries::symbols::delete_symbols_by_file(&self.conn, file_path)
+        queries::symbols::delete_symbols_by_file(&self.write(), file_path)
     }
 
     pub fn count_symbols(&self) -> Result<u64> {
-        queries::symbols::count_symbols(&self.conn)
+        queries::symbols::count_symbols(&self.read())
     }
 
     pub fn most_recent_symbol_update(&self) -> Result<Option<i64>> {
-        queries::symbols::most_recent_symbol_update(&self.conn)
+        queries::symbols::most_recent_symbol_update(&self.read())
     }
 
     pub fn search_symbols_by_exact_name(
@@ -33,7 +33,7 @@ impl SqliteStore {
         file_path: Option<&str>,
         limit: usize,
     ) -> Result<Vec<SymbolRow>> {
-        queries::symbols::search_symbols_by_exact_name(&self.conn, name, file_path, limit)
+        queries::symbols::search_symbols_by_exact_name(&self.read(), name, file_path, limit)
     }
 
     pub fn search_symbols_by_text_substr(
@@ -41,11 +41,11 @@ impl SqliteStore {
         needle: &str,
         limit: usize,
     ) -> Result<Vec<SymbolRow>> {
-        queries::symbols::search_symbols_by_text_substr(&self.conn, needle, limit)
+        queries::symbols::search_symbols_by_text_substr(&self.read(), needle, limit)
     }
 
     pub fn get_symbol_by_id(&self, id: &str) -> Result<Option<SymbolRow>> {
-        queries::symbols::get_symbol_by_id(&self.conn, id)
+        queries::symbols::get_symbol_by_id(&self.read(), id)
     }
 
     pub fn list_symbol_headers_by_file(
@@ -53,15 +53,15 @@ impl SqliteStore {
         file_path: &str,
         exported_only: bool,
     ) -> Result<Vec<SymbolHeaderRow>> {
-        queries::symbols::list_symbol_headers_by_file(&self.conn, file_path, exported_only)
+        queries::symbols::list_symbol_headers_by_file(&self.read(), file_path, exported_only)
     }
 
     pub fn list_symbol_id_name_pairs(&self) -> Result<Vec<(String, String)>> {
-        queries::symbols::list_symbol_id_name_pairs(&self.conn)
+        queries::symbols::list_symbol_id_name_pairs(&self.read())
     }
 
     pub fn list_symbols_by_file(&self, file_path: &str) -> Result<Vec<SymbolRow>> {
-        queries::symbols::list_symbols_by_file(&self.conn, file_path)
+        queries::symbols::list_symbols_by_file(&self.read(), file_path)
     }
 
     pub fn search_symbols_by_name_prefix(
@@ -69,7 +69,7 @@ impl SqliteStore {
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<SymbolRow>> {
-        queries::symbols::search_symbols_by_name_prefix(&self.conn, prefix, limit)
+        queries::symbols::search_symbols_by_name_prefix(&self.read(), prefix, limit)
     }
 
     pub fn search_symbols_by_name_substr(
@@ -77,15 +77,15 @@ impl SqliteStore {
         needle: &str,
         limit: usize,
     ) -> Result<Vec<SymbolRow>> {
-        queries::symbols::search_symbols_by_name_substr(&self.conn, needle, limit)
+        queries::symbols::search_symbols_by_name_substr(&self.read(), needle, limit)
     }
 
     pub fn upsert_edge(&self, edge: &EdgeRow) -> Result<()> {
-        queries::edges::upsert_edge(&self.conn, edge)
+        queries::edges::upsert_edge(&self.write(), edge)
     }
 
     pub fn upsert_edge_evidence(&self, evidence: &EdgeEvidenceRow) -> Result<()> {
-        queries::edges::upsert_edge_evidence(&self.conn, evidence)
+        queries::edges::upsert_edge_evidence(&self.write(), evidence)
     }
 
     pub fn list_edge_evidence(
@@ -96,7 +96,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<EdgeEvidenceRow>> {
         queries::edges::list_edge_evidence(
-            &self.conn,
+            &self.read(),
             from_symbol_id,
             to_symbol_id,
             edge_type,
@@ -105,31 +105,31 @@ impl SqliteStore {
     }
 
     pub fn list_edges_from(&self, from_symbol_id: &str, limit: usize) -> Result<Vec<EdgeRow>> {
-        queries::edges::list_edges_from(&self.conn, from_symbol_id, limit)
+        queries::edges::list_edges_from(&self.read(), from_symbol_id, limit)
     }
 
     pub fn list_edges_to(&self, to_symbol_id: &str, limit: usize) -> Result<Vec<EdgeRow>> {
-        queries::edges::list_edges_to(&self.conn, to_symbol_id, limit)
+        queries::edges::list_edges_to(&self.read(), to_symbol_id, limit)
     }
 
     pub fn count_incoming_edges(&self, to_symbol_id: &str) -> Result<u64> {
-        queries::edges::count_incoming_edges(&self.conn, to_symbol_id)
+        queries::edges::count_incoming_edges(&self.read(), to_symbol_id)
     }
 
     pub fn count_edges(&self) -> Result<u64> {
-        queries::edges::count_edges(&self.conn)
+        queries::edges::count_edges(&self.read())
     }
 
     pub fn list_all_edges(&self) -> Result<Vec<(String, String)>> {
-        queries::edges::list_all_edges(&self.conn)
+        queries::edges::list_all_edges(&self.read())
     }
 
     pub fn list_all_symbol_ids(&self) -> Result<Vec<(String, String)>> {
-        queries::edges::list_all_symbol_ids(&self.conn)
+        queries::edges::list_all_symbol_ids(&self.read())
     }
 
     pub fn get_file_fingerprint(&self, file_path: &str) -> Result<Option<FileFingerprintRow>> {
-        queries::files::get_file_fingerprint(&self.conn, file_path)
+        queries::files::get_file_fingerprint(&self.read(), file_path)
     }
 
     pub fn upsert_file_fingerprint(
@@ -138,39 +138,39 @@ impl SqliteStore {
         mtime_ns: i64,
         size_bytes: u64,
     ) -> Result<()> {
-        queries::files::upsert_file_fingerprint(&self.conn, file_path, mtime_ns, size_bytes)
+        queries::files::upsert_file_fingerprint(&self.write(), file_path, mtime_ns, size_bytes)
     }
 
     pub fn delete_file_fingerprint(&self, file_path: &str) -> Result<()> {
-        queries::files::delete_file_fingerprint(&self.conn, file_path)
+        queries::files::delete_file_fingerprint(&self.write(), file_path)
     }
 
     pub fn list_all_file_fingerprints(&self, limit: usize) -> Result<Vec<FileFingerprintRow>> {
-        queries::files::list_all_file_fingerprints(&self.conn, limit)
+        queries::files::list_all_file_fingerprints(&self.read(), limit)
     }
 
     pub fn insert_index_run(&self, run: &IndexRunRow) -> Result<()> {
-        queries::stats::insert_index_run(&self.conn, run)
+        queries::stats::insert_index_run(&self.write(), run)
     }
 
     pub fn insert_search_run(&self, run: &SearchRunRow) -> Result<()> {
-        queries::stats::insert_search_run(&self.conn, run)
+        queries::stats::insert_search_run(&self.write(), run)
     }
 
     pub fn latest_index_run(&self) -> Result<Option<IndexRunRow>> {
-        queries::stats::latest_index_run(&self.conn)
+        queries::stats::latest_index_run(&self.read())
     }
 
     pub fn latest_search_run(&self) -> Result<Option<SearchRunRow>> {
-        queries::stats::latest_search_run(&self.conn)
+        queries::stats::latest_search_run(&self.read())
     }
 
     pub fn upsert_similarity_cluster(&self, row: &SimilarityClusterRow) -> Result<()> {
-        queries::misc::upsert_similarity_cluster(&self.conn, row)
+        queries::misc::upsert_similarity_cluster(&self.write(), row)
     }
 
     pub fn get_similarity_cluster_key(&self, symbol_id: &str) -> Result<Option<String>> {
-        queries::misc::get_similarity_cluster_key(&self.conn, symbol_id)
+        queries::misc::get_similarity_cluster_key(&self.read(), symbol_id)
     }
 
     pub fn list_symbols_in_cluster(
@@ -178,15 +178,15 @@ impl SqliteStore {
         cluster_key: &str,
         limit: usize,
     ) -> Result<Vec<(String, String)>> {
-        queries::misc::list_symbols_in_cluster(&self.conn, cluster_key, limit)
+        queries::misc::list_symbols_in_cluster(&self.read(), cluster_key, limit)
     }
 
     pub fn delete_usage_examples_by_file(&self, file_path: &str) -> Result<()> {
-        queries::misc::delete_usage_examples_by_file(&self.conn, file_path)
+        queries::misc::delete_usage_examples_by_file(&self.write(), file_path)
     }
 
     pub fn upsert_usage_example(&self, example: &UsageExampleRow) -> Result<()> {
-        queries::misc::upsert_usage_example(&self.conn, example)
+        queries::misc::upsert_usage_example(&self.write(), example)
     }
 
     pub fn list_usage_examples_for_symbol(
@@ -194,22 +194,22 @@ impl SqliteStore {
         to_symbol_id: &str,
         limit: usize,
     ) -> Result<Vec<UsageExampleRow>> {
-        queries::misc::list_usage_examples_for_symbol(&self.conn, to_symbol_id, limit)
+        queries::misc::list_usage_examples_for_symbol(&self.read(), to_symbol_id, limit)
     }
 
     pub fn upsert_symbol_metrics(&self, metrics: &SymbolMetricsRow) -> Result<()> {
-        queries::metrics::upsert_symbol_metrics(&self.conn, metrics)
+        queries::metrics::upsert_symbol_metrics(&self.write(), metrics)
     }
 
     pub fn batch_get_symbol_metrics(
         &self,
         symbol_ids: &[String],
     ) -> Result<std::collections::HashMap<String, f64>> {
-        queries::metrics::batch_get_symbol_metrics(&self.conn, symbol_ids)
+        queries::metrics::batch_get_symbol_metrics(&self.read(), symbol_ids)
     }
 
     pub fn get_symbol_metrics(&self, symbol_id: &str) -> Result<Option<SymbolMetricsRow>> {
-        queries::metrics::get_symbol_metrics(&self.conn, symbol_id)
+        queries::metrics::get_symbol_metrics(&self.read(), symbol_id)
     }
 
     pub fn insert_query_selection(
@@ -220,7 +220,7 @@ impl SqliteStore {
         position: u32,
     ) -> Result<i64> {
         queries::selections::insert_query_selection(
-            &self.conn,
+            &self.write(),
             query_text,
             query_normalized,
             selected_symbol_id,
@@ -232,7 +232,7 @@ impl SqliteStore {
         &self,
         pairs: &[(String, String)],
     ) -> Result<std::collections::HashMap<String, f32>> {
-        queries::selections::batch_get_selection_boosts(&self.conn, pairs)
+        queries::selections::batch_get_selection_boosts(&self.read(), pairs)
     }
 
     pub fn search_todos(
@@ -242,39 +242,39 @@ impl SqliteStore {
         kind: Option<&str>,
         limit: usize,
     ) -> Result<Vec<schema::TodoRow>> {
-        queries::todos::search_todos(&self.conn, keyword, file_path, kind, limit)
+        queries::todos::search_todos(&self.read(), keyword, file_path, kind, limit)
     }
 
     pub fn batch_upsert_todos(&self, todos: &[TodoEntry]) -> Result<()> {
-        queries::todos::batch_upsert_todos(&self.conn, todos)
+        queries::todos::batch_upsert_todos(&self.write(), todos)
     }
 
     pub fn delete_todos_by_file(&self, file_path: &str) -> Result<()> {
-        queries::todos::delete_todos_by_file(&self.conn, file_path)
+        queries::todos::delete_todos_by_file(&self.write(), file_path)
     }
 
     pub fn batch_upsert_docstrings(&self, entries: &[crate::indexer::extract::symbol::JSDocEntry]) -> Result<()> {
-        queries::docstrings::batch_upsert_docstrings(&self.conn, entries)
+        queries::docstrings::batch_upsert_docstrings(&self.write(), entries)
     }
 
     pub fn has_docstring(&self, symbol_id: &str) -> Result<bool> {
-        queries::docstrings::has_docstring(&self.conn, symbol_id)
+        queries::docstrings::has_docstring(&self.read(), symbol_id)
     }
 
     pub fn get_docstring_by_symbol(&self, symbol_id: &str) -> Result<Option<schema::DocstringRow>> {
-        queries::docstrings::get_docstring_by_symbol(&self.conn, symbol_id)
+        queries::docstrings::get_docstring_by_symbol(&self.read(), symbol_id)
     }
 
     pub fn delete_docstrings_by_file(&self, file_path: &str) -> Result<()> {
-        queries::docstrings::delete_docstrings_by_file(&self.conn, file_path)
+        queries::docstrings::delete_docstrings_by_file(&self.write(), file_path)
     }
 
     pub fn batch_upsert_decorators(&self, decorators: &[crate::storage::sqlite::schema::DecoratorRow]) -> Result<()> {
-        queries::decorators::batch_upsert_decorators(&self.conn, decorators)
+        queries::decorators::batch_upsert_decorators(&self.write(), decorators)
     }
 
     pub fn delete_decorators_by_file(&self, file_path: &str) -> Result<()> {
-        queries::decorators::delete_decorators_by_file(&self.conn, file_path)
+        queries::decorators::delete_decorators_by_file(&self.write(), file_path)
     }
 
     pub fn search_decorators_by_name(
@@ -284,7 +284,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<DecoratorRow>> {
         queries::decorators::search_decorators_by_name_filtered(
-            &self.conn,
+            &self.read(),
             name,
             decorator_type,
             limit,
@@ -296,26 +296,26 @@ impl SqliteStore {
     }
 
     pub fn create_test_links_for_file(&self, test_file_path: &str) -> Result<()> {
-        queries::tests::create_test_links_for_file(&self.conn, test_file_path)
+        queries::tests::create_test_links_for_file(&self.write(), test_file_path)
     }
 
     pub fn delete_test_links_for_file(&self, file_path: &str) -> Result<()> {
-        queries::tests::delete_test_links_for_file(&self.conn, file_path)
+        queries::tests::delete_test_links_for_file(&self.write(), file_path)
     }
 
     pub fn get_tests_for_source(&self, source_path: &str) -> Result<Vec<String>> {
-        queries::tests::get_tests_for_source(&self.conn, source_path)
+        queries::tests::get_tests_for_source(&self.read(), source_path)
     }
 
     pub fn get_symbols_with_tests(
         &self,
         file_path: &str,
     ) -> Result<Vec<(String, String)>> {
-        queries::tests::get_symbols_with_tests(&self.conn, file_path)
+        queries::tests::get_symbols_with_tests(&self.read(), file_path)
     }
 
     pub fn get_cached_embedding(&self, cache_key: &str) -> Result<Option<Vec<u8>>> {
-        queries::cache::get_cached_embedding(&self.conn, cache_key)
+        queries::cache::get_cached_embedding(&self.read(), cache_key)
     }
 
     pub fn put_cached_embedding(
@@ -327,7 +327,7 @@ impl SqliteStore {
         vector_dim: usize,
     ) -> Result<()> {
         queries::cache::put_cached_embedding(
-            &self.conn,
+            &self.write(),
             cache_key,
             model_name,
             text_hash,
@@ -337,6 +337,6 @@ impl SqliteStore {
     }
 
     pub fn cleanup_cache(&self, max_size_bytes: i64) -> Result<i64> {
-        queries::cache::cleanup_cache(&self.conn, max_size_bytes)
+        queries::cache::cleanup_cache(&self.write(), max_size_bytes)
     }
 }

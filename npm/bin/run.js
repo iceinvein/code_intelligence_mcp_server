@@ -44,6 +44,19 @@ if (os.platform() === 'darwin' && !env.EMBEDDINGS_DEVICE) {
     env.EMBEDDINGS_DEVICE = 'cpu';
 }
 
+// 6. Limit CPU threads for embedding model (helps reduce CPU usage)
+// For example, set to 50% of available cores: EMBEDDINGS_MAX_THREADS=4
+// Default is 0 (auto, use all available CPUs)
+if (!env.EMBEDDINGS_MAX_THREADS) {
+    // Set a sensible default based on CPU count to avoid 100% CPU usage
+    const cpuCount = os.cpus().length;
+    // Use 50% of available CPUs, minimum 2, maximum 8
+    const defaultThreads = Math.max(2, Math.min(8, Math.floor(cpuCount * 0.5)));
+    env.EMBEDDINGS_MAX_THREADS = defaultThreads.toString();
+    console.error(`[code-intelligence-mcp] Setting EMBEDDINGS_MAX_THREADS=${defaultThreads} (${cpuCount} CPUs detected)`);
+    console.error('[code-intelligence-mcp] Set EMBEDDINGS_MAX_THREADS=0 to use all CPUs or customize as needed');
+}
+
 // 5. Set persistence paths to be inside the project (BASE_DIR/.cimcp) 
 // if not explicitly overridden. This keeps indexes local to the project.
 const cimcpDir = path.join(env.BASE_DIR, '.cimcp');

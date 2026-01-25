@@ -371,6 +371,7 @@ mod tests {
             // Performance config (FNDN-06)
             parallel_workers: 4,
             embedding_cache_enabled: true,
+            embedding_max_threads: 0,
             // PageRank config (FNDN-07)
             pagerank_damping: 0.85,
             pagerank_iterations: 20,

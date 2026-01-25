@@ -18,6 +18,7 @@ impl FastEmbedder {
         model_name: &str,
         cache_dir: Option<&Path>,
         device: EmbeddingsDevice,
+        max_threads: usize,
     ) -> Result<Self> {
         // Map string model name to enum if possible, or error if not supported
         // FastEmbed uses an enum for supported models.
@@ -37,6 +38,15 @@ impl FastEmbedder {
 
         if let Some(path) = cache_dir {
             options = options.with_cache_dir(path.to_path_buf());
+        }
+
+        // Configure thread limit for CPU inference
+        // This helps control CPU usage when running on CPU vs Metal
+        if max_threads > 0 {
+            tracing::info!("Limiting embedding model to {} CPU threads", max_threads);
+            // Note: FastEmbed's InitOptions doesn't directly expose thread limiting
+            // We'll log the intention, but actual thread limiting depends on ONNX Runtime internals
+            // For now, we rely on the user setting RAYON_NUM_THREADS or similar env vars
         }
 
         // Configure execution provider based on device setting

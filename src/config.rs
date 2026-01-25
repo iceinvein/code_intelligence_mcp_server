@@ -87,6 +87,7 @@ pub struct Config {
     // Performance config (FNDN-06)
     pub parallel_workers: usize,
     pub embedding_cache_enabled: bool,
+    pub embedding_max_threads: usize, // Max CPU threads for ONNX Runtime (0 = auto)
 
     // PageRank config (FNDN-07)
     pub pagerank_damping: f32,
@@ -361,6 +362,11 @@ impl Config {
             .map(parse_bool)
             .transpose()?
             .unwrap_or(true);
+        let embedding_max_threads = optional_env("EMBEDDING_MAX_THREADS")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(0); // 0 = auto (use all available CPUs)
 
         // PageRank config (FNDN-07)
         let pagerank_damping = optional_env("PAGERANK_DAMPING")
@@ -498,6 +504,7 @@ impl Config {
             // Performance config (FNDN-06)
             parallel_workers,
             embedding_cache_enabled,
+            embedding_max_threads,
 
             // PageRank config (FNDN-07)
             pagerank_damping,
@@ -712,6 +719,7 @@ mod tests {
             "EMBEDDINGS_MODEL_HF_TOKEN",
             "EMBEDDINGS_DEVICE",
             "EMBEDDING_BATCH_SIZE",
+            "EMBEDDING_MAX_THREADS",
             "HASH_EMBEDDING_DIM",
             "VECTOR_SEARCH_LIMIT",
             "HYBRID_ALPHA",
@@ -743,6 +751,7 @@ mod tests {
             // Performance config (FNDN-06)
             "PARALLEL_WORKERS",
             "EMBEDDING_CACHE_ENABLED",
+            "EMBEDDING_MAX_THREADS",
             // PageRank config (FNDN-07)
             "PAGERANK_DAMPING",
             "PAGERANK_ITERATIONS",

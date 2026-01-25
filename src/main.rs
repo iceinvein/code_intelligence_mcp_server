@@ -90,6 +90,7 @@ async fn run() -> SdkResult<()> {
         config.embeddings_model_dir.as_deref(),
         config.embeddings_model_repo.as_deref(),
         config.embeddings_device,
+        config.embedding_max_threads,
         config.hash_embedding_dim,
     )
     .map_err(|err| McpSdkError::Internal {

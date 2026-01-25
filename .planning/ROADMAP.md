@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1 Ultimate Context Engine** — Phases 1-9 (shipped 2026-01-25)
-- 🚧 **v1.1 Integration Polish** — Phases 10-11 (gap closure, planned)
+- ✅ **v1.1 Integration Polish** — Phases 10-11 (shipped 2026-01-25)
 - 📋 **v2.0 Future Enhancements** — TBD (planned)
 
 ## Phases
@@ -27,12 +27,14 @@
 
 </details>
 
-### 🚧 v1.1 Integration Polish (In Progress)
+### ✅ v1.1 Integration Polish (Complete)
 
 - [x] Phase 10: Query Understanding Integration (1/1 plans) — completed 2026-01-25
   - [x] 10-01-PLAN.md — Wire query expansion and decomposition into search flow
-- [ ] Phase 11: Context Assembly Enhancement (1/1 plans)
-  - [ ] 11-01-PLAN.md — Wire smart truncation into search flow
+- [x] Phase 11: Context Assembly Enhancement (1/1 plans) — completed 2026-01-25
+  - [x] 11-01-PLAN.md — Wire smart truncation into search flow
+
+**Total:** 2/2 plans complete (100%)
 
 ## Progress
 
@@ -48,10 +50,10 @@
 | 8. Performance & Scale | v1 | 3/3 | Complete | 2026-01-25 |
 | 9. Multi-Repo Support | v1 | 7/7 | Complete | 2026-01-25 |
 | 10. Query Understanding Integration | v1.1 | 1/1 | Complete | 2026-01-25 |
-| 11. Context Assembly Enhancement | v1.1 | 0/1 | Pending | - |
+| 11. Context Assembly Enhancement | v1.1 | 1/1 | Complete | 2026-01-25 |
 
-**Total:** 41/42 plans complete (98%)
+**Total:** 42/42 plans complete (100%)
 
 ---
 *Roadmap created: 2026-01-22*
-*Last updated: 2026-01-25 (Phase 11 planned)*
+*Last updated: 2026-01-25 (v1.1 Integration Polish complete)*

@@ -62,15 +62,33 @@ if (!env.DB_PATH) env.DB_PATH = path.join(cimcpDir, 'code-intelligence.db');
 if (!env.VECTOR_DB_PATH) env.VECTOR_DB_PATH = path.join(cimcpDir, 'vectors');
 if (!env.TANTIVY_INDEX_PATH) env.TANTIVY_INDEX_PATH = path.join(cimcpDir, 'tantivy-index');
 
-// Also set model dir to local project cache if not set globally
+// Also set model dir - use GLOBAL cache to avoid downloading models for every project
+// Models are shared across projects, but indexes remain local
 if (!env.EMBEDDINGS_MODEL_DIR) {
-    env.EMBEDDINGS_MODEL_DIR = path.join(cimcpDir, 'embeddings-model');
-    // Ensure model dir exists, otherwise the Rust server might complain
+    // Use platform-appropriate global cache location
+    if (os.platform() === 'darwin') {
+        // macOS: ~/Library/Application Support/cimcp/embeddings-cache
+        env.EMBEDDINGS_MODEL_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'cimcp', 'embeddings-cache');
+    } else if (os.platform() === 'linux') {
+        // Linux: ~/.local/share/cimcp/embeddings-cache
+        const xdgDataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+        env.EMBEDDINGS_MODEL_DIR = path.join(xdgDataHome, 'cimcp', 'embeddings-cache');
+    } else if (os.platform() === 'win32') {
+        // Windows: %APPDATA%/cimcp/embeddings-cache
+        env.EMBEDDINGS_MODEL_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'cimcp', 'embeddings-cache');
+    } else {
+        // Fallback to ~/.cimcp/embeddings-cache
+        env.EMBEDDINGS_MODEL_DIR = path.join(os.homedir(), '.cimcp', 'embeddings-cache');
+    }
+
+    // Ensure global model cache directory exists
     if (!fs.existsSync(env.EMBEDDINGS_MODEL_DIR)) {
         try {
             fs.mkdirSync(env.EMBEDDINGS_MODEL_DIR, { recursive: true });
         } catch (e) {
-             console.error(`Failed to create embeddings directory at ${env.EMBEDDINGS_MODEL_DIR}:`, e.message);
+            console.error(`Failed to create global embeddings cache at ${env.EMBEDDINGS_MODEL_DIR}:`, e.message);
+            console.warn('Falling back to local project cache for this session');
+            env.EMBEDDINGS_MODEL_DIR = path.join(cimcpDir, 'embeddings-model');
         }
     }
 }

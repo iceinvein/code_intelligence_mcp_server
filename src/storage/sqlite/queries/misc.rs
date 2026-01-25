@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::storage::sqlite::schema::{SimilarityClusterRow, UsageExampleRow};
+use crate::storage::sqlite::schema::{SimilarityClusterRow, SymbolRow, UsageExampleRow};
 
 pub fn upsert_similarity_cluster(conn: &Connection, row: &SimilarityClusterRow) -> Result<()> {
     conn.execute(
@@ -114,6 +114,48 @@ LIMIT ?2
                 .get::<_, Option<i64>>(4)?
                 .and_then(|v| u32::try_from(v).ok()),
             snippet: row.get(5)?,
+        });
+    }
+    Ok(out)
+}
+
+/// List symbols that don't have similarity clusters (i.e., no embeddings generated yet)
+///
+/// This is used to find symbols that need embeddings after parallel indexing.
+pub fn list_symbols_without_similarity_clusters(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<SymbolRow>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT
+  s.id, s.file_path, s.language, s.kind, s.name, s.exported,
+  s.start_byte, s.end_byte, s.start_line, s.end_line, s.text
+FROM symbols s
+LEFT JOIN similarity_clusters c ON s.id = c.symbol_id
+WHERE c.symbol_id IS NULL
+ORDER BY s.created_at DESC
+LIMIT ?1
+"#,
+        )
+        .context("Failed to prepare list_symbols_without_similarity_clusters")?;
+
+    let mut rows = stmt.query(params![limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(SymbolRow {
+            id: row.get(0)?,
+            file_path: row.get(1)?,
+            language: row.get(2)?,
+            kind: row.get(3)?,
+            name: row.get(4)?,
+            exported: row.get::<_, i64>(5)? != 0,
+            start_byte: row.get(6)?,
+            end_byte: row.get(7)?,
+            start_line: row.get(8)?,
+            end_line: row.get(9)?,
+            text: row.get(10)?,
         });
     }
     Ok(out)

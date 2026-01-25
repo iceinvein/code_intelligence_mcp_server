@@ -35,12 +35,22 @@ use std::{
     },
 };
 
+/// Result type that distinguishes between "unchanged" and "processed"
+#[derive(Debug)]
+pub enum IndexFileResult {
+    /// File was unchanged, no indexing needed
+    Unchanged,
+    /// File was processed (may have 0 or more symbols)
+    Processed { symbols_count: usize },
+}
+
 /// Result of indexing a single file
 #[derive(Debug)]
 pub struct FileIndexResult {
     pub file_path: PathBuf,
     pub success: bool,
     pub symbols_count: usize,
+    pub unchanged: bool,
     pub error: Option<String>,
 }
 
@@ -67,11 +77,21 @@ fn index_file_with_retry(
 
     while attempt <= max_retries {
         match index_file_single(file, config, db_path, tantivy, vectors) {
-            Ok(count) => {
+            Ok(IndexFileResult::Unchanged) => {
                 return FileIndexResult {
                     file_path: file.to_path_buf(),
                     success: true,
-                    symbols_count: count,
+                    symbols_count: 0,
+                    unchanged: true,
+                    error: None,
+                };
+            }
+            Ok(IndexFileResult::Processed { symbols_count }) => {
+                return FileIndexResult {
+                    file_path: file.to_path_buf(),
+                    success: true,
+                    symbols_count,
+                    unchanged: false,
                     error: None,
                 };
             }
@@ -96,6 +116,7 @@ fn index_file_with_retry(
         file_path: file.to_path_buf(),
         success: false,
         symbols_count: 0,
+        unchanged: false,
         error: last_error,
     }
 }
@@ -113,7 +134,7 @@ fn index_file_single(
     db_path: &Path,
     tantivy: &TantivyIndex,
     _vectors: &LanceVectorTable,
-) -> Result<usize> {
+) -> Result<IndexFileResult> {
     let rel = file_key(config, file);
 
     let language_id = language_id_for_path(file)
@@ -156,7 +177,7 @@ fn index_file_single(
     });
 
     if is_unchanged {
-        return Ok(0); // File unchanged, skip
+        return Ok(IndexFileResult::Unchanged); // File unchanged, skip
     }
 
     let source = fs::read_to_string(file)
@@ -241,7 +262,7 @@ fn index_file_single(
 
     if symbol_rows.is_empty() {
         sqlite.upsert_file_fingerprint(&rel, fp.mtime_ns, fp.size_bytes)?;
-        return Ok(0);
+        return Ok(IndexFileResult::Processed { symbols_count: 0 });
     }
 
     // Update Tantivy
@@ -335,7 +356,9 @@ fn index_file_single(
 
     sqlite.upsert_file_fingerprint(&rel, fp.mtime_ns, fp.size_bytes)?;
 
-    Ok(symbol_rows.len())
+    Ok(IndexFileResult::Processed {
+        symbols_count: symbol_rows.len(),
+    })
 }
 
 /// Index multiple files in parallel using Rayon
@@ -385,7 +408,11 @@ pub fn index_files_parallel(
 
             let mut stats_guard = stats.lock().unwrap();
             if result.success {
-                stats_guard.files_indexed += 1;
+                if result.unchanged {
+                    stats_guard.files_unchanged += 1;
+                } else {
+                    stats_guard.files_indexed += 1;
+                }
                 stats_guard.symbols_indexed += result.symbols_count;
             } else {
                 stats_guard.files_skipped += 1;

@@ -781,11 +781,87 @@ impl IndexPipeline {
         let vectors = self.vectors.clone();
 
         // Run parallel indexing in blocking task
-        tokio::task::spawn_blocking(move || {
+        let stats = tokio::task::spawn_blocking(move || {
             index_files_parallel(config, db_path, tantivy, vectors, files)
         })
         .await
-        .context("Join error in parallel indexing")?
+        .context("Join error in parallel indexing")??;
+
+        // Post-processing: Generate embeddings and create similarity clusters
+        // This is required because parallel indexing skips embedding generation
+        if stats.files_indexed > 0 {
+            self.generate_embeddings_for_parallel_indexed_files().await?;
+        }
+
+        Ok(stats)
+    }
+
+    /// Generate embeddings and similarity clusters for symbols that don't have them yet
+    ///
+    /// This is called after parallel indexing to populate:
+    /// - LanceDB vectors
+    /// - similarity_clusters table
+    async fn generate_embeddings_for_parallel_indexed_files(&self) -> Result<()> {
+        use crate::storage::sqlite::schema::SymbolRow;
+
+        let sqlite = SqliteStore::open(&self.db_path)?;
+        sqlite.init()?;
+
+        // Get symbols that don't have similarity clusters (i.e., no embeddings generated yet)
+        let symbols_need_embeddings = sqlite.list_symbols_without_similarity_clusters(1000)?;
+
+        if symbols_need_embeddings.is_empty() {
+            tracing::debug!("No symbols need embeddings after parallel indexing");
+            return Ok(());
+        }
+
+        tracing::info!(
+            count = symbols_need_embeddings.len(),
+            "Generating embeddings for symbols after parallel indexing"
+        );
+
+        let mut symbol_rows: Vec<SymbolRow> = Vec::new();
+        for sym in symbols_need_embeddings {
+            symbol_rows.push(SymbolRow {
+                id: sym.id,
+                file_path: sym.file_path,
+                language: sym.language,
+                kind: sym.kind,
+                name: sym.name,
+                exported: sym.exported,
+                start_byte: sym.start_byte,
+                end_byte: sym.end_byte,
+                start_line: sym.start_line,
+                end_line: sym.end_line,
+                text: sym.text,
+            });
+        }
+
+        // Generate embeddings
+        let vectors = self
+            .embed_and_build_vector_records(&symbol_rows)
+            .await
+            .context("Failed to embed symbols for parallel indexing")?;
+
+        // Add vectors to LanceDB
+        self.vectors.add_records(&vectors).await.context(
+            "Failed to add vector records for parallel indexing",
+        )?;
+
+        // Create similarity clusters
+        for rec in &vectors {
+            let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
+                symbol_id: rec.id.clone(),
+                cluster_key: cluster_key_from_vector(&rec.vector),
+            });
+        }
+
+        tracing::info!(
+            count = vectors.len(),
+            "Generated embeddings and similarity clusters after parallel indexing"
+        );
+
+        Ok(())
     }
 
     /// Index files sequentially (original logic with embeddings)

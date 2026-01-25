@@ -57,8 +57,8 @@ const VENDOR_DIRS: &[&str] = &[
 /// # Examples
 ///
 /// ```no_run
-/// use crate::config::Config;
-/// use crate::indexer::package::detector::discover_manifests;
+/// use code_intelligence_mcp_server::config::Config;
+/// use code_intelligence_mcp_server::indexer::package::detector::discover_manifests;
 /// use std::path::Path;
 ///
 /// fn main() -> anyhow::Result<()> {

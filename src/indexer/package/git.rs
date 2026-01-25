@@ -74,7 +74,7 @@ impl RepositoryInfo {
 /// ```no_run
 /// use anyhow::Result;
 /// use std::path::PathBuf;
-/// use crate::indexer::package::git::discover_git_roots;
+/// use code_intelligence_mcp_server::indexer::package::git::discover_git_roots;
 ///
 /// fn main() -> Result<()> {
 ///     let manifests = vec![

@@ -16,5 +16,3 @@ pub use score::{
     rank_hits_with_signals,
 };
 
-#[cfg(test)]
-pub use diversify::is_definition_kind;

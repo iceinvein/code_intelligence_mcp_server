@@ -862,7 +862,7 @@ async fn test_find_similar_code_by_symbol_name() {
             .get("results")
             .and_then(|v| v.as_array())
             .map_or(EMPTY, |v| v);
-        assert!(results.len() >= 0);
+        assert!(!results.is_empty());
     }
 }
 

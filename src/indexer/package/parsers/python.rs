@@ -23,7 +23,7 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```no_run
-/// use crate::indexer::package::parsers::python::parse_pyproject_toml;
+/// use code_intelligence_mcp_server::indexer::package::parsers::python::parse_pyproject_toml;
 /// use std::path::Path;
 ///
 /// let manifest = Path::new("/path/to/pyproject.toml");

@@ -242,8 +242,8 @@ impl fmt::Display for VcsType {
 /// # Examples
 ///
 /// ```no_run
-/// use crate::config::Config;
-/// use crate::indexer::package::discover_packages;
+/// use code_intelligence_mcp_server::config::Config;
+/// use code_intelligence_mcp_server::indexer::package::discover_packages;
 /// use std::path::PathBuf;
 ///
 /// # fn main() -> anyhow::Result<()> {
@@ -314,8 +314,8 @@ pub fn discover_packages(
 /// # Examples
 ///
 /// ```no_run
-/// use crate::indexer::package::{discover_packages, detect_repositories};
-/// use crate::config::Config;
+/// use code_intelligence_mcp_server::indexer::package::{discover_packages, detect_repositories};
+/// use code_intelligence_mcp_server::config::Config;
 ///
 /// # fn main() -> anyhow::Result<()> {
 /// let config = Config::from_env()?;

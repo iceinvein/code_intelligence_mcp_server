@@ -20,7 +20,7 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```no_run
-/// use crate::indexer::package::parsers::cargo::parse_cargo_toml;
+/// use code_intelligence_mcp_server::indexer::package::parsers::cargo::parse_cargo_toml;
 /// use std::path::Path;
 ///
 /// let manifest = Path::new("/path/to/Cargo.toml");

@@ -425,4 +425,18 @@ CREATE TABLE IF NOT EXISTS decorators (
 );
 CREATE INDEX IF NOT EXISTS idx_decorators_name ON decorators(name);
 CREATE INDEX IF NOT EXISTS idx_decorators_type ON decorators(decorator_type);
+
+-- Embedding cache for avoiding recomputation (PERF-02)
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    cache_key TEXT PRIMARY KEY NOT NULL,
+    model_name TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    vector_dim INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_accessed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    access_count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_cache_model ON embedding_cache(model_name);
+CREATE INDEX IF NOT EXISTS idx_embedding_cache_accessed ON embedding_cache(last_accessed_at);
 "#;

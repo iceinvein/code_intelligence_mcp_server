@@ -3,6 +3,10 @@ use prometheus::{
 };
 use std::sync::Arc;
 
+pub mod server;
+
+pub use server::{spawn_metrics_server, MetricsState};
+
 pub struct MetricsRegistry {
     pub registry: Registry,
 

@@ -15,6 +15,7 @@ use code_intelligence_mcp_server::config::Config;
 use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
+use code_intelligence_mcp_server::metrics::{MetricsRegistry, spawn_metrics_server};
 use code_intelligence_mcp_server::reranker::create_reranker;
 use code_intelligence_mcp_server::retrieval::hyde::HypotheticalCodeGenerator;
 use code_intelligence_mcp_server::retrieval::Retriever;
@@ -129,6 +130,26 @@ async fn run() -> SdkResult<()> {
     let tantivy = Arc::new(tantivy);
     let vectors = Arc::new(vectors);
 
+    // Create metrics registry
+    let metrics = Arc::new(
+        MetricsRegistry::new()
+            .map_err(|err| McpSdkError::Internal {
+                description: format!("Failed to create metrics registry: {}", err),
+            })?
+    );
+
+    // Spawn metrics server if enabled
+    let metrics_handle = if config.metrics_enabled {
+        let handle = spawn_metrics_server(Arc::clone(&metrics), config.metrics_port)
+            .await
+            .map_err(|err| McpSdkError::Internal {
+                description: format!("Failed to spawn metrics server: {}", err),
+            })?;
+        Some(handle)
+    } else {
+        None
+    };
+
     // Create reranker if model path is configured
     let reranker = create_reranker(
         config.reranker_model_path.as_deref(),
@@ -155,6 +176,7 @@ async fn run() -> SdkResult<()> {
         tantivy.clone(),
         vectors.clone(),
         embedder.clone(),
+        Arc::clone(&metrics),
     );
     let retriever = Retriever::new(
         config.clone(),
@@ -163,6 +185,7 @@ async fn run() -> SdkResult<()> {
         embedder.clone(),
         reranker,
         hyde_generator,
+        Arc::clone(&metrics),
     );
 
     let state = Arc::new(AppState {

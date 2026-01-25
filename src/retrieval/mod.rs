@@ -9,6 +9,7 @@ mod ranking;
 use crate::{
     config::Config,
     embeddings::Embedder,
+    metrics::MetricsRegistry,
     retrieval::assembler::{ContextAssembler, ContextItem},
     reranker::Reranker,
     storage::{
@@ -80,6 +81,7 @@ pub struct Retriever {
     hyde_generator: Option<HypotheticalCodeGenerator>,
     cache: Arc<Mutex<RetrieverCaches>>,
     cache_config_key: String,
+    metrics: Arc<MetricsRegistry>,
 }
 
 impl Retriever {
@@ -90,6 +92,7 @@ impl Retriever {
         embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
         reranker: Option<Arc<dyn Reranker>>,
         hyde_generator: Option<HypotheticalCodeGenerator>,
+        metrics: Arc<MetricsRegistry>,
     ) -> Self {
         let cache = RetrieverCaches::new();
         let cache_config_key = format!(
@@ -115,6 +118,7 @@ impl Retriever {
             hyde_generator,
             cache: Arc::new(Mutex::new(cache)),
             cache_config_key,
+            metrics,
         }
     }
 
@@ -124,6 +128,8 @@ impl Retriever {
         limit: usize,
         exported_only: bool,
     ) -> Result<SearchResponse> {
+        let _timer = self.metrics.search_duration.start_timer();
+
         let started_at_unix_s = unix_now_s();
         let started = Instant::now();
 
@@ -520,6 +526,9 @@ impl Retriever {
         };
         let _ = sqlite.insert_search_run(&run);
 
+        // Record Prometheus metrics
+        self.metrics.search_results_total.inc_by(hits.len() as f64);
+
         let resp = SearchResponse {
             query: query.to_string(),
             limit,
@@ -529,6 +538,8 @@ impl Retriever {
             hit_signals,
         };
         self.cache_insert_response(cache_key, resp.clone());
+
+        // Note: timer observes duration when dropped
         Ok(resp)
     }
 

@@ -20,7 +20,7 @@ pub use parsers::parse_manifest;
 use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{collections::HashMap, path::Path, path::PathBuf};
 
 /// Package ecosystem type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Copy, Hash)]
@@ -207,63 +207,159 @@ pub enum VcsType {
 /// This function walks the directory tree, finds manifest files,
 /// and returns package information for each one.
 ///
-/// Note: This is a stub implementation that will be completed in 09-01D
-/// after parsers and git detection modules are implemented.
-pub fn discover_packages(config: &Config) -> anyhow::Result<Vec<PackageInfo>> {
+/// # Arguments
+///
+/// * `config` - Configuration for the workspace
+/// * `repo_roots` - List of repository root directories to scan
+///
+/// # Returns
+///
+/// Vector of discovered packages with metadata extracted from manifests
+///
+/// # Examples
+///
+/// ```no_run
+/// use crate::config::Config;
+/// use crate::indexer::package::discover_packages;
+/// use std::path::PathBuf;
+///
+/// # fn main() -> anyhow::Result<()> {
+/// let config = Config::from_env()?;
+/// let repo_roots = vec![config.base_dir.clone()];
+/// let packages = discover_packages(&config, &repo_roots)?;
+/// # Ok(())
+/// # }
+/// ```
+pub fn discover_packages(config: &Config, repo_roots: &[PathBuf]) -> anyhow::Result<Vec<PackageInfo>> {
     let mut packages = Vec::new();
 
-    // Discover all manifest files
-    let manifest_paths = discover_manifests(config, &config.base_dir)?;
-
-    // TODO: In 09-01D, this will:
-    // 1. Parse each manifest to extract name and version
-    // 2. Detect git roots for repository grouping
-    // 3. Associate packages with repositories
-    // 4. Return complete PackageInfo structs
-
-    for manifest_path in manifest_paths {
-        let package_type = PackageType::from_filename(
-            manifest_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(""),
-        );
-
-        let root_path = manifest_path
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        packages.push(PackageInfo::new(
-            manifest_path.to_string_lossy().to_string(),
-            root_path,
-            package_type,
-            None, // name - will be populated by parser
-            None, // version - will be populated by parser
-        ));
+    // Discover all manifest files from all repo roots
+    let mut manifest_paths = Vec::new();
+    for root in repo_roots {
+        match discover_manifests(config, root) {
+            Ok(mut manifests) => manifest_paths.append(&mut manifests),
+            Err(e) => {
+                tracing::debug!(
+                    root = %root.display(),
+                    error = %e,
+                    "Failed to discover manifests in root"
+                );
+                // Continue with other roots
+            }
+        }
     }
+
+    // Parse each manifest to extract package metadata
+    for manifest_path in manifest_paths {
+        match parse_manifest(&manifest_path) {
+            Ok(pkg) => packages.push(pkg),
+            Err(e) => {
+                tracing::debug!(
+                    manifest = %manifest_path.display(),
+                    error = %e,
+                    "Failed to parse manifest"
+                );
+                // Continue with other manifests
+            }
+        }
+    }
+
+    tracing::debug!(
+        count = packages.len(),
+        "Discovered packages"
+    );
 
     Ok(packages)
 }
 
 /// Detect all repositories in the workspace.
 ///
-/// This function discovers git repositories and returns repository information.
+/// This function discovers git repositories from package manifest locations
+/// and returns repository information. It also assigns each package to its
+/// containing repository.
 ///
-/// Note: This is a stub implementation that will be completed in 09-01C
-/// after git detection module is implemented.
-pub fn detect_repositories(config: &Config) -> anyhow::Result<Vec<RepositoryInfo>> {
-    // TODO: In 09-01C, this will:
-    // 1. Use git2::Repository::discover() to find git roots
-    // 2. Extract remote URLs from git config
-    // 3. Return RepositoryInfo for each unique git root
+/// # Arguments
+///
+/// * `packages` - Slice of packages to detect repositories for
+///
+/// # Returns
+///
+/// Vector of discovered repositories. Each package in the input slice
+/// will have its `repository_id` field updated to point to the containing
+/// repository.
+///
+/// # Examples
+///
+/// ```no_run
+/// use crate::indexer::package::{discover_packages, detect_repositories};
+/// use crate::config::Config;
+///
+/// # fn main() -> anyhow::Result<()> {
+/// let config = Config::from_env()?;
+/// let mut packages = discover_packages(&config, &config.repo_roots)?;
+/// let repositories = detect_repositories(&mut packages)?;
+/// # Ok(())
+/// # }
+/// ```
+pub fn detect_repositories(packages: &mut [PackageInfo]) -> anyhow::Result<Vec<RepositoryInfo>> {
+    // Extract manifest paths from packages for git root detection
+    let manifest_paths: Vec<PathBuf> = packages
+        .iter()
+        .map(|p| PathBuf::from(&p.manifest_path))
+        .collect();
 
-    // For now, return a placeholder repository for base_dir
-    Ok(vec![RepositoryInfo::new(
-        config.base_dir.to_string_lossy().to_string(),
-        VcsType::None,
-        None,
-    )])
+    // Use git module to discover repository roots
+    let git_repos = discover_git_roots(&manifest_paths)?;
+
+    // Build a map of root_path -> repository_id for efficient lookup
+    let mut repo_map: HashMap<String, String> = HashMap::new();
+    let mut repositories = Vec::new();
+
+    for git_repo in git_repos {
+        let repo_id = git_repo.id.clone();
+        let root_path = git_repo.root_path.clone();
+
+        // Convert git::RepositoryInfo to package::RepositoryInfo
+        repositories.push(RepositoryInfo {
+            id: repo_id.clone(),
+            name: git_repo.name,
+            root_path,
+            vcs_type: VcsType::Git,
+            remote_url: git_repo.remote_url,
+        });
+
+        repo_map.insert(git_repo.root_path, repo_id);
+    }
+
+    // Assign repository_id to each package based on git root
+    for pkg in packages.iter_mut() {
+        let pkg_path = PathBuf::from(&pkg.manifest_path);
+
+        // Find the repository that contains this package
+        // The repository with the longest matching root path wins
+        let mut matching_repo_id: Option<String> = None;
+        let mut longest_match_len = 0;
+
+        for (repo_root, repo_id) in &repo_map {
+            if pkg_path.starts_with(repo_root) {
+                let match_len = repo_root.len();
+                if match_len > longest_match_len {
+                    longest_match_len = match_len;
+                    matching_repo_id = Some(repo_id.clone());
+                }
+            }
+        }
+
+        pkg.repository_id = matching_repo_id;
+    }
+
+    tracing::debug!(
+        repositories = repositories.len(),
+        packages_assigned = packages.iter().filter(|p| p.repository_id.is_some()).count(),
+        "Detected repositories and assigned packages"
+    );
+
+    Ok(repositories)
 }
 
 #[cfg(test)]

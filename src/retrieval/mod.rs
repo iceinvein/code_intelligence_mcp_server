@@ -20,7 +20,7 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use cache::RetrieverCaches;
-use query::{detect_intent, normalize_query, parse_query_controls, trim_query, Intent, QueryControls};
+use query::{detect_intent, normalize_and_expand_query, parse_query_controls, trim_query, Intent, QueryControls};
 use ranking::{
     apply_docstring_boost_with_signals, apply_file_affinity_boost_with_signals, apply_package_boost_with_signals, apply_popularity_boost_with_signals, apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
     rank_hits_with_signals, apply_reranker_scores, prepare_rerank_docs, should_rerank,
@@ -243,7 +243,11 @@ impl Retriever {
         let intent = detect_intent(&query_without_controls);
 
         // Normalize and expand query
-        let expanded_query = normalize_query(&query_without_controls);
+        let expanded_query = normalize_and_expand_query(
+            &query_without_controls,
+            self.config.synonym_expansion_enabled,
+            self.config.acronym_expansion_enabled,
+        );
         let search_query = &expanded_query;
 
         if let Some(Intent::Callers(name)) = &intent {

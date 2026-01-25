@@ -320,11 +320,14 @@ impl Config {
             .unwrap_or_else(|| "o200k_base".to_string());
 
         // Performance config (FNDN-06)
+        // Default to sequential indexing (1 worker) to avoid SQLite write contention
+        // Parallel indexing can be enabled via PARALLEL_WORKERS env var, but may cause
+        // write lock contention due to SQLite's single-writer limitation
         let parallel_workers = optional_env("PARALLEL_WORKERS")
             .as_deref()
             .map(parse_usize)
             .transpose()?
-            .unwrap_or_else(|| num_cpus::get());
+            .unwrap_or(1);
         let embedding_cache_enabled = optional_env("EMBEDDING_CACHE_ENABLED")
             .as_deref()
             .map(parse_bool)

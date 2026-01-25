@@ -21,6 +21,7 @@ use crate::{
         extract::typescript::extract_typescript_symbols_with_path,
         parser::{language_id_for_path, LanguageId},
     },
+    metrics::MetricsRegistry,
     storage::{
         cache::EmbeddingCache,
         sqlite::{SimilarityClusterRow, SqliteStore, SymbolRow},
@@ -58,6 +59,7 @@ pub struct IndexPipeline {
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
     cache: Arc<EmbeddingCache>,
+    metrics: Arc<MetricsRegistry>,
 }
 
 impl IndexPipeline {
@@ -66,6 +68,7 @@ impl IndexPipeline {
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
         embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+        metrics: Arc<MetricsRegistry>,
     ) -> Self {
         let db_path = config.db_path.clone();
 
@@ -92,10 +95,13 @@ impl IndexPipeline {
             vectors,
             embedder,
             cache,
+            metrics,
         }
     }
 
     pub async fn index_all(&self) -> Result<IndexRunStats> {
+        let _timer = self.metrics.index_duration.start_timer();
+
         let started_at = Instant::now();
         let started_at_unix_s = unix_now_s();
         let mut files = Vec::new();
@@ -103,8 +109,49 @@ impl IndexPipeline {
             files.extend(scan_files(&self.config, root)?);
         }
         let stats = self.index_files(files, true).await?;
+
+        // Record Prometheus metrics
+        self.metrics.index_files_total.inc_by(stats.files_indexed as f64);
+        self.metrics.index_symbols_total.inc_by(stats.symbols_indexed as f64);
+        self.metrics.index_files_skipped.inc_by(stats.files_skipped as f64);
+        self.metrics.index_files_unchanged.inc_by(stats.files_unchanged as f64);
+
+        // Cache metrics
+        let cache_stats = self.cache.stats();
+        self.metrics.index_cache_hits.inc_by(cache_stats.hits as f64);
+        self.metrics.index_cache_misses.inc_by(cache_stats.misses as f64);
+
         self.persist_index_run_metrics(started_at_unix_s, started_at.elapsed(), &stats)?;
+
+        // Update resource gauges
+        self.update_resource_gauges()?;
+
+        // Note: timer observes duration when dropped
         Ok(stats)
+    }
+
+    fn update_resource_gauges(&self) -> Result<()> {
+        let sqlite = SqliteStore::open(&self.db_path)?;
+        let symbol_count = sqlite.count_symbols()?;
+
+        self.metrics.symbol_count.set(symbol_count as f64);
+
+        // Get index sizes
+        let tantivy_size = Self::dir_size(&self.config.tantivy_index_path)?;
+        let db_size = std::fs::metadata(&self.db_path)?.len() as u64;
+
+        self.metrics.index_size_bytes.set((tantivy_size + db_size) as f64);
+
+        Ok(())
+    }
+
+    fn dir_size(path: &PathBuf) -> Result<u64> {
+        Ok(std::fs::read_dir(path)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.metadata().ok())
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+            .sum())
     }
 
     pub async fn index_paths(&self, paths: &[PathBuf]) -> Result<IndexRunStats> {

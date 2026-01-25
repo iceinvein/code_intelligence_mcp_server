@@ -109,5 +109,5 @@ pub fn cleanup_cache(conn: &Connection, max_size_bytes: i64) -> Result<i64> {
         []
     )?;
 
-    Ok(deleted)
+    Ok(deleted as i64)
 }

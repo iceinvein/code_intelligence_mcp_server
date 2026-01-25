@@ -211,9 +211,9 @@ pub fn smart_truncate(text: &str, query: &str, max_tokens: usize, counter: &Toke
         let mut current_tokens = 0usize;
 
         // Add header first
-        for i in 0..header_count {
-            result_lines.push((i, lines[i]));
-            current_tokens += counter.count(lines[i]);
+        for (i, line) in lines.iter().take(header_count).enumerate() {
+            result_lines.push((i, *line));
+            current_tokens += counter.count(line);
         }
 
         // Add relevant middle lines until budget exhausted
@@ -255,17 +255,18 @@ pub fn smart_truncate(text: &str, query: &str, max_tokens: usize, counter: &Toke
 
     // Fallback: just head + tail
     let mut result = String::new();
-    for i in 0..header_count {
-        result.push_str(lines[i]);
+    for line in lines.iter().take(header_count) {
+        result.push_str(line);
         result.push('\n');
     }
     if middle_end > middle_start {
         let omitted = middle_end - middle_start;
         result.push_str(&format!("... ({} lines omitted) ...\n", omitted));
     }
-    for i in lines.len().saturating_sub(footer_count)..lines.len() {
-        result.push_str(lines[i]);
-        if i < lines.len() - 1 {
+    let footer_start = lines.len().saturating_sub(footer_count);
+    for (idx, line) in lines.iter().enumerate().skip(footer_start) {
+        result.push_str(line);
+        if idx < lines.len() - 1 {
             result.push('\n');
         }
     }

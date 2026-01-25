@@ -61,9 +61,9 @@ pub struct FileIndexResult {
 ///
 /// Retries up to 2 times on failure before giving up.
 fn index_file_with_retry(
-    file: &PathBuf,
+    file: &Path,
     config: &Config,
-    db_path: &PathBuf,
+    db_path: &Path,
     tantivy: &TantivyIndex,
     vectors: &LanceVectorTable,
     max_retries: usize,
@@ -75,7 +75,7 @@ fn index_file_with_retry(
         match index_file_single(file, config, db_path, tantivy, vectors) {
             Ok(count) => {
                 return FileIndexResult {
-                    file_path: file.clone(),
+                    file_path: file.to_path_buf(),
                     success: true,
                     symbols_count: count,
                     error: None,
@@ -99,7 +99,7 @@ fn index_file_with_retry(
     }
 
     FileIndexResult {
-        file_path: file.clone(),
+        file_path: file.to_path_buf(),
         success: false,
         symbols_count: 0,
         error: last_error,

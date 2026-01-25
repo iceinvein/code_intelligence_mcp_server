@@ -166,7 +166,7 @@ pub fn handle_hydrate_symbols(
     };
 
     let assembler = crate::retrieval::assembler::ContextAssembler::new(state.config.clone());
-    let (context, context_items) = assembler.format_context_with_mode(&sqlite, &rows, &[], &[], mode)?;
+    let (context, context_items) = assembler.format_context_with_mode(&sqlite, &rows, &[], &[], mode, None)?;
 
     Ok(json!({
         "count": rows.len(),

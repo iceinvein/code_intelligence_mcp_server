@@ -836,7 +836,7 @@ impl Retriever {
         let sqlite = SqliteStore::open(&self.db_path)?;
         sqlite.init()?;
         let assembler = ContextAssembler::new(self.config.clone());
-        Ok(assembler.format_context(&sqlite, symbols, &[], &[])?.0)
+        Ok(assembler.format_context(&sqlite, symbols, &[], &[], None)?.0)
     }
 
     pub fn load_symbol_rows_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {

@@ -378,6 +378,9 @@ mod tests {
             hyde_llm_backend: "openai".to_string(),
             hyde_api_key: None,
             hyde_max_tokens: 512,
+            // Metrics config (PERF-04)
+            metrics_enabled: true,
+            metrics_port: 9090,
         })
     }
 

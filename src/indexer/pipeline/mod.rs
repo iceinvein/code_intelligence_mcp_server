@@ -209,6 +209,15 @@ impl IndexPipeline {
 
         // Upsert all packages
         for pkg in packages {
+            // Convert absolute manifest_path to relative for consistency with symbol file_paths
+            let manifest_path = if let Ok(rel) = PathBuf::from(&pkg.manifest_path)
+                .strip_prefix(&self.config.base_dir)
+            {
+                rel.to_string_lossy().to_string()
+            } else {
+                pkg.manifest_path.clone()
+            };
+
             let pkg_row = crate::storage::sqlite::schema::PackageRow {
                 id: pkg.id,
                 repository_id: pkg.repository_id.unwrap_or_default(),
@@ -221,7 +230,7 @@ impl IndexPipeline {
                         .to_string()
                 }),
                 version: pkg.version,
-                manifest_path: pkg.manifest_path,
+                manifest_path,
                 package_type: pkg.package_type.to_string(),
                 created_at,
             };

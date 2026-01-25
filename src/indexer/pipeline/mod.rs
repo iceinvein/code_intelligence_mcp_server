@@ -174,10 +174,23 @@ impl IndexPipeline {
         let pipeline = self.clone();
         tokio::spawn(async move {
             let interval_ms = pipeline.config.watch_debounce_ms.max(50);
+            let mut consecutive_failures = 0;
+            let max_backoff_ms = 5000; // Max 5 seconds backoff
+
             loop {
                 sleep(Duration::from_millis(interval_ms)).await;
                 if let Err(err) = pipeline.index_all().await {
-                    tracing::warn!(error = %err, "Watch index run failed");
+                    consecutive_failures += 1;
+                    let backoff_ms = (interval_ms * (1 << consecutive_failures.min(8))).min(max_backoff_ms);
+                    tracing::warn!(
+                        error = %err,
+                        consecutive_failures = consecutive_failures,
+                        backoff_ms = backoff_ms,
+                        "Watch index run failed, backing off"
+                    );
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                } else {
+                    consecutive_failures = 0; // Reset on success
                 }
             }
         })

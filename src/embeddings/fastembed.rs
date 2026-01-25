@@ -4,6 +4,10 @@ use anyhow::{anyhow, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::path::Path;
 
+// Execution provider imports for Metal acceleration
+#[cfg(target_os = "macos")]
+use ort::execution_providers::CoreMLExecutionProvider;
+
 pub struct FastEmbedder {
     model: TextEmbedding,
     model_name: String,
@@ -13,7 +17,7 @@ impl FastEmbedder {
     pub fn new(
         model_name: &str,
         cache_dir: Option<&Path>,
-        _device: EmbeddingsDevice, // FastEmbed handles device selection via ORT execution providers if configured, but currently defaults to CPU/Accelerate
+        device: EmbeddingsDevice,
     ) -> Result<Self> {
         // Map string model name to enum if possible, or error if not supported
         // FastEmbed uses an enum for supported models.
@@ -35,10 +39,27 @@ impl FastEmbedder {
             options = options.with_cache_dir(path.to_path_buf());
         }
 
-        // FastEmbed defaults to ONNX Runtime.
-        // On macOS, it typically uses CoreML or CPU with Accelerate.
-        // Explicit execution provider configuration might require 'ort' crate types which we might not want to expose directly yet.
-        // For now, default settings are usually optimal.
+        // Configure execution provider based on device setting
+        // On macOS, Metal (CoreML) acceleration can significantly improve performance
+        match device {
+            EmbeddingsDevice::Metal => {
+                #[cfg(target_os = "macos")]
+                {
+                    tracing::info!("Initializing FastEmbed with Metal (CoreML) acceleration");
+                    let coreml = CoreMLExecutionProvider::default();
+                    options = options.with_execution_providers(vec!(
+                        coreml.into()
+                    ));
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    tracing::warn!("Metal device requested but not on macOS - falling back to CPU");
+                }
+            }
+            EmbeddingsDevice::Cpu => {
+                tracing::debug!("Initializing FastEmbed with CPU execution provider");
+            }
+        }
 
         let model = TextEmbedding::try_new(options)
             .map_err(|e| anyhow!("Failed to initialize FastEmbed: {}", e))?;

@@ -313,4 +313,30 @@ impl SqliteStore {
     ) -> Result<Vec<(String, String)>> {
         queries::tests::get_symbols_with_tests(&self.conn, file_path)
     }
+
+    pub fn get_cached_embedding(&self, cache_key: &str) -> Result<Option<Vec<u8>>> {
+        queries::cache::get_cached_embedding(&self.conn, cache_key)
+    }
+
+    pub fn put_cached_embedding(
+        &self,
+        cache_key: &str,
+        model_name: &str,
+        text_hash: &str,
+        embedding: &[u8],
+        vector_dim: usize,
+    ) -> Result<()> {
+        queries::cache::put_cached_embedding(
+            &self.conn,
+            cache_key,
+            model_name,
+            text_hash,
+            embedding,
+            vector_dim,
+        )
+    }
+
+    pub fn cleanup_cache(&self, max_size_bytes: i64) -> Result<i64> {
+        queries::cache::cleanup_cache(&self.conn, max_size_bytes)
+    }
 }

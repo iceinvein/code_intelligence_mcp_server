@@ -92,6 +92,10 @@ pub struct Config {
     pub hyde_llm_backend: String,
     pub hyde_api_key: Option<String>,
     pub hyde_max_tokens: usize,
+
+    // Metrics config (PERF-04)
+    pub metrics_enabled: bool,
+    pub metrics_port: u16,
 }
 
 impl Config {
@@ -393,6 +397,18 @@ impl Config {
             .transpose()?
             .unwrap_or(512);
 
+        // Metrics config (PERF-04)
+        let metrics_enabled = optional_env("METRICS_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true);
+        let metrics_port = optional_env("METRICS_PORT")
+            .as_deref()
+            .map(parse_u16)
+            .transpose()?
+            .unwrap_or(9090);
+
         Ok(Self {
             base_dir,
             db_path,
@@ -465,6 +481,10 @@ impl Config {
             hyde_llm_backend,
             hyde_api_key,
             hyde_max_tokens,
+
+            // Metrics config (PERF-04)
+            metrics_enabled,
+            metrics_port,
         })
     }
 
@@ -578,6 +598,13 @@ fn parse_u64(value: &str) -> Result<u64> {
         .map_err(|err| anyhow!("Invalid integer '{value}': {err}"))
 }
 
+fn parse_u16(value: &str) -> Result<u16> {
+    value
+        .trim()
+        .parse::<u16>()
+        .map_err(|err| anyhow!("Invalid u16 '{value}': {err}"))
+}
+
 fn parse_f32(value: &str) -> Result<f32> {
     let v = value
         .trim()
@@ -689,6 +716,9 @@ mod tests {
             "HYDE_LLM_BACKEND",
             "HYDE_API_KEY",
             "HYDE_MAX_TOKENS",
+            // Metrics config (PERF-04)
+            "METRICS_ENABLED",
+            "METRICS_PORT",
         ] {
             std::env::remove_var(k);
         }

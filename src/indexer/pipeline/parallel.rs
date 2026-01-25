@@ -131,6 +131,31 @@ fn index_file_single(
     let sqlite = SqliteStore::open(db_path)?;
     sqlite.init()?;
 
+    // Log package membership for this file
+    match sqlite.get_package_for_file(&rel) {
+        Ok(Some(pkg)) => {
+            tracing::debug!(
+                file = %rel,
+                package_id = %pkg.id,
+                package_name = %pkg.name,
+                "Indexing file with package"
+            );
+        }
+        Ok(None) => {
+            tracing::trace!(
+                file = %rel,
+                "No package found for file during indexing"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                file = %rel,
+                error = %err,
+                "Failed to look up package for file"
+            );
+        }
+    }
+
     // Check if unchanged
     let is_unchanged = sqlite
         .get_file_fingerprint(&rel)?

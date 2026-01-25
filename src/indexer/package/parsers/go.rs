@@ -82,34 +82,32 @@ pub fn parse_go_mod(path: &Path) -> Result<PackageInfo> {
 fn extract_local_dependencies(content: &str) -> Vec<String> {
     let mut local_deps = Vec::new();
 
-    // Match require directives with local paths
-    // Format: require module/path v1.2.3
-    // or with indirect: require other/module v1.0.0 // indirect
-    let require_re = Regex::new(r"^\s+require\s+([^\s]+)\s+v[0-9.]+").unwrap();
-
     for line in content.lines() {
-        if let Some(caps) = require_re.captures(line) {
-            if let Some(module_path) = caps.get(1) {
-                let path = module_path.as_str();
-                // Check if this looks like a local/relative dependency
-                // In Go workspaces, local modules often have paths starting with the same base
-                // or use relative paths in replace directives
-                if path.starts_with("./") || path.contains("/local/") {
-                    local_deps.push(path.to_string());
+        let trimmed = line.trim();
+
+        // Check for replace directives which indicate workspace members
+        // Format: replace module/path => ./local/path
+        if trimmed.starts_with("replace ") {
+            if let Some(rest) = trimmed.strip_prefix("replace ") {
+                if let Some(idx) = rest.find(" => ") {
+                    let replace_path = rest[idx + 4..].trim();
+                    if replace_path.starts_with("./") || replace_path.starts_with("../") {
+                        local_deps.push(replace_path.to_string());
+                    }
                 }
             }
         }
-    }
 
-    // Also check for replace directives which indicate workspace members
-    // Format: replace module/path => ./local/path
-    let replace_re = Regex::new(r#"^\s+replace\s+[^\s]+\s+=>\s+([^\s]+)"#).unwrap();
-    for line in content.lines() {
-        if let Some(caps) = replace_re.captures(line) {
-            if let Some(replace_path) = caps.get(1) {
-                let path = replace_path.as_str();
-                if path.starts_with("./") || path.starts_with("../") {
-                    local_deps.push(path.to_string());
+        // Check for require directives with local paths (less common)
+        // Local dependencies typically use replace directives instead
+        if trimmed.starts_with("require ") {
+            // Extract module path from require statement
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let module_path = parts[1];
+                // Check for relative-style module paths
+                if module_path.starts_with("./") || module_path.contains("/local/") {
+                    local_deps.push(module_path.to_string());
                 }
             }
         }

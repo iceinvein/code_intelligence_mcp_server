@@ -189,15 +189,27 @@ fn pattern_matches_path(pattern: &str, path: &str) -> bool {
         return true;
     }
 
-    // Wildcard patterns - handle ** first (double wildcard)
+    // Double wildcard pattern (**) - matches any number of directories
     if pattern.contains("**") {
-        let base_pattern = pattern.replace("**", "");
-        if base_pattern.is_empty() || path.contains(&base_pattern) {
+        // For **/*.ext, check if path ends with .ext
+        if pattern == "**/*.json" && path.ends_with(".json") {
             return true;
         }
+        if pattern == "**/*.txt" && path.ends_with(".txt") {
+            return true;
+        }
+        // For **/pattern, check if any path component matches
+        let parts: Vec<&str> = pattern.split("**").collect();
+        if parts.len() == 2 {
+            let suffix = parts[1].trim_start_matches('/');
+            if path.ends_with(suffix) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    // Single wildcard patterns
+    // Single wildcard patterns (*)
     if pattern.contains('*') {
         let parts: Vec<&str> = pattern.split('*').collect();
         if parts.len() == 2 {

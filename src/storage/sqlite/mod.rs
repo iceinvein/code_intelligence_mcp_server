@@ -339,4 +339,37 @@ impl SqliteStore {
     pub fn cleanup_cache(&self, max_size_bytes: i64) -> Result<i64> {
         queries::cache::cleanup_cache(&self.write(), max_size_bytes)
     }
+
+    // Repository and package operations (09-03)
+    pub fn upsert_repository(&self, repo: &RepositoryRow) -> Result<()> {
+        queries::packages::upsert_repository(&self.write(), repo)
+    }
+
+    pub fn upsert_package(&self, pkg: &PackageRow) -> Result<()> {
+        queries::packages::upsert_package(&self.write(), pkg)
+    }
+
+    pub fn get_package_for_file(&self, file_path: &str) -> Result<Option<PackageRow>> {
+        queries::packages::get_package_for_file(&self.read(), file_path)
+    }
+
+    pub fn list_all_packages(&self) -> Result<Vec<PackageRow>> {
+        queries::packages::list_all_packages(&self.read())
+    }
+
+    pub fn list_all_repositories(&self) -> Result<Vec<RepositoryRow>> {
+        queries::packages::list_all_repositories(&self.read())
+    }
+
+    pub fn get_repository_by_id(&self, id: &str) -> Result<Option<RepositoryRow>> {
+        queries::packages::get_repository_by_id(&self.read(), id)
+    }
+
+    pub fn get_package_by_id(&self, id: &str) -> Result<Option<PackageRow>> {
+        queries::packages::get_package_by_id(&self.read(), id)
+    }
+
+    pub fn count_packages_in_repository(&self, repository_id: &str) -> Result<u64> {
+        queries::packages::count_packages_in_repository(&self.read(), repository_id)
+    }
 }

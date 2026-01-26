@@ -221,8 +221,8 @@ mod tests {
         let results = reciprocal_rank_fusion(&hits, &[], &[], (1.0, 0.0, 0.0));
 
         // All have same score, but exported should come first
-        assert_eq!(results[0].exported, true);
-        assert_eq!(results[1].exported, true);
-        assert_eq!(results[2].exported, false);
+        assert!(results[0].exported);
+        assert!(results[1].exported);
+        assert!(!results[2].exported);
     }
 }

@@ -649,6 +649,7 @@ mod tests {
             exclude_patterns: vec!["**/node_modules/**".to_string()],
             watch_mode: false,
             watch_debounce_ms: 250,
+            watch_min_index_interval_ms: 5000,
             max_context_bytes: 200_000,
             index_node_modules: false,
             repo_roots: vec![],
@@ -898,10 +899,10 @@ mod tests {
             // Note: hit_signals may not contain entries for symbols with no boost
             assert!(hit_signals
                 .get("symbol1")
-                .map_or(true, |s| s.popularity_boost == 0.0));
+                .is_none_or(|s| s.popularity_boost == 0.0));
             assert!(hit_signals
                 .get("symbol2")
-                .map_or(true, |s| s.popularity_boost == 0.0));
+                .is_none_or(|s| s.popularity_boost == 0.0));
             // Original scores unchanged
             assert_eq!(result[0].id, "symbol1");
             assert_eq!(result[0].score, 10.0);
@@ -971,7 +972,7 @@ mod tests {
             // hit_signals may be empty when weight is 0 (early return)
             assert!(hit_signals
                 .get("symbol1")
-                .map_or(true, |s| s.popularity_boost == 0.0));
+                .is_none_or(|s| s.popularity_boost == 0.0));
         }
 
         let _ = std::fs::remove_file(&db_path);

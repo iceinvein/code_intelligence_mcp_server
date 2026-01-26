@@ -198,7 +198,7 @@ pub fn handle_hydrate_symbols(
 
     let assembler = crate::retrieval::assembler::ContextAssembler::new(state.config.clone());
     let (context, context_items) =
-        assembler.format_context_with_mode(&sqlite, &rows, &[], &[], mode, None)?;
+        assembler.format_context_with_mode(sqlite, &rows, &[], &[], mode, None)?;
 
     Ok(json!({
         "count": rows.len(),
@@ -757,7 +757,7 @@ pub fn handle_trace_data_flow(
     };
 
     // Trace data flow using edge traversal
-    let (reads, writes) = trace_data_flow_edges(&sqlite, &root.id, depth, limit, &direction)?;
+    let (reads, writes) = trace_data_flow_edges(sqlite, &root.id, depth, limit, &direction)?;
 
     // Build flow items
     let mut flows = Vec::new();
@@ -1324,7 +1324,7 @@ pub fn handle_find_affected_code(
     };
 
     // Use build_dependency_graph with "upstream" direction
-    let graph_result = build_dependency_graph(&sqlite, root, "upstream", depth, limit);
+    let graph_result = build_dependency_graph(sqlite, root, "upstream", depth, limit);
 
     let (affected, warning) = match graph_result {
         Ok(graph) => {

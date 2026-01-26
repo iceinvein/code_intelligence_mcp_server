@@ -106,6 +106,7 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         exclude_patterns: vec![],
         watch_mode: false,
         watch_debounce_ms: 100,
+        watch_min_index_interval_ms: 50,
         max_context_bytes: 200_000,
         index_node_modules: false,
         repo_roots: vec![base_dir],
@@ -294,9 +295,8 @@ mod smoke_tests {
 
     /// Verifies that tantivy_index fixture can be created
     #[rstest]
-    fn tantivy_index_fixture_works(tantivy_index: Arc<TantivyIndex>) {
+    fn tantivy_index_fixture_works(_tantivy_index: Arc<TantivyIndex>) {
         // If we got here, the fixture was created successfully
-        assert!(true, "tantivy_index fixture created successfully");
     }
 
     /// Verifies that vector_store fixture can be created
@@ -305,9 +305,8 @@ mod smoke_tests {
     #[rstest]
     #[tokio::test]
     #[ignore = "fixture smoke test - not needed for coverage"]
-    async fn vector_store_fixture_works(vector_store: Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable>) {
+    async fn vector_store_fixture_works(_vector_store: Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable>) {
         // If we got here, the fixture was created successfully
-        assert!(true, "vector_store fixture created successfully");
     }
 
     /// Verifies that the complete app_state fixture can be constructed

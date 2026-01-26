@@ -120,6 +120,7 @@ pub fn create_test_symbol(
 /// # Returns
 ///
 /// `Ok(())` if the symbol was created successfully
+#[allow(dead_code)]
 pub fn create_test_symbol_with_text(
     db_path: &Path,
     id: &str,
@@ -168,6 +169,7 @@ pub fn create_test_symbol_with_text(
 /// # Returns
 ///
 /// `Ok(())` if the symbol was created successfully
+#[allow(dead_code)]
 pub fn create_test_symbol_with_language(
     db_path: &Path,
     id: &str,
@@ -238,6 +240,6 @@ mod tests {
         let symbols = sqlite.search_symbols_by_exact_name("testFunction", None, 10).unwrap();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "testFunction");
-        assert_eq!(symbols[0].exported, true);
+        assert!(symbols[0].exported);
     }
 }

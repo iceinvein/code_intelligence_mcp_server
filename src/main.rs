@@ -288,6 +288,7 @@ async fn run() -> SdkResult<()> {
         rank_popularity_cap = config.rank_popularity_cap,
         watch_mode = config.watch_mode,
         watch_debounce_ms = config.watch_debounce_ms,
+        watch_min_index_interval_ms = config.watch_min_index_interval_ms,
         max_context_bytes = config.max_context_bytes,
         index_node_modules = config.index_node_modules,
         repo_roots = ?config.repo_roots,

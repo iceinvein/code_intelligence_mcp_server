@@ -29,7 +29,7 @@ use code_intelligence_mcp_server::{
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -80,7 +80,7 @@ fn create_test_symbol(
 }
 
 /// Create AppState with sqlite initialized for handler tests
-async fn create_app_state(db_path: &PathBuf, suffix: &str) -> code_intelligence_mcp_server::handlers::AppState {
+async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp_server::handlers::AppState {
     // Use the parent directory of the db_path as the base directory
     let base_dir = db_path.parent().unwrap_or(db_path).to_path_buf();
 
@@ -562,7 +562,7 @@ export function myFunction(param: string): number {
             .and_then(|v| v.as_array())
             .unwrap_or(&empty);
 
-        assert!(exports.len() >= 1, "Should have at least one export");
+        assert!(!exports.is_empty(), "Should have at least one export");
 
         // Check signature field exists on the first export
         assert!(exports[0].get("signature").is_some());
@@ -774,8 +774,8 @@ fn tmp_test_dir() -> PathBuf {
 }
 
 /// Create test configuration
-fn test_config(base_dir: &PathBuf) -> Config {
-    let base_dir = base_dir.canonicalize().unwrap_or_else(|_| base_dir.clone());
+fn test_config(base_dir: &Path) -> Config {
+    let base_dir = base_dir.canonicalize().unwrap_or_else(|_| base_dir.to_path_buf());
     Config {
         db_path: base_dir.join("code-intelligence.db"),
         vector_db_path: base_dir.join("vectors"),
@@ -809,6 +809,7 @@ fn test_config(base_dir: &PathBuf) -> Config {
         exclude_patterns: vec![],
         watch_mode: false,
         watch_debounce_ms: 100,
+        watch_min_index_interval_ms: 50,
         max_context_bytes: 200_000,
         index_node_modules: false,
         repo_roots: vec![base_dir],
@@ -1168,6 +1169,7 @@ mod fixture_tests {
     use rstest::*;
 
     // Import fixtures from the support module declared at file root
+    #[allow(unused_imports)]
     use super::support::fixtures::*;
 
     // Import the actual AppState type to avoid ambiguity
@@ -1191,7 +1193,6 @@ mod fixture_tests {
     #[rstest]
     fn rstest_metrics_fixture_works(_metrics: std::sync::Arc<code_intelligence_mcp_server::metrics::MetricsRegistry>) {
         // Just verify we got the fixture - MetricsRegistry doesn't have much to check
-        assert!(true, "metrics fixture injected successfully");
     }
 
     // Verify the app_state fixture can be constructed and injected

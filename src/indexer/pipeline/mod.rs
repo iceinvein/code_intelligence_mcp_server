@@ -909,6 +909,7 @@ impl IndexPipeline {
         let db_path = self.db_path.clone();
         let tantivy = self.tantivy.clone();
         let vectors = self.vectors.clone();
+        let num_files = files.len();
 
         // Run parallel indexing in blocking task
         let stats = tokio::task::spawn_blocking(move || {
@@ -918,7 +919,7 @@ impl IndexPipeline {
         .with_context(|| {
             format!(
                 "Join error in parallel indexing: num_files={}",
-                files.len()
+                num_files
             )
         })??;
 

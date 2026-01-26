@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
+
 /// Returns the global cimcp directory (~/.cimcp)
 ///
 /// This function uses a layered fallback strategy to avoid panicking:
@@ -14,22 +16,24 @@ use std::{
 ///
 /// The /tmp fallback ensures the application can always start, even in
 /// degraded environments (e.g., chroot, missing HOME).
-pub fn get_global_cimcp_dir() -> PathBuf {
+pub fn get_global_cimcp_dir() -> Utf8PathBuf {
     env::var("HOME")
-        .map(|home| PathBuf::from(home).join(".cimcp"))
-        .unwrap_or_else(|_| {
+        .ok()
+        .and_then(|home| Utf8PathBuf::from_path_buf(PathBuf::from(home).join(".cimcp")).ok())
+        .or_else(|| {
             // Fallback to XDG_DATA_HOME or use /tmp/.cimcp as ultimate fallback
             env::var("XDG_DATA_HOME")
-                .map(|p| PathBuf::from(p).join("cimcp"))
-                .unwrap_or_else(|_| {
-                    // Use /tmp/.cimcp as last resort instead of panicking
-                    let fallback = PathBuf::from("/tmp/.cimcp");
-                    tracing::warn!(
-                        path = %fallback.display(),
-                        "HOME and XDG_DATA_HOME not set, using temporary fallback (non-standard location)"
-                    );
-                    fallback
-                })
+                .ok()
+                .and_then(|p| Utf8PathBuf::from_path_buf(PathBuf::from(p).join("cimcp")).ok())
+        })
+        .unwrap_or_else(|| {
+            // Use /tmp/.cimcp as last resort instead of panicking
+            let fallback = Utf8PathBuf::from("/tmp/.cimcp");
+            tracing::warn!(
+                path = %fallback,
+                "HOME and XDG_DATA_HOME not set, using temporary fallback (non-standard location)"
+            );
+            fallback
         })
 }
 
@@ -50,12 +54,12 @@ pub enum EmbeddingsBackend {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub base_dir: PathBuf,
-    pub db_path: PathBuf,
-    pub vector_db_path: PathBuf,
-    pub tantivy_index_path: PathBuf,
+    pub base_dir: Utf8PathBuf,
+    pub db_path: Utf8PathBuf,
+    pub vector_db_path: Utf8PathBuf,
+    pub tantivy_index_path: Utf8PathBuf,
     pub embeddings_backend: EmbeddingsBackend,
-    pub embeddings_model_dir: Option<PathBuf>,
+    pub embeddings_model_dir: Option<Utf8PathBuf>,
     pub embeddings_model_url: Option<String>,
     pub embeddings_model_sha256: Option<String>,
     pub embeddings_auto_download: bool,
@@ -81,12 +85,12 @@ pub struct Config {
     pub watch_min_index_interval_ms: u64, // Minimum time between index runs in watch mode
     pub max_context_bytes: usize,
     pub index_node_modules: bool,
-    pub repo_roots: Vec<PathBuf>,
+    pub repo_roots: Vec<Utf8PathBuf>,
 
     // Reranker config (FNDN-03)
-    pub reranker_model_path: Option<PathBuf>,
+    pub reranker_model_path: Option<Utf8PathBuf>,
     pub reranker_top_k: usize,
-    pub reranker_cache_dir: Option<PathBuf>,
+    pub reranker_cache_dir: Option<Utf8PathBuf>,
 
     // Learning config (FNDN-04)
     pub learning_enabled: bool,
@@ -154,7 +158,7 @@ impl Config {
         let (embeddings_backend, embeddings_model_dir) = match embeddings_backend_env {
             Some(EmbeddingsBackend::FastEmbed) => {
                 let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
-                    Some(raw) => Some(Path::new(raw).to_path_buf()),
+                    Some(raw) => Some(to_utf8_pathbuf(Path::new(raw))?),
                     None => {
                         // Default to ~/.cimcp/embeddings-cache
                         let global_dir = get_global_cimcp_dir();
@@ -166,7 +170,7 @@ impl Config {
             Some(EmbeddingsBackend::Hash) => (EmbeddingsBackend::Hash, None),
             Some(EmbeddingsBackend::JinaCode) => {
                 let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
-                    Some(raw) => Some(Path::new(raw).to_path_buf()),
+                    Some(raw) => Some(to_utf8_pathbuf(Path::new(raw))?),
                     None => {
                         // Default to ~/.cimcp/models/jina-code-onnx
                         let global_dir = get_global_cimcp_dir();
@@ -196,15 +200,18 @@ impl Config {
         // Default to global ~/.cimcp directory
         let global_dir = get_global_cimcp_dir();
         let db_path = optional_env("DB_PATH")
-            .map(|p| Path::new(&p).to_path_buf())
+            .map(|p| to_utf8_pathbuf(Path::new(&p)))
+            .transpose()?
             .unwrap_or_else(|| global_dir.join("code-intelligence.db"));
 
         let vector_db_path = optional_env("VECTOR_DB_PATH")
-            .map(|p| Path::new(&p).to_path_buf())
+            .map(|p| to_utf8_pathbuf(Path::new(&p)))
+            .transpose()?
             .unwrap_or_else(|| global_dir.join("vectors"));
 
         let tantivy_index_path = optional_env("TANTIVY_INDEX_PATH")
-            .map(|p| Path::new(&p).to_path_buf())
+            .map(|p| to_utf8_pathbuf(Path::new(&p)))
+            .transpose()?
             .unwrap_or_else(|| global_dir.join("tantivy-index"));
 
         let embeddings_device = optional_env("EMBEDDINGS_DEVICE")
@@ -331,14 +338,17 @@ impl Config {
         }
 
         // Reranker config (FNDN-03)
-        let reranker_model_path = optional_env("RERANKER_MODEL_PATH").map(PathBuf::from);
+        let reranker_model_path = optional_env("RERANKER_MODEL_PATH")
+            .map(|p| to_utf8_pathbuf(Path::new(&p)))
+            .transpose()?;
         let reranker_top_k = optional_env("RERANKER_TOP_K")
             .as_deref()
             .map(parse_usize)
             .transpose()?
             .unwrap_or(20);
         let reranker_cache_dir = optional_env("RERANKER_CACHE_DIR")
-            .map(PathBuf::from)
+            .map(|p| to_utf8_pathbuf(Path::new(&p)))
+            .transpose()?
             .or_else(|| Some(global_dir.join("reranker-cache")));
 
         // Learning config (FNDN-04)
@@ -556,29 +566,39 @@ impl Config {
         })
     }
 
+    /// Normalize a path to be absolute relative to base directory.
     pub fn normalize_path_to_base(&self, path: &Path) -> Result<PathBuf> {
         let abs = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.base_dir.join(path)
+            self.base_dir.as_std_path().join(path)
         };
         Ok(abs)
     }
 
-    pub fn path_relative_to_base(&self, path: &Path) -> Result<String> {
-        let abs = self.normalize_path_to_base(path)?;
-        let abs = abs.canonicalize().unwrap_or(abs);
+    /// Get the relative path from base to the given path.
+    pub fn path_relative_to_base(&self, path: &crate::path::Utf8Path) -> Result<String> {
+        let normalizer = PathNormalizer::new(self.base_dir.clone());
+        let relative = normalizer.relative_to_base(path)?;
+        Ok(relative.as_str().to_string())
+    }
 
-        let rel = abs
-            .strip_prefix(&self.base_dir)
-            .map_err(|_| anyhow!("Path is not under BASE_DIR: {}", abs.display()))?;
-
-        Ok(rel.to_string_lossy().into_owned())
+    /// Get the relative path from base to the given path (PathBuf version for compatibility).
+    pub fn path_relative_to_base_path(&self, path: &Path) -> Result<String> {
+        let utf8_path = to_utf8_pathbuf(path)?;
+        self.path_relative_to_base(&utf8_path)
     }
 }
 
 fn required_env(key: &str) -> Result<String> {
     env::var(key).map_err(|_| anyhow!("Missing required env var: {key}"))
+}
+
+/// Convert a std::path::Path to Utf8PathBuf, returning PathError on non-UTF-8.
+fn to_utf8_pathbuf(path: &Path) -> Result<Utf8PathBuf> {
+    Utf8PathBuf::from_path_buf(path.to_path_buf()).map_err(|_| PathError::NonUtf8 {
+        path: path.to_path_buf(),
+    }).map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 fn optional_env(key: &str) -> Option<String> {
@@ -592,7 +612,7 @@ fn optional_env(key: &str) -> Option<String> {
     })
 }
 
-fn canonicalize_dir(path: &Path) -> Result<PathBuf> {
+fn canonicalize_dir(path: &Path) -> Result<Utf8PathBuf> {
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -605,8 +625,10 @@ fn canonicalize_dir(path: &Path) -> Result<PathBuf> {
     if !meta.is_dir() {
         return Err(anyhow!("Expected directory, got file: {}", path.display()));
     }
-    path.canonicalize()
-        .with_context(|| format!("Failed to canonicalize: {}", path.display()))
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize: {}", path.display()))?;
+    to_utf8_pathbuf(&canonical)
 }
 
 fn parse_csv_or_default(value: Option<&str>, default: &[&str]) -> Vec<String> {
@@ -698,7 +720,7 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    fn tmp_dir() -> PathBuf {
+    fn tmp_dir() -> Utf8PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "code-intel-config-test-{}",
             std::time::SystemTime::now()
@@ -707,10 +729,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        to_utf8_pathbuf(&dir).unwrap()
     }
 
-    fn tmp_home_dir() -> PathBuf {
+    fn tmp_home_dir() -> Utf8PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "code-intel-home-test-{}",
             std::time::SystemTime::now()
@@ -719,7 +741,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        to_utf8_pathbuf(&dir).unwrap()
     }
 
     fn clear_env() {
@@ -813,8 +835,8 @@ mod tests {
         clear_env();
         let base = tmp_dir();
         let home = tmp_home_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
-        std::env::set_var("HOME", home.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("HOME", home.to_string());
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
@@ -834,8 +856,8 @@ mod tests {
         clear_env();
         let base = tmp_dir();
         let home = tmp_home_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
-        std::env::set_var("HOME", home.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("HOME", home.to_string());
 
         // Default should be JinaCode
         let cfg = Config::from_env().unwrap();
@@ -856,9 +878,9 @@ mod tests {
         clear_env();
         let base = tmp_dir();
         let custom = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
         std::env::set_var("EMBEDDINGS_BACKEND", "fastembed");
-        std::env::set_var("EMBEDDINGS_MODEL_DIR", custom.to_string_lossy().to_string());
+        std::env::set_var("EMBEDDINGS_MODEL_DIR", custom.to_string());
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::FastEmbed);
@@ -870,7 +892,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
         // No backend set, should default to JinaCode
 
         let cfg = Config::from_env().unwrap();
@@ -884,22 +906,23 @@ mod tests {
         clear_env();
         let base = tmp_dir();
         let extra = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        // Canonicalize the extra path for comparison since repo_roots contains canonicalized paths
+        let extra_canonical = to_utf8_pathbuf(&std::fs::canonicalize(&extra).unwrap()).unwrap();
+        std::env::set_var("BASE_DIR", base.to_string());
         std::env::set_var(
             "REPO_ROOTS",
             format!(
                 "  {} , {} , {} ",
-                extra.to_string_lossy(),
-                extra.to_string_lossy(),
-                base.to_string_lossy()
+                extra.as_str(),
+                extra.as_str(),
+                base.as_str()
             ),
         );
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.repo_roots.len(), 2);
-        let extra_c = extra.canonicalize().unwrap_or(extra);
         assert!(cfg.repo_roots.contains(&cfg.base_dir));
-        assert!(cfg.repo_roots.contains(&extra_c));
+        assert!(cfg.repo_roots.contains(&extra_canonical));
     }
 
     #[test]
@@ -907,7 +930,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
         std::env::set_var("HYBRID_ALPHA", "2");
         assert!(Config::from_env().is_err());
 
@@ -923,7 +946,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
         let cfg = Config::from_env().unwrap();
         assert!(cfg.watch_mode);
     }
@@ -933,7 +956,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
         std::env::set_var("WATCH_MODE", "yes");
         std::env::set_var("INDEX_NODE_MODULES", "1");
         let cfg = Config::from_env().unwrap();
@@ -946,7 +969,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
 
         let cfg = Config::from_env().unwrap();
 
@@ -982,7 +1005,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string_lossy().to_string());
+        std::env::set_var("BASE_DIR", base.to_string());
         std::env::set_var("LEARNING_ENABLED", "true");
         std::env::set_var("MAX_CONTEXT_TOKENS", "16384");
         std::env::set_var("PAGERANK_DAMPING", "0.9");

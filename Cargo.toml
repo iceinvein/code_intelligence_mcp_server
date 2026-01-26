@@ -58,7 +58,7 @@ toml = "0.8"
 regex = "1"
 
 # Phase 14 Path Reliability dependencies (14-01)
-camino = "1.1"
+camino = { version = "1.1", features = ["serde1"] }
 dunce = "1.0"
 
 [dev-dependencies]

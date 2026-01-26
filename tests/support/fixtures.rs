@@ -23,6 +23,7 @@ use code_intelligence_mcp_server::{
     handlers::AppState,
     indexer::pipeline::IndexPipeline,
     metrics::MetricsRegistry,
+    path::Utf8PathBuf,
     retrieval::Retriever,
     storage::{
         sqlite::SqliteStore,
@@ -73,11 +74,14 @@ pub fn tmp_dir() -> PathBuf {
 #[fixture]
 pub fn test_config(tmp_dir: PathBuf) -> Config {
     let base_dir = tmp_dir.canonicalize().unwrap_or_else(|_| tmp_dir.clone());
+    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone()).unwrap_or_else(|_| {
+        Utf8PathBuf::from(base_dir.to_string_lossy().as_ref())
+    });
     Config {
-        db_path: base_dir.join("code-intelligence.db"),
-        vector_db_path: base_dir.join("vectors"),
-        tantivy_index_path: base_dir.join("tantivy-index"),
-        base_dir: base_dir.clone(),
+        db_path: base_dir_utf8.join("code-intelligence.db"),
+        vector_db_path: base_dir_utf8.join("vectors"),
+        tantivy_index_path: base_dir_utf8.join("tantivy-index"),
+        base_dir: base_dir_utf8.clone(),
         embeddings_backend: EmbeddingsBackend::Hash,
         embeddings_model_dir: None,
         embeddings_model_url: None,
@@ -109,7 +113,7 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         watch_min_index_interval_ms: 50,
         max_context_bytes: 200_000,
         index_node_modules: false,
-        repo_roots: vec![base_dir],
+        repo_roots: vec![base_dir_utf8],
         reranker_model_path: None,
         reranker_top_k: 20,
         reranker_cache_dir: None,

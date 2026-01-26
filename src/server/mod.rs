@@ -95,7 +95,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "get_file_symbols" => {
                 let tool: GetFileSymbolsTool = parse_tool_args(&params)?;
-                let result = handle_get_file_symbols(&self.state.config.db_path, tool)
+                let result = handle_get_file_symbols(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -228,7 +228,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "get_module_summary" => {
                 let tool: GetModuleSummaryTool = parse_tool_args(&params)?;
-                let result = handle_get_module_summary(&self.state.config.db_path, tool)
+                let result = handle_get_module_summary(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)

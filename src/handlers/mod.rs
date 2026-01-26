@@ -113,7 +113,7 @@ pub async fn handle_get_definition(
 
 /// Handle get_file_symbols tool
 pub fn handle_get_file_symbols(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: GetFileSymbolsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let exported_only = tool.exported_only.unwrap_or(false);
@@ -124,10 +124,22 @@ pub fn handle_get_file_symbols(
         "get_file_symbols called"
     );
 
-    let sqlite = SqliteStore::open(db_path)?;
+    // Normalize file path to match how it's stored in the database (relative to BASE_DIR)
+    let file_path_normalized = state
+        .config
+        .path_relative_to_base(std::path::Path::new(&tool.file_path))
+        .unwrap_or_else(|_| tool.file_path.clone());
+
+    tracing::debug!(
+        original_path = %tool.file_path,
+        normalized_path = %file_path_normalized,
+        "Normalized file path"
+    );
+
+    let sqlite = SqliteStore::open(&state.config.db_path)?;
     sqlite.init()?;
 
-    let rows = sqlite.list_symbol_headers_by_file(&tool.file_path, exported_only)?;
+    let rows = sqlite.list_symbol_headers_by_file(&file_path_normalized, exported_only)?;
 
     if rows.is_empty() {
         tracing::warn!(
@@ -139,6 +151,7 @@ pub fn handle_get_file_symbols(
 
     Ok(json!({
         "file_path": tool.file_path,
+        "file_path_normalized": file_path_normalized,
         "count": rows.len(),
         "symbols": rows,
     }))
@@ -562,12 +575,26 @@ pub async fn handle_find_similar_code(
             }));
         };
 
-        // Get embedding from LanceDB by symbol ID
-        let vector = state
+        // Try to get embedding from LanceDB by symbol ID
+        // If not found, fall back to embedding the symbol's text
+        let vector = match state
             .retriever
             .get_vector_store()
             .get_embedding_by_id(&root.id)
-            .await?;
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    symbol_id = %root.id,
+                    symbol_name = %root.name,
+                    error = %e,
+                    "Embedding not found in LanceDB, falling back to text embedding"
+                );
+                // Fall back to embedding the symbol's text
+                state.retriever.embed_text(&root.text).await?
+            }
+        };
         (vector, name.clone())
     } else if let Some(snippet) = &tool.code_snippet {
         // Embed the code snippet
@@ -937,7 +964,7 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
 
 /// Handle get_module_summary tool - list exported symbols with signatures
 pub fn handle_get_module_summary(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: GetModuleSummaryTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let group_by_kind = tool.group_by_kind.unwrap_or(false);
@@ -948,20 +975,34 @@ pub fn handle_get_module_summary(
         "get_module_summary called"
     );
 
-    let sqlite = SqliteStore::open(db_path)?;
+    // Normalize file path to match how it's stored in the database (relative to BASE_DIR)
+    let file_path_normalized = state
+        .config
+        .path_relative_to_base(std::path::Path::new(&tool.file_path))
+        .unwrap_or_else(|_| tool.file_path.clone());
+
+    tracing::debug!(
+        original_path = %tool.file_path,
+        normalized_path = %file_path_normalized,
+        "Normalized file path"
+    );
+
+    let sqlite = SqliteStore::open(&state.config.db_path)?;
     sqlite.init()?;
 
     // Get exported symbols only
-    let symbols = sqlite.list_symbol_headers_by_file(&tool.file_path, true)?;
+    let symbols = sqlite.list_symbol_headers_by_file(&file_path_normalized, true)?;
 
     if symbols.is_empty() {
         tracing::warn!(
             file_path = %tool.file_path,
+            normalized_path = %file_path_normalized,
             "get_module_summary returned no exports - file may not be indexed or path may be incorrect"
         );
 
         return Ok(json!({
             "file_path": tool.file_path,
+            "file_path_normalized": file_path_normalized,
             "error": "NO_EXPORTS",
             "message": format!("No exported symbols found for '{}'", tool.file_path),
             "exports": [],
@@ -1019,6 +1060,7 @@ pub fn handle_get_module_summary(
 
     Ok(json!({
         "file_path": tool.file_path,
+        "file_path_normalized": file_path_normalized,
         "export_count": exports.len(),
         "exports": exports,
         "groups": groups,

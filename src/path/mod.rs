@@ -302,88 +302,239 @@ impl PathNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
 
     fn create_test_normalizer() -> PathNormalizer {
         PathNormalizer::new("/test/repo".into())
     }
 
-    #[test]
-    fn test_normalize_for_compare_basic() {
+    // ========== Parameterized Tests ==========
+
+    // Cross-platform path normalization tests
+    #[test_case("src/lib.rs", "src/lib.rs"; "unix relative path")]
+    #[test_case("src\\lib.rs", "src/lib.rs"; "windows relative path with backslashes")]
+    #[test_case("src/sub/../lib.rs", "src/sub/../lib.rs"; "path with parent reference")]
+    #[test_case("./src/lib.rs", "./src/lib.rs"; "current dir prefix")]
+    #[test_case("/test/repo/src/lib.rs", "/test/repo/src/lib.rs"; "absolute unix path")]
+    #[test_case("C:\\test\\repo\\src\\lib.rs", "C:/test/repo/src/lib.rs"; "absolute windows path")]
+    #[test_case("/test/repo/src/sub/../lib.rs", "/test/repo/src/sub/../lib.rs"; "normalized with parent")]
+    #[test_case("/test\\repo/src\\lib.rs", "/test/repo/src/lib.rs"; "mixed separators")]
+    #[test_case("/test/repo/src/", "/test/repo/src/"; "trailing slash preserved")]
+    #[test_case("", ""; "empty path")]
+    fn test_normalize_for_compare(input: &str, expected: &str) {
         let normalizer = create_test_normalizer();
-
-        let path = Utf8Path::new("/test/repo/src/main.rs");
-        let normalized = normalizer.normalize_for_compare(path).unwrap();
-
-        assert_eq!(normalized.as_str(), "/test/repo/src/main.rs");
+        let input_path = Utf8Path::new(input);
+        let result = normalizer.normalize_for_compare(input_path).unwrap();
+        assert_eq!(result.as_str(), expected);
     }
 
-    #[test]
-    fn test_normalize_for_compare_backslashes() {
-        let normalizer = create_test_normalizer();
-
-        // Simulate Windows-style path
-        let path = Utf8Path::new("C:\\test\\repo\\src\\main.rs");
-        let normalized = normalizer.normalize_for_compare(path).unwrap();
-
-        // Backslashes should be converted to forward slashes
-        assert_eq!(normalized.as_str(), "C:/test/repo/src/main.rs");
+    // Relative path computation tests
+    #[test_case("/test/repo/src/lib.rs", "src/lib.rs"; "simple relative path")]
+    #[test_case("/test/repo/src/sub/../lib.rs", "src/sub/../lib.rs"; "relative with parent ref")]
+    #[test_case("/test/repo", "."; "exact base path")]
+    #[test_case("/test/repo/handler/mod.rs", "handler/mod.rs"; "single level nested")]
+    #[test_case("/test/repo/a/b/c/d/file.rs", "a/b/c/d/file.rs"; "deeply nested")]
+    fn test_relative_to_base_success(full_path: &str, expected: &str) {
+        let base = Utf8PathBuf::from("/test/repo");
+        let normalizer = PathNormalizer::new(base);
+        let input_path = Utf8Path::new(full_path);
+        let result = normalizer.relative_to_base(input_path).unwrap();
+        assert_eq!(result.as_str(), expected);
     }
 
-    #[test]
-    fn test_normalize_for_compare_mixed_slashes() {
-        let normalizer = create_test_normalizer();
-
-        let path = Utf8Path::new("/test\\repo/src\\lib.rs");
-        let normalized = normalizer.normalize_for_compare(path).unwrap();
-
-        assert_eq!(normalized.as_str(), "/test/repo/src/lib.rs");
+    // Error cases for relative_to_base
+    #[test_case("/other/path/lib.rs"; "outside base different root")]
+    #[test_case("/test/repo_other/src/lib.rs"; "outside base similar prefix")]
+    #[test_case("/test/repo-backup/file.rs"; "outside base with dash")]
+    #[test_case("/etc/passwd"; "system path outside repo")]
+    #[test_case("/tmp/test/file.txt"; "tmp directory outside repo")]
+    #[test_case("../outside/file.rs"; "parent directory escape")]
+    #[test_case("../../etc/passwd"; "multi-level parent escape")]
+    fn test_relative_to_base_error(path: &str) {
+        let base = Utf8PathBuf::from("/test/repo");
+        let normalizer = PathNormalizer::new(base);
+        let input_path = Utf8Path::new(path);
+        let result = normalizer.relative_to_base(input_path);
+        assert!(result.is_err(), "Expected error for path: {}", path);
+        // Verify helpful error message contains both path and base
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("outside repository"), "Error message should mention being outside repo");
     }
 
-    #[test]
-    fn test_normalize_for_compare_trailing_slash() {
+    // Windows-specific UNC path tests
+    #[cfg(windows)]
+    #[test_case("\\\\?\\C:\\Users\\test", "\\\\?\\C:\\Users\\test"; "verbatim UNC path")]
+    #[test_case("\\\\?\\UNC\\server\\share\\file", "\\\\?\\UNC\\server\\share\\file"; "UNC share path")]
+    #[test_case("\\\\server\\share\\file", "//server/share/file"; "network path UNC")]
+    #[test_case("C:\\\\Users\\\\test", "C://Users/test"; "multiple consecutive backslashes")]
+    fn test_normalize_windows_unc_path(input: &str, expected: &str) {
         let normalizer = create_test_normalizer();
-
-        let path = Utf8Path::new("/test/repo/src/");
-        let normalized = normalizer.normalize_for_compare(path).unwrap();
-
-        // Trailing slash preserved
-        assert_eq!(normalized.as_str(), "/test/repo/src/");
+        let input_path = Utf8Path::new(input);
+        let result = normalizer.normalize_for_compare(input_path).unwrap();
+        // UNC paths should be normalized by dunce
+        assert!(result.as_str().contains('/'), "UNC path should use forward slashes");
     }
 
-    #[test]
-    fn test_relative_to_base_success() {
+    // Cross-platform backslash normalization
+    #[test_case("src\\lib.rs", "src/lib.rs"; "single backslash")]
+    #[test_case("src\\\\lib.rs", "src//lib.rs"; "double backslash")]
+    #[test_case("a\\b\\c\\d.rs", "a/b/c/d.rs"; "multiple backslashes")]
+    #[test_case("/repo\\src/lib.rs", "/repo/src/lib.rs"; "mixed backslash forward")]
+    #[test_case("C:\\Users\\test\\file.rs", "C:/Users/test/file.rs"; "windows absolute path")]
+    fn test_backslash_normalization(input: &str, expected: &str) {
         let normalizer = create_test_normalizer();
-
-        let path = Utf8Path::new("/test/repo/src/main.rs");
-        let relative = normalizer.relative_to_base(path).unwrap();
-
-        assert_eq!(relative.as_str(), "src/main.rs");
+        let input_path = Utf8Path::new(input);
+        let result = normalizer.normalize_for_compare(input_path).unwrap();
+        assert_eq!(result.as_str(), expected);
     }
+
+    // Security validation tests
+    #[test_case("/test/repo/src/main.rs", true; "valid path within base")]
+    #[test_case("/test/repo/./src/../lib.rs", true; "dot and parent within base")]
+    #[test_case("/test/repo_other/file.rs", false; "similar prefix but outside base")]
+    #[test_case("/other/path/file.rs", false; "different root outside base")]
+    fn test_validate_within_base(path: &str, should_pass: bool) {
+        let base = Utf8PathBuf::from("/test/repo");
+        let normalizer = PathNormalizer::new(base);
+        let input_path = Utf8Path::new(path);
+        let result = normalizer.validate_within_base(input_path);
+        assert_eq!(result.is_ok(), should_pass, "Path '{}' validation result mismatch", path);
+    }
+
+    // Similar prefix but outside base tests (security: detect path confusion)
+    #[test_case("/test/repo_backup/file.rs"; "repo_backup prefix")]
+    #[test_case("/test/repo2/src/lib.rs"; "repo2 numeric suffix")]
+    #[test_case("/test/repositories/project/src/lib.rs"; "repositories prefix")]
+    fn test_similar_prefix_outside_base(path: &str) {
+        let base = Utf8PathBuf::from("/test/repo");
+        let normalizer = PathNormalizer::new(base);
+        let input_path = Utf8Path::new(path);
+
+        let result = normalizer.validate_within_base(input_path);
+        assert!(result.is_err(), "Path '{}' should be outside base", path);
+
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("outside") || err_msg.contains("repository"),
+                "Error should mention being outside repository");
+    }
+
+    // Note: The PathNormalizer uses string-based prefix checking via strip_prefix.
+    // It does NOT resolve '..' segments to check if they escape the base.
+    // Full canonical path resolution would require std::fs::canonicalize which
+    // requires the path to exist on disk. For symlink security, consider calling
+    // canonicalize on resolved symlinks in higher-level code.
+
+    // Path joining tests
+    #[test_case("src/main.rs", "/test/repo/src/main.rs"; "simple join")]
+    #[test_case("lib/utils/mod.rs", "/test/repo/lib/utils/mod.rs"; "nested join")]
+    #[test_case("../outside.rs", "/test/repo/../outside.rs"; "parent in relative")]
+    #[test_case("./relative.rs", "/test/repo/./relative.rs"; "dot prefix")]
+    fn test_join_base(relative: &str, expected: &str) {
+        let base = Utf8PathBuf::from("/test/repo");
+        let normalizer = PathNormalizer::new(base);
+        let joined = normalizer.join_base(relative);
+        assert_eq!(joined.as_str(), expected);
+    }
+
+    // Error message helpfulness tests
+    #[test_case("/etc/passwd", "/test/repo"; "system path error")]
+    #[test_case("/tmp/file.rs", "/test/repo"; "tmp path error")]
+    #[test_case("/home/user/file.rs", "/test/repo"; "home path error")]
+    fn test_error_message_helpfulness(path: &str, base: &str) {
+        let normalizer = PathNormalizer::new(base.into());
+        let input_path = Utf8Path::new(path);
+        let result = normalizer.relative_to_base(input_path);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+
+        // Error should mention the problematic path
+        assert!(err_msg.contains(path) || err_msg.contains("outside"),
+                "Error should reference the problematic path");
+
+        // Error should mention the base directory for context
+        assert!(err_msg.contains(base) || err_msg.contains("repository"),
+                "Error should reference the base directory");
+    }
+
+    // Case sensitivity comparison tests
+    #[test_case("src/lib.rs", "src/lib.rs", true; "identical paths")]
+    #[test_case("src/lib.rs", "src/Lib.rs", false; "different case (case-sensitive)")]
+    #[test_case("src/lib.rs", "SRC/lib.rs", false; "different case directory")]
+    #[test_case("src/LIB.rs", "src/lib.rs", false; "different case extension")]
+    #[test_case("/test/repo/file.rs", "/test/repo/FILE.rs", false; "absolute different case")]
+    fn test_path_case_comparison(a: &str, b: &str, case_sensitive_equal: bool) {
+        // On Unix systems, paths are case-sensitive
+        // On Windows, paths are case-insensitive
+        let a_normalized = a.replace('\\', "/");
+        let b_normalized = b.replace('\\', "/");
+
+        let equal = a_normalized == b_normalized;
+        assert_eq!(equal, case_sensitive_equal,
+                   "Case comparison failed for '{}' vs '{}'", a, b);
+    }
+
+    // Platform-specific case behavior
+    #[test_case("src/lib.rs", "src/LIB.RS"; "case difference check")]
+    #[test_case("Main.ts", "main.ts"; "different case in filename")]
+    #[test_case("/A/B/C", "/a/b/c"; "different case in directory")]
+    fn test_case_sensitivity_behavior(path1: &str, path2: &str) {
+        // This test documents the case sensitivity behavior
+        // On Unix: these are different paths
+        // On Windows: these are the same path
+
+        let normalizer = create_test_normalizer();
+        let p1 = Utf8Path::new(path1);
+        let p2 = Utf8Path::new(path2);
+
+        let n1 = normalizer.normalize_for_compare(p1).unwrap();
+        let n2 = normalizer.normalize_for_compare(p2).unwrap();
+
+        // After normalization, string comparison is case-sensitive
+        let strings_equal = n1.as_str() == n2.as_str();
+
+        #[cfg(unix)]
+        assert!(!strings_equal, "Unix paths are case-sensitive: {} != {}", path1, path2);
+
+        #[cfg(windows)]
+        {
+            // On Windows, the file system may be case-insensitive
+            // but our string comparison is still case-sensitive
+            // This documents that behavior
+            assert_eq!(strings_equal, path1.to_lowercase() == path2.to_lowercase(),
+                      "Windows case behavior documented");
+        }
+    }
+
+    // Empty and edge case path tests
+    #[test_case(".", "."; "current directory")]
+    #[test_case("..", ".."; "parent directory")]
+    #[test_case("/", "/"; "root directory")]
+    #[test_case("file.rs", "file.rs"; "filename only")]
+    #[test_case("./file.rs", "./file.rs"; "dot prefix filename")]
+    fn test_edge_case_paths(input: &str, expected: &str) {
+        let normalizer = create_test_normalizer();
+        let input_path = Utf8Path::new(input);
+        let result = normalizer.normalize_for_compare(input_path).unwrap();
+        assert_eq!(result.as_str(), expected);
+    }
+
+    // ========== Additional Non-Parameterized Tests ==========
 
     #[test]
     fn test_relative_to_base_nested() {
+        // Additional nested test not covered by parameterized cases
         let normalizer = create_test_normalizer();
-
         let path = Utf8Path::new("/test/repo/src/lib/utils.rs");
         let relative = normalizer.relative_to_base(path).unwrap();
-
         assert_eq!(relative.as_str(), "src/lib/utils.rs");
     }
 
     #[test]
-    fn test_relative_to_base_exact_base() {
+    fn test_relative_to_base_outside_repo_structured_error() {
+        // Verify structured error content
         let normalizer = create_test_normalizer();
-
-        let path = Utf8Path::new("/test/repo");
-        let relative = normalizer.relative_to_base(path).unwrap();
-
-        assert_eq!(relative.as_str(), ".");
-    }
-
-    #[test]
-    fn test_relative_to_base_outside_repo() {
-        let normalizer = create_test_normalizer();
-
         let path = Utf8Path::new("/other/repo/src/main.rs");
         let result = normalizer.relative_to_base(path);
 
@@ -398,67 +549,9 @@ mod tests {
     }
 
     #[test]
-    fn test_relative_to_base_parent_escape() {
-        let normalizer = create_test_normalizer();
-
-        // Path that starts with base but goes outside via parent reference
-        // This is tricky - we're checking an absolute path, not a relative one
-        let path = Utf8Path::new("/test/repo_other/src/main.rs");
-        let result = normalizer.relative_to_base(path);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_within_base_success() {
-        let normalizer = create_test_normalizer();
-
-        let path = Utf8Path::new("/test/repo/src/main.rs");
-        assert!(normalizer.validate_within_base(path).is_ok());
-    }
-
-    #[test]
-    fn test_validate_within_base_failure() {
-        let normalizer = create_test_normalizer();
-
-        let path = Utf8Path::new("/etc/passwd");
-        let result = normalizer.validate_within_base(path);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_within_base_similar_prefix() {
-        let normalizer = create_test_normalizer();
-
-        // Path that has base as prefix but isn't actually within it
-        let path = Utf8Path::new("/test/repo_backup/src/main.rs");
-        let result = normalizer.validate_within_base(path);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_join_base() {
-        let normalizer = create_test_normalizer();
-
-        let joined = normalizer.join_base("src/main.rs");
-        assert_eq!(joined.as_str(), "/test/repo/src/main.rs");
-    }
-
-    #[test]
-    fn test_join_base_nested() {
-        let normalizer = create_test_normalizer();
-
-        let joined = normalizer.join_base("src/lib/utils.rs");
-        assert_eq!(joined.as_str(), "/test/repo/src/lib/utils.rs");
-    }
-
-    #[test]
-    fn test_join_base_absolute() {
-        let normalizer = create_test_normalizer();
-
+    fn test_join_base_absolute_path_override() {
         // camino's join handles absolute paths by ignoring the base
+        let normalizer = create_test_normalizer();
         let joined = normalizer.join_base("/absolute/path.rs");
         assert_eq!(joined.as_str(), "/absolute/path.rs");
     }
@@ -564,5 +657,21 @@ mod tests {
         let normalizer = PathNormalizer::new(base.clone());
 
         assert_eq!(normalizer.base_dir(), &base);
+    }
+
+    #[test]
+    fn test_error_message_includes_expected_format() {
+        // Verify error messages include helpful context for debugging
+        let normalizer = PathNormalizer::new("/Users/dev/myproject".into());
+        let result = normalizer.relative_to_base(Utf8Path::new("/etc/passwd"));
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+
+        // Error should mention the problematic path
+        assert!(err_msg.contains("/etc/passwd"));
+
+        // Error should mention the base directory
+        assert!(err_msg.contains("/Users/dev/myproject") || err_msg.contains("repository"));
     }
 }

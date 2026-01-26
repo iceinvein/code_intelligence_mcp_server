@@ -1,8 +1,8 @@
 use crate::config::EmbeddingsDevice;
 use crate::embeddings::Embedder;
+use crate::path::Utf8Path;
 use anyhow::{anyhow, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use std::path::Path;
 
 // Execution provider imports for Metal acceleration
 #[cfg(target_os = "macos")]
@@ -16,7 +16,7 @@ pub struct FastEmbedder {
 impl FastEmbedder {
     pub fn new(
         model_name: &str,
-        cache_dir: Option<&Path>,
+        cache_dir: Option<&Utf8Path>,
         device: EmbeddingsDevice,
         max_threads: usize,
     ) -> Result<Self> {
@@ -37,7 +37,7 @@ impl FastEmbedder {
         let mut options = InitOptions::new(model_enum);
 
         if let Some(path) = cache_dir {
-            options = options.with_cache_dir(path.to_path_buf());
+            options = options.with_cache_dir(path.as_std_path().to_path_buf());
         }
 
         // Configure thread limit for CPU inference

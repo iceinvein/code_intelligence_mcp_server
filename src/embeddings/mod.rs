@@ -31,7 +31,7 @@ pub trait Embedder {
 /// - Invalid backend specified
 pub fn create_embedder(
     backend: crate::config::EmbeddingsBackend,
-    model_dir: Option<&std::path::Path>,
+    model_dir: Option<&crate::path::Utf8Path>,
     model_repo: Option<&str>,
     device: crate::config::EmbeddingsDevice,
     max_threads: usize,

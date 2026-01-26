@@ -5,7 +5,7 @@ pub mod onnx;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::path::Path;
+use crate::path::Utf8Path;
 use std::sync::Arc;
 
 /// Trait for reranking search results
@@ -29,8 +29,8 @@ pub struct RerankDocument {
 
 /// Create a reranker based on config
 pub fn create_reranker(
-    model_path: Option<&Path>,
-    cache_dir: Option<&Path>,
+    model_path: Option<&Utf8Path>,
+    cache_dir: Option<&Utf8Path>,
     top_k: usize,
 ) -> Result<Option<Arc<dyn Reranker>>> {
     let model_path = match model_path {
@@ -38,7 +38,7 @@ pub fn create_reranker(
         Some(p) => {
             tracing::warn!(
                 "Reranker model path not found: {}, reranking disabled",
-                p.display()
+                p
             );
             return Ok(None);
         }

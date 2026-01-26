@@ -3,6 +3,7 @@ pub mod graph;
 pub mod tokens;
 
 use crate::config::Config;
+use crate::path::Utf8PathBuf;
 use crate::storage::sqlite::SqliteStore;
 use crate::storage::sqlite::SymbolRow;
 use anyhow::{anyhow, Context, Result};
@@ -12,7 +13,6 @@ use formatting::{
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 
 pub use formatting::{ContextItem, FormatMode};
@@ -304,9 +304,9 @@ impl ContextAssembler {
     }
 }
 
-fn read_symbol_snippet(base_dir: &Path, sym: &SymbolRow) -> Result<String> {
+fn read_symbol_snippet(base_dir: &Utf8PathBuf, sym: &SymbolRow) -> Result<String> {
     let abs = base_dir.join(&sym.file_path);
-    let bytes = fs::read(&abs).with_context(|| format!("Failed to read {}", abs.display()))?;
+    let bytes = fs::read(&abs).with_context(|| format!("Failed to read {}", abs))?;
 
     let start = sym.start_byte as usize;
     let end = sym.end_byte as usize;
@@ -326,10 +326,10 @@ mod tests {
 
     fn make_config(max_bytes: usize) -> Arc<Config> {
         Arc::new(Config {
-            db_path: std::path::PathBuf::from("db"),
-            vector_db_path: std::path::PathBuf::from("vec"),
-            tantivy_index_path: std::path::PathBuf::from("tantivy"),
-            base_dir: std::path::PathBuf::from("."),
+            db_path: Utf8PathBuf::from("db"),
+            vector_db_path: Utf8PathBuf::from("vec"),
+            tantivy_index_path: Utf8PathBuf::from("tantivy"),
+            base_dir: Utf8PathBuf::from("."),
             embeddings_backend: crate::config::EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_model_url: None,

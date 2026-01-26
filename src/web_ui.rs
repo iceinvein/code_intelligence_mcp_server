@@ -1,6 +1,7 @@
 //! Web UI for code intelligence (optional feature)
 
 use crate::handlers::{tool_internal_error, AppState};
+use crate::path::Utf8PathBuf;
 use axum::{
     extract::{Query, State},
     response::{Html, IntoResponse},
@@ -9,7 +10,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, path::Path, sync::Arc};
 
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
@@ -193,11 +194,14 @@ mod tests {
 
     fn cfg(base: &Path) -> Config {
         let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+        let base_utf8 = Utf8PathBuf::from_path_buf(base.clone()).unwrap_or_else(|_| {
+            Utf8PathBuf::from(base.to_string_lossy().as_ref())
+        });
         Config {
-            base_dir: base.clone(),
-            db_path: base.join("code-intelligence.db"),
-            vector_db_path: base.join("vectors"),
-            tantivy_index_path: base.join("tantivy-index"),
+            base_dir: base_utf8.clone(),
+            db_path: base_utf8.join("code-intelligence.db"),
+            vector_db_path: base_utf8.join("vectors"),
+            tantivy_index_path: base_utf8.join("tantivy-index"),
             embeddings_backend: EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_model_url: None,
@@ -222,9 +226,47 @@ mod tests {
             exclude_patterns: vec![],
             watch_mode: false,
             watch_debounce_ms: 50,
+            watch_min_index_interval_ms: 50,
             max_context_bytes: 200_000,
             index_node_modules: false,
-            repo_roots: vec![base],
+            repo_roots: vec![base_utf8],
+            // Reranker config (FNDN-03)
+            reranker_model_path: None,
+            reranker_top_k: 20,
+            reranker_cache_dir: None,
+            // Learning config (FNDN-04)
+            learning_enabled: false,
+            learning_selection_boost: 0.1,
+            learning_file_affinity_boost: 0.05,
+            // Token config (FNDN-05)
+            max_context_tokens: 8192,
+            token_encoding: "o200k_base".to_string(),
+            // Performance config (FNDN-06)
+            parallel_workers: 4,
+            embedding_cache_enabled: true,
+            embedding_max_threads: 0,
+            // PageRank config (FNDN-07)
+            pagerank_damping: 0.85,
+            pagerank_iterations: 20,
+            // Query expansion config (FNDN-02)
+            synonym_expansion_enabled: true,
+            acronym_expansion_enabled: true,
+            // RRF config (RETR-05)
+            rrf_enabled: true,
+            rrf_k: 60.0,
+            rrf_keyword_weight: 1.0,
+            rrf_vector_weight: 1.0,
+            rrf_graph_weight: 0.5,
+            // HyDE config (RETR-06, RETR-07)
+            hyde_enabled: false,
+            hyde_llm_backend: "openai".to_string(),
+            hyde_api_key: None,
+            hyde_max_tokens: 512,
+            // Metrics config (PERF-04)
+            metrics_enabled: true,
+            metrics_port: 9090,
+            // Package detection config (09-04)
+            package_detection_enabled: true,
         }
     }
 

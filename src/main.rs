@@ -90,7 +90,7 @@ async fn main() -> SdkResult<()> {
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        logs_dir = %logs_dir.display(),
+        logs_dir = %logs_dir,
         "Starting code-intelligence-mcp-server"
     );
 
@@ -265,15 +265,15 @@ async fn run() -> SdkResult<()> {
         .ok();
 
     debug!(
-        base_dir = %config.base_dir.display(),
-        db_path = %config.db_path.display(),
+        base_dir = %config.base_dir,
+        db_path = %config.db_path,
         db_path_rel = ?db_path_rel,
-        vector_db_path = %config.vector_db_path.display(),
+        vector_db_path = %config.vector_db_path,
         vector_db_path_rel = ?vector_db_path_rel,
-        tantivy_index_path = %config.tantivy_index_path.display(),
+        tantivy_index_path = %config.tantivy_index_path,
         tantivy_index_path_rel = ?tantivy_index_path_rel,
         embeddings_backend = ?config.embeddings_backend,
-        embeddings_model_dir = ?config.embeddings_model_dir.as_ref().map(|p| p.display().to_string()),
+        embeddings_model_dir = ?config.embeddings_model_dir.as_ref().map(|p| p.to_string()),
         embeddings_device = ?config.embeddings_device,
         embedding_batch_size = config.embedding_batch_size,
         hash_embedding_dim = config.hash_embedding_dim,

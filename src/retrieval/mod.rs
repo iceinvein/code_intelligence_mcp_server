@@ -6,6 +6,7 @@ pub mod hyde;
 mod query;
 mod ranking;
 
+use crate::path::Utf8PathBuf;
 use crate::retrieval::hyde::HypotheticalCodeGenerator;
 use crate::{
     config::Config,
@@ -79,7 +80,7 @@ pub struct HitSignals {
 #[derive(Clone)]
 pub struct Retriever {
     config: Arc<Config>,
-    db_path: std::path::PathBuf,
+    db_path: Utf8PathBuf,
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,

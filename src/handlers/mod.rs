@@ -132,7 +132,7 @@ pub fn handle_get_file_symbols(
     // Normalize file path to match how it's stored in the database (relative to BASE_DIR)
     let file_path_normalized = state
         .config
-        .path_relative_to_base(std::path::Path::new(&tool.file_path))
+        .path_relative_to_base_path(std::path::Path::new(&tool.file_path))
         .unwrap_or_else(|_| tool.file_path.clone());
 
     tracing::debug!(
@@ -971,7 +971,7 @@ pub fn handle_get_module_summary(
     // Normalize file path to match how it's stored in the database (relative to BASE_DIR)
     let file_path_normalized = state
         .config
-        .path_relative_to_base(std::path::Path::new(&tool.file_path))
+        .path_relative_to_base_path(std::path::Path::new(&tool.file_path))
         .unwrap_or_else(|_| tool.file_path.clone());
 
     tracing::debug!(

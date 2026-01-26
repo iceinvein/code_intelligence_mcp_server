@@ -636,6 +636,7 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::path::Utf8PathBuf;
     use crate::storage::sqlite::schema::{SymbolMetricsRow, SymbolRow};
     use crate::storage::sqlite::SqliteStore;
     use std::collections::HashMap;
@@ -643,12 +644,12 @@ mod tests {
     /// Create a minimal test config
     fn test_config(popularity_weight: f32) -> Config {
         use crate::config::{EmbeddingsBackend, EmbeddingsDevice};
-        use std::path::PathBuf;
+        use crate::path::Utf8PathBuf;
         Config {
-            base_dir: PathBuf::from("/tmp/test"),
-            db_path: PathBuf::from("/tmp/test.db"),
-            vector_db_path: PathBuf::from("/tmp/vectors"),
-            tantivy_index_path: PathBuf::from("/tmp/tantivy"),
+            base_dir: Utf8PathBuf::from("/tmp/test"),
+            db_path: Utf8PathBuf::from("/tmp/test.db"),
+            vector_db_path: Utf8PathBuf::from("/tmp/vectors"),
+            tantivy_index_path: Utf8PathBuf::from("/tmp/tantivy"),
             embeddings_backend: EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_model_url: None,
@@ -740,7 +741,8 @@ mod tests {
 
     #[test]
     fn page_rank_boosts_important_symbols() {
-        let db_path = std::env::temp_dir().join("test_page_rank_boosts.db");
+        let db_path_buf = std::env::temp_dir().join("test_page_rank_boosts.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -804,7 +806,8 @@ mod tests {
 
     #[test]
     fn page_rank_normalization_works() {
-        let db_path = std::env::temp_dir().join("test_page_rank_normalization.db");
+        let db_path_buf = std::env::temp_dir().join("test_page_rank_normalization.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -859,7 +862,8 @@ mod tests {
 
     #[test]
     fn page_rank_handles_missing_metrics() {
-        let db_path = std::env::temp_dir().join("test_page_rank_missing.db");
+        let db_path_buf = std::env::temp_dir().join("test_page_rank_missing.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -901,7 +905,8 @@ mod tests {
 
     #[test]
     fn page_rank_handles_empty_result_set() {
-        let db_path = std::env::temp_dir().join("test_page_rank_empty.db");
+        let db_path_buf = std::env::temp_dir().join("test_page_rank_empty.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -939,7 +944,8 @@ mod tests {
 
     #[test]
     fn page_rank_empty_hits_returns_early() {
-        let db_path = std::env::temp_dir().join("test_page_rank_empty_hits.db");
+        let db_path_buf = std::env::temp_dir().join("test_page_rank_empty_hits.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -963,7 +969,8 @@ mod tests {
 
     #[test]
     fn page_rank_zero_weight_returns_early() {
-        let db_path = std::env::temp_dir().join("test_page_rank_zero_weight.db");
+        let db_path_buf = std::env::temp_dir().join("test_page_rank_zero_weight.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {

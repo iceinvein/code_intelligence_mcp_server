@@ -158,15 +158,15 @@ fn intent_boost_multiplier(intent: &Intent) -> f32 {
 mod tests {
     use super::*;
     use crate::config::{EmbeddingsBackend, EmbeddingsDevice};
+    use crate::path::Utf8PathBuf;
     use crate::storage::sqlite::schema::{PackageRow, RepositoryRow, SymbolRow};
-    use std::path::PathBuf;
 
     fn test_config() -> Config {
         Config {
-            base_dir: PathBuf::from("/tmp/test"),
-            db_path: PathBuf::from("/tmp/test.db"),
-            vector_db_path: PathBuf::from("/tmp/vectors"),
-            tantivy_index_path: PathBuf::from("/tmp/tantivy"),
+            base_dir: Utf8PathBuf::from("/tmp/test"),
+            db_path: Utf8PathBuf::from("/tmp/test.db"),
+            vector_db_path: Utf8PathBuf::from("/tmp/vectors"),
+            tantivy_index_path: Utf8PathBuf::from("/tmp/tantivy"),
             embeddings_backend: EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_model_url: None,
@@ -243,7 +243,8 @@ mod tests {
 
     #[test]
     fn test_same_package_boost_prioritizes_same_package() {
-        let db_path = std::env::temp_dir().join("test_same_package_boost.db");
+        let db_path_buf = std::env::temp_dir().join("test_same_package_boost.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -364,7 +365,8 @@ mod tests {
 
     #[test]
     fn test_cross_package_no_boost_applied() {
-        let db_path = std::env::temp_dir().join("test_cross_package.db");
+        let db_path_buf = std::env::temp_dir().join("test_cross_package.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -445,7 +447,8 @@ mod tests {
 
     #[test]
     fn test_intent_affects_boost_multiplier() {
-        let db_path = std::env::temp_dir().join("test_intent_boost_multiplier.db");
+        let db_path_buf = std::env::temp_dir().join("test_intent_boost_multiplier.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -546,7 +549,8 @@ mod tests {
 
     #[test]
     fn test_auto_detect_package_from_first_hit() {
-        let db_path = std::env::temp_dir().join("test_auto_detect_package.db");
+        let db_path_buf = std::env::temp_dir().join("test_auto_detect_package.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {
@@ -652,7 +656,8 @@ mod tests {
 
     #[test]
     fn test_empty_hits_returns_early() {
-        let db_path = std::env::temp_dir().join("test_empty_hits_package.db");
+        let db_path_buf = std::env::temp_dir().join("test_empty_hits_package.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let _ = std::fs::remove_file(&db_path);
 
         {

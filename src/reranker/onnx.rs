@@ -2,9 +2,9 @@
 
 use super::{RerankDocument, Reranker};
 use anyhow::{Context, Result};
+use crate::path::Utf8Path;
 use ndarray::Array;
 use ort::session::Session;
-use std::path::Path;
 use tokenizers::Tokenizer;
 use tokio::sync::Mutex;
 
@@ -18,17 +18,17 @@ pub struct CrossEncoderReranker {
 
 impl CrossEncoderReranker {
     /// Create a new cross-encoder reranker from an ONNX model file
-    pub fn new(model_path: &Path, _cache_dir: Option<&Path>, top_k: usize) -> Result<Self> {
+    pub fn new(model_path: &Utf8Path, _cache_dir: Option<&Utf8Path>, top_k: usize) -> Result<Self> {
         tracing::info!(
             "Loading cross-encoder reranker from: {}",
-            model_path.display()
+            model_path
         );
 
         let session = Session::builder()?
             .with_execution_providers([
                 ort::execution_providers::CPUExecutionProvider::default().build()
             ])?
-            .commit_from_file(model_path)
+            .commit_from_file(model_path.as_std_path())
             .context("Failed to load cross-encoder ONNX model")?;
 
         // Try to load tokenizer from same directory

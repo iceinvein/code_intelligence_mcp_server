@@ -187,6 +187,7 @@ mod tests {
             exclude_patterns: vec!["**/node_modules/**".to_string()],
             watch_mode: false,
             watch_debounce_ms: 250,
+            watch_min_index_interval_ms: 5000,
             max_context_bytes: 200_000,
             index_node_modules: false,
             repo_roots: vec!["/tmp/test".into()],

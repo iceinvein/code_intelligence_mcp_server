@@ -66,6 +66,7 @@ pub struct Config {
     pub exclude_patterns: Vec<String>,
     pub watch_mode: bool,
     pub watch_debounce_ms: u64,
+    pub watch_min_index_interval_ms: u64, // Minimum time between index runs in watch mode
     pub max_context_bytes: usize,
     pub index_node_modules: bool,
     pub repo_roots: Vec<PathBuf>,
@@ -288,6 +289,12 @@ impl Config {
             .transpose()?
             .unwrap_or(250);
 
+        let watch_min_index_interval_ms = optional_env("WATCH_MIN_INDEX_INTERVAL_MS")
+            .as_deref()
+            .map(parse_u64)
+            .transpose()?
+            .unwrap_or(5000); // Default 5 seconds between index runs
+
         let max_context_bytes = optional_env("MAX_CONTEXT_BYTES")
             .as_deref()
             .map(parse_usize)
@@ -483,6 +490,7 @@ impl Config {
             exclude_patterns,
             watch_mode,
             watch_debounce_ms,
+            watch_min_index_interval_ms,
             max_context_bytes,
             index_node_modules,
             repo_roots,

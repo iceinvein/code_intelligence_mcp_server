@@ -65,6 +65,15 @@ pub struct IndexPipeline {
 }
 
 impl IndexPipeline {
+    /// Get repository name for logging purposes
+    fn repo_name(&self) -> &str {
+        self.config
+            .base_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+    }
+
     pub fn new(
         config: Arc<Config>,
         tantivy: Arc<TantivyIndex>,
@@ -111,6 +120,7 @@ impl IndexPipeline {
         if self.config.package_detection_enabled {
             if let Err(e) = self.index_packages_and_repositories() {
                 tracing::warn!(
+                    repo = %self.repo_name(),
                     error = %e,
                     "Package detection failed, continuing with indexing"
                 );
@@ -256,6 +266,7 @@ impl IndexPipeline {
         let pkg_count = sqlite.list_all_packages()?.len();
 
         tracing::info!(
+            repo = %self.repo_name(),
             repositories = repo_count,
             packages = pkg_count,
             "Discovered packages and repositories"
@@ -280,28 +291,133 @@ impl IndexPipeline {
         Ok(stats)
     }
 
+    /// Check if any files in the workspace have changed since last indexing
+    ///
+    /// Returns Ok(true) if changes are detected, Ok(false) if no changes,
+    /// or Err() if checking fails.
+    fn check_for_changes(&self) -> Result<bool> {
+        let sqlite = SqliteStore::open(&self.db_path)?;
+        sqlite.init()?;
+
+        // Scan all files in the workspace
+        let mut files = Vec::new();
+        for root in &self.config.repo_roots {
+            files.extend(scan_files(&self.config, root)?);
+        }
+
+        // Check if any files have changed by comparing fingerprints
+        for file in &files {
+            let rel = file_key(&self.config, file);
+            let fp = file_fingerprint(file)?;
+
+            // Check if file is already indexed and unchanged
+            if let Ok(Some(existing)) = sqlite.get_file_fingerprint(&rel) {
+                // File exists in index - check if it changed
+                if existing.mtime_ns != fp.mtime_ns || existing.size_bytes != fp.size_bytes {
+                    // File changed - need to re-index
+                    return Ok(true);
+                }
+            } else {
+                // File not in index yet - need to index
+                return Ok(true);
+            }
+        }
+
+        // Check for deleted files
+        let scanned_rel: HashSet<String> = files
+            .iter()
+            .map(|f| file_key(&self.config, f))
+            .collect();
+
+        let existing = sqlite.list_all_file_fingerprints(1_000_000)?;
+        for fp in existing {
+            if !scanned_rel.contains(&fp.file_path) {
+                // File was deleted - need to re-index
+                return Ok(true);
+            }
+        }
+
+        // No changes detected
+        Ok(false)
+    }
+
     pub fn spawn_watch_loop(&self) -> tokio::task::JoinHandle<()> {
         let pipeline = self.clone();
         tokio::spawn(async move {
             let interval_ms = pipeline.config.watch_debounce_ms.max(50);
+            let min_index_interval = pipeline.config.watch_min_index_interval_ms;
             let mut consecutive_failures = 0;
             let max_backoff_ms = 5000; // Max 5 seconds backoff
+            let mut last_index_time: Option<Instant> = None;
+
+            // Get repository name for logging
+            let repo_name = pipeline
+                .config
+                .base_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
 
             loop {
                 sleep(Duration::from_millis(interval_ms)).await;
-                if let Err(err) = pipeline.index_all().await {
-                    consecutive_failures += 1;
-                    let backoff_ms =
-                        (interval_ms * (1 << consecutive_failures.min(8))).min(max_backoff_ms);
-                    tracing::warn!(
-                        error = %err,
-                        consecutive_failures = consecutive_failures,
-                        backoff_ms = backoff_ms,
-                        "Watch index run failed, backing off"
-                    );
-                    sleep(Duration::from_millis(backoff_ms)).await;
-                } else {
-                    consecutive_failures = 0; // Reset on success
+
+                // Only re-index if files have actually changed
+                match pipeline.check_for_changes() {
+                    Ok(true) => {
+                        // Check rate limiting: ensure minimum time between index runs
+                        if let Some(last_time) = last_index_time {
+                            let elapsed = last_time.elapsed().as_millis() as u64;
+                            if elapsed < min_index_interval {
+                                tracing::debug!(
+                                    repo = %repo_name,
+                                    elapsed_ms = elapsed,
+                                    min_interval_ms = min_index_interval,
+                                    "Rate limiting: skipping index, too soon since last run"
+                                );
+                                continue;
+                            }
+                        }
+
+                        // Changes detected - proceed with indexing
+                        tracing::info!(
+                            repo = %repo_name,
+                            "Changes detected, starting index run"
+                        );
+
+                        match pipeline.index_all().await {
+                            Ok(_) => {
+                                last_index_time = Some(Instant::now());
+                                consecutive_failures = 0; // Reset on success
+                            }
+                            Err(err) => {
+                                consecutive_failures += 1;
+                                let backoff_ms =
+                                    (interval_ms * (1 << consecutive_failures.min(8))).min(max_backoff_ms);
+                                tracing::warn!(
+                                    repo = %repo_name,
+                                    error = %err,
+                                    consecutive_failures = consecutive_failures,
+                                    backoff_ms = backoff_ms,
+                                    "Watch index run failed, backing off"
+                                );
+                                sleep(Duration::from_millis(backoff_ms)).await;
+                            }
+                        }
+                    }
+                    Ok(false) => {
+                        // No changes - skip indexing this cycle
+                        tracing::trace!(
+                            repo = %repo_name,
+                            "No changes detected, skipping index cycle"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            repo = %repo_name,
+                            error = %err,
+                            "Failed to check for changes, skipping this cycle"
+                        );
+                    }
                 }
             }
         })
@@ -398,13 +514,17 @@ impl IndexPipeline {
         let indexing_stats = if self.config.parallel_workers > 1 {
             // Parallel path (no embeddings/vectors in parallel mode)
             tracing::info!(
-                "Using parallel indexing with {} workers",
-                self.config.parallel_workers
+                repo = %self.repo_name(),
+                workers = self.config.parallel_workers,
+                "Using parallel indexing"
             );
             self.index_files_parallel_async(uniq.clone()).await?
         } else {
             // Sequential path (includes embeddings/vectors)
-            tracing::info!("Using sequential indexing");
+            tracing::info!(
+                repo = %self.repo_name(),
+                "Using sequential indexing"
+            );
             // For now, keep the original logic inline
             // TODO: Refactor into index_files_sequential helper
             self.index_files_sequential_internal(&uniq, &mut stats)
@@ -430,13 +550,18 @@ impl IndexPipeline {
         // Log cache statistics
         let cache_stats = self.cache.stats();
         tracing::info!(
+            repo = %self.repo_name(),
             hits = cache_stats.hits,
             misses = cache_stats.misses,
             hit_rate = %format!("{:.1}%", cache_stats.hit_rate * 100.0),
             "Embedding cache statistics"
         );
 
-        tracing::debug!(?stats, "Index run completed");
+        tracing::debug!(
+            repo = %self.repo_name(),
+            ?stats,
+            "Index run completed"
+        );
         Ok(stats)
     }
 
@@ -811,11 +936,15 @@ impl IndexPipeline {
         let symbols_need_embeddings = sqlite.list_symbols_without_similarity_clusters(1000)?;
 
         if symbols_need_embeddings.is_empty() {
-            tracing::debug!("No symbols need embeddings after parallel indexing");
+            tracing::debug!(
+                repo = %self.repo_name(),
+                "No symbols need embeddings after parallel indexing"
+            );
             return Ok(());
         }
 
         tracing::info!(
+            repo = %self.repo_name(),
             count = symbols_need_embeddings.len(),
             "Generating embeddings for symbols after parallel indexing"
         );
@@ -857,6 +986,7 @@ impl IndexPipeline {
         }
 
         tracing::info!(
+            repo = %self.repo_name(),
             count = vectors.len(),
             "Generated embeddings and similarity clusters after parallel indexing"
         );

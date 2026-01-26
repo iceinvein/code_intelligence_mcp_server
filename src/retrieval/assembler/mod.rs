@@ -354,6 +354,7 @@ mod tests {
             exclude_patterns: vec![],
             watch_mode: false,
             watch_debounce_ms: 100,
+            watch_min_index_interval_ms: 5000,
             max_context_bytes: max_bytes,
             index_node_modules: false,
             repo_roots: vec![],
@@ -523,7 +524,7 @@ mod tests {
 
         // Test with query - should work without panicking
         let (output_with_query, _items) = assembler
-            .format_context(&store, &[func.clone()], &[], &[], Some("test"))
+            .format_context(&store, std::slice::from_ref(&func), &[], &[], Some("test"))
             .unwrap();
 
         // Test without query - should work without panicking
@@ -574,11 +575,11 @@ mod tests {
 
         // Both should produce some output and not panic
         let (with_query, _) = assembler
-            .format_context(&store, &[large_func.clone()], &[], &[], Some("x100"))
+            .format_context(&store, std::slice::from_ref(&large_func), &[], &[], Some("x100"))
             .unwrap();
 
         let (without_query, _) = assembler
-            .format_context(&store, &[large_func.clone()], &[], &[], None)
+            .format_context(&store, std::slice::from_ref(&large_func), &[], &[], None)
             .unwrap();
 
         // Both should produce some output

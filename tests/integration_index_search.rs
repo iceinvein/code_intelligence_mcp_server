@@ -63,6 +63,7 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         exclude_patterns: vec![],
         watch_mode: false,
         watch_debounce_ms: 100,
+        watch_min_index_interval_ms: 50, // Small interval for tests
         max_context_bytes: 200_000,
         index_node_modules: false,
         repo_roots: vec![base_dir],

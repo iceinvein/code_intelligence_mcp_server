@@ -240,6 +240,7 @@ mod tests {
             exclude_patterns: vec![],
             watch_mode: false,
             watch_debounce_ms: 100,
+            watch_min_index_interval_ms: 50,
             max_context_bytes: 10_000,
             index_node_modules: false,
             repo_roots: vec![base.clone()],

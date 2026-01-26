@@ -14,7 +14,7 @@ use rust_mcp_sdk::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use code_intelligence_mcp_server::config::Config;
 use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
@@ -54,15 +54,43 @@ async fn main() -> SdkResult<()> {
         return Ok(());
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    // Set up file logging to global ~/.cimcp/logs directory
+    let global_dir = code_intelligence_mcp_server::config::get_global_cimcp_dir();
+    let logs_dir = global_dir.join("logs");
+
+    // Create logs directory if it doesn't exist
+    std::fs::create_dir_all(&logs_dir).map_err(|err| McpSdkError::Internal {
+        description: format!("Failed to create logs directory: {}", err),
+    })?;
+
+    // Create a daily rotating file appender
+    let file_appender = tracing_appender::rolling::daily(&logs_dir, "server.log");
+    let (non_blocking_file, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Set up layered subscriber with both stderr and file output
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(true)
         )
-        .with_writer(std::io::stderr)
+        .with(
+            fmt::layer()
+                .with_writer(non_blocking_file)
+                .with_ansi(false)
+        )
         .init();
+
+    // Keep the guard alive for the duration of the program
+    // This ensures logs are flushed when the program exits
+    std::mem::forget(_guard);
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
+        logs_dir = %logs_dir.display(),
         "Starting code-intelligence-mcp-server"
     );
 

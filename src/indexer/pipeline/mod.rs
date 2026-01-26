@@ -542,7 +542,12 @@ impl IndexPipeline {
             let sqlite = SqliteStore::open(&self.db_path)?;
             sqlite.init()?;
             pagerank::compute_and_store_pagerank(&sqlite, &self.config)
-                .context("Failed to compute PageRank scores")?;
+                .with_context(|| {
+                    format!(
+                        "Failed to compute PageRank scores: files_indexed={}, files_deleted={}",
+                        stats.files_indexed, stats.files_deleted
+                    )
+                })?;
         } else {
             tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
         }
@@ -910,7 +915,12 @@ impl IndexPipeline {
             index_files_parallel(config, db_path, tantivy, vectors, files)
         })
         .await
-        .context("Join error in parallel indexing")??;
+        .with_context(|| {
+            format!(
+                "Join error in parallel indexing: num_files={}",
+                files.len()
+            )
+        })??;
 
         // Post-processing: Generate embeddings and create similarity clusters
         // This is required because parallel indexing skips embedding generation
@@ -970,7 +980,12 @@ impl IndexPipeline {
         let vectors = self
             .embed_and_build_vector_records(&symbol_rows)
             .await
-            .context("Failed to embed symbols for parallel indexing")?;
+            .with_context(|| {
+                format!(
+                    "Failed to embed symbols for parallel indexing: symbol_count={}",
+                    symbol_rows.len()
+                )
+            })?;
 
         // Add vectors to LanceDB
         self.vectors.add_records(&vectors).await.context(

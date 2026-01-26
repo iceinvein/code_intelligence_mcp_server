@@ -383,7 +383,12 @@ pub fn index_files_parallel(
         .num_threads(config.parallel_workers)
         .thread_name(|i| format!("indexer-{}", i))
         .build()
-        .context("Failed to build Rayon thread pool")?;
+        .with_context(|| {
+            format!(
+                "Failed to build Rayon thread pool: num_threads={}",
+                config.parallel_workers
+            )
+        })?;
 
     let stats = Arc::new(Mutex::new(IndexRunStats {
         files_scanned: files.len(),

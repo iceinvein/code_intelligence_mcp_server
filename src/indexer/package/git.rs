@@ -139,14 +139,24 @@ fn discover_single_root(manifest_path: &PathBuf) -> Result<Option<RepositoryInfo
             return Ok(None);
         }
         Err(e) => {
-            return Err(e).context("Failed to discover git repository");
+            return Err(e).with_context(|| {
+                format!(
+                    "Failed to discover git repository: manifest_path={}",
+                    manifest_path.display()
+                )
+            });
         }
     };
 
     // Get the workdir (repository root)
     let workdir = repo
         .workdir()
-        .context("Repository is bare, cannot determine root path")?;
+        .with_context(|| {
+            format!(
+                "Repository is bare, cannot determine root path: manifest_path={}",
+                manifest_path.display()
+            )
+        })?;
 
     let root_path = workdir.to_path_buf();
 
@@ -172,7 +182,12 @@ mod tests {
             .arg("init")
             .current_dir(dir)
             .status()
-            .context("Failed to run git init")?;
+            .with_context(|| {
+                format!(
+                    "Failed to run git init: dir={}",
+                    dir.display()
+                )
+            })?;
 
         if !status.success() {
             return Err(anyhow::anyhow!("git init failed"));
@@ -198,7 +213,14 @@ mod tests {
             .args(["remote", "add", name, url])
             .current_dir(dir)
             .status()
-            .context("Failed to add git remote")?;
+            .with_context(|| {
+                format!(
+                    "Failed to add git remote: dir={}, remote_name={}, remote_url={}",
+                    dir.display(),
+                    name,
+                    url
+                )
+            })?;
 
         if !status.success() {
             return Err(anyhow::anyhow!("git remote add failed"));

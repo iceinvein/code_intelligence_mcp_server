@@ -3,6 +3,9 @@
 //! Tests verify that tool handlers produce correct response structures
 //! and handle error cases appropriately.
 
+// Test support module with fixtures and helpers
+mod support;
+
 use code_intelligence_mcp_server::{
     config::{Config, EmbeddingsBackend, EmbeddingsDevice},
     embeddings::hash::HashEmbedder,
@@ -1068,4 +1071,33 @@ async fn test_find_similar_code_not_found() {
         result.get("error").and_then(|v| v.as_str()),
         Some("SYMBOL_NOT_FOUND")
     );
+}
+
+// ============================================================================
+// Fixture smoke tests
+// ============================================================================
+
+/// Verify that rstest fixtures can be injected correctly
+///
+/// This test ensures the new rstest fixture infrastructure works.
+/// It's a simple smoke test that all fixtures compose correctly.
+#[cfg(test)]
+mod fixture_tests {
+    use rstest::*;
+
+    // Import fixtures from the support module declared at file root
+    use super::support::fixtures::*;
+
+    // Import the actual AppState type to avoid ambiguity
+    use code_intelligence_mcp_server::handlers::AppState as ActualAppState;
+
+    #[rstest]
+    #[tokio::test]
+    async fn rstest_fixture_injection_works(app_state: ActualAppState) {
+        // Fixtures should inject successfully
+        assert!(app_state.config.base_dir.exists());
+        // Verify sqlite was initialized by checking we can query it
+        let count = app_state.sqlite.count_symbols().unwrap();
+        assert_eq!(count, 0); // Empty database
+    }
 }

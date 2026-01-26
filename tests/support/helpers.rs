@@ -34,10 +34,13 @@ pub fn tmp_db_path() -> PathBuf {
 /// Creates a temporary directory with a unique name for test isolation.
 /// The directory is created immediately and the path is returned.
 ///
+/// Note: This is a procedural helper function, not a rstest fixture.
+/// For rstest tests, use the `tmp_dir` fixture from fixtures.rs instead.
+///
 /// # Returns
 ///
 /// A `PathBuf` pointing to a newly created temporary directory
-pub fn tmp_dir() -> PathBuf {
+pub fn tmp_test_dir() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -210,8 +213,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tmp_dir_creates_directory() {
-        let dir = tmp_dir();
+    fn test_tmp_test_dir_creates_directory() {
+        let dir = tmp_test_dir();
         assert!(dir.exists());
         assert!(dir.is_dir());
     }

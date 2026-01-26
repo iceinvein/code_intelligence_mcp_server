@@ -11,7 +11,8 @@ use code_intelligence_mcp_server::{
     embeddings::hash::HashEmbedder,
     handlers::{
         handle_explain_search, handle_find_affected_code, handle_find_similar_code,
-        handle_report_selection, handle_summarize_file, handle_trace_data_flow,
+        handle_get_module_summary, handle_report_selection, handle_summarize_file,
+        handle_trace_data_flow,
     },
     metrics::MetricsRegistry,
     retrieval::Retriever,
@@ -21,8 +22,8 @@ use code_intelligence_mcp_server::{
         vector::LanceDbStore,
     },
     tools::{
-        ExplainSearchTool, FindAffectedCodeTool, FindSimilarCodeTool, ReportSelectionTool,
-        SummarizeFileTool, TraceDataFlowTool,
+        ExplainSearchTool, FindAffectedCodeTool, FindSimilarCodeTool, GetModuleSummaryTool,
+        ReportSelectionTool, SummarizeFileTool, TraceDataFlowTool,
     },
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -318,183 +319,264 @@ async fn test_summarize_file_not_found() {
 // Tests for get_module_summary tool
 // ============================================================================
 
-#[test]
-#[ignore] // TODO: Fix test to create AppState for path normalization
-fn test_get_module_summary_tool() {
-    // Test temporarily disabled due to signature change requiring AppState
-    /*
-    let db_path = tmp_db_path();
+#[cfg(test)]
+mod get_module_summary_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Note: We can't use rstest fixtures directly with tokio::test because
+    // the app_state fixture uses blocking calls internally (block_on) which
+    // conflicts with the tokio runtime. Instead, we create AppState manually
+    // within each async test.
 
-    create_test_symbol(
-        &db_path,
-        "export-1",
-        "exportedFunction",
-        "function",
-        "src/module.ts",
-        true,
-    )
-    .unwrap();
-    create_test_symbol(
-        &db_path,
-        "export-2",
-        "exportedClass",
-        "class",
-        "src/module.ts",
-        true,
-    )
-    .unwrap();
+    // Unique counter for test isolation
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    let params = GetModuleSummaryTool {
-        file_path: "src/module.ts".to_string(),
-        group_by_kind: Some(true),
-    };
+    /// Helper to create AppState for async tests
+    /// This must be called within async context to avoid runtime conflicts
+    async fn create_async_app_state() -> (code_intelligence_mcp_server::handlers::AppState, std::path::PathBuf) {
+        use code_intelligence_mcp_server::handlers::AppState;
+        use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
+        use code_intelligence_mcp_server::retrieval::Retriever;
+        use code_intelligence_mcp_server::storage::sqlite::SqliteStore;
+        use code_intelligence_mcp_server::storage::tantivy::TantivyIndex;
+        use code_intelligence_mcp_server::storage::vector::LanceDbStore;
 
-    let result = handle_get_module_summary(&db_path, params).unwrap();
+        // Create temp dir for this test with unique ID for parallel test safety
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base_dir = std::path::PathBuf::from(format!(
+            "/tmp/cimcp-test-{}-{}",
+            unique_id,
+            counter
+        ));
+        std::fs::create_dir_all(&base_dir).unwrap();
 
-    assert_eq!(result.get("export_count").and_then(|v| v.as_u64()), Some(2));
-    assert!(result.get("exports").is_some());
-    assert!(result.get("groups").is_some());
+        let config = std::sync::Arc::new(super::test_config(&base_dir));
 
-    // Check grouping worked
-    let empty = Vec::new();
-    let groups = result
-        .get("groups")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&empty);
-    assert!(!groups.is_empty());
+        // Create storage components async
+        let tantivy = std::sync::Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+        let sqlite = std::sync::Arc::new(SqliteStore::open(&config.db_path).unwrap());
+        sqlite.init().unwrap();
 
-    // Should have groups for function and class
-    let kinds: Vec<_> = groups
-        .iter()
-        .filter_map(|g| g.get("kind").and_then(|k| k.as_str()))
-        .collect();
-    assert!(kinds.contains(&"function"));
-    assert!(kinds.contains(&"class"));
-    */
+        let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+        let vectors = std::sync::Arc::new(
+            lancedb
+                .open_or_create_table("symbols", config.hash_embedding_dim)
+                .await
+                .unwrap(),
+        );
+
+        let embedder = std::sync::Arc::new(tokio::sync::Mutex::new(
+            Box::new(code_intelligence_mcp_server::embeddings::hash::HashEmbedder::new(config.hash_embedding_dim))
+                as Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>
+        ));
+
+        let metrics = std::sync::Arc::new(code_intelligence_mcp_server::metrics::MetricsRegistry::new().unwrap());
+
+        let indexer = IndexPipeline::new(
+            config.clone(),
+            tantivy.clone(),
+            vectors.clone(),
+            embedder.clone(),
+            metrics.clone(),
+        );
+
+        let retriever = Retriever::new(
+            config.clone(),
+            tantivy,
+            vectors,
+            embedder,
+            None,
+            None,
+            metrics,
+        );
+
+        let app_state = AppState {
+            config,
+            indexer,
+            retriever,
+            sqlite,
+        };
+
+        (app_state, base_dir)
+    }
+
+    #[tokio::test]
+    async fn test_get_module_summary_tool() {
+        let (app_state, _base_dir) = create_async_app_state().await;
+
+        // Create actual source file with exports
+        let module_path = app_state.config.base_dir.join("src/module.ts");
+        std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
+        std::fs::write(&module_path, r#"
+export function exportedFunction() {
+    return "hello";
 }
 
-#[test]
-#[ignore] // TODO: Fix test to create AppState for path normalization
-fn test_get_module_summary_flat() {
-    // Test temporarily disabled due to signature change requiring AppState
-    // which is complex to create in unit tests
-    /*
-    let db_path = tmp_db_path();
-
-    create_test_symbol(
-        &db_path,
-        "export-1",
-        "myFunction",
-        "function",
-        "src/api.ts",
-        true,
-    )
-    .unwrap();
-
-    let params = GetModuleSummaryTool {
-        file_path: "src/api.ts".to_string(),
-        group_by_kind: Some(false), // Flat output
-    };
-
-    let result = handle_get_module_summary(&db_path, params).unwrap();
-
-    assert_eq!(result.get("export_count").and_then(|v| v.as_u64()), Some(1));
-
-    let empty = Vec::new();
-    let exports = result
-        .get("exports")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&empty);
-    assert_eq!(exports.len(), 1);
-    assert_eq!(
-        exports[0].get("name").and_then(|v| v.as_str()),
-        Some("myFunction")
-    );
-
-    // groups should be empty when group_by_kind=false
-    let groups = result
-        .get("groups")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&empty);
-    assert!(groups.is_empty());
-    */
+export class ExportedClass {
+    constructor() {}
 }
 
-#[test]
-#[ignore] // TODO: Fix test to create AppState for path normalization
-fn test_get_module_summary_no_exports() {
-    // Test temporarily disabled due to signature change requiring AppState
-    /*
-    let db_path = tmp_db_path();
-
-    // Only create internal symbols (exported=false)
-    create_test_symbol(
-        &db_path,
-        "internal-1",
-        "internalFunc",
-        "function",
-        "src/internal.ts",
-        false,
-    )
-    .unwrap();
-
-    let params = GetModuleSummaryTool {
-        file_path: "src/internal.ts".to_string(),
-        group_by_kind: Some(false),
-    };
-
-    let result = handle_get_module_summary(&db_path, params).unwrap();
-
-    // Should return NO_EXPORTS error
-    assert_eq!(
-        result.get("error").and_then(|v| v.as_str()),
-        Some("NO_EXPORTS")
-    );
-    assert!(result.get("message").is_some());
-    */
+function internalFunc() {
+    // This is internal, not exported
 }
+"#).unwrap();
 
-#[test]
-#[ignore] // TODO: Fix test to create AppState for path normalization
-fn test_get_module_summary_signatures() {
-    // Test temporarily disabled due to signature change requiring AppState
-    /*
-    let db_path = tmp_db_path();
+        // Index the file
+        app_state.indexer.index_all().await.unwrap();
 
-    create_test_symbol(
-        &db_path,
-        "export-1",
-        "myFunction",
-        "function",
-        "src/utils.ts",
-        true,
-    )
-    .unwrap();
+        let params = GetModuleSummaryTool {
+            file_path: "src/module.ts".to_string(),
+            group_by_kind: Some(true),
+        };
 
-    let params = GetModuleSummaryTool {
-        file_path: "src/utils.ts".to_string(),
-        group_by_kind: Some(false),
-    };
+        let result = handle_get_module_summary(&app_state, params).unwrap();
 
-    let result = handle_get_module_summary(&db_path, params).unwrap();
+        assert_eq!(result.get("export_count").and_then(|v| v.as_u64()), Some(2));
+        assert!(result.get("exports").is_some());
+        assert!(result.get("groups").is_some());
 
-    let empty = Vec::new();
-    let exports = result
-        .get("exports")
-        .and_then(|v| v.as_array())
-        .unwrap_or(&empty);
-    assert_eq!(exports.len(), 1);
+        // Check grouping worked
+        let empty = Vec::new();
+        let groups = result
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+        assert!(!groups.is_empty());
 
-    // Check signature field exists
-    assert!(exports[0].get("signature").is_some());
+        // Should have groups for function and class
+        let kinds: Vec<_> = groups
+            .iter()
+            .filter_map(|g| g.get("kind").and_then(|k| k.as_str()))
+            .collect();
+        assert!(kinds.contains(&"function"));
+        assert!(kinds.contains(&"class"));
+    }
 
-    // Signature should be a truncated version of the text
-    let sig = exports[0]
-        .get("signature")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    assert!(!sig.is_empty());
-    */
+    #[tokio::test]
+    async fn test_get_module_summary_flat() {
+        let (app_state, _base_dir) = create_async_app_state().await;
+
+        // Create actual source file with a single export
+        let module_path = app_state.config.base_dir.join("src/api.ts");
+        std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
+        std::fs::write(&module_path, r#"
+export function myFunction() {
+    return "api response";
+}
+"#).unwrap();
+
+        // Index the file
+        app_state.indexer.index_all().await.unwrap();
+
+        let params = GetModuleSummaryTool {
+            file_path: "src/api.ts".to_string(),
+            group_by_kind: Some(false), // Flat output
+        };
+
+        let result = handle_get_module_summary(&app_state, params).unwrap();
+
+        assert_eq!(result.get("export_count").and_then(|v| v.as_u64()), Some(1));
+
+        let empty = Vec::new();
+        let exports = result
+            .get("exports")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(
+            exports[0].get("name").and_then(|v| v.as_str()),
+            Some("myFunction")
+        );
+
+        // groups should be empty when group_by_kind=false
+        let groups = result
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+        assert!(groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_module_summary_no_exports() {
+        let (app_state, _base_dir) = create_async_app_state().await;
+
+        // Create actual source file with only internal symbols (no exports)
+        let module_path = app_state.config.base_dir.join("src/internal.ts");
+        std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
+        std::fs::write(&module_path, r#"
+function internalFunc() {
+    // No exports here - just internal function
+    return "internal";
+}
+"#).unwrap();
+
+        // Index the file
+        app_state.indexer.index_all().await.unwrap();
+
+        let params = GetModuleSummaryTool {
+            file_path: "src/internal.ts".to_string(),
+            group_by_kind: Some(false),
+        };
+
+        let result = handle_get_module_summary(&app_state, params).unwrap();
+
+        // Should return NO_EXPORTS error
+        assert_eq!(
+            result.get("error").and_then(|v| v.as_str()),
+            Some("NO_EXPORTS")
+        );
+        assert!(result.get("message").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_module_summary_signatures() {
+        let (app_state, _base_dir) = create_async_app_state().await;
+
+        // Create actual source file with export
+        let module_path = app_state.config.base_dir.join("src/utils.ts");
+        std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
+        std::fs::write(&module_path, r#"
+// Exported function with a longer body to test signature truncation
+export function myFunction(param: string): number {
+    return param.length * 2;
+}
+"#).unwrap();
+
+        // Index the file
+        app_state.indexer.index_all().await.unwrap();
+
+        let params = GetModuleSummaryTool {
+            file_path: "src/utils.ts".to_string(),
+            group_by_kind: Some(false),
+        };
+
+        let result = handle_get_module_summary(&app_state, params).unwrap();
+
+        let empty = Vec::new();
+        let exports = result
+            .get("exports")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+
+        assert!(exports.len() >= 1, "Should have at least one export");
+
+        // Check signature field exists on the first export
+        assert!(exports[0].get("signature").is_some());
+
+        // Signature should be a truncated version of the text
+        let sig = exports[0]
+            .get("signature")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(!sig.is_empty());
+
+        // Signature should contain the function signature
+        assert!(sig.contains("myFunction"), "Signature should contain function name");
+    }
 }
 
 // ============================================================================

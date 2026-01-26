@@ -1097,4 +1097,30 @@ mod fixture_tests {
         assert!(tmp_dir.exists());
         assert!(tmp_dir.is_dir());
     }
+
+    // Verify test_config fixture works
+    #[rstest]
+    fn rstest_test_config_fixture_works(test_config: code_intelligence_mcp_server::config::Config) {
+        assert!(test_config.base_dir.exists());
+        assert!(test_config.db_path.starts_with(&test_config.base_dir));
+    }
+
+    // Async fixture test - verify metrics fixture works
+    #[rstest]
+    fn rstest_metrics_fixture_works(_metrics: std::sync::Arc<code_intelligence_mcp_server::metrics::MetricsRegistry>) {
+        // Just verify we got the fixture - MetricsRegistry doesn't have much to check
+        assert!(true, "metrics fixture injected successfully");
+    }
+
+    // Verify the app_state fixture can be constructed and injected
+    // Note: app_state fixture uses blocking calls internally for LanceDB
+    #[rstest]
+    fn rstest_app_state_fixture_works(app_state: ActualAppState) {
+        // Verify all components are present
+        assert!(app_state.config.base_dir.exists());
+        assert!(app_state.config.db_path.exists());
+        // Verify sqlite was initialized by checking we can query it
+        let count = app_state.sqlite.count_symbols().unwrap();
+        assert_eq!(count, 0); // Empty database
+    }
 }

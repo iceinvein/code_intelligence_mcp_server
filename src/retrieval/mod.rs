@@ -354,29 +354,58 @@ impl Retriever {
                 let _keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
                 let vector_t = Instant::now();
-                let query_vector = self.get_query_vector_cached(search_query).await?;
-                let mut vector_hits = self.vectors.search(&query_vector, k).await?;
 
-                // HyDE: Add hypothetical document retrieval
-                if self.config.hyde_enabled {
-                    if let Some(generator) = &self.hyde_generator {
-                        let language = detect_language_from_query(search_query);
-                        if let Ok(hyde_result) = generator.generate(search_query, language).await {
-                            let mut embedder = self.embedder.lock().await;
-                            if let Ok(hyde_embeddings) =
-                                embedder.embed(&[hyde_result.hypothetical_code])
-                            {
-                                if let Some(hyde_vector) = hyde_embeddings.first() {
-                                    if let Ok(mut hyde_hits) =
-                                        self.vectors.search(hyde_vector, k / 2).await
-                                    {
-                                        vector_hits.append(&mut hyde_hits);
+                // Vector search with graceful degradation
+                let (vector_hits, _vector_degraded) = match self.get_query_vector_cached(search_query).await {
+                    Ok(query_vector) => {
+                        match self.vectors.search(&query_vector, k).await {
+                            Ok(mut hits) => {
+                                // HyDE: Add hypothetical document retrieval (best-effort)
+                                if self.config.hyde_enabled {
+                                    if let Some(generator) = &self.hyde_generator {
+                                        let language = detect_language_from_query(search_query);
+                                        if let Ok(hyde_result) = generator.generate(search_query, language).await {
+                                            let mut embedder = self.embedder.lock().await;
+                                            if let Ok(hyde_embeddings) =
+                                                embedder.embed(&[hyde_result.hypothetical_code])
+                                            {
+                                                if let Some(hyde_vector) = hyde_embeddings.first() {
+                                                    if let Ok(mut hyde_hits) =
+                                                        self.vectors.search(hyde_vector, k / 2).await
+                                                    {
+                                                        hits.append(&mut hyde_hits);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // HyDE failures are silently ignored - it's a best-effort enhancement
                                     }
                                 }
+                                (hits, false)
+                            }
+                            Err(e) => {
+                                // Vector search failed - degrade gracefully
+                                tracing::warn!(
+                                    query = %search_query,
+                                    error = %e,
+                                    "LanceDB vector search failed, degrading to keyword-only search"
+                                );
+                                self.metrics.search_errors_total.inc();
+                                (Vec::new(), true)
                             }
                         }
                     }
-                }
+                    Err(e) => {
+                        // Embedding generation failed - degrade gracefully
+                        tracing::warn!(
+                            query = %search_query,
+                            error = %e,
+                            "Query embedding generation failed, degrading to keyword-only search"
+                        );
+                        self.metrics.search_errors_total.inc();
+                        (Vec::new(), true)
+                    }
+                };
 
                 let _vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 

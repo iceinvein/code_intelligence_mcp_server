@@ -220,6 +220,7 @@ async fn run() -> SdkResult<()> {
         config: config.clone(),
         indexer,
         retriever,
+        sqlite: Arc::new(sqlite),
     });
 
     // Trigger automatic re-index if vector dimension migration occurred

@@ -95,8 +95,7 @@ pub async fn handle_get_definition(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(10).max(1) as usize;
 
-    let sqlite = SqliteStore::open(&state.config.db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let rows =
         sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file.as_deref(), limit)?;
@@ -136,8 +135,7 @@ pub fn handle_get_file_symbols(
         "Normalized file path"
     );
 
-    let sqlite = SqliteStore::open(&state.config.db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let rows = sqlite.list_symbol_headers_by_file(&file_path_normalized, exported_only)?;
 
@@ -159,8 +157,7 @@ pub fn handle_get_file_symbols(
 
 /// Handle get_index_stats tool
 pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, anyhow::Error> {
-    let sqlite = SqliteStore::open(&state.config.db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let symbols = sqlite.count_symbols()?;
     let edges = sqlite.count_edges()?;
@@ -183,8 +180,7 @@ pub fn handle_hydrate_symbols(
     state: &AppState,
     tool: HydrateSymbolsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let sqlite = SqliteStore::open(&state.config.db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let mut rows = Vec::new();
     let mut missing = Vec::new();
@@ -214,15 +210,14 @@ pub fn handle_hydrate_symbols(
 
 /// Handle explore_dependency_graph tool
 pub fn handle_explore_dependency_graph(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: ExploreDependencyGraphTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = tool.depth.unwrap_or(2) as usize;
     let limit = tool.limit.unwrap_or(200).max(1) as usize;
     let direction = tool.direction.unwrap_or_else(|| "downstream".to_string());
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
     let root = roots.first().cloned();
@@ -237,19 +232,18 @@ pub fn handle_explore_dependency_graph(
         }));
     };
 
-    let graph = build_dependency_graph(&sqlite, &root, &direction, depth, limit)?;
+    let graph = build_dependency_graph(sqlite, &root, &direction, depth, limit)?;
     Ok(graph)
 }
 
 /// Handle get_similarity_cluster tool
 pub fn handle_get_similarity_cluster(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: GetSimilarityClusterTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(20).max(1) as usize;
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
     let root = roots.first().cloned();
@@ -289,14 +283,13 @@ pub fn handle_get_similarity_cluster(
 
 /// Handle find_references tool
 pub fn handle_find_references(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: FindReferencesTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(200).max(1) as usize;
     let reference_type = tool.reference_type.unwrap_or_else(|| "all".to_string());
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 20)?;
 
@@ -336,13 +329,12 @@ pub fn handle_find_references(
 
 /// Handle get_usage_examples tool
 pub fn handle_get_usage_examples(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: GetUsageExamplesTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(20).max(1) as usize;
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 20)?;
 
@@ -409,15 +401,14 @@ pub fn handle_get_usage_examples(
 
 /// Handle get_call_hierarchy tool
 pub fn handle_get_call_hierarchy(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: GetCallHierarchyTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = tool.depth.unwrap_or(2) as usize;
     let limit = tool.limit.unwrap_or(200).max(1) as usize;
     let direction = tool.direction.unwrap_or_else(|| "callees".to_string());
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
     let root = roots.first().cloned();
@@ -432,20 +423,19 @@ pub fn handle_get_call_hierarchy(
         }));
     };
 
-    let graph = build_call_hierarchy(&sqlite, &root, &direction, depth, limit)?;
+    let graph = build_call_hierarchy(sqlite, &root, &direction, depth, limit)?;
     Ok(graph)
 }
 
 /// Handle get_type_graph tool
 pub fn handle_get_type_graph(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: GetTypeGraphTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = tool.depth.unwrap_or(2) as usize;
     let limit = tool.limit.unwrap_or(200).max(1) as usize;
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
     let root = roots.first().cloned();
@@ -459,17 +449,16 @@ pub fn handle_get_type_graph(
         }));
     };
 
-    let graph = build_type_graph(&sqlite, &root, depth, limit)?;
+    let graph = build_type_graph(sqlite, &root, depth, limit)?;
     Ok(graph)
 }
 
 /// Handle report_selection tool
 pub async fn handle_report_selection(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: ReportSelectionTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     // Normalize query (reuse logic from retrieval/query.rs)
     let normalized = tool.query.to_lowercase().trim().to_string();
@@ -560,8 +549,7 @@ pub async fn handle_find_similar_code(
     let limit = tool.limit.unwrap_or(20).clamp(1, 100) as usize;
     let threshold = tool.threshold.unwrap_or(0.5);
 
-    let sqlite = SqliteStore::open(&state.config.db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     // Determine search vector: either from symbol_name or code_snippet
     let (query_vector, query_description) = if let Some(name) = &tool.symbol_name {
@@ -747,15 +735,14 @@ fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> Strin
 
 /// Handle trace_data_flow tool - trace variable reads/writes through the codebase
 pub fn handle_trace_data_flow(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: TraceDataFlowTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = tool.depth.unwrap_or(3) as usize;
     let limit = tool.limit.unwrap_or(50).max(1) as usize;
     let direction = tool.direction.unwrap_or_else(|| "both".to_string());
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     // Find the root symbol
     let roots =
@@ -987,8 +974,7 @@ pub fn handle_get_module_summary(
         "Normalized file path"
     );
 
-    let sqlite = SqliteStore::open(&state.config.db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     // Get exported symbols only
     let symbols = sqlite.list_symbol_headers_by_file(&file_path_normalized, true)?;
@@ -1146,14 +1132,13 @@ fn format_module_summary(
 
 /// Handle summarize_file tool - generate file-level summary with symbol counts and purpose inference
 pub fn handle_summarize_file(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: SummarizeFileTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let include_signatures = tool.include_signatures.unwrap_or(false);
     let verbose = tool.verbose.unwrap_or(false);
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     // Get all symbols in file
     let symbols = sqlite.list_symbols_by_file(&tool.file_path)?;
@@ -1317,15 +1302,14 @@ fn format_file_summary(
 
 /// Handle find_affected_code tool - find code affected if a symbol changes
 pub fn handle_find_affected_code(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: FindAffectedCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = tool.depth.unwrap_or(3) as usize;
     let limit = tool.limit.unwrap_or(100).max(1) as usize;
     let include_tests = tool.include_tests.unwrap_or(false);
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     // Find the root symbol
     let roots =
@@ -1513,13 +1497,12 @@ fn format_affected_code(
 
 /// Handle search_todos tool
 pub fn handle_search_todos(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: SearchTodosTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(50).max(1) as usize;
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let todos = sqlite.search_todos(
         tool.query.as_deref(),
@@ -1540,13 +1523,12 @@ pub fn handle_search_todos(
 
 /// Handle find_tests_for_symbol tool
 pub fn handle_find_tests_for_symbol(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: FindTestsForSymbolTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let _limit = tool.limit.unwrap_or(20).max(1) as usize;
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     // Find the symbol
     let roots =
@@ -1648,13 +1630,12 @@ fn format_test_results(
 
 /// Handle search_decorators tool
 pub fn handle_search_decorators(
-    db_path: &std::path::Path,
+    state: &AppState,
     tool: SearchDecoratorsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(50).clamp(1, 500) as usize;
 
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let sqlite = &state.sqlite;
 
     let decorators = sqlite.search_decorators_by_name(
         tool.name.as_deref(),

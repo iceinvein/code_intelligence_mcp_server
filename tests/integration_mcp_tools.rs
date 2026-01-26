@@ -75,12 +75,67 @@ fn create_test_symbol(
     Ok(())
 }
 
+/// Create AppState with sqlite initialized for handler tests
+async fn create_app_state(db_path: &PathBuf, suffix: &str) -> code_intelligence_mcp_server::handlers::AppState {
+    // Use the parent directory of the db_path as the base directory
+    let base_dir = db_path.parent().unwrap_or(db_path).to_path_buf();
+
+    let config = Arc::new(test_config(&base_dir));
+
+    let sqlite = Arc::new(SqliteStore::open(db_path).unwrap());
+    // Initialize database schema
+    sqlite.init().unwrap();
+
+    // Create unique tantivy index path using db_path stem and suffix to avoid lock contention
+    let tantivy_index_path = config.tantivy_index_path
+        .join(format!("{}-{}", db_path.file_stem().unwrap_or_default().to_string_lossy(), suffix));
+    let tantivy = Arc::new(TantivyIndex::open_or_create(&tantivy_index_path).unwrap());
+    let embedder = Arc::new(AsyncMutex::new(
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+    ));
+
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vectors = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", config.hash_embedding_dim)
+            .await
+            .unwrap(),
+    );
+
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
+    let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
+        config.clone(),
+        tantivy.clone(),
+        vectors.clone(),
+        embedder.clone(),
+        metrics.clone(),
+    );
+
+    let retriever = Retriever::new(
+        config.clone(),
+        tantivy,
+        vectors,
+        embedder,
+        None,
+        None,
+        metrics,
+    );
+
+    code_intelligence_mcp_server::handlers::AppState {
+        config,
+        indexer,
+        retriever,
+        sqlite,
+    }
+}
+
 // ============================================================================
 // Tests for summarize_file tool
 // ============================================================================
 
-#[test]
-fn test_summarize_file_tool() {
+#[tokio::test]
+async fn test_summarize_file_tool() {
     let db_path = tmp_db_path();
 
     create_test_symbol(
@@ -111,13 +166,15 @@ fn test_summarize_file_tool() {
     )
     .unwrap();
 
+    let state = create_app_state(&db_path, "summarize-1").await;
+
     let params = SummarizeFileTool {
         file_path: "src/test.rs".to_string(),
         include_signatures: Some(false),
         verbose: Some(false),
     };
 
-    let result = handle_summarize_file(&db_path, params).unwrap();
+    let result = handle_summarize_file(&state, params).unwrap();
 
     assert_eq!(
         result.get("file_path").and_then(|v| v.as_str()),
@@ -135,8 +192,8 @@ fn test_summarize_file_tool() {
     assert!(result.get("purpose").is_some());
 }
 
-#[test]
-fn test_summarize_file_with_signatures() {
+#[tokio::test]
+async fn test_summarize_file_with_signatures() {
     let db_path = tmp_db_path();
 
     create_test_symbol(
@@ -158,13 +215,15 @@ fn test_summarize_file_with_signatures() {
     )
     .unwrap();
 
+    let state = create_app_state(&db_path, "summarize-2").await;
+
     let params = SummarizeFileTool {
         file_path: "src/module.ts".to_string(),
         include_signatures: Some(true),
         verbose: Some(false),
     };
 
-    let result = handle_summarize_file(&db_path, params).unwrap();
+    let result = handle_summarize_file(&state, params).unwrap();
 
     assert_eq!(
         result.get("file_path").and_then(|v| v.as_str()),
@@ -189,8 +248,8 @@ fn test_summarize_file_with_signatures() {
     assert!(exports[0].get("signature").is_some());
 }
 
-#[test]
-fn test_summarize_file_verbose_includes_internal() {
+#[tokio::test]
+async fn test_summarize_file_verbose_includes_internal() {
     let db_path = tmp_db_path();
 
     create_test_symbol(
@@ -212,13 +271,15 @@ fn test_summarize_file_verbose_includes_internal() {
     )
     .unwrap();
 
+    let state = create_app_state(&db_path, "summarize-3").await;
+
     let params = SummarizeFileTool {
         file_path: "src/module.ts".to_string(),
         include_signatures: Some(true),
         verbose: Some(true), // verbose=true should include internal symbols
     };
 
-    let result = handle_summarize_file(&db_path, params).unwrap();
+    let result = handle_summarize_file(&state, params).unwrap();
 
     let empty = Vec::new();
     let exports = result
@@ -229,9 +290,11 @@ fn test_summarize_file_verbose_includes_internal() {
     assert_eq!(exports.len(), 2);
 }
 
-#[test]
-fn test_summarize_file_not_found() {
+#[tokio::test]
+async fn test_summarize_file_not_found() {
     let db_path = tmp_db_path();
+
+    let state = create_app_state(&db_path, "summarize-4").await;
 
     let params = SummarizeFileTool {
         file_path: "nonexistent.rs".to_string(),
@@ -239,7 +302,7 @@ fn test_summarize_file_not_found() {
         verbose: Some(false),
     };
 
-    let result = handle_summarize_file(&db_path, params).unwrap();
+    let result = handle_summarize_file(&state, params).unwrap();
 
     assert_eq!(
         result.get("error").and_then(|v| v.as_str()),
@@ -435,11 +498,13 @@ fn test_get_module_summary_signatures() {
 // Tests for trace_data_flow tool
 // ============================================================================
 
-#[test]
-fn test_trace_data_flow_tool() {
+#[tokio::test]
+async fn test_trace_data_flow_tool() {
     let db_path = tmp_db_path();
 
     create_test_symbol(&db_path, "root", "dataVar", "variable", "src/main.rs", true).unwrap();
+
+    let state = create_app_state(&db_path, "trace-1").await;
 
     let params = TraceDataFlowTool {
         symbol_name: "dataVar".to_string(),
@@ -449,7 +514,7 @@ fn test_trace_data_flow_tool() {
         limit: Some(50),
     };
 
-    let result = handle_trace_data_flow(&db_path, params).unwrap();
+    let result = handle_trace_data_flow(&state, params).unwrap();
 
     assert!(result.get("symbol_name").is_some());
     assert!(result.get("flows").is_some());
@@ -457,9 +522,11 @@ fn test_trace_data_flow_tool() {
     assert!(result.get("write_count").is_some());
 }
 
-#[test]
-fn test_trace_data_flow_not_found() {
+#[tokio::test]
+async fn test_trace_data_flow_not_found() {
     let db_path = tmp_db_path();
+
+    let state = create_app_state(&db_path, "trace-2").await;
 
     let params = TraceDataFlowTool {
         symbol_name: "nonexistent".to_string(),
@@ -469,7 +536,7 @@ fn test_trace_data_flow_not_found() {
         limit: Some(50),
     };
 
-    let result = handle_trace_data_flow(&db_path, params).unwrap();
+    let result = handle_trace_data_flow(&state, params).unwrap();
 
     assert_eq!(
         result.get("error").and_then(|v| v.as_str()),
@@ -481,8 +548,8 @@ fn test_trace_data_flow_not_found() {
 // Tests for find_affected_code tool
 // ============================================================================
 
-#[test]
-fn test_find_affected_code_tool() {
+#[tokio::test]
+async fn test_find_affected_code_tool() {
     let db_path = tmp_db_path();
 
     create_test_symbol(
@@ -495,6 +562,8 @@ fn test_find_affected_code_tool() {
     )
     .unwrap();
 
+    let state = create_app_state(&db_path, "affected-1").await;
+
     let params = FindAffectedCodeTool {
         symbol_name: "apiFunction".to_string(),
         file_path: None,
@@ -503,16 +572,18 @@ fn test_find_affected_code_tool() {
         include_tests: Some(false),
     };
 
-    let result = handle_find_affected_code(&db_path, params).unwrap();
+    let result = handle_find_affected_code(&state, params).unwrap();
 
     assert!(result.get("symbol_name").is_some());
     assert!(result.get("affected").is_some());
     assert!(result.get("affected_files").is_some());
 }
 
-#[test]
-fn test_find_affected_code_not_found() {
+#[tokio::test]
+async fn test_find_affected_code_not_found() {
     let db_path = tmp_db_path();
+
+    let state = create_app_state(&db_path, "affected-2").await;
 
     let params = FindAffectedCodeTool {
         symbol_name: "nonexistent".to_string(),
@@ -522,7 +593,7 @@ fn test_find_affected_code_not_found() {
         include_tests: Some(false),
     };
 
-    let result = handle_find_affected_code(&db_path, params).unwrap();
+    let result = handle_find_affected_code(&state, params).unwrap();
 
     assert_eq!(
         result.get("error").and_then(|v| v.as_str()),
@@ -534,8 +605,8 @@ fn test_find_affected_code_not_found() {
 // Tests for report_selection tool
 // ============================================================================
 
-#[test]
-fn test_report_selection_tool() {
+#[tokio::test]
+async fn test_report_selection_tool() {
     let db_path = tmp_db_path();
 
     // Create a symbol first (required for foreign key constraint)
@@ -549,17 +620,15 @@ fn test_report_selection_tool() {
     )
     .unwrap();
 
+    let state = create_app_state(&db_path, "report-1").await;
+
     let params = ReportSelectionTool {
         query: "test search".to_string(),
         selected_symbol_id: "sym-123".to_string(),
         position: 1,
     };
 
-    // report_selection is async
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt
-        .block_on(handle_report_selection(&db_path, params))
-        .unwrap();
+    let result = handle_report_selection(&state, params).await.unwrap();
 
     assert_eq!(result.get("ok").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(result.get("recorded").and_then(|v| v.as_bool()), Some(true));
@@ -570,8 +639,8 @@ fn test_report_selection_tool() {
     );
 }
 
-#[test]
-fn test_report_selection_normalizes_query() {
+#[tokio::test]
+async fn test_report_selection_normalizes_query() {
     let db_path = tmp_db_path();
 
     // Create a symbol first (required for foreign key constraint)
@@ -585,16 +654,15 @@ fn test_report_selection_normalizes_query() {
     )
     .unwrap();
 
+    let state = create_app_state(&db_path, "report-2").await;
+
     let params = ReportSelectionTool {
         query: "  Test Search  ".to_string(), // Leading/trailing spaces and mixed case
         selected_symbol_id: "sym-456".to_string(),
         position: 2,
     };
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt
-        .block_on(handle_report_selection(&db_path, params))
-        .unwrap();
+    let result = handle_report_selection(&state, params).await.unwrap();
 
     // Query should be normalized (lowercased, trimmed)
     assert_eq!(
@@ -852,9 +920,10 @@ async fn test_find_similar_code_by_symbol_name() {
         metrics,
     );
     let state = code_intelligence_mcp_server::handlers::AppState {
-        config,
+        config: config.clone(),
         indexer,
         retriever,
+        sqlite: Arc::new(SqliteStore::open(&config.db_path).unwrap()),
     };
 
     // The handler might fail if embedding isn't found, so check both success and error cases
@@ -929,9 +998,10 @@ async fn test_find_similar_code_by_code_snippet() {
         metrics,
     );
     let state = code_intelligence_mcp_server::handlers::AppState {
-        config,
+        config: config.clone(),
         indexer,
         retriever,
+        sqlite: Arc::new(SqliteStore::open(&config.db_path).unwrap()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();
@@ -986,9 +1056,10 @@ async fn test_find_similar_code_not_found() {
         metrics,
     );
     let state = code_intelligence_mcp_server::handlers::AppState {
-        config,
+        config: config.clone(),
         indexer,
         retriever,
+        sqlite: Arc::new(SqliteStore::open(&config.db_path).unwrap()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();

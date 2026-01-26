@@ -167,18 +167,6 @@ pub fn apply_file_affinity_boost_with_signals(
     Ok(hits)
 }
 
-/// Rank hits from keyword and vector search
-#[cfg(test)]
-pub fn rank_hits(
-    keyword_hits: &[KeywordHit],
-    vector_hits: &[VectorHit],
-    config: &Config,
-    intent: &Option<Intent>,
-    query: &str,
-) -> Vec<RankedHit> {
-    rank_hits_with_signals(keyword_hits, vector_hits, config, intent, query).0
-}
-
 /// Rank hits and return signals for debugging
 pub fn rank_hits_with_signals(
     keyword_hits: &[KeywordHit],
@@ -360,42 +348,6 @@ pub fn rank_hits_with_signals(
             .then_with(|| a.id.cmp(&b.id))
     });
     (out, signals)
-}
-
-/// Apply popularity boost based on incoming edges
-///
-/// #[deprecated] Note: This function uses O(N) database queries and is replaced by
-/// apply_popularity_boost_with_signals which uses batch PageRank lookup.
-#[deprecated(note = "Use apply_popularity_boost_with_signals for O(1) batch PageRank lookup")]
-#[cfg(test)]
-pub fn apply_popularity_boost(
-    sqlite: &SqliteStore,
-    mut hits: Vec<RankedHit>,
-    config: &Config,
-) -> Result<Vec<RankedHit>> {
-    if hits.is_empty() || config.rank_popularity_weight == 0.0 || config.rank_popularity_cap == 0 {
-        return Ok(hits);
-    }
-
-    for h in hits.iter_mut() {
-        let count = sqlite.count_incoming_edges(&h.id).unwrap_or(0);
-        let capped = count.min(config.rank_popularity_cap) as f32;
-        let denom = config.rank_popularity_cap as f32;
-        if denom > 0.0 {
-            h.score += config.rank_popularity_weight * (capped / denom);
-        }
-    }
-
-    hits.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| b.exported.cmp(&a.exported))
-            .then_with(|| a.name.cmp(&b.name))
-            .then_with(|| a.file_path.cmp(&b.file_path))
-            .then_with(|| a.kind.cmp(&b.kind))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    Ok(hits)
 }
 
 /// Apply popularity boost with signals tracking using PageRank scores

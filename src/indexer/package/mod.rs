@@ -327,9 +327,9 @@ pub fn discover_packages(
 /// ```
 pub fn detect_repositories(packages: &mut [PackageInfo]) -> anyhow::Result<Vec<RepositoryInfo>> {
     // Extract manifest paths from packages for git root detection
-    let manifest_paths: Vec<PathBuf> = packages
+    let manifest_paths: Vec<Utf8PathBuf> = packages
         .iter()
-        .map(|p| PathBuf::from(&p.manifest_path))
+        .filter_map(|p| Utf8PathBuf::from_path_buf(PathBuf::from(&p.manifest_path)).ok())
         .collect();
 
     // Use git module to discover repository roots

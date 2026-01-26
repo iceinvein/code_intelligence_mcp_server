@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use git2::Repository;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use crate::path::Utf8PathBuf;
 
 /// Information about a discovered git repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,9 +26,9 @@ pub struct RepositoryInfo {
 
 impl RepositoryInfo {
     /// Create a new RepositoryInfo from a root path.
-    pub fn from_root_path(root_path: PathBuf, remote_url: Option<String>) -> Self {
+    pub fn from_root_path(root_path: Utf8PathBuf, remote_url: Option<String>) -> Self {
         // Generate SHA-256 hash of root path string for stable ID
-        let path_str = root_path.to_string_lossy();
+        let path_str = root_path.as_str();
         let mut hasher = Sha256::new();
         hasher.update(path_str.as_bytes());
         let hash = hasher.finalize();
@@ -37,8 +37,8 @@ impl RepositoryInfo {
         // Extract name from directory name
         let name = root_path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+            .unwrap_or("unknown")
+            .to_string();
 
         RepositoryInfo {
             id,
@@ -73,13 +73,13 @@ impl RepositoryInfo {
 ///
 /// ```no_run
 /// use anyhow::Result;
-/// use std::path::PathBuf;
+/// use code_intelligence_mcp_server::path::Utf8PathBuf;
 /// use code_intelligence_mcp_server::indexer::package::git::discover_git_roots;
 ///
 /// fn main() -> Result<()> {
 ///     let manifests = vec![
-///         PathBuf::from("/path/to/repo/package.json"),
-///         PathBuf::from("/path/to/repo/subdir/Cargo.toml"),
+///         Utf8PathBuf::from("/path/to/repo/package.json"),
+///         Utf8PathBuf::from("/path/to/repo/subdir/Cargo.toml"),
 ///     ];
 ///
 ///     let repos = discover_git_roots(&manifests)?;
@@ -88,7 +88,7 @@ impl RepositoryInfo {
 ///     Ok(())
 /// }
 /// ```
-pub fn discover_git_roots(manifests: &[PathBuf]) -> Result<Vec<RepositoryInfo>> {
+pub fn discover_git_roots(manifests: &[Utf8PathBuf]) -> Result<Vec<RepositoryInfo>> {
     let mut roots = HashSet::new();
     let mut results = Vec::new();
     let mut error_count = 0;
@@ -130,9 +130,12 @@ pub fn discover_git_roots(manifests: &[PathBuf]) -> Result<Vec<RepositoryInfo>> 
 }
 
 /// Discover git repository for a single manifest path.
-fn discover_single_root(manifest_path: &PathBuf) -> Result<Option<RepositoryInfo>> {
+fn discover_single_root(manifest_path: &Utf8PathBuf) -> Result<Option<RepositoryInfo>> {
+    // Convert Utf8PathBuf to std::path::Path for git2 compatibility
+    let std_path = manifest_path.as_std_path();
+
     // Use git2::Repository::discover to find the git root
-    let repo = match Repository::discover(manifest_path) {
+    let repo = match Repository::discover(std_path) {
         Ok(r) => r,
         Err(e) if e.class() == git2::ErrorClass::Repository => {
             // Not in a git repository
@@ -142,7 +145,7 @@ fn discover_single_root(manifest_path: &PathBuf) -> Result<Option<RepositoryInfo
             return Err(e).with_context(|| {
                 format!(
                     "Failed to discover git repository: manifest_path={}",
-                    manifest_path.display()
+                    manifest_path
                 )
             });
         }
@@ -154,11 +157,13 @@ fn discover_single_root(manifest_path: &PathBuf) -> Result<Option<RepositoryInfo
         .with_context(|| {
             format!(
                 "Repository is bare, cannot determine root path: manifest_path={}",
-                manifest_path.display()
+                manifest_path
             )
         })?;
 
-    let root_path = workdir.to_path_buf();
+    // Convert PathBuf back to Utf8PathBuf, fall back to string if path is not valid UTF-8
+    let root_path = Utf8PathBuf::from_path_buf(workdir.to_path_buf())
+        .map_err(|_| anyhow::anyhow!("Repository root path is not valid UTF-8"))?;
 
     // Try to get the remote URL from "origin"
     let remote_url = repo.find_remote("origin").ok().and_then(|remote| {
@@ -173,6 +178,7 @@ fn discover_single_root(manifest_path: &PathBuf) -> Result<Option<RepositoryInfo
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -231,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_repository_info_from_root_path() {
-        let root_path = PathBuf::from("/test/repo");
+        let root_path = Utf8PathBuf::from("/test/repo");
         let remote_url = Some("https://github.com/test/repo.git".to_string());
 
         let info = RepositoryInfo::from_root_path(root_path.clone(), remote_url.clone());
@@ -246,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_repository_info_id_stability() {
-        let root_path = PathBuf::from("/test/repo");
+        let root_path = Utf8PathBuf::from("/test/repo");
 
         let info1 = RepositoryInfo::from_root_path(root_path.clone(), None);
         let info2 = RepositoryInfo::from_root_path(root_path, None);
@@ -257,8 +263,8 @@ mod tests {
 
     #[test]
     fn test_repository_info_different_paths_different_ids() {
-        let path1 = PathBuf::from("/test/repo1");
-        let path2 = PathBuf::from("/test/repo2");
+        let path1 = Utf8PathBuf::from("/test/repo1");
+        let path2 = Utf8PathBuf::from("/test/repo2");
 
         let info1 = RepositoryInfo::from_root_path(path1, None);
         let info2 = RepositoryInfo::from_root_path(path2, None);
@@ -276,16 +282,22 @@ mod tests {
         init_git_repo(&repo_root.to_path_buf()).unwrap();
 
         // Create multiple manifest paths in the same repository
-        let manifests = vec![
+        let path_manifests = vec![
             repo_root.join("package.json"),
             repo_root.join("subdir").join("Cargo.toml"),
             repo_root.join("deep").join("nested").join("go.mod"),
         ];
 
+        // Convert to Utf8PathBuf for our API
+        let manifests: Vec<Utf8PathBuf> = path_manifests
+            .iter()
+            .filter_map(|p| Utf8PathBuf::from_path_buf(p.clone()).ok())
+            .collect();
+
         // Create the directories and files
         fs::create_dir_all(repo_root.join("subdir")).unwrap();
         fs::create_dir_all(repo_root.join("deep").join("nested")).unwrap();
-        for manifest in &manifests {
+        for manifest in &path_manifests {
             fs::write(manifest, b"{}").unwrap();
         }
 
@@ -316,7 +328,8 @@ mod tests {
         let manifest = repo_root.join("package.json");
         fs::write(&manifest, b"{}").unwrap();
 
-        let results = discover_git_roots(&[manifest]).unwrap();
+        let utf8_manifest = Utf8PathBuf::from_path_buf(manifest).unwrap();
+        let results = discover_git_roots(&[utf8_manifest]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(
@@ -335,7 +348,8 @@ mod tests {
         let manifest = repo_root.join("package.json");
         fs::write(&manifest, b"{}").unwrap();
 
-        let results = discover_git_roots(&[manifest]).unwrap();
+        let utf8_manifest = Utf8PathBuf::from_path_buf(manifest).unwrap();
+        let results = discover_git_roots(&[utf8_manifest]).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].remote_url, None);
@@ -349,7 +363,8 @@ mod tests {
         let manifest = temp_dir.path().join("package.json");
         fs::write(&manifest, b"{}").unwrap();
 
-        let results = discover_git_roots(&[manifest]).unwrap();
+        let utf8_manifest = Utf8PathBuf::from_path_buf(manifest).unwrap();
+        let results = discover_git_roots(&[utf8_manifest]).unwrap();
 
         // Should return empty results, not error
         assert_eq!(results.len(), 0);
@@ -375,7 +390,9 @@ mod tests {
         fs::write(&manifest1, b"{}").unwrap();
         fs::write(&manifest2, b"[package]").unwrap();
 
-        let results = discover_git_roots(&[manifest1, manifest2]).unwrap();
+        let utf8_manifest1 = Utf8PathBuf::from_path_buf(manifest1).unwrap();
+        let utf8_manifest2 = Utf8PathBuf::from_path_buf(manifest2).unwrap();
+        let results = discover_git_roots(&[utf8_manifest1, utf8_manifest2]).unwrap();
 
         // Should find both repositories
         assert_eq!(results.len(), 2);

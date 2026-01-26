@@ -1,3 +1,4 @@
+use crate::path::{Utf8Path, Utf8PathBuf};
 use crate::storage::sqlite::SymbolRow;
 use crate::text;
 use anyhow::{anyhow, Context, Result};
@@ -154,11 +155,11 @@ impl Tokenizer for CodeNgramTokenizer {
 }
 
 impl TantivyIndex {
-    pub fn open_or_create(index_dir: &Path) -> Result<Self> {
+    pub fn open_or_create(index_dir: &Utf8Path) -> Result<Self> {
         std::fs::create_dir_all(index_dir).with_context(|| {
             format!(
                 "Failed to create tantivy index directory: {}",
-                index_dir.display()
+                index_dir
             )
         })?;
 
@@ -177,13 +178,13 @@ impl TantivyIndex {
             std::fs::remove_dir_all(index_dir).with_context(|| {
                 format!(
                     "Failed to remove existing tantivy index directory: {}",
-                    index_dir.display()
+                    index_dir
                 )
             })?;
             std::fs::create_dir_all(index_dir).with_context(|| {
                 format!(
                     "Failed to create tantivy index directory: {}",
-                    index_dir.display()
+                    index_dir
                 )
             })?;
         }
@@ -193,7 +194,7 @@ impl TantivyIndex {
             Err(_) => {
                 let schema = build_schema();
                 Index::create_in_dir(index_dir, schema).with_context(|| {
-                    format!("Failed to create tantivy index: index_dir={}", index_dir.display())
+                    format!("Failed to create tantivy index: index_dir={}", index_dir)
                 })?
             }
         };
@@ -234,13 +235,13 @@ impl TantivyIndex {
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .with_context(|| {
-                format!("Failed to create tantivy reader: index_dir={}", index_dir.display())
+                format!("Failed to create tantivy reader: index_dir={}", index_dir)
             })?;
 
         let writer = index
             .writer(64 * 1024 * 1024)
             .with_context(|| {
-                format!("Failed to create tantivy writer: index_dir={}", index_dir.display())
+                format!("Failed to create tantivy writer: index_dir={}", index_dir)
             })?;
 
         Ok(Self {
@@ -260,7 +261,10 @@ impl TantivyIndex {
                 )
             })?;
         }
-        Self::open_or_create(index_dir)
+        let index_dir_utf8 = Utf8PathBuf::from_path_buf(index_dir.to_path_buf()).map_err(|_| {
+            anyhow!("Tantivy index path contains non-UTF-8 characters: {}", index_dir.display())
+        })?;
+        Self::open_or_create(&index_dir_utf8)
     }
 
     pub fn upsert_symbol(&self, symbol: &SymbolRow) -> Result<()> {
@@ -496,17 +500,17 @@ fn looks_like_partial(query: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::path::Utf8PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn tmp_index_dir() -> PathBuf {
+    fn tmp_index_dir() -> Utf8PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("code-intel-tantivy-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        Utf8PathBuf::from_path_buf(dir).unwrap()
     }
 
     fn sample_symbol(id: &str, name: &str, text: &str) -> SymbolRow {

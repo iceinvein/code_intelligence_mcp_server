@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use crate::path::Utf8Path;
 use super::schema::SCHEMA_SQL;
 
 pub struct SqliteStore {
@@ -43,14 +43,14 @@ impl SqliteStore {
 }
 
 impl SqliteStore {
-    pub fn open(db_path: &Path) -> Result<Self> {
+    pub fn open(db_path: &Utf8Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create db parent dir: {}", parent.display()))?;
+                .with_context(|| format!("Failed to create db parent dir: {}", parent))?;
         }
 
         let conn = Connection::open(db_path)
-            .with_context(|| format!("Failed to open sqlite db: {}", db_path.display()))?;
+            .with_context(|| format!("Failed to open sqlite db: {}", db_path))?;
 
         // Enable WAL mode for better concurrent access (optional)
         // Use query_row for PRAGMA journal_mode as it returns a value

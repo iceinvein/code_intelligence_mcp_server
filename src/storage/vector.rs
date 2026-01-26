@@ -9,7 +9,8 @@ use lancedb::{
     query::{ExecutableQuery, QueryBase},
     Connection,
 };
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
+use crate::path::Utf8Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorRecord {
@@ -39,18 +40,16 @@ pub struct LanceDbStore {
 }
 
 impl LanceDbStore {
-    pub async fn connect(path: &Path) -> Result<Self> {
-        let uri = path
-            .to_str()
-            .ok_or_else(|| anyhow!("VECTOR_DB_PATH is not valid UTF-8"))?;
+    pub async fn connect(path: &Utf8Path) -> Result<Self> {
+        let uri = path.as_str();
 
         std::fs::create_dir_all(path)
-            .with_context(|| format!("Failed to create VECTOR_DB_PATH: {}", path.display()))?;
+            .with_context(|| format!("Failed to create VECTOR_DB_PATH: {}", path))?;
 
         let db = lancedb::connect(uri)
             .execute()
             .await
-            .with_context(|| format!("Failed to connect to lancedb: path={}", path.display()))?;
+            .with_context(|| format!("Failed to connect to lancedb: path={}", path))?;
         Ok(Self { db })
     }
 
@@ -646,16 +645,17 @@ fn build_record_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::Utf8PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn tmp_db_dir() -> std::path::PathBuf {
+    fn tmp_db_dir() -> Utf8PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("code-intel-lancedb-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        Utf8PathBuf::from_path_buf(dir).unwrap()
     }
 
     #[tokio::test]

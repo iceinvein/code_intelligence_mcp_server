@@ -143,7 +143,7 @@ async fn run() -> SdkResult<()> {
         })?;
 
     // Migrate vector table if dimensions have changed (e.g., 384 -> 768)
-    lancedb
+    let needs_reindex = lancedb
         .migrate_vector_table("symbols", vector_dim)
         .await
         .map_err(|err| McpSdkError::Internal {
@@ -221,6 +221,28 @@ async fn run() -> SdkResult<()> {
         indexer,
         retriever,
     });
+
+    // Trigger automatic re-index if vector dimension migration occurred
+    if needs_reindex {
+        tracing::info!(
+            "Vector table migration completed. Starting automatic re-index with new model..."
+        );
+        match state.indexer.index_all().await {
+            Ok(stats) => {
+                tracing::info!(
+                    "Automatic re-index completed successfully: indexed {} symbols from {} files",
+                    stats.symbols_indexed,
+                    stats.files_indexed
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    "Automatic re-index failed: {}. Please run 'refresh_index' manually.",
+                    err
+                );
+            }
+        }
+    }
 
     if state.config.watch_mode {
         state.indexer.spawn_watch_loop();

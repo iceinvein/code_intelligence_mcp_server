@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const { spawn } = require('child_process');
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
+const { spawn } = require('node:child_process');
+const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs');
 
-const BINARY_NAME = 'code-intelligence-mcp-server' + (os.platform() === 'win32' ? '.exe' : '');
+const BINARY_NAME = `code-intelligence-mcp-server${os.platform() === 'win32' ? '.exe' : ''}`;
 const BINARY_PATH = path.join(__dirname, BINARY_NAME);
 
 if (!fs.existsSync(BINARY_PATH)) {
@@ -22,9 +22,9 @@ if (!env.BASE_DIR) {
     env.BASE_DIR = process.cwd();
 }
 
-// 2. Default to Candle backend (local AI)
+// 2. Default to JinaCode backend (matches Rust defaults)
 if (!env.EMBEDDINGS_BACKEND) {
-    env.EMBEDDINGS_BACKEND = 'fastembed';
+    env.EMBEDDINGS_BACKEND = 'jinacode';
 }
 
 // 3. Enable Auto Download
@@ -34,7 +34,7 @@ if (!env.EMBEDDINGS_AUTO_DOWNLOAD) {
 
 // 4. Set Better Default Model (Jina V2 Base Code)
 if (!env.EMBEDDINGS_MODEL_REPO) {
-    env.EMBEDDINGS_MODEL_REPO = 'BAAI/bge-base-en-v1.5';
+    env.EMBEDDINGS_MODEL_REPO = 'jinaai/jina-embeddings-v2-base-code';
 }
 
 // 5. Metal Acceleration for macOS

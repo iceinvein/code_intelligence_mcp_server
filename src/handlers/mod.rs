@@ -118,10 +118,24 @@ pub fn handle_get_file_symbols(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let exported_only = tool.exported_only.unwrap_or(false);
 
+    tracing::debug!(
+        file_path = %tool.file_path,
+        exported_only = exported_only,
+        "get_file_symbols called"
+    );
+
     let sqlite = SqliteStore::open(db_path)?;
     sqlite.init()?;
 
     let rows = sqlite.list_symbol_headers_by_file(&tool.file_path, exported_only)?;
+
+    if rows.is_empty() {
+        tracing::warn!(
+            file_path = %tool.file_path,
+            exported_only = exported_only,
+            "get_file_symbols returned no results - file may not be indexed or path may be incorrect"
+        );
+    }
 
     Ok(json!({
         "file_path": tool.file_path,
@@ -928,6 +942,12 @@ pub fn handle_get_module_summary(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let group_by_kind = tool.group_by_kind.unwrap_or(false);
 
+    tracing::debug!(
+        file_path = %tool.file_path,
+        group_by_kind = group_by_kind,
+        "get_module_summary called"
+    );
+
     let sqlite = SqliteStore::open(db_path)?;
     sqlite.init()?;
 
@@ -935,6 +955,11 @@ pub fn handle_get_module_summary(
     let symbols = sqlite.list_symbol_headers_by_file(&tool.file_path, true)?;
 
     if symbols.is_empty() {
+        tracing::warn!(
+            file_path = %tool.file_path,
+            "get_module_summary returned no exports - file may not be indexed or path may be incorrect"
+        );
+
         return Ok(json!({
             "file_path": tool.file_path,
             "error": "NO_EXPORTS",

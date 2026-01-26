@@ -14,3 +14,7 @@ target
 test_workspace
 opencode.json
 .planning
+
+# npm package binaries (downloaded via install.js from GitHub releases)
+npm/bin/code-intelligence-mcp-server
+npm/bin/code-intelligence-mcp-server.exe

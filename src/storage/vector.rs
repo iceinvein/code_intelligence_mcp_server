@@ -96,12 +96,13 @@ impl LanceDbStore {
     /// * `expected_dim` - Expected vector dimension (e.g., 768 for Jina Code)
     ///
     /// # Returns
-    /// Ok(()) if migration succeeds or table doesn't exist
+    /// Ok(true) if migration occurred (table was dropped and needs re-indexing)
+    /// Ok(false) if no migration was needed (dimensions match or table doesn't exist)
     ///
     /// # Note
     /// This is a destructive operation - all existing embeddings will be lost
     /// and must be re-indexed. This is intentional when switching embedding models.
-    pub async fn migrate_vector_table(&self, table_name: &str, expected_dim: usize) -> Result<()> {
+    pub async fn migrate_vector_table(&self, table_name: &str, expected_dim: usize) -> Result<bool> {
         let existing = self
             .db
             .table_names()
@@ -111,7 +112,7 @@ impl LanceDbStore {
 
         if !existing.iter().any(|n| n == table_name) {
             // Table doesn't exist, nothing to migrate
-            return Ok(());
+            return Ok(false);
         }
 
         let table = self
@@ -144,7 +145,7 @@ impl LanceDbStore {
 
         // If dimensions match, no migration needed
         if current_dim == expected_dim {
-            return Ok(());
+            return Ok(false);
         }
 
         // Dimensions don't match - drop the table
@@ -159,14 +160,14 @@ impl LanceDbStore {
             .await
             .context("Failed to drop lancedb table during migration")?;
 
-        tracing::info!(
-            "Dropped table '{}' due to dimension migration ({} -> {}). Full re-index required.",
+        tracing::warn!(
+            "Dropped table '{}' due to dimension migration ({} -> {}). Triggering automatic re-index.",
             table_name,
             current_dim,
             expected_dim
         );
 
-        Ok(())
+        Ok(true)
     }
 }
 

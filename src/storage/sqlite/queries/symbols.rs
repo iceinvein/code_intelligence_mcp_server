@@ -224,7 +224,7 @@ SELECT
   id, file_path, language, kind, name, exported,
   start_byte, end_byte, start_line, end_line
 FROM symbols
-WHERE file_path = ?1 AND (?2 = 0 OR exported = 1)
+WHERE file_path = ?1 AND (?2 = 0 OR exported = ?2)
 ORDER BY start_byte ASC
 "#,
         )
@@ -246,6 +246,46 @@ ORDER BY start_byte ASC
             end_line: row.get::<_, i64>(9)? as u32,
         });
     }
+
+    // Log diagnostic info for empty results
+    if out.is_empty() {
+        tracing::warn!(
+            file_path = %file_path,
+            exported_only = exported_only,
+            "No symbols found for file path"
+        );
+
+        // Try to find similar paths for debugging
+        let mut similar_stmt = conn
+            .prepare("SELECT DISTINCT file_path FROM symbols WHERE file_path LIKE ?1 LIMIT 5")
+            .context("Failed to prepare similar path query")?;
+
+        let pattern = if let Some(parent) = file_path.rsplit('/').next() {
+            format!("%{}%", parent)
+        } else {
+            format!("%{}%", file_path)
+        };
+
+        let similar_paths = {
+            let mut rows = similar_stmt.query(params![pattern])?;
+            let mut paths = Vec::new();
+            while let Some(row) = rows.next().ok().flatten() {
+                if let Ok(path) = row.get::<_, String>(0) {
+                    paths.push(path);
+                }
+            }
+            paths
+        };
+
+        if !similar_paths.is_empty() {
+            tracing::warn!(
+                file_path = %file_path,
+                similar_paths = ?similar_paths,
+                "Found similar file paths in database"
+            );
+        }
+    }
+
     Ok(out)
 }
 

@@ -32,7 +32,12 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
             resolution_rank
         ],
     )
-    .context("Failed to upsert edge")?;
+    .with_context(|| {
+        format!(
+            "Failed to upsert edge: from={}, to={}, type={}",
+            edge.from_symbol_id, edge.to_symbol_id, edge.edge_type
+        )
+    })?;
     Ok(())
 }
 
@@ -53,7 +58,15 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type, at_file, at_line) DO UPDATE
             evidence.count as i64
         ],
     )
-    .context("Failed to upsert edge evidence")?;
+    .with_context(|| {
+        format!(
+            "Failed to upsert edge evidence: from={}, to={}, type={}, file={}",
+            evidence.from_symbol_id,
+            evidence.to_symbol_id,
+            evidence.edge_type,
+            evidence.at_file
+        )
+    })?;
     Ok(())
 }
 

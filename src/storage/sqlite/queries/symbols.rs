@@ -38,7 +38,12 @@ ON CONFLICT(id) DO UPDATE SET
             symbol.text
         ],
     )
-    .context("Failed to upsert symbol")?;
+    .with_context(|| {
+        format!(
+            "Failed to upsert symbol: id={}, file_path={}, name={}",
+            symbol.id, symbol.file_path, symbol.name
+        )
+    })?;
     Ok(())
 }
 
@@ -54,7 +59,7 @@ pub fn delete_symbols_by_file(conn: &Connection, file_path: &str) -> Result<()> 
 pub fn count_symbols(conn: &Connection) -> Result<u64> {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))
-        .context("Failed to count symbols")?;
+        .context("Failed to count symbols: table=symbols, COUNT(*)")?;
     Ok(count.max(0) as u64)
 }
 
@@ -62,7 +67,7 @@ pub fn most_recent_symbol_update(conn: &Connection) -> Result<Option<i64>> {
     let ts: Option<i64> = conn
         .query_row("SELECT MAX(updated_at) FROM symbols", [], |row| row.get(0))
         .optional()
-        .context("Failed to query most recent symbol update")?
+        .context("Failed to query most recent symbol update: table=symbols, MAX(updated_at)")?
         .flatten();
     Ok(ts)
 }
@@ -209,7 +214,7 @@ WHERE id = ?1
         },
     )
     .optional()
-    .context("Failed to query symbol by id")
+    .with_context(|| format!("Failed to query symbol by id: table=symbols, id={}", id))
 }
 
 pub fn list_symbol_headers_by_file(

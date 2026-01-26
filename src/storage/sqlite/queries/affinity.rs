@@ -23,7 +23,12 @@ ON CONFLICT(file_path) DO UPDATE SET
 "#,
         params![file_path, view_increment as i64, edit_increment as i64],
     )
-    .context("Failed to upsert file affinity")?;
+    .with_context(|| {
+        format!(
+            "Failed to upsert file affinity: file_path={}, view_inc={}, edit_inc={}",
+            file_path, view_increment, edit_increment
+        )
+    })?;
     Ok(())
 }
 
@@ -49,7 +54,7 @@ WHERE file_path = ?1
         },
     )
     .optional()
-    .context("Failed to query file affinity")
+    .with_context(|| format!("Failed to query file affinity: file_path={}", file_path))
 }
 
 pub fn get_top_affinity_files(conn: &Connection, limit: usize) -> Result<Vec<UserFileAffinityRow>> {

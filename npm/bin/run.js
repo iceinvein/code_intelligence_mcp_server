@@ -57,6 +57,11 @@ if (!env.EMBEDDINGS_MAX_THREADS) {
     console.error('[code-intelligence-mcp] Set EMBEDDINGS_MAX_THREADS=0 to use all CPUs or customize as needed');
 }
 
+// Disable HTTP metrics server for MCP (overkill - logs provide enough debugging info)
+if (!env.METRICS_ENABLED) {
+    env.METRICS_ENABLED = 'false';
+}
+
 // 5. Set persistence paths to be inside the project (BASE_DIR/.cimcp) 
 // if not explicitly overridden. This keeps indexes local to the project.
 const cimcpDir = path.join(env.BASE_DIR, '.cimcp');

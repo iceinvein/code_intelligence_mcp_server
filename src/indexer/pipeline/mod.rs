@@ -275,15 +275,16 @@ impl IndexPipeline {
         Ok(())
     }
 
-    pub async fn index_paths(&self, paths: &[PathBuf]) -> Result<IndexRunStats> {
+    pub async fn index_paths(&self, paths: &[Utf8PathBuf]) -> Result<IndexRunStats> {
         let started_at = Instant::now();
         let started_at_unix_s = unix_now_s();
         let mut files = Vec::new();
         for p in paths {
-            if p.is_dir() {
-                files.extend(scan_files(&self.config, p)?);
-            } else if p.is_file() && should_index_file(&self.config, p) {
-                files.push(p.to_path_buf());
+            let std_path = p.as_std_path();
+            if std_path.is_dir() {
+                files.extend(scan_files(&self.config, std_path)?);
+            } else if std_path.is_file() && should_index_file(&self.config, std_path) {
+                files.push(std_path.to_path_buf());
             }
         }
         let stats = self.index_files(files, false).await?;

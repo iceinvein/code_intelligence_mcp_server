@@ -89,13 +89,8 @@ pub async fn handle_refresh_index(
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-        // Convert Utf8PathBuf to PathBuf for pipeline API (keeps pipeline API stable)
-        let path_bufs: Vec<std::path::PathBuf> = paths
-            .iter()
-            .map(|p| p.as_std_path().to_path_buf())
-            .collect();
-
-        state.indexer.index_paths(&path_bufs).await
+        // Pass Utf8PathBuf slice directly to pipeline API
+        state.indexer.index_paths(&paths).await
     } else {
         state.indexer.index_all().await
     }?;

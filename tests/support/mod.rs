@@ -7,7 +7,7 @@ pub mod helpers;
 // Re-export helper functions for convenient use in tests
 pub use helpers::{
     create_test_symbol, create_test_symbol_with_language, create_test_symbol_with_text,
-    tmp_db_path, tmp_dir,
+    tmp_db_path, tmp_test_dir,
 };
 
 // Re-export rstest fixtures for convenient use in tests

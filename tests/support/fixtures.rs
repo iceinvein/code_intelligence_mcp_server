@@ -141,13 +141,10 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
 
 /// Creates a TantivyIndex for full-text search
 ///
-/// This async fixture depends on `test_config` and opens or creates
+/// This fixture depends on `test_config` and opens or creates
 /// a Tantivy index at the configured path.
-///
-/// The index is created asynchronously to avoid blocking the test thread
-/// during index initialization.
 #[fixture]
-async fn tantivy_index(test_config: Arc<Config>) -> Arc<TantivyIndex> {
+fn tantivy_index(test_config: Config) -> Arc<TantivyIndex> {
     Arc::new(
         TantivyIndex::open_or_create(&test_config.tantivy_index_path)
             .unwrap()
@@ -162,7 +159,7 @@ async fn tantivy_index(test_config: Arc<Config>) -> Arc<TantivyIndex> {
 /// Hash embeddings are used for testing because they're fast and
 /// require no model downloads.
 #[fixture]
-pub fn hash_embedder(test_config: Arc<Config>) -> Arc<AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>> {
+pub fn hash_embedder(test_config: Config) -> Arc<AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>> {
     Arc::new(AsyncMutex::new(
         Box::new(HashEmbedder::new(test_config.hash_embedding_dim)) as _
     ))
@@ -170,24 +167,28 @@ pub fn hash_embedder(test_config: Arc<Config>) -> Arc<AsyncMutex<Box<dyn code_in
 
 /// Creates a LanceDB vector store for semantic search
 ///
-/// This async fixture depends on `test_config` and connects to LanceDB,
+/// This fixture depends on `test_config` and connects to LanceDB,
 /// then opens or creates the symbols table for vector embeddings.
 ///
-/// LanceDB connection is async, so this fixture must be async to avoid
-/// blocking the test thread during connection.
+/// Note: LanceDB connection is async, but we block here since rstest
+/// doesn't properly support mixing async and non-async fixtures.
 #[fixture]
-async fn vector_store(
-    test_config: Arc<Config>,
+fn vector_store(
+    test_config: Config,
 ) -> Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable> {
-    let lancedb = LanceDbStore::connect(&test_config.vector_db_path)
-        .await
-        .unwrap();
-    Arc::new(
-        lancedb
-            .open_or_create_table("symbols", test_config.hash_embedding_dim)
+    // Use tokio runtime to block on the async call
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let lancedb = LanceDbStore::connect(&test_config.vector_db_path)
             .await
-            .unwrap(),
-    )
+            .unwrap();
+        Arc::new(
+            lancedb
+                .open_or_create_table("symbols", test_config.hash_embedding_dim)
+                .await
+                .unwrap(),
+        )
+    })
 }
 
 /// Creates a MetricsRegistry for collecting telemetry
@@ -224,20 +225,23 @@ pub fn metrics() -> Arc<MetricsRegistry> {
 /// }
 /// ```
 #[fixture]
-pub async fn app_state(
-    test_config: Arc<Config>,
+pub fn app_state(
+    test_config: Config,
     tantivy_index: Arc<TantivyIndex>,
     hash_embedder: Arc<AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>>,
     vector_store: Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable>,
     metrics: Arc<MetricsRegistry>,
 ) -> AppState {
+    // Wrap config in Arc for shared use
+    let config = Arc::new(test_config);
+
     // Initialize SQLite store
-    let sqlite = Arc::new(SqliteStore::open(&test_config.db_path).unwrap());
+    let sqlite = Arc::new(SqliteStore::open(&config.db_path).unwrap());
     sqlite.init().unwrap();
 
     // Create index pipeline
     let indexer = IndexPipeline::new(
-        test_config.clone(),
+        config.clone(),
         tantivy_index.clone(),
         vector_store.clone(),
         hash_embedder.clone(),
@@ -246,7 +250,7 @@ pub async fn app_state(
 
     // Create retriever
     let retriever = Retriever::new(
-        test_config.clone(),
+        config.clone(),
         tantivy_index,
         vector_store,
         hash_embedder,
@@ -256,7 +260,7 @@ pub async fn app_state(
     );
 
     AppState {
-        config: test_config,
+        config,
         indexer,
         retriever,
         sqlite,
@@ -289,11 +293,8 @@ mod smoke_tests {
 
     /// Verifies that tantivy_index fixture can be created
     #[rstest]
-    #[tokio::test]
-    async fn tantivy_index_fixture_works(tantivy_index: Arc<TantivyIndex>) {
+    fn tantivy_index_fixture_works(tantivy_index: Arc<TantivyIndex>) {
         // If we got here, the fixture was created successfully
-        // TantivyIndex is created but we can't easily inspect it without
-        // calling internal methods
         assert!(true, "tantivy_index fixture created successfully");
     }
 
@@ -314,7 +315,9 @@ mod smoke_tests {
     async fn fixtures_smoke(app_state: AppState) {
         // Verify all components are present
         assert!(app_state.config.base_dir.exists());
-        assert!(app_state.sqlite.db_path().exists());
         assert!(app_state.config.db_path.exists());
+        // Verify sqlite was initialized by checking we can query it
+        let count = app_state.sqlite.count_symbols().unwrap();
+        assert_eq!(count, 0); // Empty database
     }
 }

@@ -18,6 +18,7 @@ pub use git::{discover_git_roots, RepositoryInfo as GitRepositoryInfo};
 pub use parsers::parse_manifest;
 
 use crate::config::Config;
+use crate::path::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fmt, path::Path, path::PathBuf};
@@ -119,12 +120,12 @@ impl PackageInfo {
         }
     }
 
-    /// Create a new PackageInfo from a Path (legacy compatibility).
-    pub fn from_path(manifest_path: &Path, package_type: PackageType) -> Self {
-        let path_str = manifest_path.to_string_lossy().to_string();
+    /// Create a new PackageInfo from a Utf8Path.
+    pub fn from_path(manifest_path: &crate::path::Utf8Path, package_type: PackageType) -> Self {
+        let path_str = manifest_path.to_string();
         let root_path = manifest_path
             .parent()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| p.to_string())
             .unwrap_or_else(|| path_str.clone());
         Self::new(path_str, root_path, package_type, None, None)
     }
@@ -255,7 +256,7 @@ impl fmt::Display for VcsType {
 /// ```
 pub fn discover_packages(
     config: &Config,
-    repo_roots: &[PathBuf],
+    repo_roots: &[Utf8PathBuf],
 ) -> anyhow::Result<Vec<PackageInfo>> {
     let mut packages = Vec::new();
 
@@ -266,7 +267,7 @@ pub fn discover_packages(
             Ok(mut manifests) => manifest_paths.append(&mut manifests),
             Err(e) => {
                 tracing::debug!(
-                    root = %root.display(),
+                    root = %root,
                     error = %e,
                     "Failed to discover manifests in root"
                 );
@@ -281,7 +282,7 @@ pub fn discover_packages(
             Ok(pkg) => packages.push(pkg),
             Err(e) => {
                 tracing::debug!(
-                    manifest = %manifest_path.display(),
+                    manifest = %manifest_path,
                     error = %e,
                     "Failed to parse manifest"
                 );
@@ -447,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_package_info_from_path() {
-        let manifest = std::path::Path::new("/path/to/package.json");
+        let manifest = crate::path::Utf8Path::new("/path/to/package.json");
         let pkg = PackageInfo::from_path(manifest, PackageType::Npm);
 
         assert_eq!(pkg.manifest_path, "/path/to/package.json");

@@ -3,8 +3,8 @@
 //! Discovers package manifest files by walking the directory tree.
 
 use crate::config::Config;
+use crate::path::{Utf8Path, Utf8PathBuf};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
 
 /// Known manifest filenames for various package ecosystems.
 pub const MANIFEST_FILENAMES: &[&str] = &[
@@ -52,7 +52,7 @@ const VENDOR_DIRS: &[&str] = &[
 ///
 /// # Returns
 ///
-/// A sorted vector of PathBuf pointing to discovered manifest files.
+/// A sorted vector of Utf8PathBuf pointing to discovered manifest files.
 ///
 /// # Examples
 ///
@@ -68,7 +68,7 @@ const VENDOR_DIRS: &[&str] = &[
 ///     Ok(())
 /// }
 /// ```
-pub fn discover_manifests(config: &Config, root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+pub fn discover_manifests(config: &Config, root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let mut manifests = BTreeSet::new();
 
     if !root.exists() {
@@ -81,11 +81,11 @@ pub fn discover_manifests(config: &Config, root: &Path) -> anyhow::Result<Vec<Pa
 }
 
 /// Recursively walk a directory looking for manifest files.
-fn walk_dir(config: &Config, dir: &Path, manifests: &mut BTreeSet<PathBuf>) -> anyhow::Result<()> {
+fn walk_dir(config: &Config, dir: &Utf8Path, manifests: &mut BTreeSet<Utf8PathBuf>) -> anyhow::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) => {
-            tracing::debug!(dir = %dir.display(), error = %err, "Failed to read directory");
+            tracing::debug!(dir = %dir, error = %err, "Failed to read directory");
             return Ok(()); // Skip directories we can't read
         }
     };
@@ -95,7 +95,7 @@ fn walk_dir(config: &Config, dir: &Path, manifests: &mut BTreeSet<PathBuf>) -> a
             Ok(e) => e,
             Err(err) => {
                 tracing::debug!(
-                    dir = %dir.display(),
+                    dir = %dir,
                     error = %err,
                     "Failed to read directory entry"
                 );
@@ -104,22 +104,26 @@ fn walk_dir(config: &Config, dir: &Path, manifests: &mut BTreeSet<PathBuf>) -> a
         };
 
         let path = entry.path();
-        let file_name = match path.file_name() {
-            Some(name) => name.to_string_lossy(),
+        let utf8_path = match Utf8PathBuf::from_path_buf(path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let file_name = match utf8_path.file_name() {
+            Some(name) => name,
             None => continue,
         };
 
         // Check if this is a directory we should skip
-        if path.is_dir() {
-            if should_skip_package_dir(config, &path, &file_name) {
+        if utf8_path.is_dir() {
+            if should_skip_package_dir(config, &utf8_path, file_name) {
                 continue;
             }
             // Recurse into subdirectory
-            walk_dir(config, &path, manifests)?;
-        } else if MANIFEST_FILENAMES.contains(&file_name.as_ref()) {
+            walk_dir(config, &utf8_path, manifests)?;
+        } else if MANIFEST_FILENAMES.contains(&file_name) {
             // Found a manifest file - check it's not in an excluded path
-            if !is_excluded_path(config, &path) {
-                manifests.insert(path);
+            if !is_excluded_path(config, &utf8_path) {
+                manifests.insert(utf8_path);
             }
         }
     }
@@ -141,7 +145,7 @@ fn walk_dir(config: &Config, dir: &Path, manifests: &mut BTreeSet<PathBuf>) -> a
 /// # Returns
 ///
 /// `true` if the directory should be skipped, `false` otherwise.
-pub fn should_skip_package_dir(config: &Config, path: &Path, name: &str) -> bool {
+pub fn should_skip_package_dir(config: &Config, path: &Utf8Path, name: &str) -> bool {
     // Check built-in vendor directory list
     if VENDOR_DIRS.contains(&name) {
         return true;
@@ -167,12 +171,12 @@ pub fn should_skip_package_dir(config: &Config, path: &Path, name: &str) -> bool
 }
 
 /// Check if a path matches any exclude pattern in the config.
-fn is_excluded_path(config: &Config, path: &Path) -> bool {
-    let path_str = path.to_string_lossy().replace('\\', "/");
+fn is_excluded_path(config: &Config, path: &Utf8Path) -> bool {
+    let path_str = path.as_str();
 
     // Check against exclude patterns
     for pattern in &config.exclude_patterns {
-        if pattern_matches_path(pattern, &path_str) {
+        if pattern_matches_path(pattern, path_str) {
             return true;
         }
     }
@@ -237,17 +241,21 @@ fn pattern_matches_path(pattern: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::{Utf8Path, Utf8PathBuf};
 
     /// Create a test config with default settings
     fn test_config() -> Config {
         // We'll create a minimal config for testing
         // In real usage, this would come from Config::from_env()
         let temp_dir = std::env::temp_dir();
+        let temp_dir_utf8 = Utf8PathBuf::from_path_buf(temp_dir.clone()).unwrap_or_else(|_| {
+            Utf8PathBuf::from(temp_dir.to_string_lossy().as_ref())
+        });
         Config {
-            base_dir: temp_dir.clone(),
-            db_path: temp_dir.join("test.db"),
-            vector_db_path: temp_dir.join("vectors"),
-            tantivy_index_path: temp_dir.join("tantivy"),
+            base_dir: temp_dir_utf8.clone(),
+            db_path: temp_dir_utf8.join("test.db"),
+            vector_db_path: temp_dir_utf8.join("vectors"),
+            tantivy_index_path: temp_dir_utf8.join("tantivy"),
             embeddings_backend: crate::config::EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_model_url: None,
@@ -323,32 +331,32 @@ mod tests {
         // All vendor directories should be skipped
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/node_modules"),
+            Utf8Path::new("/path/to/node_modules"),
             "node_modules"
         ));
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/target"),
+            Utf8Path::new("/path/to/target"),
             "target"
         ));
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/.git"),
+            Utf8Path::new("/path/to/.git"),
             ".git"
         ));
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/dist"),
+            Utf8Path::new("/path/to/dist"),
             "dist"
         ));
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/build"),
+            Utf8Path::new("/path/to/build"),
             "build"
         ));
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/vendor"),
+            Utf8Path::new("/path/to/vendor"),
             "vendor"
         ));
     }
@@ -360,17 +368,17 @@ mod tests {
         // Hidden directories should be skipped
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/.hidden"),
+            Utf8Path::new("/path/to/.hidden"),
             ".hidden"
         ));
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/.vscode"),
+            Utf8Path::new("/path/to/.vscode"),
             ".vscode"
         ));
         assert!(should_skip_package_dir(
             &config,
-            Path::new("/path/to/.idea"),
+            Utf8Path::new("/path/to/.idea"),
             ".idea"
         ));
     }
@@ -382,22 +390,22 @@ mod tests {
         // Source directories should NOT be skipped
         assert!(!should_skip_package_dir(
             &config,
-            Path::new("/path/to/src"),
+            Utf8Path::new("/path/to/src"),
             "src"
         ));
         assert!(!should_skip_package_dir(
             &config,
-            Path::new("/path/to/lib"),
+            Utf8Path::new("/path/to/lib"),
             "lib"
         ));
         assert!(!should_skip_package_dir(
             &config,
-            Path::new("/path/to/packages"),
+            Utf8Path::new("/path/to/packages"),
             "packages"
         ));
         assert!(!should_skip_package_dir(
             &config,
-            Path::new("/path/to/app"),
+            Utf8Path::new("/path/to/app"),
             "app"
         ));
     }

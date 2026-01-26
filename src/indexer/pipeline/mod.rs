@@ -24,6 +24,7 @@ use crate::{
         parser::{language_id_for_path, LanguageId},
     },
     metrics::MetricsRegistry,
+    path::Utf8PathBuf,
     storage::{
         cache::EmbeddingCache,
         sqlite::{SimilarityClusterRow, SqliteStore, SymbolRow},
@@ -49,14 +50,14 @@ use self::scan::{scan_files, should_index_file};
 use self::stats::IndexRunStats;
 use self::usage::extract_usage_examples_for_file;
 use self::utils::{
-    cluster_key_from_vector, file_fingerprint, file_key, language_string, stable_symbol_id,
+    cluster_key_from_vector, file_fingerprint, file_key_path, language_string, stable_symbol_id,
     unix_now_s,
 };
 
 #[derive(Clone)]
 pub struct IndexPipeline {
     config: Arc<Config>,
-    db_path: PathBuf,
+    db_path: Utf8PathBuf,
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
@@ -70,7 +71,6 @@ impl IndexPipeline {
         self.config
             .base_dir
             .file_name()
-            .and_then(|n| n.to_str())
             .unwrap_or("unknown")
     }
 
@@ -129,7 +129,7 @@ impl IndexPipeline {
 
         let mut files = Vec::new();
         for root in &self.config.repo_roots {
-            files.extend(scan_files(&self.config, root)?);
+            files.extend(scan_files(&self.config, root.as_std_path())?);
         }
         let stats = self.index_files(files, true).await?;
 
@@ -182,7 +182,7 @@ impl IndexPipeline {
         Ok(())
     }
 
-    fn dir_size(path: &PathBuf) -> Result<u64> {
+    fn dir_size(path: &Utf8PathBuf) -> Result<u64> {
         Ok(std::fs::read_dir(path)?
             .filter_map(|e| e.ok())
             .filter_map(|e| e.metadata().ok())
@@ -302,12 +302,12 @@ impl IndexPipeline {
         // Scan all files in the workspace
         let mut files = Vec::new();
         for root in &self.config.repo_roots {
-            files.extend(scan_files(&self.config, root)?);
+            files.extend(scan_files(&self.config, root.as_std_path())?);
         }
 
         // Check if any files have changed by comparing fingerprints
         for file in &files {
-            let rel = file_key(&self.config, file);
+            let rel = file_key_path(&self.config, file);
             let fp = file_fingerprint(file)?;
 
             // Check if file is already indexed and unchanged
@@ -326,7 +326,7 @@ impl IndexPipeline {
         // Check for deleted files
         let scanned_rel: HashSet<String> = files
             .iter()
-            .map(|f| file_key(&self.config, f))
+            .map(|f| file_key_path(&self.config, f))
             .collect();
 
         let existing = sqlite.list_all_file_fingerprints(1_000_000)?;
@@ -355,7 +355,6 @@ impl IndexPipeline {
                 .config
                 .base_dir
                 .file_name()
-                .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
             loop {
@@ -468,7 +467,7 @@ impl IndexPipeline {
         if cleanup_deleted {
             let mut scanned_rel: HashSet<String> = HashSet::new();
             for file in &uniq {
-                scanned_rel.insert(file_key(&self.config, file));
+                scanned_rel.insert(file_key_path(&self.config, file));
             }
 
             let existing = {
@@ -579,7 +578,7 @@ impl IndexPipeline {
         let mut name_to_id: HashMap<String, String> = HashMap::new();
 
         for file in uniq {
-            let rel = file_key(&self.config, file);
+            let rel = file_key_path(&self.config, file);
 
             let language_id = match language_id_for_path(file) {
                 Some(id) => id,

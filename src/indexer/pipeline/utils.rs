@@ -41,14 +41,16 @@ pub fn unix_now_s() -> i64 {
         .unwrap_or(0)
 }
 
-pub fn file_key(config: &Config, path: &Path) -> String {
-    if let Ok(rel) = config.path_relative_to_base(path) {
-        return rel.replace('\\', "/");
-    }
-    path.canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/")
+pub fn file_key(config: &Config, path: &crate::path::Utf8Path) -> String {
+    // PathNormalizer already normalizes separators, so we just use the relative path directly
+    config.path_relative_to_base(path).unwrap_or_else(|_| path.to_string())
+}
+
+/// Legacy version of file_key that accepts &Path for compatibility
+pub fn file_key_path(config: &Config, path: &Path) -> String {
+    let utf8_path = crate::path::Utf8PathBuf::from_path_buf(path.to_path_buf())
+        .unwrap_or_else(|_| crate::path::Utf8PathBuf::from(path.to_string_lossy().as_ref()));
+    file_key(config, &utf8_path)
 }
 
 pub fn fnv1a_64(data: &[u8]) -> u64 {
@@ -186,6 +188,7 @@ pub fn build_import_map(imports: &[Import]) -> HashMap<&str, &Import> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::Utf8PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn tmp_dir() -> std::path::PathBuf {
@@ -202,6 +205,7 @@ mod tests {
     fn file_key_is_relative_under_base_and_absolute_outside() {
         let base0 = tmp_dir();
         let base = base0.canonicalize().unwrap_or(base0);
+        let base_utf8 = Utf8PathBuf::from_path_buf(base.clone()).unwrap();
         let inner = base.join("src/a.ts");
         std::fs::create_dir_all(inner.parent().unwrap()).unwrap();
         std::fs::write(&inner, "export function a() {}").unwrap();
@@ -212,10 +216,10 @@ mod tests {
         std::fs::write(&outside, "export function b() {}").unwrap();
 
         let config = Config {
-            base_dir: base.clone(),
-            db_path: base.join("code-intelligence.db"),
-            vector_db_path: base.join("vectors"),
-            tantivy_index_path: base.join("tantivy-index"),
+            base_dir: base_utf8.clone(),
+            db_path: base_utf8.join("code-intelligence.db"),
+            vector_db_path: base_utf8.join("vectors"),
+            tantivy_index_path: base_utf8.join("tantivy-index"),
             embeddings_backend: crate::config::EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_model_url: None,
@@ -243,7 +247,7 @@ mod tests {
             watch_min_index_interval_ms: 50,
             max_context_bytes: 10_000,
             index_node_modules: false,
-            repo_roots: vec![base.clone()],
+            repo_roots: vec![base_utf8.clone()],
             // Reranker config (FNDN-03)
             reranker_model_path: None,
             reranker_top_k: 20,
@@ -282,10 +286,10 @@ mod tests {
             package_detection_enabled: true,
         };
 
-        let k1 = file_key(&config, &inner);
+        let k1 = file_key_path(&config, &inner);
         assert_eq!(k1, "src/a.ts");
 
-        let k2 = file_key(&config, &outside);
+        let k2 = file_key_path(&config, &outside);
         assert!(k2.ends_with("/b.ts"));
         assert!(k2.contains(&*other.to_string_lossy()));
     }
@@ -296,7 +300,8 @@ mod tests {
         let base = base0.canonicalize().unwrap_or(base0);
 
         // Create a test database
-        let db_path = base.join("test.db");
+        let db_path_buf = base.join("test.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let sqlite = SqliteStore::open(&db_path).unwrap();
         sqlite.init().unwrap();
 
@@ -337,7 +342,8 @@ mod tests {
         let base = base0.canonicalize().unwrap_or(base0);
 
         // Create a test database
-        let db_path = base.join("test.db");
+        let db_path_buf = base.join("test.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
         let sqlite = SqliteStore::open(&db_path).unwrap();
         sqlite.init().unwrap();
 

@@ -3,9 +3,9 @@
 //! Parses package.json files to extract package name, version, and workspace configuration.
 
 use crate::indexer::package::{PackageInfo, PackageType};
+use crate::path::Utf8Path;
 use anyhow::Result;
 use serde_json::Value;
-use std::path::Path;
 
 /// Parse a package.json file and extract package information.
 ///
@@ -28,14 +28,14 @@ use std::path::Path;
 /// let info = parse_package_json(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn parse_package_json(path: &Path) -> Result<PackageInfo> {
+pub fn parse_package_json(path: &Utf8Path) -> Result<PackageInfo> {
     let content = std::fs::read_to_string(path)?;
     let json: Value = serde_json::from_str(&content)?;
 
-    let manifest_path = path.to_string_lossy().to_string();
+    let manifest_path = path.to_string();
     let root_path = path
         .parent()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.to_string())
         .unwrap_or_else(|| manifest_path.clone());
 
     // Extract package name
@@ -85,13 +85,15 @@ fn has_workspaces(json: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8PathBuf;
     use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
     fn test_parse_package_json_extracts_name_version() {
         let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
+        let package_json_buf = temp_dir.path().join("package.json");
+        let package_json = Utf8PathBuf::from_path_buf(package_json_buf).unwrap();
 
         let content = r#"{
             "name": "test-package",
@@ -113,7 +115,8 @@ mod tests {
     #[test]
     fn test_parse_package_json_handles_missing_fields() {
         let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
+        let package_json_buf = temp_dir.path().join("package.json");
+        let package_json = Utf8PathBuf::from_path_buf(package_json_buf).unwrap();
 
         let content = r#"{
             "name": "minimal-package"
@@ -149,7 +152,8 @@ mod tests {
     #[test]
     fn test_parse_package_json_empty_file() {
         let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
+        let package_json_buf = temp_dir.path().join("package.json");
+        let package_json = Utf8PathBuf::from_path_buf(package_json_buf).unwrap();
 
         let content = r#"{}"#;
 

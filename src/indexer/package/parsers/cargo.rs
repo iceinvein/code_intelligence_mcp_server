@@ -3,8 +3,8 @@
 //! Parses Cargo.toml files to extract package name, version, and workspace configuration.
 
 use crate::indexer::package::{PackageInfo, PackageType};
+use crate::path::Utf8Path;
 use anyhow::Result;
-use std::path::Path;
 
 /// Parse a Cargo.toml file and extract package information.
 ///
@@ -27,14 +27,14 @@ use std::path::Path;
 /// let info = parse_cargo_toml(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn parse_cargo_toml(path: &Path) -> Result<PackageInfo> {
+pub fn parse_cargo_toml(path: &Utf8Path) -> Result<PackageInfo> {
     let content = std::fs::read_to_string(path)?;
     let toml: toml::Value = toml::from_str(&content)?;
 
-    let manifest_path = path.to_string_lossy().to_string();
+    let manifest_path = path.to_string();
     let root_path = path
         .parent()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.to_string())
         .unwrap_or_else(|| manifest_path.clone());
 
     // Extract package name from [package.name]
@@ -85,13 +85,15 @@ fn has_workspace_members(toml: &toml::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8PathBuf;
     use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
     fn test_parse_cargo_toml_extracts_name_version() {
         let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let cargo_toml_buf = temp_dir.path().join("Cargo.toml");
+        let cargo_toml = Utf8PathBuf::from_path_buf(cargo_toml_buf).unwrap();
 
         let content = r#"[package]
 name = "test-crate"
@@ -113,7 +115,8 @@ description = "Test crate"
     #[test]
     fn test_parse_cargo_toml_handles_missing_fields() {
         let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let cargo_toml_buf = temp_dir.path().join("Cargo.toml");
+        let cargo_toml = Utf8PathBuf::from_path_buf(cargo_toml_buf).unwrap();
 
         let content = r#"[package]
 name = "minimal-crate"
@@ -131,7 +134,8 @@ name = "minimal-crate"
     #[test]
     fn test_parse_cargo_toml_empty_file() {
         let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let cargo_toml_buf = temp_dir.path().join("Cargo.toml");
+        let cargo_toml = Utf8PathBuf::from_path_buf(cargo_toml_buf).unwrap();
 
         let content = r#"# Empty Cargo.toml
 "#;
@@ -180,7 +184,8 @@ version = "0.1.0"
     #[test]
     fn test_parse_cargo_toml_workspace_root() {
         let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let cargo_toml_buf = temp_dir.path().join("Cargo.toml");
+        let cargo_toml = Utf8PathBuf::from_path_buf(cargo_toml_buf).unwrap();
 
         let content = r#"[workspace]
 members = ["member1", "member2"]
@@ -203,7 +208,8 @@ version = "0.1.0"
     #[test]
     fn test_parse_cargo_toml_virtual_workspace() {
         let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let cargo_toml_buf = temp_dir.path().join("Cargo.toml");
+        let cargo_toml = Utf8PathBuf::from_path_buf(cargo_toml_buf).unwrap();
 
         // Virtual workspace with [workspace.metadata]
         let content = r#"[workspace]

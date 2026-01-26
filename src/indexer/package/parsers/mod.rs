@@ -13,14 +13,13 @@ pub mod python;
 
 // Re-export types from parent module
 pub use crate::indexer::package::{PackageInfo, PackageType};
+use crate::path::Utf8Path;
 
 // Re-export parser functions for public use
 pub use cargo::parse_cargo_toml;
 pub use go::parse_go_mod;
 pub use npm::parse_package_json;
 pub use python::parse_pyproject_toml;
-
-use std::path::Path;
 
 /// Parse a package manifest file and return package information.
 ///
@@ -46,10 +45,9 @@ use std::path::Path;
 /// let info = parse_manifest(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn parse_manifest(path: &Path) -> anyhow::Result<PackageInfo> {
+pub fn parse_manifest(path: &Utf8Path) -> anyhow::Result<PackageInfo> {
     let file_name = path
         .file_name()
-        .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("Invalid manifest path: no filename"))?;
 
     let package_type = PackageType::from_filename(file_name);

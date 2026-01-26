@@ -1,11 +1,11 @@
 //! pyproject.toml parser.
 //!
 //! Parses pyproject.toml files to extract package name, version, and dependencies.
-//! Supports both PEP 621 and Poetry formats.
+//! Supports both PEP 621 (standard) and Poetry formats.
 
 use crate::indexer::package::{PackageInfo, PackageType};
+use crate::path::Utf8Path;
 use anyhow::Result;
-use std::path::Path;
 
 /// Parse a pyproject.toml file and extract package information.
 ///
@@ -30,14 +30,14 @@ use std::path::Path;
 /// let info = parse_pyproject_toml(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn parse_pyproject_toml(path: &Path) -> Result<PackageInfo> {
+pub fn parse_pyproject_toml(path: &Utf8Path) -> Result<PackageInfo> {
     let content = std::fs::read_to_string(path)?;
     let toml: toml::Value = toml::from_str(&content)?;
 
-    let manifest_path = path.to_string_lossy().to_string();
+    let manifest_path = path.to_string();
     let root_path = path
         .parent()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.to_string())
         .unwrap_or_else(|| manifest_path.clone());
 
     // Try PEP 621 format first: [project.name], [project.version]
@@ -76,13 +76,15 @@ pub fn parse_pyproject_toml(path: &Path) -> Result<PackageInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8PathBuf;
     use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
     fn test_parse_pyproject_toml_pep621() {
         let temp_dir = TempDir::new().unwrap();
-        let pyproject = temp_dir.path().join("pyproject.toml");
+        let pyproject_buf = temp_dir.path().join("pyproject.toml");
+        let pyproject = Utf8PathBuf::from_path_buf(pyproject_buf).unwrap();
 
         let content = r#"[project]
 name = "test-package"
@@ -105,7 +107,8 @@ requires-python = ">=3.8"
     #[test]
     fn test_parse_pyproject_toml_poetry() {
         let temp_dir = TempDir::new().unwrap();
-        let pyproject = temp_dir.path().join("pyproject.toml");
+        let pyproject_buf = temp_dir.path().join("pyproject.toml");
+        let pyproject = Utf8PathBuf::from_path_buf(pyproject_buf).unwrap();
 
         let content = r#"[tool.poetry]
 name = "poetry-package"
@@ -130,7 +133,8 @@ python = "^3.9"
     #[test]
     fn test_parse_pyproject_toml_handles_missing_fields() {
         let temp_dir = TempDir::new().unwrap();
-        let pyproject = temp_dir.path().join("pyproject.toml");
+        let pyproject_buf = temp_dir.path().join("pyproject.toml");
+        let pyproject = Utf8PathBuf::from_path_buf(pyproject_buf).unwrap();
 
         let content = r#"[project]
 name = "minimal-package"
@@ -148,7 +152,8 @@ name = "minimal-package"
     #[test]
     fn test_parse_pyproject_toml_empty_file() {
         let temp_dir = TempDir::new().unwrap();
-        let pyproject = temp_dir.path().join("pyproject.toml");
+        let pyproject_buf = temp_dir.path().join("pyproject.toml");
+        let pyproject = Utf8PathBuf::from_path_buf(pyproject_buf).unwrap();
 
         let content = r#"# Empty pyproject.toml
 "#;
@@ -166,7 +171,8 @@ name = "minimal-package"
     #[test]
     fn test_parse_pyproject_toml_pep621_with_dependencies() {
         let temp_dir = TempDir::new().unwrap();
-        let pyproject = temp_dir.path().join("pyproject.toml");
+        let pyproject_buf = temp_dir.path().join("pyproject.toml");
+        let pyproject = Utf8PathBuf::from_path_buf(pyproject_buf).unwrap();
 
         let content = r#"[project]
 name = "dep-package"
@@ -193,7 +199,8 @@ dev = ["pytest>=7.0.0"]
     #[test]
     fn test_parse_pyproject_toml_poetry_with_workspace() {
         let temp_dir = TempDir::new().unwrap();
-        let pyproject = temp_dir.path().join("pyproject.toml");
+        let pyproject_buf = temp_dir.path().join("pyproject.toml");
+        let pyproject = Utf8PathBuf::from_path_buf(pyproject_buf).unwrap();
 
         // Poetry doesn't have native workspace support, but use tools like
         // poetry-workspace-plugin or multi-project repos

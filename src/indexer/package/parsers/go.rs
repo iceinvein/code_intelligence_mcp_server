@@ -3,9 +3,9 @@
 //! Parses go.mod files to extract module path, Go version, and local dependencies.
 
 use crate::indexer::package::{PackageInfo, PackageType};
+use crate::path::Utf8Path;
 use anyhow::Result;
 use regex::Regex;
-use std::path::Path;
 
 /// Parse a go.mod file and extract package information.
 ///
@@ -28,13 +28,13 @@ use std::path::Path;
 /// let info = parse_go_mod(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-pub fn parse_go_mod(path: &Path) -> Result<PackageInfo> {
+pub fn parse_go_mod(path: &Utf8Path) -> Result<PackageInfo> {
     let content = std::fs::read_to_string(path)?;
 
-    let manifest_path = path.to_string_lossy().to_string();
+    let manifest_path = path.to_string();
     let root_path = path
         .parent()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| p.to_string())
         .unwrap_or_else(|| manifest_path.clone());
 
     // Extract module path (e.g., "github.com/user/repo")
@@ -117,13 +117,15 @@ fn extract_local_dependencies(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8PathBuf;
     use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
     fn test_parse_go_mod_extracts_module_path() {
         let temp_dir = TempDir::new().unwrap();
-        let go_mod = temp_dir.path().join("go.mod");
+        let go_mod_buf = temp_dir.path().join("go.mod");
+        let go_mod = Utf8PathBuf::from_path_buf(go_mod_buf).unwrap();
 
         let content = r#"module github.com/example/test-project
 
@@ -146,7 +148,8 @@ require github.com/example/other v1.0.0
     #[test]
     fn test_parse_go_mod_handles_minimal() {
         let temp_dir = TempDir::new().unwrap();
-        let go_mod = temp_dir.path().join("go.mod");
+        let go_mod_buf = temp_dir.path().join("go.mod");
+        let go_mod = Utf8PathBuf::from_path_buf(go_mod_buf).unwrap();
 
         let content = r#"module example.com/simple
 
@@ -202,7 +205,8 @@ replace github.com/external/lib => ../external
     #[test]
     fn test_parse_go_mod_empty_file() {
         let temp_dir = TempDir::new().unwrap();
-        let go_mod = temp_dir.path().join("go.mod");
+        let go_mod_buf = temp_dir.path().join("go.mod");
+        let go_mod = Utf8PathBuf::from_path_buf(go_mod_buf).unwrap();
 
         let content = r#"# Empty go.mod
 "#;
@@ -225,7 +229,8 @@ go 1.21
 "#;
 
         let temp_dir = TempDir::new().unwrap();
-        let go_mod = temp_dir.path().join("go.mod");
+        let go_mod_buf = temp_dir.path().join("go.mod");
+        let go_mod = Utf8PathBuf::from_path_buf(go_mod_buf).unwrap();
         let mut file = std::fs::File::create(&go_mod).unwrap();
         file.write_all(content.as_bytes()).unwrap();
 

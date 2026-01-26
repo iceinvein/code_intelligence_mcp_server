@@ -14,9 +14,10 @@ use crate::{
             parsing::symbol_kind_to_string,
             stats::IndexRunStats,
             usage::extract_usage_examples_for_file,
-            utils::{file_fingerprint, file_key, language_string, stable_symbol_id},
+            utils::{file_fingerprint, file_key_path, language_string, stable_symbol_id},
         },
     },
+    path::Utf8PathBuf,
     storage::{
         sqlite::{schema::DecoratorRow, SqliteStore, SymbolRow},
         tantivy::TantivyIndex,
@@ -67,7 +68,7 @@ pub struct FileIndexResult {
 fn index_file_with_retry(
     file: &Path,
     config: &Config,
-    db_path: &Path,
+    db_path: &Utf8PathBuf,
     tantivy: &TantivyIndex,
     vectors: &LanceVectorTable,
     max_retries: usize,
@@ -131,11 +132,11 @@ fn index_file_with_retry(
 fn index_file_single(
     file: &Path,
     config: &Config,
-    db_path: &Path,
+    db_path: &Utf8PathBuf,
     tantivy: &TantivyIndex,
     _vectors: &LanceVectorTable,
 ) -> Result<IndexFileResult> {
-    let rel = file_key(config, file);
+    let rel = file_key_path(config, file);
 
     let language_id = language_id_for_path(file)
         .ok_or_else(|| anyhow::anyhow!("Unsupported language for file: {}", file.display()))?;
@@ -374,7 +375,7 @@ fn index_file_single(
 /// They must be handled in a separate sequential pass or batch operation.
 pub fn index_files_parallel(
     config: Arc<Config>,
-    db_path: PathBuf,
+    db_path: Utf8PathBuf,
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
     files: Vec<PathBuf>,

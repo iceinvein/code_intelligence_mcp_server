@@ -6,7 +6,7 @@ use std::{
 };
 
 /// Returns the global cimcp directory (~/.cimcp)
-fn get_global_cimcp_dir() -> PathBuf {
+pub fn get_global_cimcp_dir() -> PathBuf {
     env::var("HOME")
         .map(|home| PathBuf::from(home).join(".cimcp"))
         .unwrap_or_else(|_| {

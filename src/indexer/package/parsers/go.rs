@@ -22,9 +22,9 @@ use regex::Regex;
 ///
 /// ```no_run
 /// use code_intelligence_mcp_server::indexer::package::parsers::go::parse_go_mod;
-/// use std::path::Path;
+/// use code_intelligence_mcp_server::path::Utf8Path;
 ///
-/// let manifest = Path::new("/path/to/go.mod");
+/// let manifest = Utf8Path::new("/path/to/go.mod");
 /// let info = parse_go_mod(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```

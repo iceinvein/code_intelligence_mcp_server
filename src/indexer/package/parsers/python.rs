@@ -24,9 +24,9 @@ use anyhow::Result;
 ///
 /// ```no_run
 /// use code_intelligence_mcp_server::indexer::package::parsers::python::parse_pyproject_toml;
-/// use std::path::Path;
+/// use code_intelligence_mcp_server::path::Utf8Path;
 ///
-/// let manifest = Path::new("/path/to/pyproject.toml");
+/// let manifest = Utf8Path::new("/path/to/pyproject.toml");
 /// let info = parse_pyproject_toml(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```

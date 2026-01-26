@@ -59,7 +59,9 @@ fn create_test_symbol(
     file_path: &str,
     exported: bool,
 ) -> Result<(), anyhow::Error> {
-    let sqlite = SqliteStore::open(db_path)?;
+    let db_path_utf8 = Utf8PathBuf::from_path_buf(db_path.to_path_buf())
+        .map_err(|_| anyhow::anyhow!("Database path is not valid UTF-8"))?;
+    let sqlite = SqliteStore::open(&db_path_utf8)?;
     sqlite.init()?;
 
     let symbol = SymbolRow {
@@ -87,7 +89,8 @@ async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp
 
     let config = Arc::new(test_config(&base_dir));
 
-    let sqlite = Arc::new(SqliteStore::open(db_path).unwrap());
+    let db_path_utf8 = Utf8PathBuf::from_path_buf(db_path.to_path_buf()).unwrap();
+    let sqlite = Arc::new(SqliteStore::open(&db_path_utf8).unwrap());
     // Initialize database schema
     sqlite.init().unwrap();
 
@@ -359,7 +362,7 @@ mod get_module_summary_tests {
 
         // Create storage components async
         let tantivy = std::sync::Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
-        let sqlite = std::sync::Arc::new(SqliteStore::open(&config.db_path).unwrap());
+        let sqlite = std::sync::Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap());
         sqlite.init().unwrap();
 
         let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
@@ -784,7 +787,7 @@ fn test_config(base_dir: &Path) -> Config {
         db_path: base_dir_utf8.join("code-intelligence.db"),
         vector_db_path: base_dir_utf8.join("vectors"),
         tantivy_index_path: base_dir_utf8.join("tantivy-index"),
-        base_dir: base_dir_utf8,
+        base_dir: base_dir_utf8.clone(),
         embeddings_backend: EmbeddingsBackend::Hash,
         embeddings_model_dir: None,
         embeddings_model_url: None,
@@ -1013,7 +1016,7 @@ async fn test_find_similar_code_by_symbol_name() {
         config: config.clone(),
         indexer,
         retriever,
-        sqlite: Arc::new(SqliteStore::open(&config.db_path).unwrap()),
+        sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
     };
 
     // The handler might fail if embedding isn't found, so check both success and error cases
@@ -1091,7 +1094,7 @@ async fn test_find_similar_code_by_code_snippet() {
         config: config.clone(),
         indexer,
         retriever,
-        sqlite: Arc::new(SqliteStore::open(&config.db_path).unwrap()),
+        sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();
@@ -1149,7 +1152,7 @@ async fn test_find_similar_code_not_found() {
         config: config.clone(),
         indexer,
         retriever,
-        sqlite: Arc::new(SqliteStore::open(&config.db_path).unwrap()),
+        sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();

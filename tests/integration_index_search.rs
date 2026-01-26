@@ -38,7 +38,7 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         db_path: base_dir_utf8.join("code-intelligence.db"),
         vector_db_path: base_dir_utf8.join("vectors"),
         tantivy_index_path: base_dir_utf8.join("tantivy-index"),
-        base_dir: base_dir_utf8,
+        base_dir: base_dir_utf8.clone(),
         embeddings_backend: EmbeddingsBackend::Hash,
         embeddings_model_dir: None,
         embeddings_model_url: None,
@@ -137,7 +137,7 @@ pub fn foo() -> Foo { Foo { a: 1 } }
 
     let config = Arc::new(test_config(&dir));
 
-    let sqlite = SqliteStore::open(&config.db_path).unwrap();
+    let sqlite = SqliteStore::open(config.db_path.as_path()).unwrap();
     sqlite.init().unwrap();
 
     let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
@@ -185,7 +185,7 @@ pub fn foo() -> Foo { Foo { a: 1 } }
     let resp2 = retriever.search("Foo", 3, false).await.unwrap();
     assert!(resp2.context.contains("pub struct Foo"));
 
-    let sqlite = SqliteStore::open(&config.db_path).unwrap();
+    let sqlite = SqliteStore::open(config.db_path.as_path()).unwrap();
     sqlite.init().unwrap();
     assert!(sqlite.latest_index_run().unwrap().is_some());
     assert!(sqlite.latest_search_run().unwrap().is_some());
@@ -329,7 +329,7 @@ export function beta() { return alpha() }
     )
     .unwrap();
 
-    let sqlite = SqliteStore::open(&config.db_path).unwrap();
+    let sqlite = SqliteStore::open(config.db_path.as_path()).unwrap();
     sqlite.init().unwrap();
 
     let mut found = false;
@@ -362,7 +362,8 @@ export function extraRoot() { return 42 }
     .unwrap();
 
     let mut config = test_config(&dir);
-    config.repo_roots.push(other.clone());
+    let other_utf8 = Utf8PathBuf::from_path_buf(other.clone()).unwrap();
+    config.repo_roots.push(other_utf8);
     let config = Arc::new(config);
 
     let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
@@ -504,7 +505,7 @@ export const myConstant = 123;
     config.package_detection_enabled = true;
     let config = Arc::new(config);
 
-    let sqlite = SqliteStore::open(&config.db_path).unwrap();
+    let sqlite = SqliteStore::open(config.db_path.as_path()).unwrap();
     sqlite.init().unwrap();
 
     let tantivy = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
@@ -562,7 +563,7 @@ export const myConstant = 123;
         use code_intelligence_mcp_server::storage::sqlite::schema::{PackageRow, RepositoryRow};
 
         // First create a repository
-        let repo_root = config.repo_roots[0].to_string_lossy().replace('\\', "/");
+        let repo_root = config.repo_roots[0].to_string().replace('\\', "/");
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();

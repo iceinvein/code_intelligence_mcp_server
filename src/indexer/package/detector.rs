@@ -59,11 +59,11 @@ const VENDOR_DIRS: &[&str] = &[
 /// ```no_run
 /// use code_intelligence_mcp_server::config::Config;
 /// use code_intelligence_mcp_server::indexer::package::detector::discover_manifests;
-/// use std::path::Path;
+/// use code_intelligence_mcp_server::path::Utf8Path;
 ///
 /// fn main() -> anyhow::Result<()> {
 ///     let config = Config::from_env()?;
-///     let manifests = discover_manifests(&config, Path::new("/path/to/workspace"))?;
+///     let manifests = discover_manifests(&config, Utf8Path::new("/path/to/workspace"))?;
 ///     println!("Found {} manifest files", manifests.len());
 ///     Ok(())
 /// }

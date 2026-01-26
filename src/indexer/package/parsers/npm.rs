@@ -22,9 +22,9 @@ use serde_json::Value;
 ///
 /// ```no_run
 /// use code_intelligence_mcp_server::indexer::package::parsers::npm::parse_package_json;
-/// use std::path::Path;
+/// use code_intelligence_mcp_server::path::Utf8Path;
 ///
-/// let manifest = Path::new("/path/to/package.json");
+/// let manifest = Utf8Path::new("/path/to/package.json");
 /// let info = parse_package_json(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```

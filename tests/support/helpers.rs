@@ -5,6 +5,7 @@
 //! directly in tests for setup and teardown operations.
 
 use anyhow::Result;
+use code_intelligence_mcp_server::path::Utf8PathBuf;
 use code_intelligence_mcp_server::storage::sqlite::{SqliteStore, SymbolRow};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,7 +82,9 @@ pub fn create_test_symbol(
     file_path: &str,
     exported: bool,
 ) -> Result<()> {
-    let sqlite = SqliteStore::open(db_path)?;
+    let db_path_utf8 = Utf8PathBuf::from_path_buf(db_path.to_path_buf())
+        .map_err(|_| anyhow::anyhow!("Database path is not valid UTF-8"))?;
+    let sqlite = SqliteStore::open(&db_path_utf8)?;
     sqlite.init()?;
 
     let symbol = SymbolRow {
@@ -130,7 +133,9 @@ pub fn create_test_symbol_with_text(
     exported: bool,
     text: &str,
 ) -> Result<()> {
-    let sqlite = SqliteStore::open(db_path)?;
+    let db_path_utf8 = Utf8PathBuf::from_path_buf(db_path.to_path_buf())
+        .map_err(|_| anyhow::anyhow!("Database path is not valid UTF-8"))?;
+    let sqlite = SqliteStore::open(&db_path_utf8)?;
     sqlite.init()?;
 
     let symbol = SymbolRow {
@@ -179,7 +184,9 @@ pub fn create_test_symbol_with_language(
     language: &str,
     exported: bool,
 ) -> Result<()> {
-    let sqlite = SqliteStore::open(db_path)?;
+    let db_path_utf8 = Utf8PathBuf::from_path_buf(db_path.to_path_buf())
+        .map_err(|_| anyhow::anyhow!("Database path is not valid UTF-8"))?;
+    let sqlite = SqliteStore::open(&db_path_utf8)?;
     sqlite.init()?;
 
     let symbol = SymbolRow {
@@ -236,7 +243,8 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify symbol was created
-        let sqlite = SqliteStore::open(&db_path).unwrap();
+        let db_path_utf8 = Utf8PathBuf::from_path_buf(db_path).unwrap();
+        let sqlite = SqliteStore::open(&db_path_utf8).unwrap();
         let symbols = sqlite.search_symbols_by_exact_name("testFunction", None, 10).unwrap();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "testFunction");

@@ -21,9 +21,9 @@ use anyhow::Result;
 ///
 /// ```no_run
 /// use code_intelligence_mcp_server::indexer::package::parsers::cargo::parse_cargo_toml;
-/// use std::path::Path;
+/// use code_intelligence_mcp_server::path::Utf8Path;
 ///
-/// let manifest = Path::new("/path/to/Cargo.toml");
+/// let manifest = Utf8Path::new("/path/to/Cargo.toml");
 /// let info = parse_cargo_toml(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```

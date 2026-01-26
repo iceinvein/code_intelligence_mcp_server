@@ -39,9 +39,9 @@ pub use python::parse_pyproject_toml;
 ///
 /// ```no_run
 /// use code_intelligence_mcp_server::indexer::package::parsers::parse_manifest;
-/// use std::path::Path;
+/// use code_intelligence_mcp_server::path::Utf8Path;
 ///
-/// let manifest = Path::new("/path/to/package.json");
+/// let manifest = Utf8Path::new("/path/to/package.json");
 /// let info = parse_manifest(manifest)?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```

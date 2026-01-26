@@ -6,17 +6,29 @@ use std::{
 };
 
 /// Returns the global cimcp directory (~/.cimcp)
+///
+/// This function uses a layered fallback strategy to avoid panicking:
+/// 1. Try $HOME/.cimcp
+/// 2. Try $XDG_DATA_HOME/cimcp
+/// 3. Fall back to /tmp/.cimcp (logs a warning since this is non-standard)
+///
+/// The /tmp fallback ensures the application can always start, even in
+/// degraded environments (e.g., chroot, missing HOME).
 pub fn get_global_cimcp_dir() -> PathBuf {
     env::var("HOME")
         .map(|home| PathBuf::from(home).join(".cimcp"))
         .unwrap_or_else(|_| {
-            // Fallback to XDG_DATA_HOME or default to ~/.cimcp
+            // Fallback to XDG_DATA_HOME or use /tmp/.cimcp as ultimate fallback
             env::var("XDG_DATA_HOME")
                 .map(|p| PathBuf::from(p).join("cimcp"))
                 .unwrap_or_else(|_| {
-                    env::current_dir()
-                        .unwrap()
-                        .join(".cimcp")
+                    // Use /tmp/.cimcp as last resort instead of panicking
+                    let fallback = PathBuf::from("/tmp/.cimcp");
+                    tracing::warn!(
+                        path = %fallback.display(),
+                        "HOME and XDG_DATA_HOME not set, using temporary fallback (non-standard location)"
+                    );
+                    fallback
                 })
         })
 }

@@ -18,13 +18,27 @@ unsafe impl Sync for SqliteStore {}
 
 impl SqliteStore {
     /// Get read access to the connection
-    pub fn read(&self) -> RwLockReadGuard<'_, Connection> {
-        self.conn.read().unwrap()
+    ///
+    /// Returns Result to handle poisoned RwLock gracefully instead of panicking.
+    /// A poisoned lock indicates a previous panic while holding the lock, which
+    /// suggests corrupt state - this error surfaces that condition for handling.
+    pub fn read(&self) -> Result<RwLockReadGuard<'_, Connection>> {
+        self.conn.read().map_err(|e| {
+            anyhow::anyhow!("RwLock read lock is poisoned: {}", e)
+                .context("Database connection lock poisoned - indicates a previous panic while holding read lock")
+        })
     }
 
     /// Get write access to the connection
-    pub fn write(&self) -> RwLockWriteGuard<'_, Connection> {
-        self.conn.write().unwrap()
+    ///
+    /// Returns Result to handle poisoned RwLock gracefully instead of panicking.
+    /// A poisoned lock indicates a previous panic while holding the lock, which
+    /// suggests corrupt state - this error surfaces that condition for handling.
+    pub fn write(&self) -> Result<RwLockWriteGuard<'_, Connection>> {
+        self.conn.write().map_err(|e| {
+            anyhow::anyhow!("RwLock write lock is poisoned: {}", e)
+                .context("Database connection lock poisoned - indicates a previous panic while holding write lock")
+        })
     }
 }
 
@@ -69,7 +83,7 @@ impl SqliteStore {
         {
             // Write lock needed for migration functions that modify schema
             #[allow(clippy::readonly_write_lock)]
-            let conn = self.conn.write().unwrap();
+            let conn = self.write()?;
             conn.execute_batch(SCHEMA_SQL)
                 .context("Failed to initialize sqlite schema")?;
 
@@ -82,9 +96,7 @@ impl SqliteStore {
     }
 
     pub fn clear_all(&self) -> Result<()> {
-        self.conn
-            .write()
-            .unwrap()
+        self.write()?
             .execute_batch(
                 r#"
 DELETE FROM edges;
@@ -112,7 +124,8 @@ DELETE FROM repositories;
     /// Wrapper around queries::affinity::batch_get_affinity_boosts
     /// Returns HashMap mapping file_path to affinity_score (0.0-1.0)
     pub fn batch_get_affinity_boosts(&self, file_paths: &[&str]) -> Result<HashMap<String, f32>> {
-        super::queries::affinity::batch_get_affinity_boosts(&self.read(), file_paths)
+        let conn = self.read()?;
+        super::queries::affinity::batch_get_affinity_boosts(&conn, file_paths)
     }
 }
 

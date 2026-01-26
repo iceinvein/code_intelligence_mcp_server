@@ -50,7 +50,7 @@ impl LanceDbStore {
         let db = lancedb::connect(uri)
             .execute()
             .await
-            .context("Failed to connect to lancedb")?;
+            .with_context(|| format!("Failed to connect to lancedb: path={}", path.display()))?;
         Ok(Self { db })
     }
 
@@ -64,7 +64,7 @@ impl LanceDbStore {
             .table_names()
             .execute()
             .await
-            .context("Failed to list lancedb table names")?;
+            .with_context(|| format!("Failed to list lancedb table names: table_name={}", table_name))?;
 
         if !existing.iter().any(|n| n == table_name) {
             let schema = Arc::new(build_schema(vector_dim));
@@ -72,7 +72,12 @@ impl LanceDbStore {
                 .create_empty_table(table_name, schema)
                 .execute()
                 .await
-                .context("Failed to create lancedb table")?;
+                .with_context(|| {
+                    format!(
+                        "Failed to create lancedb table: table_name={}, vector_dim={}",
+                        table_name, vector_dim
+                    )
+                })?;
         }
 
         let table = self
@@ -80,7 +85,7 @@ impl LanceDbStore {
             .open_table(table_name)
             .execute()
             .await
-            .context("Failed to open lancedb table")?;
+            .with_context(|| format!("Failed to open lancedb table: table_name={}", table_name))?;
 
         Ok(LanceVectorTable { table, vector_dim })
     }
@@ -120,10 +125,13 @@ impl LanceDbStore {
             .open_table(table_name)
             .execute()
             .await
-            .context("Failed to open lancedb table")?;
+            .with_context(|| format!("Failed to open lancedb table: table_name={}", table_name))?;
 
         // Check the schema to determine current vector dimension
-        let schema = table.schema().await.context("Failed to get table schema")?;
+        let schema = table
+            .schema()
+            .await
+            .with_context(|| format!("Failed to get table schema: table_name={}", table_name))?;
 
         // Find the vector field by name
         let vector_field_index = schema
@@ -158,7 +166,12 @@ impl LanceDbStore {
         self.db
             .drop_table(table_name, &[])
             .await
-            .context("Failed to drop lancedb table during migration")?;
+            .with_context(|| {
+                format!(
+                    "Failed to drop lancedb table during migration: table_name={}, current_dim={}, expected_dim={}",
+                    table_name, current_dim, expected_dim
+                )
+            })?;
 
         tracing::warn!(
             "Dropped table '{}' due to dimension migration ({} -> {}). Triggering automatic re-index.",
@@ -188,7 +201,12 @@ impl LanceVectorTable {
         self.table
             .delete(&predicate)
             .await
-            .context("Failed to delete lancedb records by file_path")?;
+            .with_context(|| {
+                format!(
+                    "Failed to delete lancedb records by file_path: file_path={}, predicate={}",
+                    file_path, predicate
+                )
+            })?;
 
         Ok(())
     }
@@ -217,7 +235,12 @@ impl LanceVectorTable {
             .add(Box::new(batches))
             .execute()
             .await
-            .context("Failed to add records to lancedb table")?;
+            .with_context(|| {
+                format!(
+                    "Failed to add records to lancedb table: record_count={}",
+                    records.len()
+                )
+            })?;
 
         Ok(())
     }
@@ -235,11 +258,23 @@ impl LanceVectorTable {
             .table
             .query()
             .nearest_to(query_vector)
-            .context("Failed to create lancedb nearest_to query")?
+            .with_context(|| {
+                format!(
+                    "Failed to create lancedb nearest_to query: vector_dim={}, limit={}",
+                    query_vector.len(),
+                    limit
+                )
+            })?
             .limit(limit)
             .execute()
             .await
-            .context("Failed to execute lancedb query")?;
+            .with_context(|| {
+                format!(
+                    "Failed to execute lancedb query: vector_dim={}, limit={}",
+                    query_vector.len(),
+                    limit
+                )
+            })?;
 
         let batches: Vec<RecordBatch> = stream.try_collect().await?;
 
@@ -350,12 +385,22 @@ impl LanceVectorTable {
             .limit(1)
             .execute()
             .await
-            .context("Failed to execute lancedb query for get_embedding_by_id")?;
+            .with_context(|| {
+                format!(
+                    "Failed to execute lancedb query for get_embedding_by_id: symbol_id={}",
+                    id
+                )
+            })?;
 
         let batches: Vec<RecordBatch> = stream
             .try_collect()
             .await
-            .context("Failed to collect results for get_embedding_by_id")?;
+            .with_context(|| {
+                format!(
+                    "Failed to collect results for get_embedding_by_id: symbol_id={}",
+                    id
+                )
+            })?;
 
         if batches.is_empty() {
             return Err(anyhow::anyhow!("No embedding found for symbol ID: {}", id));
@@ -407,12 +452,26 @@ impl LanceVectorTable {
             .table
             .query()
             .nearest_to(query_vector)
-            .context("Failed to create lancedb nearest_to query")?
+            .with_context(|| {
+                format!(
+                    "Failed to create lancedb nearest_to query with filter: vector_dim={}, limit={}, filter={}",
+                    query_vector.len(),
+                    limit,
+                    filter
+                )
+            })?
             .only_if(filter)
             .limit(limit)
             .execute()
             .await
-            .context("Failed to execute lancedb query with filter")?;
+            .with_context(|| {
+                format!(
+                    "Failed to execute lancedb query with filter: vector_dim={}, limit={}, filter={}",
+                    query_vector.len(),
+                    limit,
+                    filter
+                )
+            })?;
 
         let batches: Vec<RecordBatch> = stream.try_collect().await?;
 
@@ -575,7 +634,13 @@ fn build_record_batch(
             Arc::new(texts),
         ],
     )
-    .context("Failed to build arrow record batch")
+    .with_context(|| {
+        format!(
+            "Failed to build arrow record batch: record_count={}, vector_dim={}",
+            records.len(),
+            vector_dim
+        )
+    })
 }
 
 #[cfg(test)]

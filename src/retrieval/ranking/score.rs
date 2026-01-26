@@ -36,9 +36,17 @@ pub fn apply_selection_boost_with_signals(
         .collect();
 
     // Batch load selection boost scores
-    let boost_map = sqlite
-        .batch_get_selection_boosts(&pairs)
-        .unwrap_or_default();
+    let boost_map = match sqlite.batch_get_selection_boosts(&pairs) {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                pair_count = pairs.len(),
+                "Selection boost lookup failed, using empty boosts (degraded learning)"
+            );
+            HashMap::new()
+        }
+    };
 
     // Apply boosts to hits
     for h in hits.iter_mut() {
@@ -112,9 +120,17 @@ pub fn apply_file_affinity_boost_with_signals(
     let file_paths: Vec<&str> = file_paths_set.into_iter().collect();
 
     // Batch load affinity boost scores
-    let affinity_map = sqlite
-        .batch_get_affinity_boosts(&file_paths)
-        .unwrap_or_default();
+    let affinity_map = match sqlite.batch_get_affinity_boosts(&file_paths) {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                file_count = file_paths.len(),
+                "File affinity boost lookup failed, using empty boosts (degraded learning)"
+            );
+            HashMap::new()
+        }
+    };
 
     // Find max affinity_score for normalization (avoid division by zero)
     let max_affinity = affinity_map
@@ -373,9 +389,17 @@ pub fn apply_popularity_boost_with_signals(
     let symbol_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
 
     // Batch load PageRank scores from symbol_metrics table
-    let pagerank_map = sqlite
-        .batch_get_symbol_metrics(&symbol_ids)
-        .unwrap_or_default();
+    let pagerank_map = match sqlite.batch_get_symbol_metrics(&symbol_ids) {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                symbol_count = symbol_ids.len(),
+                "PageRank metrics lookup failed, using empty scores (degraded popularity ranking)"
+            );
+            HashMap::new()
+        }
+    };
 
     // Find max PageRank for normalization
     let max_pagerank = pagerank_map

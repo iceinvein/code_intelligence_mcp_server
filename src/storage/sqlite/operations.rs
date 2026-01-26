@@ -85,12 +85,16 @@ impl SqliteStore {
             #[allow(clippy::readonly_write_lock)]
             let conn = self.write()?;
             conn.execute_batch(SCHEMA_SQL)
-                .context("Failed to initialize sqlite schema")?;
+                .context("Failed to initialize sqlite schema: execute_batch SCHEMA_SQL")?;
 
-            migrate_add_edges_location_columns(&conn)?;
-            migrate_add_edges_confidence_column(&conn)?;
-            migrate_add_edges_evidence_count_column(&conn)?;
-            migrate_add_edges_resolution_columns(&conn)?;
+            migrate_add_edges_location_columns(&conn)
+                .with_context(|| "Failed to run migration: migrate_add_edges_location_columns")?;
+            migrate_add_edges_confidence_column(&conn)
+                .with_context(|| "Failed to run migration: migrate_add_edges_confidence_column")?;
+            migrate_add_edges_evidence_count_column(&conn)
+                .with_context(|| "Failed to run migration: migrate_add_edges_evidence_count_column")?;
+            migrate_add_edges_resolution_columns(&conn)
+                .with_context(|| "Failed to run migration: migrate_add_edges_resolution_columns")?;
         }
         Ok(())
     }
@@ -115,7 +119,7 @@ DELETE FROM packages;
 DELETE FROM repositories;
 "#,
             )
-            .context("Failed to clear sqlite index")?;
+            .context("Failed to clear sqlite index: execute_batch DELETE FROM all tables")?;
         Ok(())
     }
 

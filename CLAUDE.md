@@ -72,6 +72,82 @@ The server reads configuration from environment variables. Key ones:
 | `HYBRID_ALPHA` | `0.7` | Vector vs keyword weight (0-1) |
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |
 
+## Path Handling
+
+**Standard:** Use camino for UTF-8 typed paths, centralized normalization.
+
+This project uses `camino` for guaranteed UTF-8 paths at the type level. All file paths should use `Utf8PathBuf` (owned) or `&Utf8Path` (borrowed) instead of the standard library's `PathBuf` and `&Path`.
+
+```rust
+use crate::path::{PathNormalizer, Utf8Path, Utf8PathBuf, PathError};
+
+// Create normalizer with base directory
+let normalizer = PathNormalizer::new(base_dir);
+
+// Normalize path for cross-platform comparison
+let normalized = normalizer.normalize_for_compare(path)?;
+
+// Convert to relative path within base
+let relative = normalizer.relative_to_base(absolute_path)?;
+
+// Security check against path escaping
+normalizer.validate_within_base(user_input)?;
+```
+
+### Key Types
+
+| Type | Use Case | Replaces |
+|------|----------|----------|
+| `Utf8PathBuf` | Owned UTF-8 path | `PathBuf` |
+| `&Utf8Path` | Borrowed UTF-8 path | `&Path` |
+| `PathNormalizer` | Centralized path operations | Manual path manipulation |
+| `PathError` | Structured path errors | ad-hoc error handling |
+
+### Migration Pattern
+
+```rust
+// OLD (don't use - scattered, error-prone):
+let path = path.replace("\\", "/");
+let relative = path.strip_prefix("/repo")?;
+
+// NEW (use - centralized, tested):
+let normalized = normalizer.normalize_for_compare(Utf8Path::new(path))?;
+let relative = normalizer.relative_to_base(&normalized)?;
+```
+
+### Error Handling
+
+```rust
+use crate::path::PathError;
+
+// PathError provides helpful error messages with context
+match normalizer.relative_to_base(path) {
+    Ok(rel) => /* use relative path */,
+    Err(PathError::OutsideRepo { path, base }) => {
+        anyhow::bail!("Path '{path}' is outside repository '{base}'")
+    }
+    Err(PathError::NonUtf8 { path }) => {
+        anyhow::bail!("Path contains non-UTF-8 characters: {}", path.display())
+    }
+    Err(e) => return Err(e.into()),
+}
+```
+
+### Platform-Specific Behavior
+
+- **Windows:** Backslashes converted to forward slashes, UNC paths normalized via `dunce`
+- **Unix/Linux:** Paths used as-is, case-sensitive comparison
+- **macOS:** Paths case-sensitive in code (HFS+/APFS may be case-insensitive on disk)
+
+### Cross-Platform Testing
+
+The `src/path/mod.rs` module includes comprehensive parameterized tests (58+ test cases) using the `test-case` crate. Tests cover:
+- Windows backslash normalization
+- UNC path handling (Windows-only)
+- Security validation for path escape attempts
+- Case sensitivity per-platform
+- Helpful error message formatting
+
 ## Adding a New Language
 
 1. Add tree-sitter dependency to `Cargo.toml`

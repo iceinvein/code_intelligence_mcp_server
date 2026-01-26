@@ -506,30 +506,58 @@ impl Retriever {
                     let sub_keyword_hits = self.tantivy.search(sub_query, k)?;
                     combined_keyword_hits.extend(sub_keyword_hits);
 
-                    // Vector search for this sub-query
-                    let query_vector = self.get_query_vector_cached(sub_query).await?;
-                    let mut sub_vector_hits = self.vectors.search(&query_vector, k).await?;
-
-                    // HyDE for this sub-query
-                    if self.config.hyde_enabled {
-                        if let Some(generator) = &self.hyde_generator {
-                            let language = detect_language_from_query(sub_query);
-                            if let Ok(hyde_result) = generator.generate(sub_query, language).await {
-                                let mut embedder = self.embedder.lock().await;
-                                if let Ok(hyde_embeddings) =
-                                    embedder.embed(&[hyde_result.hypothetical_code])
-                                {
-                                    if let Some(hyde_vector) = hyde_embeddings.first() {
-                                        if let Ok(hyde_hits) =
-                                            self.vectors.search(hyde_vector, k / 2).await
-                                        {
-                                            sub_vector_hits.extend(hyde_hits);
+                    // Vector search for this sub-query with graceful degradation
+                    // Each sub-query degrades independently - one failure doesn't affect others
+                    let sub_vector_hits = match self.get_query_vector_cached(sub_query).await {
+                        Ok(query_vector) => {
+                            match self.vectors.search(&query_vector, k).await {
+                                Ok(mut hits) => {
+                                    // HyDE for this sub-query (best-effort)
+                                    if self.config.hyde_enabled {
+                                        if let Some(generator) = &self.hyde_generator {
+                                            let language = detect_language_from_query(sub_query);
+                                            if let Ok(hyde_result) = generator.generate(sub_query, language).await {
+                                                let mut embedder = self.embedder.lock().await;
+                                                if let Ok(hyde_embeddings) =
+                                                    embedder.embed(&[hyde_result.hypothetical_code])
+                                                {
+                                                    if let Some(hyde_vector) = hyde_embeddings.first() {
+                                                        if let Ok(hyde_hits) =
+                                                            self.vectors.search(hyde_vector, k / 2).await
+                                                        {
+                                                            hits.extend(hyde_hits);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // HyDE failures are silently ignored - it's a best-effort enhancement
                                         }
                                     }
+                                    hits
+                                }
+                                Err(e) => {
+                                    // Vector search failed for this sub-query - degrade gracefully
+                                    tracing::warn!(
+                                        query = %sub_query,
+                                        error = %e,
+                                        "LanceDB vector search failed for sub-query, degrading to keyword-only"
+                                    );
+                                    self.metrics.search_errors_total.inc();
+                                    Vec::new()
                                 }
                             }
                         }
-                    }
+                        Err(e) => {
+                            // Embedding generation failed for this sub-query - degrade gracefully
+                            tracing::warn!(
+                                query = %sub_query,
+                                error = %e,
+                                "Query embedding generation failed for sub-query, degrading to keyword-only"
+                            );
+                            self.metrics.search_errors_total.inc();
+                            Vec::new()
+                        }
+                    };
 
                     combined_vector_hits.extend(sub_vector_hits);
                 }

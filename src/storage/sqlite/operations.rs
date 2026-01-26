@@ -46,7 +46,7 @@ impl SqliteStore {
                    // Enable foreign key constraints (required for ON DELETE CASCADE to work)
                    // This MUST be set on every connection as it's connection-specific, not database-wide
         match conn.execute("PRAGMA foreign_keys = ON", []) {
-            Ok(_) => tracing::info!("Foreign keys enabled on connection"),
+            Ok(_) => tracing::debug!("Foreign keys enabled on connection"),
             Err(e) => tracing::error!("Failed to enable foreign keys: {}", e),
         }
 

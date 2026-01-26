@@ -125,7 +125,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "explore_dependency_graph" => {
                 let tool: ExploreDependencyGraphTool = parse_tool_args(&params)?;
-                let result = handle_explore_dependency_graph(&self.state.config.db_path, tool)
+                let result = handle_explore_dependency_graph(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -135,7 +135,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "get_similarity_cluster" => {
                 let tool: GetSimilarityClusterTool = parse_tool_args(&params)?;
-                let result = handle_get_similarity_cluster(&self.state.config.db_path, tool)
+                let result = handle_get_similarity_cluster(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -145,7 +145,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "find_references" => {
                 let tool: FindReferencesTool = parse_tool_args(&params)?;
-                let result = handle_find_references(&self.state.config.db_path, tool)
+                let result = handle_find_references(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -155,7 +155,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "get_usage_examples" => {
                 let tool: GetUsageExamplesTool = parse_tool_args(&params)?;
-                let result = handle_get_usage_examples(&self.state.config.db_path, tool)
+                let result = handle_get_usage_examples(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -165,7 +165,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "get_call_hierarchy" => {
                 let tool: GetCallHierarchyTool = parse_tool_args(&params)?;
-                let result = handle_get_call_hierarchy(&self.state.config.db_path, tool)
+                let result = handle_get_call_hierarchy(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -175,7 +175,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "get_type_graph" => {
                 let tool: GetTypeGraphTool = parse_tool_args(&params)?;
-                let result = handle_get_type_graph(&self.state.config.db_path, tool)
+                let result = handle_get_type_graph(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -185,7 +185,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "report_selection" => {
                 let tool: ReportSelectionTool = parse_tool_args(&params)?;
-                let result = handle_report_selection(&self.state.config.db_path, tool)
+                let result = handle_report_selection(&self.state, tool)
                     .await
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
@@ -218,7 +218,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "summarize_file" => {
                 let tool: SummarizeFileTool = parse_tool_args(&params)?;
-                let result = handle_summarize_file(&self.state.config.db_path, tool)
+                let result = handle_summarize_file(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -238,7 +238,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "trace_data_flow" => {
                 let tool: TraceDataFlowTool = parse_tool_args(&params)?;
-                let result = handle_trace_data_flow(&self.state.config.db_path, tool)
+                let result = handle_trace_data_flow(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -248,7 +248,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "find_affected_code" => {
                 let tool: FindAffectedCodeTool = parse_tool_args(&params)?;
-                let result = handle_find_affected_code(&self.state.config.db_path, tool)
+                let result = handle_find_affected_code(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -258,7 +258,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "search_todos" => {
                 let tool: SearchTodosTool = parse_tool_args(&params)?;
-                let result = handle_search_todos(&self.state.config.db_path, tool)
+                let result = handle_search_todos(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -268,7 +268,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "find_tests_for_symbol" => {
                 let tool: FindTestsForSymbolTool = parse_tool_args(&params)?;
-                let result = handle_find_tests_for_symbol(&self.state.config.db_path, tool)
+                let result = handle_find_tests_for_symbol(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)
@@ -278,7 +278,7 @@ impl ServerHandler for CodeIntelligenceHandler {
             }
             "search_decorators" => {
                 let tool: SearchDecoratorsTool = parse_tool_args(&params)?;
-                let result = handle_search_decorators(&self.state.config.db_path, tool)
+                let result = handle_search_decorators(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)

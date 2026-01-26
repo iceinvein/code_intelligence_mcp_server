@@ -1,6 +1,7 @@
 //! MCP tool handlers
 
 use crate::graph::{build_call_hierarchy, build_dependency_graph, build_type_graph};
+use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
 use crate::retrieval::assembler::FormatMode;
 use crate::retrieval::Retriever;
 use crate::storage::sqlite::{SqliteStore, SymbolRow};
@@ -35,12 +36,20 @@ pub fn parse_tool_args<T: DeserializeOwned>(
 /// Convert internal error to MCP tool error
 ///
 /// Logs the error before converting to MCP error format for observability.
+/// Preserves PathError context for helpful error messages.
 pub fn tool_internal_error(err: anyhow::Error) -> CallToolError {
+    // Check for PathError in the error chain for better context
+    let message = if let Some(path_err) = err.downcast_ref::<PathError>() {
+        path_err.to_string()
+    } else {
+        err.to_string()
+    };
+
     tracing::error!(
         error = %err,
         "Handler error: converting to MCP error"
     );
-    CallToolError::from_message(err.to_string())
+    CallToolError::from_message(message)
 }
 
 /// Extract a line containing the symbol name from text
@@ -62,16 +71,31 @@ pub async fn handle_refresh_index(
     state: &AppState,
     tool: RefreshIndexTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
+    let normalizer = PathNormalizer::new(state.config.base_dir.clone());
+
     let stats = if let Some(files) = tool.files {
         let paths = files
             .into_iter()
             .map(|p| {
-                state
-                    .config
-                    .normalize_path_to_base(std::path::Path::new(&p))
+                // Convert to Utf8Path and validate it's within base
+                let path_buf = std::path::PathBuf::from(&p);
+                let utf8_path = Utf8PathBuf::from_path_buf(path_buf.clone())
+                    .map_err(|_| PathError::NonUtf8 { path: path_buf })?;
+
+                // Validate path is within base directory
+                normalizer.validate_within_base(&utf8_path)?;
+
+                Ok(utf8_path)
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        state.indexer.index_paths(&paths).await
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        // Convert Utf8PathBuf to PathBuf for pipeline API (keeps pipeline API stable)
+        let path_bufs: Vec<std::path::PathBuf> = paths
+            .iter()
+            .map(|p| p.as_std_path().to_path_buf())
+            .collect();
+
+        state.indexer.index_paths(&path_bufs).await
     } else {
         state.indexer.index_all().await
     }?;
@@ -129,10 +153,20 @@ pub fn handle_get_file_symbols(
         "get_file_symbols called"
     );
 
-    // Normalize file path to match how it's stored in the database (relative to BASE_DIR)
-    let file_path_normalized = state
-        .config
-        .path_relative_to_base_path(std::path::Path::new(&tool.file_path))
+    // Create path normalizer for validation
+    let normalizer = PathNormalizer::new(state.config.base_dir.clone());
+
+    // Convert to Utf8Path and validate
+    let path_buf = std::path::PathBuf::from(&tool.file_path);
+    let utf8_path = Utf8PathBuf::from_path_buf(path_buf)
+        .map_err(|_| PathError::NonUtf8 {
+            path: std::path::PathBuf::from(&tool.file_path),
+        })?;
+
+    // Get relative path to base (for database lookup)
+    let file_path_normalized = normalizer
+        .relative_to_base(&utf8_path)
+        .map(|p| p.to_string())
         .unwrap_or_else(|_| tool.file_path.clone());
 
     tracing::debug!(
@@ -968,10 +1002,20 @@ pub fn handle_get_module_summary(
         "get_module_summary called"
     );
 
-    // Normalize file path to match how it's stored in the database (relative to BASE_DIR)
-    let file_path_normalized = state
-        .config
-        .path_relative_to_base_path(std::path::Path::new(&tool.file_path))
+    // Create path normalizer for validation
+    let normalizer = PathNormalizer::new(state.config.base_dir.clone());
+
+    // Convert to Utf8Path and validate
+    let path_buf = std::path::PathBuf::from(&tool.file_path);
+    let utf8_path = Utf8PathBuf::from_path_buf(path_buf)
+        .map_err(|_| PathError::NonUtf8 {
+            path: std::path::PathBuf::from(&tool.file_path),
+        })?;
+
+    // Get relative path to base (for database lookup)
+    let file_path_normalized = normalizer
+        .relative_to_base(&utf8_path)
+        .map(|p| p.to_string())
         .unwrap_or_else(|_| tool.file_path.clone());
 
     tracing::debug!(

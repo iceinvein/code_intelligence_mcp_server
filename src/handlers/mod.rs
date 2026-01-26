@@ -33,7 +33,13 @@ pub fn parse_tool_args<T: DeserializeOwned>(
 }
 
 /// Convert internal error to MCP tool error
+///
+/// Logs the error before converting to MCP error format for observability.
 pub fn tool_internal_error(err: anyhow::Error) -> CallToolError {
+    tracing::error!(
+        error = %err,
+        "Handler error: converting to MCP error"
+    );
     CallToolError::from_message(err.to_string())
 }
 

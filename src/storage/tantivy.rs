@@ -192,7 +192,9 @@ impl TantivyIndex {
             Ok(index) => index,
             Err(_) => {
                 let schema = build_schema();
-                Index::create_in_dir(index_dir, schema).context("Failed to create tantivy index")?
+                Index::create_in_dir(index_dir, schema).with_context(|| {
+                    format!("Failed to create tantivy index: index_dir={}", index_dir.display())
+                })?
             }
         };
 
@@ -231,11 +233,15 @@ impl TantivyIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
-            .context("Failed to create tantivy reader")?;
+            .with_context(|| {
+                format!("Failed to create tantivy reader: index_dir={}", index_dir.display())
+            })?;
 
         let writer = index
             .writer(64 * 1024 * 1024)
-            .context("Failed to create tantivy writer")?;
+            .with_context(|| {
+                format!("Failed to create tantivy writer: index_dir={}", index_dir.display())
+            })?;
 
         Ok(Self {
             index,
@@ -261,7 +267,13 @@ impl TantivyIndex {
         let writer = self
             .writer
             .lock()
-            .map_err(|_| anyhow!("Tantivy writer mutex poisoned"))?;
+            .map_err(|_| {
+                anyhow!(
+                    "Tantivy writer mutex poisoned: symbol_id={}, symbol_name={}",
+                    symbol.id,
+                    symbol.name
+                )
+            })?;
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
@@ -276,7 +288,15 @@ impl TantivyIndex {
             self.fields.exported => if symbol.exported { 1u64 } else { 0u64 },
             self.fields.text => expanded_text.as_str(),
             self.fields.text_ngram => expanded_text.as_str(),
-        ))?;
+        ))
+        .with_context(|| {
+            format!(
+                "Failed to add document to tantivy index: symbol_id={}, symbol_name={}, file_path={}",
+                symbol.id,
+                symbol.name,
+                symbol.file_path
+            )
+        })?;
 
         Ok(())
     }
@@ -285,7 +305,7 @@ impl TantivyIndex {
         let writer = self
             .writer
             .lock()
-            .map_err(|_| anyhow!("Tantivy writer mutex poisoned"))?;
+            .map_err(|_| anyhow!("Tantivy writer mutex poisoned: file_path={}", file_path))?;
 
         writer.delete_term(Term::from_field_text(self.fields.file_path, file_path));
         Ok(())
@@ -295,11 +315,13 @@ impl TantivyIndex {
         let mut writer = self
             .writer
             .lock()
-            .map_err(|_| anyhow!("Tantivy writer mutex poisoned"))?;
-        writer.commit().context("Failed to commit tantivy writer")?;
+            .map_err(|_| anyhow!("Tantivy writer mutex poisoned: commit operation"))?;
+        writer
+            .commit()
+            .context("Failed to commit tantivy writer: writer.commit()")?;
         self.reader
             .reload()
-            .context("Failed to reload tantivy reader")?;
+            .context("Failed to reload tantivy reader: reader.reload() after commit")?;
         Ok(())
     }
 
@@ -363,13 +385,18 @@ impl TantivyIndex {
 
         let top_docs = searcher
             .search(&parsed_query, &TopDocs::with_limit(limit))
-            .context("Failed to search tantivy index")?;
+            .with_context(|| {
+                format!(
+                    "Failed to search tantivy index: query='{}', limit={}, fields={:?}",
+                    query, limit, fields
+                )
+            })?;
 
         let mut out = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
             let retrieved = searcher
                 .doc::<TantivyDocument>(addr)
-                .context("Failed to load tantivy doc")?;
+                .with_context(|| format!("Failed to load tantivy doc: address={:?}", addr))?;
             let id = retrieved
                 .get_first(self.fields.id)
                 .and_then(|v| v.as_str())

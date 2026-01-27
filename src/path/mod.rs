@@ -793,4 +793,74 @@ mod path_proptest {
                 "relative_to_base failed for nested path within base: {} -> {:?}", full_path.as_str(), result);
         }
     }
+
+    // ========== Edge Case Tests ==========
+
+    // Property 5: Empty/edge case paths don't panic
+    // Normalization should handle any path string without panicking,
+    // including empty strings and unusual characters.
+    proptest! {
+        #[test]
+        fn prop_normalize_edge_cases_no_panic(path in r"[a-zA-Z0-9_/\.\\]{0,50}") {
+            let normalizer = test_normalizer();
+            let path_utf8 = Utf8Path::new(&path);
+
+            // Should not panic for any path (even invalid ones)
+            let _result = normalizer.normalize_for_compare(path_utf8);
+        }
+    }
+
+    // Property 6: Join base consistency
+    // When joining a relative path to base, the result should start with base
+    // (unless the relative path is absolute, which overrides the base).
+    proptest! {
+        #[test]
+        fn prop_join_base_consistent(relative in path_strategy()) {
+            let base = Utf8PathBuf::from("/test/repo");
+            let normalizer = PathNormalizer::new(base.clone());
+
+            let joined = normalizer.join_base(&relative);
+            let base_str = base.as_str();
+
+            // Joined path should either start with base (for relative paths)
+            // or be the absolute path (for absolute relative paths)
+            prop_assert!(joined.as_str().starts_with(base_str) || relative.starts_with('/'),
+                "Joined path doesn't start with base for relative path: {} -> {}", base_str, joined.as_str());
+        }
+    }
+
+    // Property 7: validate_within_base is deterministic
+    // Calling validate_within_base twice on the same path should yield the same result.
+    proptest! {
+        #[test]
+        fn prop_validate_deterministic(path in r"[a-zA-Z0-9_/\\]+") {
+            let normalizer = test_normalizer();
+            let path_utf8 = Utf8Path::new(&path);
+
+            let result1 = normalizer.validate_within_base(path_utf8);
+            let result2 = normalizer.validate_within_base(path_utf8);
+
+            prop_assert_eq!(result1.is_ok(), result2.is_ok(),
+                "validate_within_base not deterministic: {:?} != {:?}", result1, result2);
+        }
+    }
+
+    // Property 8: Normalized paths can be converted back to Utf8Path
+    // After normalization, the path should remain valid UTF-8 and
+    // convertible back to Utf8Path without loss.
+    proptest! {
+        #[test]
+        fn prop_normalize_to_utf8path_valid(path in path_strategy()) {
+            let normalizer = test_normalizer();
+            let path_utf8 = Utf8Path::new(&path);
+
+            if let Ok(normalized) = normalizer.normalize_for_compare(path_utf8) {
+                // Convert to string and back - should remain valid UTF-8
+                let as_str = normalized.as_str();
+                let back_to_utf8 = Utf8Path::new(as_str);
+                prop_assert_eq!(back_to_utf8.as_str(), normalized.as_str(),
+                    "Round-trip through string failed: {} != {}", as_str, back_to_utf8.as_str());
+            }
+        }
+    }
 }

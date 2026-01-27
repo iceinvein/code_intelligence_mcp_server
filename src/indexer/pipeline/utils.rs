@@ -363,3 +363,259 @@ mod tests {
         assert!(resolved_id.starts_with("0x") || resolved_id.len() == 16);
     }
 }
+
+#[cfg(test)]
+mod utils_proptest {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Strategy: realistic file paths (limited depth for performance testing)
+    prop_compose! {
+        fn file_path_strategy()(path in r"[a-z_]+(/[a-z_]+){0,3}\.(rs|ts|tsx|js|py|go|java|c|cpp|h)") -> String {
+            path
+        }
+    }
+
+    // Strategy: realistic symbol names (limited length for performance testing)
+    prop_compose! {
+        fn symbol_name_strategy()(name in r"[a-zA-Z_][a-zA-Z0-9_]{0,29}") -> String {
+            name
+        }
+    }
+
+    // Strategy: realistic byte offsets (limited range for typical source files)
+    fn start_byte_strategy() -> impl Strategy<Value = u32> {
+        0..50_000u32  // Covers files up to ~50KB
+    }
+
+    // Property 1: Determinism
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_deterministic(
+            file_path in file_path_strategy(),
+            name in symbol_name_strategy(),
+            start_byte in start_byte_strategy(),
+        ) {
+            let id1 = stable_symbol_id(&file_path, &name, start_byte);
+            let id2 = stable_symbol_id(&file_path, &name, start_byte);
+            prop_assert_eq!(id1, id2);
+        }
+    }
+
+    // Property 2: Output format (16-char lowercase hex)
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_format(
+            file_path in file_path_strategy(),
+            name in symbol_name_strategy(),
+            start_byte in start_byte_strategy(),
+        ) {
+            let id = stable_symbol_id(&file_path, &name, start_byte);
+            prop_assert_eq!(id.len(), 16);
+            // All chars must be hex digits, and letters must be lowercase
+            prop_assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+            prop_assert!(id.chars().all(|c| !c.is_ascii_alphabetic() || c.is_lowercase()));
+        }
+    }
+
+    // Property 3: Name sensitivity
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_name_sensitivity(
+            file_path in file_path_strategy(),
+            name1 in symbol_name_strategy(),
+            name2 in symbol_name_strategy(),
+            start_byte in start_byte_strategy(),
+        ) {
+            prop_assume!(name1 != name2);
+            let id1 = stable_symbol_id(&file_path, &name1, start_byte);
+            let id2 = stable_symbol_id(&file_path, &name2, start_byte);
+            prop_assert_ne!(id1, id2);
+        }
+    }
+
+    // Property 4: Path sensitivity
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_path_sensitivity(
+            path1 in file_path_strategy(),
+            path2 in file_path_strategy(),
+            name in symbol_name_strategy(),
+            start_byte in start_byte_strategy(),
+        ) {
+            prop_assume!(path1 != path2);
+            let id1 = stable_symbol_id(&path1, &name, start_byte);
+            let id2 = stable_symbol_id(&path2, &name, start_byte);
+            prop_assert_ne!(id1, id2);
+        }
+    }
+
+    // Property 5: Byte position sensitivity
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_byte_sensitivity(
+            file_path in file_path_strategy(),
+            name in symbol_name_strategy(),
+            byte1 in start_byte_strategy(),
+            byte2 in start_byte_strategy(),
+        ) {
+            prop_assume!(byte1 != byte2);
+            let id1 = stable_symbol_id(&file_path, &name, byte1);
+            let id2 = stable_symbol_id(&file_path, &name, byte2);
+            prop_assert_ne!(id1, id2);
+        }
+    }
+
+    // Property 6: Collision resistance (sample-based)
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_no_trivial_collisions(
+            file_path in file_path_strategy(),
+            name in symbol_name_strategy(),
+            start_byte in start_byte_strategy(),
+        ) {
+            // Single-bit change in name should produce different ID
+            if name.len() > 0 {
+                let mut modified_name = name.clone();
+                modified_name.pop();
+                if let Some(c) = modified_name.chars().last() {
+                    let modified = format!("{}{}x", &name[..name.len()-1], c);
+                    if modified != name {
+                        let id1 = stable_symbol_id(&file_path, &name, start_byte);
+                        let id2 = stable_symbol_id(&file_path, &modified, start_byte);
+                        prop_assert_ne!(id1, id2);
+                    }
+                }
+            }
+        }
+    }
+
+    // Property 7: Avalanche effect (bit distribution)
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_avalanche(
+            file_path in file_path_strategy(),
+            name in symbol_name_strategy(),
+            start_byte in start_byte_strategy(),
+        ) {
+            let id1 = stable_symbol_id(&file_path, &name, start_byte);
+            let modified_path = format!("{}x", file_path);
+            let id2 = stable_symbol_id(&modified_path, &name, start_byte);
+
+            // Hamming distance should be significant (expected ~32 bits for 64-bit hash)
+            let hamming = id1.chars().zip(id2.chars())
+                .filter(|(c1, c2)| c1 != c2)
+                .count();
+
+            // At least 4 hex digits different (very weak bound, but filters bugs)
+            prop_assert!(hamming >= 4, "Avalanche effect: only {} chars different", hamming);
+        }
+    }
+
+    // Property 8: Performance
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_performance(
+            file_path in file_path_strategy(),
+            name in symbol_name_strategy(),
+            start_byte in start_byte_strategy(),
+        ) {
+            let start = std::time::Instant::now();
+            let _id = stable_symbol_id(&file_path, &name, start_byte);
+            let elapsed = start.elapsed();
+
+            // Should complete in 1ms for realistic inputs on typical hardware
+            // NOTE: This is a regression test, not a strict benchmark. The threshold
+            // is set generously to avoid false positives on slower CI hardware while
+            // still catching significant performance regressions (e.g., accidental O(n^2)
+            // algorithms introduced during refactoring).
+            // If this test fails consistently on CI, it may indicate the hardware is slower
+            // than expected. Consider increasing the threshold or making this a benchmark-only test.
+            prop_assert!(elapsed.as_millis() < 1,
+                "Symbol ID generation took {:?} for path={}, name={}, start_byte={}. \
+                 If this fails consistently on CI, the threshold may need adjustment.",
+                elapsed, file_path, name, start_byte);
+        }
+    }
+
+    // Property 9: Large-scale consistency (verifies behavior stability across many inputs)
+    proptest! {
+        #[test]
+        fn prop_stable_symbol_id_large_scale_consistency(
+            // Generate a seed for reproducibility
+            seed in any::<u64>(),
+        ) {
+            use std::collections::HashSet;
+
+            // Track unique IDs and timing samples
+            let mut unique_ids = HashSet::new();
+            let mut timings = Vec::with_capacity(10_000);
+            let mut collision_count = 0;
+
+            // Test 10,000 randomly generated inputs
+            for i in 0..10_000 {
+                // Use the seed to generate deterministic "random" values
+                let seeded_idx = (seed.wrapping_add(i as u64)) as usize;
+
+                // Generate file path from seed
+                let depth = (seeded_idx % 4) as usize;
+                let dirs: Vec<_> = (0..depth).map(|d| format!("dir{}", (seeded_idx + d) % 100)).collect();
+                let file_path = if dirs.is_empty() {
+                    format!("file{}.rs", (seeded_idx % 50))
+                } else {
+                    format!("{}/file{}.rs", dirs.join("/"), (seeded_idx % 50))
+                };
+
+                // Generate symbol name from seed
+                let name_len = 1 + (seeded_idx % 30);
+                let name_chars: Vec<_> = (0..name_len)
+                    .map(|c| match (seeded_idx + c) % 62 {
+                        n @ 0..=9 => (b'0' + n as u8) as char,
+                        n @ 10..=35 => (b'a' + (n - 10) as u8) as char,
+                        n @ 36..=61 => (b'A' + (n - 36) as u8) as char,
+                        _ => '_',
+                    })
+                    .collect();
+                let name: String = name_chars.into_iter().collect();
+
+                // Generate start_byte from seed
+                let start_byte = (((seeded_idx % 50_000) * 17) % 50_000) as u32;
+
+                let start = std::time::Instant::now();
+                let id = stable_symbol_id(&file_path, &name, start_byte);
+                let elapsed = start.elapsed();
+
+                timings.push(elapsed.as_nanos());
+
+                // Check for collisions (should be extremely rare)
+                if !unique_ids.insert(id.clone()) {
+                    collision_count += 1;
+                }
+
+                // Sanity check: output format still valid
+                prop_assert_eq!(id.len(), 16,
+                    "ID format invalid at iteration {}: {}", i, id);
+                prop_assert!(id.chars().all(|c| c.is_ascii_hexdigit()),
+                    "ID contains invalid characters at iteration {}: {}", i, id);
+                prop_assert!(id.chars().all(|c| !c.is_ascii_alphabetic() || c.is_lowercase()),
+                    "ID contains uppercase letters at iteration {}: {}", i, id);
+            }
+
+            // Collision check: with FNV-1a 64-bit, probability of collision in 10k is negligible
+            // Birthday paradox: P(collision) ≈ 1 - e^(-n^2/2*2^64) ≈ 10^-8 for n=10,000
+            prop_assert!(collision_count == 0,
+                "Found {} collisions in 10,000 samples. This indicates a hash problem.", collision_count);
+
+            // Performance consistency: median should remain reasonable
+            timings.sort();
+            let median = timings[timings.len() / 2];
+            prop_assert!(median < 1_000_000, // 1 millisecond in nanoseconds
+                "Median performance degraded to {}ns at scale. Expected <1ms.", median);
+
+            // No single call should take more than 10 milliseconds (sanity check)
+            let max = *timings.iter().max().unwrap();
+            prop_assert!(max < 10_000_000, // 10 milliseconds in nanoseconds
+                "Max performance outlier at {}ns. Possible performance regression.", max);
+        }
+    }
+}

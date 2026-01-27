@@ -675,3 +675,122 @@ mod tests {
         assert!(err_msg.contains("/Users/dev/myproject") || err_msg.contains("repository"));
     }
 }
+
+/// Property-based tests for path normalization invariants.
+///
+/// These tests verify fundamental properties that ALWAYS hold for path operations:
+/// - Idempotence: Normalizing twice yields same result as normalizing once
+/// - Backslash elimination: Output never contains backslashes
+/// - Round-trip safety: Utf8Path conversion is lossless
+/// - Prefix consistency: relative_to_base strips base correctly
+#[cfg(test)]
+mod path_proptest {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Create a test normalizer with a fixed base directory.
+    fn test_normalizer() -> PathNormalizer {
+        PathNormalizer::new("/test/repo".into())
+    }
+
+    /// Strategy: generate realistic path strings.
+    ///
+    /// Covers:
+    /// - Simple identifiers (e.g., "src", "main")
+    /// - Nested paths (e.g., "src/lib/utils")
+    /// - Paths with extensions (e.g., "main.rs", "index.tsx")
+    /// - Windows-style paths with backslashes
+    fn path_strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            // Simple paths
+            r"[a-zA-Z_][a-zA-Z0-9_]*",
+            // Nested paths
+            r"([a-zA-Z_][a-zA-Z0-9_]*/)*[a-zA-Z_][a-zA-Z0-9_]*",
+            // Paths with extension
+            r"[a-zA-Z_][a-zA-Z0-9_]*\.[a-z]{1,4}",
+            // Paths with backslashes (Windows style)
+            r"[a-zA-Z_][a-zA-Z0-9_]*\\[a-zA-Z_][a-zA-Z0-9_]*",
+        ]
+    }
+
+    // Property 1: Idempotence
+    // Normalizing twice yields same result as normalizing once.
+    // This is a critical invariant - normalization should reach a fixed point.
+    proptest! {
+        #[test]
+        fn prop_normalize_idempotent(path in path_strategy()) {
+            let normalizer = test_normalizer();
+            let path_utf8 = Utf8Path::new(&path);
+
+            if let Ok(n1) = normalizer.normalize_for_compare(path_utf8) {
+                if let Ok(n2) = normalizer.normalize_for_compare(&n1) {
+                    prop_assert_eq!(n1.as_str(), n2.as_str(),
+                        "Normalize not idempotent: {} -> {} -> {}", path, n1.as_str(), n2.as_str());
+                }
+            }
+        }
+    }
+
+    // Property 2: Backslash elimination
+    // After normalization, output never contains backslashes.
+    // This ensures cross-platform compatibility and consistent string comparison.
+    proptest! {
+        #[test]
+        fn prop_backslash_elimination(path in r"[a-zA-Z0-9_/\\]+") {
+            let normalizer = test_normalizer();
+            let path_utf8 = Utf8Path::new(&path);
+
+            if let Ok(normalized) = normalizer.normalize_for_compare(path_utf8) {
+                prop_assert!(!normalized.as_str().contains('\\'),
+                    "Normalized path contains backslash: {} -> {}", path, normalized.as_str());
+            }
+        }
+    }
+
+    // Property 3: Round-trip safety
+    // Utf8PathBuf -> string -> Utf8PathBuf conversion is lossless.
+    // This ensures UTF-8 paths can be safely serialized and deserialized.
+    proptest! {
+        #[test]
+        fn prop_utf8path_roundtrip(path in path_strategy()) {
+            let original = Utf8PathBuf::from(path.as_str());
+            let as_str = original.as_str();
+            let roundtrip = Utf8PathBuf::from(as_str);
+
+            prop_assert_eq!(original, roundtrip);
+        }
+    }
+
+    // Property 4: Prefix removal for paths within base
+    // When joining a suffix to base, then calling relative_to_base,
+    // the result should be valid (not error) for relative paths.
+    // Note: Absolute suffixes (like "/" or "/other") override the base in join.
+    proptest! {
+        #[test]
+        fn prop_relative_to_base_within_base(suffix in r"[a-zA-Z0-9_]+") {
+            let base = Utf8PathBuf::from("/test/repo");
+            let normalizer = PathNormalizer::new(base.clone());
+            let full_path = base.join(&suffix);
+
+            // The key invariant: relative_to_base should succeed for paths within base
+            let result = normalizer.relative_to_base(&full_path);
+            prop_assert!(result.is_ok(),
+                "relative_to_base failed for path within base: {} -> {:?}", full_path.as_str(), result);
+        }
+    }
+
+    // Property 4b: Nested paths also work correctly
+    proptest! {
+        #[test]
+        fn prop_relative_to_base_nested(suffix in r"([a-zA-Z0-9_]+/)*[a-zA-Z0-9_]+") {
+            let base = Utf8PathBuf::from("/test/repo");
+            let normalizer = PathNormalizer::new(base.clone());
+            let full_path = base.join(&suffix);
+
+            // The key invariant: relative_to_base should succeed for paths within base
+            let result = normalizer.relative_to_base(&full_path);
+            prop_assert!(result.is_ok(),
+                "relative_to_base failed for nested path within base: {} -> {:?}", full_path.as_str(), result);
+        }
+    }
+}

@@ -816,6 +816,7 @@ impl IndexPipeline {
                             &extracted.type_edges,
                             &extracted.dataflow_edges,
                             package_lookup_ref,
+                            Some(&sqlite),
                         );
                         for (edge, evidence) in edges {
                             let _ = sqlite.upsert_edge(&edge);

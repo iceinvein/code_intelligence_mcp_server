@@ -25,23 +25,31 @@ pub struct RefreshIndexTool {
 
 #[macros::mcp_tool(
     name = "get_definition",
-    description = "Get full definition(s) for a symbol by name with disambiguation support."
+    description = "Get full definition(s) for a symbol by name. When multiple symbols share the same name, use the 'file' parameter to disambiguate (e.g., file: \"src/auth.ts\")."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetDefinitionTool {
+    /// The symbol name to look up
     pub symbol_name: String,
+    /// Optional file path to disambiguate when multiple symbols share the same name
     pub file: Option<String>,
+    /// Maximum number of definitions to return (default: 10)
     pub limit: Option<u32>,
 }
 
 #[macros::mcp_tool(
     name = "find_references",
-    description = "Find imports/uses/calls of a symbol across the indexed graph."
+    description = "Find imports/uses/calls of a symbol across the indexed graph. When multiple symbols share the same name, use 'file' parameter to disambiguate."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindReferencesTool {
+    /// The symbol name to find references for
     pub symbol_name: String,
+    /// Optional file path to disambiguate when multiple symbols share the same name
+    pub file: Option<String>,
+    /// Filter by reference type: "call", "import", "reference", "extends", "implements", or "all" (default)
     pub reference_type: Option<String>,
+    /// Maximum number of references to return (default: 200)
     pub limit: Option<u32>,
 }
 

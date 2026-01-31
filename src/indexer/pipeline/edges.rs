@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::indexer::extract::symbol::{DataFlowEdge, DataFlowType, Import};
-use crate::storage::sqlite::{EdgeEvidenceRow, EdgeRow, SymbolRow};
+use crate::storage::sqlite::{EdgeEvidenceRow, EdgeRow, SqliteStore, SymbolRow};
 
 use super::parsing::{
     extract_callee_names, extract_identifiers, identifier_evidence, parse_type_relations,
 };
-use super::utils::{build_import_map, resolve_imported_symbol_id};
+use super::utils::{build_import_map, resolve_imported_symbol_id, resolve_imported_symbol_id_with_db};
 
 pub fn upsert_name_mapping(name_to_id: &mut HashMap<String, String>, row: &SymbolRow) {
     if let Some(existing) = name_to_id.get(&row.name) {
@@ -165,6 +165,7 @@ pub fn extract_edges_for_symbol(
     type_edges: &[(String, String)],
     dataflow_edges: &[DataFlowEdge],
     get_package_fn: Option<&PackageLookupFn>,
+    sqlite: Option<&SqliteStore>,
 ) -> Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> {
     let mut out: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
@@ -193,6 +194,15 @@ pub fn extract_edges_for_symbol(
         id_to_symbol,
     };
 
+    // Helper to resolve import with DB or path-based fallback
+    let resolve_import = |file_path: &str, imp: &Import| -> Option<String> {
+        if let Some(db) = sqlite {
+            resolve_imported_symbol_id_with_db(file_path, imp, db)
+        } else {
+            resolve_imported_symbol_id(file_path, imp)
+        }
+    };
+
     for callee in extract_callee_names(&row.text) {
         let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&callee) {
             if local_id == &row.id {
@@ -200,8 +210,8 @@ pub fn extract_edges_for_symbol(
             }
             (Some(local_id.clone()), false)
         } else if let Some(imp) = import_map.get(callee.as_str()) {
-            // Resolve import
-            (resolve_imported_symbol_id(&row.file_path, imp), true)
+            // Resolve import using DB when available, path-based otherwise
+            (resolve_import(&row.file_path, imp), true)
         } else {
             (None, false)
         };
@@ -252,7 +262,7 @@ pub fn extract_edges_for_symbol(
                 }
                 (Some(local_id.clone()), false)
             } else if let Some(imp) = import_map.get(name.as_str()) {
-                (resolve_imported_symbol_id(&row.file_path, imp), true)
+                (resolve_import(&row.file_path, imp), true)
             } else {
                 (None, false)
             };
@@ -296,7 +306,7 @@ pub fn extract_edges_for_symbol(
                 }
                 (Some(local_id.clone()), false)
             } else if let Some(imp) = import_map.get(name.as_str()) {
-                (resolve_imported_symbol_id(&row.file_path, imp), true)
+                (resolve_import(&row.file_path, imp), true)
             } else {
                 (None, false)
             };
@@ -340,7 +350,7 @@ pub fn extract_edges_for_symbol(
                 }
                 (Some(local_id.clone()), false)
             } else if let Some(imp) = import_map.get(name.as_str()) {
-                (resolve_imported_symbol_id(&row.file_path, imp), true)
+                (resolve_import(&row.file_path, imp), true)
             } else {
                 (None, false)
             };
@@ -394,7 +404,7 @@ pub fn extract_edges_for_symbol(
             }
             (Some(local_id.clone()), false)
         } else if let Some(imp) = import_map.get(ident.as_str()) {
-            (resolve_imported_symbol_id(&row.file_path, imp), true)
+            (resolve_import(&row.file_path, imp), true)
         } else {
             (None, false)
         };
@@ -441,7 +451,7 @@ pub fn extract_edges_for_symbol(
                 }
                 (Some(local_id.clone()), false)
             } else if let Some(imp) = import_map.get(type_name.as_str()) {
-                (resolve_imported_symbol_id(&row.file_path, imp), true)
+                (resolve_import(&row.file_path, imp), true)
             } else {
                 (None, false)
             };
@@ -488,7 +498,7 @@ pub fn extract_edges_for_symbol(
             }
             (Some(local_id.clone()), false)
         } else if let Some(imp) = import_map.get(dfe.from_symbol.as_str()) {
-            (resolve_imported_symbol_id(&row.file_path, imp), true)
+            (resolve_import(&row.file_path, imp), true)
         } else {
             // For data flow edges, we might not have a symbol ID yet
             // Skip edges to unknown symbols for now
@@ -580,6 +590,7 @@ mod tests {
             &type_edges,
             &dataflow_edges,
             None,
+            None, // No sqlite in tests
         );
 
         let expected_b_id = stable_symbol_id("src/b.ts", "b", 0);
@@ -651,6 +662,7 @@ mod tests {
             &type_edges,
             &dataflow_edges,
             Some(&get_package_fn),
+            None, // No sqlite in tests
         );
 
         // Find the edge to symbol c (same package, different file)
@@ -703,6 +715,7 @@ mod tests {
             &type_edges,
             &dataflow_edges,
             None,
+            None, // No sqlite in tests
         );
 
         let edge_to_b = edges
@@ -765,6 +778,7 @@ mod tests {
             &type_edges,
             &dataflow_edges,
             Some(&get_package_fn),
+            None, // No sqlite in tests
         );
 
         let edge_to_b = edges

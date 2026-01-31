@@ -128,12 +128,32 @@ pub async fn handle_get_definition(
 
     let context = state.retriever.assemble_definitions(&rows)?;
 
-    Ok(json!({
+    // Check if disambiguation is needed (multiple symbols with same name in different files)
+    let unique_files: std::collections::HashSet<&str> =
+        rows.iter().map(|r| r.file_path.as_str()).collect();
+    let needs_disambiguation = unique_files.len() > 1 && tool.file.is_none();
+
+    let mut response = json!({
         "symbol_name": tool.symbol_name,
         "count": rows.len(),
         "definitions": rows,
         "context": context,
-    }))
+    });
+
+    // Add disambiguation hints when multiple symbols exist in different files
+    if needs_disambiguation {
+        let file_paths: Vec<&str> = unique_files.into_iter().collect();
+        response["disambiguation"] = json!({
+            "hint": format!(
+                "Multiple '{}' symbols found in {} files. Use 'file' parameter to disambiguate.",
+                tool.symbol_name,
+                file_paths.len()
+            ),
+            "available_files": file_paths,
+        });
+    }
+
+    Ok(response)
 }
 
 /// Handle get_file_symbols tool
@@ -327,10 +347,16 @@ pub fn handle_find_references(
 
     let sqlite = &state.sqlite;
 
-    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 20)?;
+    // Use file parameter for disambiguation if provided
+    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file.as_deref(), 20)?;
+
+    // Check for disambiguation needs
+    let unique_files: std::collections::HashSet<&str> =
+        roots.iter().map(|r| r.file_path.as_str()).collect();
+    let needs_disambiguation = unique_files.len() > 1 && tool.file.is_none();
 
     let mut out = Vec::new();
-    for root in roots {
+    for root in &roots {
         if out.len() >= limit {
             break;
         }
@@ -346,8 +372,10 @@ pub fn handle_find_references(
             out.push(json!({
                 "to_symbol_id": e.to_symbol_id,
                 "to_symbol_name": root.name,
+                "to_symbol_file": root.file_path,
                 "from_symbol_id": e.from_symbol_id,
                 "from_symbol_name": from.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
+                "from_symbol_file": from.as_ref().map(|s| s.file_path.clone()).unwrap_or_default(),
                 "reference_type": e.edge_type,
                 "at_file": e.at_file,
                 "at_line": e.at_line,
@@ -355,12 +383,27 @@ pub fn handle_find_references(
         }
     }
 
-    Ok(json!({
+    let mut response = json!({
         "symbol_name": tool.symbol_name,
         "reference_type": reference_type,
         "count": out.len(),
         "references": out,
-    }))
+    });
+
+    // Add disambiguation hints when multiple symbols exist in different files
+    if needs_disambiguation {
+        let file_paths: Vec<&str> = unique_files.into_iter().collect();
+        response["disambiguation"] = json!({
+            "hint": format!(
+                "Multiple '{}' symbols found in {} files. Results include references to all. Use 'file' parameter to filter to a specific symbol.",
+                tool.symbol_name,
+                file_paths.len()
+            ),
+            "available_files": file_paths,
+        });
+    }
+
+    Ok(response)
 }
 
 /// Handle get_usage_examples tool

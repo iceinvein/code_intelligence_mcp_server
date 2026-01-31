@@ -119,17 +119,69 @@ pub fn resolve_imported_symbol_id_with_db(
     imp: &Import,
     sqlite: &SqliteStore,
 ) -> Option<String> {
-    let target_path = resolve_path(current_file_path, &imp.source)?;
+    // First, try to resolve the path and find the symbol in the expected file
+    if let Some(target_path) = resolve_path(current_file_path, &imp.source) {
+        // Try to find an exported symbol with matching name in the target file
+        if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, Some(&target_path), 1) {
+            if let Some(symbol) = results.iter().find(|s| s.exported) {
+                return Some(symbol.id.clone());
+            }
+        }
 
-    // Try to find an exported symbol with matching name in the target file
-    if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, Some(&target_path), 1) {
+        // Try alternative file extensions (.tsx, .jsx, .js, index.ts, index.tsx)
+        for alt_path in alternative_import_paths(&target_path) {
+            if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, Some(&alt_path), 1)
+            {
+                if let Some(symbol) = results.iter().find(|s| s.exported) {
+                    return Some(symbol.id.clone());
+                }
+            }
+        }
+    }
+
+    // Fallback: search by name only across all files (prefer exported symbols)
+    // This handles cases where path resolution is wrong (e.g., monorepo packages,
+    // re-exports, or unusual directory structures)
+    if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, None, 10) {
+        // Prefer exported symbols - the query already orders by exported DESC
         if let Some(symbol) = results.iter().find(|s| s.exported) {
             return Some(symbol.id.clone());
         }
     }
 
-    // Fallback to file-level ID
+    // Final fallback to generated ID (for symbols not yet indexed)
+    let target_path = resolve_path(current_file_path, &imp.source)?;
     Some(stable_symbol_id(&target_path, &imp.name, 0))
+}
+
+/// Generate alternative import paths to try when the default resolution fails
+fn alternative_import_paths(base_path: &str) -> Vec<String> {
+    let mut alternatives = Vec::new();
+
+    // If path ends with .ts, try .tsx
+    if base_path.ends_with(".ts") {
+        let tsx_path = format!("{}x", base_path);
+        alternatives.push(tsx_path);
+
+        // Also try index files in directory
+        let dir_path = &base_path[..base_path.len() - 3];
+        alternatives.push(format!("{}/index.ts", dir_path));
+        alternatives.push(format!("{}/index.tsx", dir_path));
+    }
+    // If path ends with .tsx, try .ts
+    else if base_path.ends_with(".tsx") {
+        let ts_path = base_path[..base_path.len() - 1].to_string();
+        alternatives.push(ts_path);
+    }
+    // If no extension (shouldn't happen with resolve_path), try common extensions
+    else if !base_path.contains('.') {
+        alternatives.push(format!("{}.ts", base_path));
+        alternatives.push(format!("{}.tsx", base_path));
+        alternatives.push(format!("{}/index.ts", base_path));
+        alternatives.push(format!("{}/index.tsx", base_path));
+    }
+
+    alternatives
 }
 
 pub fn resolve_path(current: &str, source: &str) -> Option<String> {

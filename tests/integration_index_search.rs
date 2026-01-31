@@ -179,11 +179,11 @@ pub fn foo() -> Foo { Foo { a: 1 } }
     assert!(stats.symbols_indexed >= 3);
 
     let resp = retriever.search("alpha", 1, true).await.unwrap();
-    assert!(resp.context.contains("export function alpha"));
-    assert!(resp.context.contains("export function beta"));
+    assert!(resp.response.context.contains("export function alpha"));
+    assert!(resp.response.context.contains("export function beta"));
 
     let resp2 = retriever.search("Foo", 3, false).await.unwrap();
-    assert!(resp2.context.contains("pub struct Foo"));
+    assert!(resp2.response.context.contains("pub struct Foo"));
 
     let sqlite = SqliteStore::open(config.db_path.as_path()).unwrap();
     sqlite.init().unwrap();
@@ -274,8 +274,8 @@ pub fn gamma() -> i32 { 7 }
     assert_eq!(stats3.files_unchanged, 1);
 
     let resp = retriever.search("alpha", 5, false).await.unwrap();
-    assert!(!resp.hits.iter().any(|h| h.name == "alpha"));
-    assert!(!resp.context.contains("export function alpha"));
+    assert!(!resp.response.hits.iter().any(|h| h.name == "alpha"));
+    assert!(!resp.response.context.contains("export function alpha"));
 }
 
 #[tokio::test]
@@ -399,7 +399,7 @@ export function extraRoot() { return 42 }
 
     indexer.index_all().await.unwrap();
     let resp = retriever.search("extraRoot", 5, false).await.unwrap();
-    assert!(resp.context.contains("export function extraRoot"));
+    assert!(resp.response.context.contains("export function extraRoot"));
 }
 
 #[tokio::test]
@@ -464,11 +464,11 @@ export function callerOne() { targetFunc(); }
         .unwrap();
 
     // Should find "callerOne" because it calls targetFunc
-    assert!(resp.context.contains("callerOne"));
-    assert!(resp.context.contains("targetFunc();"));
+    assert!(resp.response.context.contains("callerOne"));
+    assert!(resp.response.context.contains("targetFunc();"));
 
     // The hits should include callerOne
-    assert!(resp.hits.iter().any(|h| h.name == "callerOne"));
+    assert!(resp.response.hits.iter().any(|h| h.name == "callerOne"));
 }
 
 #[tokio::test]

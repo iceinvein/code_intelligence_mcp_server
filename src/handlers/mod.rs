@@ -109,8 +109,9 @@ pub async fn handle_search_code(
     let limit = tool.limit.unwrap_or(5).max(1) as usize;
     let exported_only = tool.exported_only.unwrap_or(false);
 
-    let resp = retriever.search(&tool.query, limit, exported_only).await?;
-    Ok(serde_json::to_value(resp)?)
+    let result = retriever.search(&tool.query, limit, exported_only).await?;
+    // Return only the SearchResponse (without hit_signals) to reduce response size
+    Ok(serde_json::to_value(result.response)?)
 }
 
 /// Handle get_definition tool
@@ -522,12 +523,14 @@ pub async fn handle_explain_search(
     let exported_only = tool.exported_only.unwrap_or(false);
     let verbose = tool.verbose.unwrap_or(false);
 
-    let resp = retriever.search(&tool.query, limit, exported_only).await?;
+    let result = retriever.search(&tool.query, limit, exported_only).await?;
+    let resp = &result.response;
+    let hit_signals = &result.hit_signals;
 
     // Build detailed breakdown with display formatting
     let mut results = Vec::new();
     for hit in &resp.hits {
-        let signals = resp.hit_signals.get(&hit.id);
+        let signals = hit_signals.get(&hit.id);
         let mut breakdown = json!({
             "symbol_id": hit.id,
             "symbol_name": hit.name,

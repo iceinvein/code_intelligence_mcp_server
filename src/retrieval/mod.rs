@@ -48,7 +48,11 @@ pub struct RankedHit {
     pub name: String,
     pub kind: String,
     pub file_path: String,
+    /// Used internally for filtering, not serialized in responses
+    #[serde(skip_serializing)]
     pub exported: bool,
+    /// Used internally for filtering, not serialized in responses
+    #[serde(skip_serializing)]
     pub language: String,
 }
 
@@ -58,7 +62,14 @@ pub struct SearchResponse {
     pub limit: usize,
     pub hits: Vec<RankedHit>,
     pub context: String,
-    pub context_items: Vec<ContextItem>,
+    // Note: `context_items` removed - info is in context string
+    // Note: `hit_signals` removed - use explain_search tool for debugging
+}
+
+/// Extended search response with scoring signals for debugging/explain_search
+#[derive(Debug, Clone)]
+pub struct SearchResponseWithSignals {
+    pub response: SearchResponse,
     pub hit_signals: HashMap<String, HitSignals>,
 }
 
@@ -134,7 +145,7 @@ impl Retriever {
         query: &str,
         limit: usize,
         exported_only: bool,
-    ) -> Result<SearchResponse> {
+    ) -> Result<SearchResponseWithSignals> {
         let _timer = self.metrics.search_duration.start_timer();
 
         let started_at_unix_s = unix_now_s();
@@ -168,7 +179,10 @@ impl Retriever {
                 cache.last_index_run_started_at_unix_s = current_index_run_started_at;
             }
             if let Some(resp) = cache.responses.get(&cache_key) {
-                return Ok(resp);
+                return Ok(SearchResponseWithSignals {
+                    response: resp,
+                    hit_signals: HashMap::new(),
+                });
             }
         }
 
@@ -177,12 +191,13 @@ impl Retriever {
         if let Some(id) = &controls.id {
             if let Some(row) = sqlite.get_symbol_by_id(id)? {
                 if exported_only && !row.exported {
-                    return Ok(SearchResponse {
-                        query: query.to_string(),
-                        limit,
-                        hits: vec![],
-                        context: String::new(),
-                        context_items: vec![],
+                    return Ok(SearchResponseWithSignals {
+                        response: SearchResponse {
+                            query: query.to_string(),
+                            limit,
+                            hits: vec![],
+                            context: String::new(),
+                        },
                         hit_signals: HashMap::new(),
                     });
                 }
@@ -197,7 +212,7 @@ impl Retriever {
                     language: row.language.clone(),
                 }];
 
-                let (context, context_items) = self.assemble_context_cached(
+                let (context, _context_items) = self.assemble_context_cached(
                     &sqlite,
                     std::slice::from_ref(&row),
                     &[],
@@ -218,34 +233,17 @@ impl Retriever {
                 };
                 let _ = sqlite.insert_search_run(&run);
 
-                let mut hit_signals = HashMap::new();
-                hit_signals.insert(
-                    hits[0].id.clone(),
-                    HitSignals {
-                        keyword_score: 0.0,
-                        vector_score: 0.0,
-                        base_score: 0.0,
-                        structural_adjust: 0.0,
-                        intent_mult: 1.0,
-                        definition_bias: 0.0,
-                        popularity_boost: 0.0,
-                        learning_boost: 0.0,
-                        affinity_boost: 0.0,
-                        docstring_boost: 0.0,
-                        package_boost: 0.0,
-                    },
-                );
-
                 let resp = SearchResponse {
                     query: query.to_string(),
                     limit,
                     hits,
                     context,
-                    context_items,
-                    hit_signals,
                 };
-                self.cache_insert_response(cache_key, resp.clone());
-                return Ok(resp);
+                self.cache_insert_response(cache_key, resp.clone(), &[]);
+                return Ok(SearchResponseWithSignals {
+                    response: resp,
+                    hit_signals: HashMap::new(),
+                });
             }
         }
 
@@ -307,7 +305,7 @@ impl Retriever {
                         .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
                         .collect::<Vec<_>>();
 
-                    let (context, context_items) = self.assemble_context_cached(
+                    let (context, _context_items) = self.assemble_context_cached(
                         &sqlite,
                         &rows,
                         &[],
@@ -333,11 +331,12 @@ impl Retriever {
                         limit,
                         hits,
                         context,
-                        context_items,
-                        hit_signals: HashMap::new(),
                     };
-                    self.cache_insert_response(cache_key, resp.clone());
-                    return Ok(resp);
+                    self.cache_insert_response(cache_key, resp.clone(), &[]);
+                    return Ok(SearchResponseWithSignals {
+                        response: resp,
+                        hit_signals: HashMap::new(),
+                    });
                 }
             }
         }
@@ -734,7 +733,7 @@ impl Retriever {
             }
         }
 
-        let (context, context_items) =
+        let (context, _context_items) =
             self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -761,22 +760,24 @@ impl Retriever {
             limit,
             hits,
             context,
-            context_items,
-            hit_signals,
         };
-        self.cache_insert_response(cache_key, resp.clone());
+        self.cache_insert_response(cache_key, resp.clone(), &_context_items);
 
         // Note: timer observes duration when dropped
-        Ok(resp)
+        Ok(SearchResponseWithSignals {
+            response: resp,
+            hit_signals,
+        })
     }
 
-    fn cache_insert_response(&self, key: String, resp: SearchResponse) {
-        let size = resp.context.len()
-            + resp
-                .context_items
-                .iter()
-                .map(|i| i.tokens * 4)
-                .sum::<usize>();
+    fn cache_insert_response(
+        &self,
+        key: String,
+        resp: SearchResponse,
+        context_items: &[ContextItem],
+    ) {
+        let size =
+            resp.context.len() + context_items.iter().map(|i| i.tokens * 4).sum::<usize>();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.responses.insert(key, resp, size);
     }

@@ -102,7 +102,10 @@ async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp
         Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
     ));
 
-    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    // Create unique vector db path using db_path stem and suffix to avoid table conflicts
+    let vector_db_path = config.vector_db_path
+        .join(format!("{}-{}", db_path.file_stem().unwrap_or_default().to_string_lossy(), suffix));
+    let lancedb = LanceDbStore::connect(&vector_db_path).await.unwrap();
     let vectors = Arc::new(
         lancedb
             .open_or_create_table("symbols", config.hash_embedding_dim)
@@ -111,6 +114,11 @@ async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp
     );
 
     let metrics = Arc::new(MetricsRegistry::new().unwrap());
+
+    // Create a new config with the unique vector_db_path for this test
+    let mut test_config = (*config).clone();
+    test_config.vector_db_path = vector_db_path;
+    let config = Arc::new(test_config);
 
     let indexer = code_intelligence_mcp_server::indexer::pipeline::IndexPipeline::new(
         config.clone(),

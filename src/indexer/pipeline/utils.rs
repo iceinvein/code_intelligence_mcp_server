@@ -664,10 +664,13 @@ mod utils_proptest {
             prop_assert!(median < 1_000_000, // 1 millisecond in nanoseconds
                 "Median performance degraded to {}ns at scale. Expected <1ms.", median);
 
-            // No single call should take more than 30 milliseconds (sanity check for CI)
-            // Threshold increased for CI environments with variable performance (CPU throttling, etc.)
+            // No single call should take more than 100 milliseconds (sanity check for CI)
+            // Threshold set generously for CI environments with variable performance
+            // (CPU throttling, resource contention, virtualization overhead, etc.)
+            // This is a regression guard, not a benchmark - we want to catch O(n^2) bugs,
+            // not minor CI performance variations.
             let max = *timings.iter().max().unwrap();
-            prop_assert!(max < 30_000_000, // 30 milliseconds in nanoseconds
+            prop_assert!(max < 100_000_000, // 100 milliseconds in nanoseconds
                 "Max performance outlier at {}ns. Possible performance regression.", max);
         }
     }

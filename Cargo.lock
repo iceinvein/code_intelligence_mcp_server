@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "code-intelligence-mcp-server"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "arrow-array",

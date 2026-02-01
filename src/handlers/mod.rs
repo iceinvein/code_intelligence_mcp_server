@@ -1824,6 +1824,112 @@ fn format_decorators(decorators: &[serde_json::Value]) -> String {
     out
 }
 
+/// Handle search_framework_patterns tool
+pub fn handle_search_framework_patterns(
+    state: &AppState,
+    tool: SearchFrameworkPatternsTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(50).clamp(1, 500) as usize;
+
+    let sqlite = &state.sqlite;
+
+    let patterns = sqlite.search_framework_patterns(
+        tool.framework.as_deref(),
+        tool.kind.as_deref(),
+        tool.http_method.as_deref(),
+        tool.path.as_deref(),
+        None, // name filter not exposed in tool yet
+        None, // file_path filter not exposed in tool yet
+        limit,
+    )?;
+
+    let mut results = Vec::new();
+    for pattern in patterns {
+        results.push(serde_json::json!({
+            "id": pattern.id,
+            "file_path": pattern.file_path,
+            "line": pattern.line,
+            "framework": pattern.framework,
+            "kind": pattern.kind,
+            "http_method": pattern.http_method,
+            "path": pattern.path,
+            "name": pattern.name,
+            "handler": pattern.handler,
+            "arguments": pattern.arguments,
+            "parent_chain": pattern.parent_chain,
+        }));
+    }
+
+    // Build display
+    let display = format_framework_patterns(&results);
+
+    Ok(serde_json::json!({
+        "count": results.len(),
+        "patterns": results,
+        "display": display,
+    }))
+}
+
+/// Format framework pattern search results as markdown
+fn format_framework_patterns(patterns: &[serde_json::Value]) -> String {
+    let mut out = String::from("# Framework Pattern Search Results\n\n");
+
+    if patterns.is_empty() {
+        out.push_str("*No framework patterns found*\n");
+        return out;
+    }
+
+    // Group by framework and kind
+    let mut by_framework: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
+    for pattern in patterns {
+        let framework = pattern
+            .get("framework")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        by_framework.entry(framework).or_default().push(pattern);
+    }
+
+    for (framework, items) in by_framework {
+        out.push_str(&format!("## {} Framework\n\n", framework));
+
+        // Group by kind within framework
+        let mut by_kind: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
+        for item in items {
+            let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown");
+            by_kind.entry(kind).or_default().push(item);
+        }
+
+        for (kind, kind_items) in by_kind {
+            out.push_str(&format!("### {} ({})\n\n", kind, kind_items.len()));
+
+            for pattern in kind_items.iter().take(20) {
+                let file_path = pattern.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                let file_short = file_path.split('/').next_back().unwrap_or(file_path);
+                let line = pattern.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+                let http_method = pattern.get("http_method").and_then(|v| v.as_str());
+                let path = pattern.get("path").and_then(|v| v.as_str());
+                let name = pattern.get("name").and_then(|v| v.as_str());
+
+                // Format based on pattern type
+                let label = if let (Some(method), Some(route)) = (http_method, path) {
+                    format!("{} {}", method, route)
+                } else if let Some(n) = name {
+                    n.to_string()
+                } else if let Some(p) = path {
+                    p.to_string()
+                } else {
+                    kind.to_string()
+                };
+
+                out.push_str(&format!("- **{}** - `{}`:{}\n", label, file_short, line));
+            }
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

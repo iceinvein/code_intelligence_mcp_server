@@ -467,4 +467,35 @@ impl SqliteStore {
         let conn = self.read()?;
         queries::packages::get_package_id_for_file(&conn, file_path)
     }
+
+    // Framework pattern operations
+    pub fn batch_upsert_framework_patterns(
+        &self,
+        patterns: &[FrameworkPatternRow],
+    ) -> Result<()> {
+        let conn = self.write()?;
+        queries::framework::batch_upsert_framework_patterns(&conn, patterns)
+    }
+
+    pub fn delete_framework_patterns_by_file(&self, file_path: &str) -> Result<()> {
+        let conn = self.write()?;
+        queries::framework::delete_framework_patterns_by_file(&conn, file_path)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_framework_patterns(
+        &self,
+        framework: Option<&str>,
+        kind: Option<&str>,
+        http_method: Option<&str>,
+        path: Option<&str>,
+        name: Option<&str>,
+        file_path: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<FrameworkPatternRow>> {
+        let conn = self.read()?;
+        queries::framework::search_framework_patterns(
+            &conn, framework, kind, http_method, path, name, file_path, limit,
+        )
+    }
 }

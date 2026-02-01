@@ -191,6 +191,23 @@ pub struct DecoratorRow {
     pub updated_at: i64,
 }
 
+/// Framework pattern row for Elysia/Hono/Express route and plugin metadata
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameworkPatternRow {
+    pub id: String,
+    pub file_path: String,
+    pub line: u32,
+    pub framework: String,
+    pub kind: String,
+    pub http_method: Option<String>,
+    pub path: Option<String>,
+    pub name: Option<String>,
+    pub handler: Option<String>,
+    pub arguments: Option<String>,
+    pub parent_chain: Option<String>,
+    pub updated_at: i64,
+}
+
 pub const SCHEMA_SQL: &str = r#"
 PRAGMA foreign_keys = ON;
 
@@ -437,4 +454,25 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_embedding_cache_model ON embedding_cache(model_name);
 CREATE INDEX IF NOT EXISTS idx_embedding_cache_accessed ON embedding_cache(last_accessed_at);
+
+-- Framework patterns for Elysia/Hono/Express route metadata
+CREATE TABLE IF NOT EXISTS framework_patterns (
+    id TEXT PRIMARY KEY NOT NULL,
+    file_path TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    framework TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    http_method TEXT,
+    path TEXT,
+    name TEXT,
+    handler TEXT,
+    arguments TEXT,
+    parent_chain TEXT,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_fp_file_path ON framework_patterns(file_path);
+CREATE INDEX IF NOT EXISTS idx_fp_framework ON framework_patterns(framework);
+CREATE INDEX IF NOT EXISTS idx_fp_kind ON framework_patterns(kind);
+CREATE INDEX IF NOT EXISTS idx_fp_http_method ON framework_patterns(http_method);
+CREATE INDEX IF NOT EXISTS idx_fp_path ON framework_patterns(path);
 "#;

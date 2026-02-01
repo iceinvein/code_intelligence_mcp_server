@@ -711,6 +711,9 @@ impl IndexPipeline {
                 sqlite
                     .delete_decorators_by_file(&rel)
                     .with_context(|| format!("Failed to delete old decorators for {rel}"))?;
+                sqlite
+                    .delete_framework_patterns_by_file(&rel)
+                    .with_context(|| format!("Failed to delete old framework patterns for {rel}"))?;
                 // Note: test_links auto-delete via ON DELETE CASCADE when symbols are deleted
             }
 
@@ -872,6 +875,40 @@ impl IndexPipeline {
                             })
                             .collect();
                         let _ = sqlite.batch_upsert_decorators(&decorator_rows);
+                    }
+
+                    // Store framework pattern entries extracted from this file
+                    if !extracted.framework_patterns.is_empty() {
+                        use crate::storage::sqlite::schema::FrameworkPatternRow;
+                        let pattern_rows: Vec<FrameworkPatternRow> = extracted
+                            .framework_patterns
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| {
+                                let id = format!(
+                                    "{}:{}:{}:{}",
+                                    rel,
+                                    p.line,
+                                    p.column,
+                                    i
+                                );
+                                FrameworkPatternRow {
+                                    id,
+                                    file_path: rel.clone(),
+                                    line: p.line,
+                                    framework: p.framework.clone(),
+                                    kind: p.kind.to_string(),
+                                    http_method: p.http_method.clone(),
+                                    path: p.path.clone(),
+                                    name: p.name.clone(),
+                                    handler: p.handler.clone(),
+                                    arguments: p.arguments.clone(),
+                                    parent_chain: p.parent_chain.clone(),
+                                    updated_at: 0,
+                                }
+                            })
+                            .collect();
+                        let _ = sqlite.batch_upsert_framework_patterns(&pattern_rows);
                     }
 
                     // Create test links if this is a test file

@@ -1,5 +1,6 @@
 pub mod c;
 pub mod cpp;
+pub mod elysia;
 pub mod go;
 pub mod java;
 pub mod javascript;

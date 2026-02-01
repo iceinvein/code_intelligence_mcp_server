@@ -159,19 +159,19 @@ fn alternative_import_paths(base_path: &str) -> Vec<String> {
     let mut alternatives = Vec::new();
 
     // If path ends with .ts, try .tsx
-    if base_path.ends_with(".ts") {
+    if let Some(dir_path) = base_path.strip_suffix(".ts") {
         let tsx_path = format!("{}x", base_path);
         alternatives.push(tsx_path);
 
         // Also try index files in directory
-        let dir_path = &base_path[..base_path.len() - 3];
         alternatives.push(format!("{}/index.ts", dir_path));
         alternatives.push(format!("{}/index.tsx", dir_path));
     }
     // If path ends with .tsx, try .ts
-    else if base_path.ends_with(".tsx") {
-        let ts_path = base_path[..base_path.len() - 1].to_string();
-        alternatives.push(ts_path);
+    else if let Some(ts_path) = base_path.strip_suffix("x") {
+        if ts_path.ends_with(".ts") {
+            alternatives.push(ts_path.to_string());
+        }
     }
     // If no extension (shouldn't happen with resolve_path), try common extensions
     else if !base_path.contains('.') {

@@ -2,6 +2,7 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
+use super::elysia::extract_elysia_patterns;
 use super::symbol::{
     ByteSpan, DataFlowEdge, DataFlowType, DecoratorEntry, DecoratorType, ExtractedFile,
     ExtractedSymbol, Import, JSDocEntry, JSDocParam, LineSpan, SymbolKind, TodoEntry, TodoKind,
@@ -153,6 +154,9 @@ fn extract_symbols_with_parser(
     let cursor = root.walk();
     let decorators = extract_decorators_for_symbols(&symbols, source, cursor);
 
+    // Extract Elysia framework patterns
+    let framework_patterns = extract_elysia_patterns(root, source);
+
     Ok(ExtractedFile {
         symbols,
         imports,
@@ -161,6 +165,7 @@ fn extract_symbols_with_parser(
         todos,
         jsdoc_entries,
         decorators,
+        framework_patterns,
     })
 }
 

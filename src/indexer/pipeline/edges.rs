@@ -157,6 +157,7 @@ fn determine_edge_resolution(
     "unknown".to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn extract_edges_for_symbol(
     row: &SymbolRow,
     name_to_id: &HashMap<String, String>,

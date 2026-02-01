@@ -261,3 +261,21 @@ pub struct SearchDecoratorsTool {
     /// Maximum number of results to return (default: 50)
     pub limit: Option<u32>,
 }
+
+#[macros::mcp_tool(
+    name = "search_framework_patterns",
+    description = "Search for framework-specific patterns in the codebase (e.g., Elysia routes, WebSocket handlers, middleware). Returns pattern metadata including file path, line, framework, kind, HTTP method, and route path."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct SearchFrameworkPatternsTool {
+    /// Framework to filter by (e.g., 'elysia'). If not specified, returns patterns from all frameworks.
+    pub framework: Option<String>,
+    /// Pattern kind to filter by (e.g., 'route', 'websocket', 'plugin', 'middleware')
+    pub kind: Option<String>,
+    /// HTTP method to filter by (e.g., 'GET', 'POST', 'PUT', 'DELETE')
+    pub http_method: Option<String>,
+    /// Route path pattern to search for (e.g., '/api/users')
+    pub path: Option<String>,
+    /// Maximum number of results to return (default: 50)
+    pub limit: Option<u32>,
+}

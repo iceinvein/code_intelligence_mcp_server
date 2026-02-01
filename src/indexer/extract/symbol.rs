@@ -94,6 +94,56 @@ pub enum DecoratorType {
     Unknown,
 }
 
+/// Framework pattern kind for Elysia/Hono/Express
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameworkPatternKind {
+    Route,
+    WebSocket,
+    Macro,
+    Plugin,
+    State,
+    Decorate,
+    Derive,
+    Resolve,
+    Guard,
+    Group,
+    Listen,
+}
+
+impl std::fmt::Display for FrameworkPatternKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Route => write!(f, "route"),
+            Self::WebSocket => write!(f, "websocket"),
+            Self::Macro => write!(f, "macro"),
+            Self::Plugin => write!(f, "plugin"),
+            Self::State => write!(f, "state"),
+            Self::Decorate => write!(f, "decorate"),
+            Self::Derive => write!(f, "derive"),
+            Self::Resolve => write!(f, "resolve"),
+            Self::Guard => write!(f, "guard"),
+            Self::Group => write!(f, "group"),
+            Self::Listen => write!(f, "listen"),
+        }
+    }
+}
+
+/// Extracted framework pattern from source code
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtractedFrameworkPattern {
+    pub line: u32,
+    pub column: u32, // Column for ordering chained methods on same line
+    pub framework: String,
+    pub kind: FrameworkPatternKind,
+    pub http_method: Option<String>,
+    pub path: Option<String>,
+    pub name: Option<String>,
+    pub handler: Option<String>,
+    pub arguments: Option<String>,
+    pub parent_chain: Option<String>,
+}
+
 /// Data flow edge types for tracking reads/writes relationships
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -157,4 +207,6 @@ pub struct ExtractedFile {
     pub jsdoc_entries: Vec<JSDocEntry>,
     /// Decorators extracted from this file (LANG-02)
     pub decorators: Vec<DecoratorEntry>,
+    /// Framework patterns extracted from this file (Elysia/Hono/Express)
+    pub framework_patterns: Vec<ExtractedFrameworkPattern>,
 }

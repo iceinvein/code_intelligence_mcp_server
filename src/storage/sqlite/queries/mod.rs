@@ -4,6 +4,7 @@ pub mod decorators;
 pub mod docstrings;
 pub mod edges;
 pub mod files;
+pub mod framework;
 pub mod metrics;
 pub mod misc;
 pub mod packages;

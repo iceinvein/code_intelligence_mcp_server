@@ -48,6 +48,7 @@ impl ServerHandler for CodeIntelligenceHandler {
                 SearchTodosTool::tool(),
                 FindTestsForSymbolTool::tool(),
                 SearchDecoratorsTool::tool(),
+                SearchFrameworkPatternsTool::tool(),
             ],
             meta: None,
             next_cursor: None,
@@ -279,6 +280,16 @@ impl ServerHandler for CodeIntelligenceHandler {
             "search_decorators" => {
                 let tool: SearchDecoratorsTool = parse_tool_args(&params)?;
                 let result = handle_search_decorators(&self.state, tool)
+                    .map_err(tool_internal_error)?;
+                Ok(CallToolResult::text_content(vec![
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| "{}".to_string())
+                        .into(),
+                ]))
+            }
+            "search_framework_patterns" => {
+                let tool: SearchFrameworkPatternsTool = parse_tool_args(&params)?;
+                let result = handle_search_framework_patterns(&self.state, tool)
                     .map_err(tool_internal_error)?;
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&result)

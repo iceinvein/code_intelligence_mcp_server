@@ -2,6 +2,7 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
+use super::elysia::extract_elysia_patterns;
 use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
 
 pub fn extract_javascript_symbols(source: &str) -> Result<ExtractedFile> {
@@ -62,6 +63,10 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     });
 
     symbols.sort_by_key(|s| s.bytes.start);
+
+    // Extract Elysia framework patterns
+    let framework_patterns = extract_elysia_patterns(root, source);
+
     Ok(ExtractedFile {
         symbols,
         imports,
@@ -70,6 +75,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
+        framework_patterns,
     })
 }
 

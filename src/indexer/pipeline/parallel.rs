@@ -19,7 +19,7 @@ use crate::{
     },
     path::Utf8PathBuf,
     storage::{
-        sqlite::{schema::DecoratorRow, SqliteStore, SymbolRow},
+        sqlite::{schema::{DecoratorRow, FrameworkPatternRow}, SqliteStore, SymbolRow},
         tantivy::TantivyIndex,
         vector::LanceVectorTable,
     },
@@ -209,6 +209,7 @@ fn index_file_single(
     sqlite.delete_todos_by_file(&rel)?;
     sqlite.delete_docstrings_by_file(&rel)?;
     sqlite.delete_decorators_by_file(&rel)?;
+    sqlite.delete_framework_patterns_by_file(&rel)?;
     // Note: test_links auto-delete via ON DELETE CASCADE when symbols are deleted
 
     let mut name_to_id: HashMap<String, String> = HashMap::new();
@@ -350,6 +351,38 @@ fn index_file_single(
             })
             .collect();
         let _ = sqlite.batch_upsert_decorators(&decorator_rows);
+    }
+
+    if !extracted.framework_patterns.is_empty() {
+        let pattern_rows: Vec<FrameworkPatternRow> = extracted
+            .framework_patterns
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let id = format!(
+                    "{}:{}:{}:{}",
+                    rel,
+                    p.line,
+                    p.column,
+                    i
+                );
+                FrameworkPatternRow {
+                    id,
+                    file_path: rel.clone(),
+                    line: p.line,
+                    framework: p.framework.clone(),
+                    kind: p.kind.to_string(),
+                    http_method: p.http_method.clone(),
+                    path: p.path.clone(),
+                    name: p.name.clone(),
+                    handler: p.handler.clone(),
+                    arguments: p.arguments.clone(),
+                    parent_chain: p.parent_chain.clone(),
+                    updated_at: 0,
+                }
+            })
+            .collect();
+        let _ = sqlite.batch_upsert_framework_patterns(&pattern_rows);
     }
 
     if sqlite.is_test_file(&rel) {

@@ -5,7 +5,7 @@ pub mod reranker;
 pub mod rrf;
 pub mod score;
 
-pub use diversify::{diversify_by_cluster, diversify_by_kind};
+pub use diversify::{diversify_by_cluster, diversify_by_file, diversify_by_kind};
 pub use expansion::expand_with_edges;
 pub use package::apply_package_boost_with_signals;
 pub use reranker::{apply_reranker_scores, prepare_rerank_docs, should_rerank};

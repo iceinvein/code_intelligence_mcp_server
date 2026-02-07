@@ -227,25 +227,28 @@ pub fn rank_hits_with_signals(
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
         let base_score = vector_w * v + keyword_w * kw;
-        let structural = structural_adjustment(config, h.exported, &h.file_path, intent, query);
+        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
         let mut score = (base_score + structural) * intent_mult;
 
-        // Definition Bias
+        // Definition Bias — only for symbol-like queries (1-2 words), not NL queries
         let mut definition_bias = 0.0;
         if !matches!(intent, Some(Intent::Callers(_))) {
             let q = query.trim();
-            let q_no_space = q.replace(' ', "");
-            if (h.name.eq_ignore_ascii_case(q) || h.name.eq_ignore_ascii_case(&q_no_space))
-                && is_definition_kind(&h.kind)
-            {
-                score += 10.0;
-                definition_bias += 10.0;
-            } else if h.name.to_lowercase().contains(&q.to_lowercase())
-                && is_definition_kind(&h.kind)
-            {
-                score += 1.0;
-                definition_bias += 1.0;
+            let word_count = q.split_whitespace().count();
+            if word_count <= 2 {
+                let q_no_space = q.replace(' ', "");
+                if (h.name.eq_ignore_ascii_case(q) || h.name.eq_ignore_ascii_case(&q_no_space))
+                    && is_definition_kind(&h.kind)
+                {
+                    score += 10.0;
+                    definition_bias += 10.0;
+                } else if h.name.to_lowercase().contains(&q.to_lowercase())
+                    && is_definition_kind(&h.kind)
+                {
+                    score += 1.0;
+                    definition_bias += 1.0;
+                }
             }
         }
 
@@ -286,25 +289,28 @@ pub fn rank_hits_with_signals(
         let v = vec_scores.get(&h.id).copied().unwrap_or(0.0);
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let base_score = vector_w * v + keyword_w * kw;
-        let structural = structural_adjustment(config, h.exported, &h.file_path, intent, query);
+        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
         let mut score = (base_score + structural) * intent_mult;
 
-        // Definition Bias
+        // Definition Bias — only for symbol-like queries (1-2 words), not NL queries
         let mut definition_bias = 0.0;
         if !matches!(intent, Some(Intent::Callers(_))) {
             let q = query.trim();
-            let q_no_space = q.replace(' ', "");
-            if (h.name.eq_ignore_ascii_case(q) || h.name.eq_ignore_ascii_case(&q_no_space))
-                && is_definition_kind(&h.kind)
-            {
-                score += 10.0;
-                definition_bias += 10.0;
-            } else if h.name.to_lowercase().contains(&q.to_lowercase())
-                && is_definition_kind(&h.kind)
-            {
-                score += 1.0;
-                definition_bias += 1.0;
+            let word_count = q.split_whitespace().count();
+            if word_count <= 2 {
+                let q_no_space = q.replace(' ', "");
+                if (h.name.eq_ignore_ascii_case(q) || h.name.eq_ignore_ascii_case(&q_no_space))
+                    && is_definition_kind(&h.kind)
+                {
+                    score += 10.0;
+                    definition_bias += 10.0;
+                } else if h.name.to_lowercase().contains(&q.to_lowercase())
+                    && is_definition_kind(&h.kind)
+                {
+                    score += 1.0;
+                    definition_bias += 1.0;
+                }
             }
         }
 
@@ -514,12 +520,19 @@ fn structural_adjustment(
     config: &Config,
     exported: bool,
     file_path: &str,
+    kind: &str,
     _intent: &Option<Intent>,
     query: &str,
 ) -> f32 {
     let mut score = 0.0;
     if exported {
         score += config.rank_exported_boost;
+    }
+
+    // Module re-export penalty: `pub mod foo;` declarations are near-useless
+    // for search results — they contain no implementation, just a re-export.
+    if kind == "module" {
+        score -= 5.0;
     }
 
     // Glue Code Filtering
@@ -548,7 +561,7 @@ fn structural_adjustment(
         score += 1.0;
     }
 
-    // Subdirectory Semantics
+    // Subdirectory Semantics — boost when query terms match path segments
     let terms: Vec<&str> = query
         .split_whitespace()
         .map(|s| s.trim())
@@ -556,15 +569,22 @@ fn structural_adjustment(
         .collect();
 
     let path_parts: Vec<&str> = file_path.split('/').collect();
-    for term in terms {
+    for term in &terms {
+        let term_lower = term.to_lowercase();
         if path_parts.iter().any(|p| {
-            if p.eq_ignore_ascii_case(term) {
+            let p_lower = p.to_lowercase();
+            if p_lower == term_lower {
                 return true;
             }
-            if let Some((stem, _)) = p.rsplit_once('.') {
-                if stem.eq_ignore_ascii_case(term) {
+            // Stem match (strip extension)
+            if let Some((stem, _)) = p_lower.rsplit_once('.') {
+                if stem == term_lower {
                     return true;
                 }
+            }
+            // Prefix/plural match: "handler" matches "handlers", "config" matches "configs"
+            if p_lower.starts_with(&term_lower) || term_lower.starts_with(&p_lower) {
+                return true;
             }
             false
         }) {
@@ -575,15 +595,27 @@ fn structural_adjustment(
     score
 }
 
-fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool) -> f32 {
-    // Test Penalty (0.5x multiplier)
-    let is_test = file_path.contains(".test.")
+fn is_test_file(file_path: &str) -> bool {
+    file_path.contains(".test.")
         || file_path.contains(".spec.")
         || file_path.contains("/__tests__/")
-        || file_path.contains("/tests/");
+        || file_path.contains("/tests/")
+        || file_path.starts_with("tests/")
+        || file_path.ends_with("_test.rs")
+        || file_path.ends_with("_test.go")
+        || file_path.ends_with("_test.py")
+        || file_path.ends_with("_test.ts")
+        || file_path.ends_with("_test.tsx")
+        || file_path.ends_with("_test.js")
+        || file_path.ends_with("_test.jsx")
+        || file_path.contains("/test_")
+        || file_path.contains("/conftest")
+}
 
-    if is_test && !matches!(intent, Some(Intent::Test)) {
-        return 0.5;
+fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool) -> f32 {
+    // Test Penalty (0.3x multiplier - strong penalty to keep test files out of general results)
+    if is_test_file(file_path) && !matches!(intent, Some(Intent::Test)) {
+        return 0.3;
     }
 
     let Some(intent) = intent else {
@@ -620,15 +652,100 @@ fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, expor
             }
         }
         Intent::Callers(_) => 1.0,
-        Intent::Test => 1.0,
-        // New intents (FNDN-15) - default multiplier of 1.0
-        Intent::Implementation => 1.0,
-        Intent::Config => 1.0,
-        Intent::Error => 1.0,
-        Intent::Api => 1.0,
-        Intent::Hook => 1.0,
-        Intent::Middleware => 1.0,
-        Intent::Migration => 1.0,
+        Intent::Test => {
+            // When user wants tests, boost test files
+            if is_test_file(file_path) {
+                2.0
+            } else {
+                0.5
+            }
+        }
+        Intent::Implementation => {
+            // Boost function/method definitions - the actual implementations
+            if matches!(kind, "function" | "method" | "impl") {
+                1.5
+            } else if matches!(kind, "class" | "struct" | "trait") {
+                1.3
+            } else {
+                1.0
+            }
+        }
+        Intent::Config => {
+            // Boost config/settings files and const definitions
+            let path = file_path.to_lowercase();
+            if path.contains("config")
+                || path.contains("settings")
+                || path.contains(".env")
+                || path.contains("options")
+            {
+                3.0
+            } else if matches!(kind, "const" | "variable") {
+                1.5
+            } else {
+                0.8
+            }
+        }
+        Intent::Error => {
+            // Boost error handling code
+            let path = file_path.to_lowercase();
+            if path.contains("error") || path.contains("exception") {
+                3.0
+            } else if matches!(kind, "class" | "enum" | "type_alias") {
+                1.3
+            } else {
+                1.0
+            }
+        }
+        Intent::Api => {
+            // Boost route/handler/endpoint files
+            let path = file_path.to_lowercase();
+            if path.contains("handler")
+                || path.contains("route")
+                || path.contains("controller")
+                || path.contains("endpoint")
+                || path.contains("api")
+            {
+                3.0
+            } else if path.contains("server") || path.contains("service") {
+                1.5
+            } else {
+                0.8
+            }
+        }
+        Intent::Hook => {
+            // Boost hook definitions
+            let path = file_path.to_lowercase();
+            if path.contains("hook") || path.contains("use") {
+                2.0
+            } else if matches!(kind, "function") {
+                1.3
+            } else {
+                1.0
+            }
+        }
+        Intent::Middleware => {
+            // Boost middleware/interceptor files
+            let path = file_path.to_lowercase();
+            if path.contains("middleware") || path.contains("interceptor") || path.contains("guard")
+            {
+                3.0
+            } else if path.contains("plugin") {
+                1.5
+            } else {
+                0.8
+            }
+        }
+        Intent::Migration => {
+            // Boost migration files
+            let path = file_path.to_lowercase();
+            if path.contains("migration") || path.contains("migrate") {
+                5.0
+            } else if path.contains("schema") || path.contains("sql") {
+                2.0
+            } else {
+                0.5
+            }
+        }
     }
 }
 

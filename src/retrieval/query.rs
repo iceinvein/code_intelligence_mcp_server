@@ -324,8 +324,8 @@ pub fn decompose_query(query: &str, max_depth: usize) -> Vec<String> {
 /// Detect if query contains code snippets (FNDN-17)
 ///
 /// Returns true if the query appears to contain actual code rather than
-/// natural language description. Used to switch between embedding strategies.
-#[allow(dead_code)]
+/// natural language description. Used to switch between embedding strategies
+/// and to increase the retrieval pool for natural language queries.
 pub fn contains_code_snippet(query: &str) -> bool {
     let q = query.trim();
 

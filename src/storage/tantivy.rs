@@ -15,7 +15,7 @@ use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
-const TANTIVY_SCHEMA_VERSION: &str = "4";
+const TANTIVY_SCHEMA_VERSION: &str = "5";
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -281,7 +281,7 @@ impl TantivyIndex {
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
-        let expanded_text = expand_index_text(&symbol.name, &symbol.text);
+        let expanded_text = expand_index_text(&symbol.name, &symbol.text, &symbol.file_path);
 
         writer.add_document(doc!(
             self.fields.id => symbol.id.as_str(),
@@ -340,23 +340,41 @@ impl TantivyIndex {
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let searcher = self.reader.searcher();
+
+        // For multi-word NL queries, boost text field over name to reduce
+        // false positives from partial symbol name matches (e.g. "JSON serialization"
+        // matching parse_package_json due to "json" in the name).
+        let words = query.split_whitespace().count();
+        let field_boosts: &[(Field, f32)] = if words >= 2 {
+            &[(self.fields.name, 0.5), (self.fields.text, 2.0)]
+        } else {
+            &[(self.fields.name, 1.0), (self.fields.text, 1.0)]
+        };
+
         let mut out = self.search_in_fields(
             &searcher,
             query,
             limit,
             1.0,
             &[self.fields.name, self.fields.text],
+            field_boosts,
         )?;
 
         if out.len() < limit && !query.contains('"') && looks_like_partial(query) {
             let remaining = limit.saturating_sub(out.len());
             if remaining > 0 {
+                let ngram_boosts: &[(Field, f32)] = if words >= 2 {
+                    &[(self.fields.name_ngram, 0.5), (self.fields.text_ngram, 2.0)]
+                } else {
+                    &[(self.fields.name_ngram, 1.0), (self.fields.text_ngram, 1.0)]
+                };
                 let extra = self.search_in_fields(
                     &searcher,
                     query,
                     remaining * 2,
                     0.35,
                     &[self.fields.name_ngram, self.fields.text_ngram],
+                    ngram_boosts,
                 )?;
                 let mut seen: std::collections::HashSet<String> =
                     out.iter().map(|h| h.id.clone()).collect();
@@ -381,8 +399,12 @@ impl TantivyIndex {
         limit: usize,
         score_multiplier: f32,
         fields: &[Field],
+        field_boosts: &[(Field, f32)],
     ) -> Result<Vec<SearchHit>> {
-        let query_parser = QueryParser::for_index(&self.index, fields.to_vec());
+        let mut query_parser = QueryParser::for_index(&self.index, fields.to_vec());
+        for &(field, boost) in field_boosts {
+            query_parser.set_field_boost(field, boost);
+        }
         let parsed_query = query_parser
             .parse_query(query)
             .with_context(|| format!("Failed to parse tantivy query: {query}"))?;
@@ -472,15 +494,34 @@ fn register_tokenizers(index: &Index) {
         .register("code_ngram", CodeNgramTokenizer);
 }
 
-fn expand_index_text(name: &str, text: &str) -> String {
-    let split = text::split_identifier_like(name);
-    if split.is_empty() {
-        return text.to_string();
+fn expand_index_text(name: &str, text: &str, file_path: &str) -> String {
+    let mut result = text.to_string();
+
+    // Append split symbol name if not already present
+    let split_name = text::split_identifier_like(name);
+    if !split_name.is_empty() && !result.contains(&split_name) {
+        result.push(' ');
+        result.push_str(&split_name);
     }
-    if text.contains(&split) {
-        return text.to_string();
+
+    // Append file path segments so queries like "handler" match src/handlers/mod.rs
+    let path_segments: Vec<&str> = file_path
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .collect();
+    for seg in &path_segments {
+        // Strip extension for the filename segment
+        let base = seg.rsplit_once('.').map(|(b, _)| b).unwrap_or(seg);
+        if !base.is_empty() && base != "mod" && base != "index" && base != "lib" {
+            let split_seg = text::split_identifier_like(base);
+            if !split_seg.is_empty() && !result.contains(&split_seg) {
+                result.push(' ');
+                result.push_str(&split_seg);
+            }
+        }
     }
-    format!("{text} {split}")
+
+    result
 }
 
 fn looks_like_partial(query: &str) -> bool {

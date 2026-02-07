@@ -23,15 +23,15 @@ use crate::{
 use anyhow::{anyhow, Result};
 use cache::RetrieverCaches;
 use query::{
-    decompose_query, detect_intent, normalize_and_expand_query, parse_query_controls, trim_query,
-    Intent, QueryControls,
+    contains_code_snippet, decompose_query, detect_intent, normalize_and_expand_query,
+    parse_query_controls, trim_query, Intent, QueryControls,
 };
 use ranking::{
     apply_docstring_boost_with_signals, apply_file_affinity_boost_with_signals,
     apply_package_boost_with_signals, apply_popularity_boost_with_signals, apply_reranker_scores,
-    apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_kind, expand_with_edges,
-    get_graph_ranked_hits, prepare_rerank_docs, rank_hits_with_signals, reciprocal_rank_fusion,
-    should_rerank,
+    apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_file, diversify_by_kind,
+    expand_with_edges, get_graph_ranked_hits, prepare_rerank_docs, rank_hits_with_signals,
+    reciprocal_rank_fusion, should_rerank,
 };
 use serde::Serialize;
 use std::{
@@ -348,7 +348,13 @@ impl Retriever {
                 // SINGLE-QUERY PATH: Use existing logic unchanged
                 let search_query = &sub_queries[0];
 
-                let k = self.config.vector_search_limit.max(limit).max(5);
+                // For natural language queries, use a larger retrieval pool
+                // to give the ranking pipeline more candidates to work with
+                let k = if contains_code_snippet(search_query) {
+                    self.config.vector_search_limit.max(limit).max(5)
+                } else {
+                    self.config.vector_search_limit.max(limit * 3).max(40)
+                };
                 let keyword_t = Instant::now();
                 let keyword_hits = self.tantivy.search(search_query, k)?;
                 let _keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -495,7 +501,8 @@ impl Retriever {
                 }
             } else {
                 // MULTI-QUERY PATH: Loop over sub-queries and collect combined hits
-                let k = self.config.vector_search_limit.max(limit).max(5);
+                // Always use larger pool for multi-query (compound NL queries)
+                let k = self.config.vector_search_limit.max(limit * 3).max(40);
 
                 // Combined accumulators for ALL sub-queries
                 let mut combined_keyword_hits: Vec<crate::storage::tantivy::SearchHit> = Vec::new();
@@ -715,6 +722,7 @@ impl Retriever {
         };
 
         hits = diversify_by_cluster(&sqlite, hits, limit);
+        hits = diversify_by_file(hits, limit);
         hits = diversify_by_kind(hits, limit);
         hits.truncate(limit);
 

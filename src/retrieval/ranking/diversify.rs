@@ -2,6 +2,43 @@ use crate::retrieval::RankedHit;
 use crate::storage::sqlite::SqliteStore;
 use std::collections::HashMap;
 
+/// Diversify results by file path to prevent any single file from dominating results.
+///
+/// Caps the number of results from any single file to `max_per_file`.
+/// Deferred hits are appended in score order after primary results.
+pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
+    if hits.len() <= limit || hits.is_empty() {
+        return hits;
+    }
+
+    let max_per_file = (limit / 3).max(2);
+    let mut out = Vec::with_capacity(limit.min(hits.len()));
+    let mut deferred = Vec::new();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+
+    for h in &hits {
+        if out.len() >= limit {
+            break;
+        }
+        let n = counts.get(h.file_path.as_str()).copied().unwrap_or(0);
+        if n < max_per_file {
+            *counts.entry(h.file_path.as_str()).or_insert(0) += 1;
+            out.push(h.clone());
+        } else {
+            deferred.push(h.clone());
+        }
+    }
+
+    for h in deferred {
+        if out.len() >= limit {
+            break;
+        }
+        out.push(h);
+    }
+
+    out
+}
+
 /// Diversify results by similarity cluster
 pub fn diversify_by_cluster(
     sqlite: &SqliteStore,

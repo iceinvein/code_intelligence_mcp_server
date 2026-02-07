@@ -1,6 +1,6 @@
 [package]
 name = "code-intelligence-mcp-server"
-version = "1.0.9"
+version = "1.0.10"
 edition = "2021"
 
 [dependencies]

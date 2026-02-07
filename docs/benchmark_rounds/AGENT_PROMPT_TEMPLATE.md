@@ -161,3 +161,36 @@ For batch in [1, 2, 3]:
 ```
 
 Then waits for all 3 to complete, reads the 3 output files (~30 lines each), and compiles into the final round entry.
+
+## Recommended New-Context Prompt
+
+Copy this into a fresh conversation to run a full benchmark round. Replace `N` with the round number and update the previous round's averages.
+
+```
+Run a full 15-query search quality benchmark round using the autonomous
+agent workflow described in docs/SEARCH_BENCHMARK.md under "How to Run
+(Autonomous Agent Workflow)".
+
+The agent prompt template is at docs/benchmark_rounds/AGENT_PROMPT_TEMPLATE.md.
+This is Round N. Dispatch all 3 batches in parallel with
+run_in_background: true, writing to:
+- docs/benchmark_rounds/round_N_batch_1.md
+- docs/benchmark_rounds/round_N_batch_2.md
+- docs/benchmark_rounds/round_N_batch_3.md
+
+After all 3 complete, read the batch files, compile the full round table,
+and compare deltas to Round N-1 (CI avg X.X, Augment avg X.X).
+
+Then analyze the results:
+1. Flag regressions (>1 point drop from previous round)
+2. Group queries scoring CI < 6 by failure pattern
+3. For each pattern affecting 2+ queries, propose a fix:
+   - File to modify and what to change
+   - Which queries should improve
+   - Regression risk
+4. Append the compiled round AND analysis to docs/SEARCH_BENCHMARK.md.
+```
+
+### After implementing fixes
+
+When fixes are applied and you want to re-benchmark, use the same prompt with an incremented round number. The analysis section in SEARCH_BENCHMARK.md from the previous round tells you what was changed and what to watch for regressions on.

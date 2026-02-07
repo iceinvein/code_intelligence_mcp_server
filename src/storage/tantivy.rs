@@ -44,6 +44,9 @@ pub struct TantivyIndex {
     fields: Fields,
     reader: IndexReader,
     writer: Mutex<IndexWriter>,
+    /// True if the index was wiped and recreated due to a schema version mismatch.
+    /// The indexing pipeline should force a full re-index when this is set.
+    was_recreated: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -174,7 +177,16 @@ impl TantivyIndex {
         let existing_version = std::fs::read_to_string(&version_path)
             .ok()
             .map(|s| s.trim().to_string());
-        if existing_version.as_deref() != Some(TANTIVY_SCHEMA_VERSION) && index_dir.exists() {
+        // Only flag as "recreated" if there WAS an old version file with a different version.
+        // A missing version file means fresh index (not a schema migration).
+        let was_recreated = existing_version.is_some()
+            && existing_version.as_deref() != Some(TANTIVY_SCHEMA_VERSION);
+        if was_recreated {
+            tracing::warn!(
+                old_version = ?existing_version,
+                new_version = TANTIVY_SCHEMA_VERSION,
+                "Tantivy schema version mismatch — wiping index for full rebuild"
+            );
             std::fs::remove_dir_all(index_dir).with_context(|| {
                 format!(
                     "Failed to remove existing tantivy index directory: {}",
@@ -249,7 +261,15 @@ impl TantivyIndex {
             fields,
             reader,
             writer: Mutex::new(writer),
+            was_recreated,
         })
+    }
+
+    /// Returns true if the index was wiped and recreated due to a schema version
+    /// mismatch. When this is true, the indexing pipeline must clear file
+    /// fingerprints in SQLite to force a full re-index of all files.
+    pub fn was_recreated(&self) -> bool {
+        self.was_recreated
     }
 
     pub fn recreate(index_dir: &Path) -> Result<Self> {
@@ -341,14 +361,18 @@ impl TantivyIndex {
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let searcher = self.reader.searcher();
 
-        // For multi-word NL queries, boost text field over name to reduce
-        // false positives from partial symbol name matches (e.g. "JSON serialization"
-        // matching parse_package_json due to "json" in the name).
+        // 3-tier field boosts based on query length:
+        // - 1 word: Likely a symbol lookup → favor name field
+        // - 2 words: Short phrase → balanced with slight text preference
+        // - 3+ words: NL query → strongly favor body text to avoid
+        //   false positives from partial symbol name matches
         let words = query.split_whitespace().count();
-        let field_boosts: &[(Field, f32)] = if words >= 2 {
+        let field_boosts: &[(Field, f32)] = if words >= 3 {
+            &[(self.fields.name, 0.2), (self.fields.text, 3.0)]
+        } else if words == 2 {
             &[(self.fields.name, 0.5), (self.fields.text, 2.0)]
         } else {
-            &[(self.fields.name, 1.0), (self.fields.text, 1.0)]
+            &[(self.fields.name, 1.5), (self.fields.text, 1.0)]
         };
 
         let mut out = self.search_in_fields(
@@ -363,10 +387,12 @@ impl TantivyIndex {
         if out.len() < limit && !query.contains('"') && looks_like_partial(query) {
             let remaining = limit.saturating_sub(out.len());
             if remaining > 0 {
-                let ngram_boosts: &[(Field, f32)] = if words >= 2 {
+                let ngram_boosts: &[(Field, f32)] = if words >= 3 {
+                    &[(self.fields.name_ngram, 0.2), (self.fields.text_ngram, 3.0)]
+                } else if words == 2 {
                     &[(self.fields.name_ngram, 0.5), (self.fields.text_ngram, 2.0)]
                 } else {
-                    &[(self.fields.name_ngram, 1.0), (self.fields.text_ngram, 1.0)]
+                    &[(self.fields.name_ngram, 1.5), (self.fields.text_ngram, 1.0)]
                 };
                 let extra = self.search_in_fields(
                     &searcher,

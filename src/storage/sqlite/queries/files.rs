@@ -56,6 +56,13 @@ pub fn delete_file_fingerprint(conn: &Connection, file_path: &str) -> Result<()>
     Ok(())
 }
 
+pub fn clear_all_file_fingerprints(conn: &Connection) -> Result<u64> {
+    let count = conn
+        .execute("DELETE FROM file_fingerprints", [])
+        .context("Failed to clear file_fingerprints table")?;
+    Ok(count as u64)
+}
+
 pub fn list_all_file_fingerprints(
     conn: &Connection,
     limit: usize,

@@ -15,4 +15,5 @@ pub use score::{
     apply_popularity_boost_with_signals, apply_selection_boost_with_signals,
     rank_hits_with_signals,
 };
+pub(crate) use score::{definition_bias, intent_adjustment, structural_adjustment};
 

@@ -4,23 +4,25 @@ use std::collections::HashMap;
 
 /// Diversify results by file path to prevent any single file from dominating results.
 ///
-/// Caps the number of results from any single file to `max_per_file`.
-/// Deferred hits are appended in score order after primary results.
+/// Caps the number of results from any single file to `max_per_file` in the
+/// primary pass. Deferred hits get a relaxed cap of `2 * max_per_file` total
+/// (primary + deferred combined) to prevent single-file flooding even in the
+/// overflow slots.
 pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     if hits.is_empty() {
         return hits;
     }
 
-    let effective_limit = limit.max(hits.len());
-    let max_per_file = (limit / 3).max(2);
-    let mut out = Vec::with_capacity(effective_limit.min(hits.len()));
+    let max_per_file = (limit / 5).max(2);
+    let total_cap_per_file = max_per_file * 2; // absolute cap across primary + deferred
+    let mut out = Vec::with_capacity(limit.min(hits.len()));
     let mut deferred = Vec::new();
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
 
     for h in &hits {
-        let n = counts.get(h.file_path.as_str()).copied().unwrap_or(0);
+        let n = counts.get(&h.file_path).copied().unwrap_or(0);
         if n < max_per_file {
-            *counts.entry(h.file_path.as_str()).or_insert(0) += 1;
+            *counts.entry(h.file_path.clone()).or_insert(0) += 1;
             out.push(h.clone());
         } else {
             deferred.push(h.clone());
@@ -28,10 +30,14 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     }
 
     for h in deferred {
-        if out.len() >= effective_limit {
+        if out.len() >= limit {
             break;
         }
-        out.push(h);
+        let n = counts.get(&h.file_path).copied().unwrap_or(0);
+        if n < total_cap_per_file {
+            *counts.entry(h.file_path.clone()).or_insert(0) += 1;
+            out.push(h);
+        }
     }
 
     out

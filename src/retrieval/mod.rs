@@ -460,25 +460,66 @@ impl Retriever {
                         self.config.rrf_graph_weight,
                     );
 
-                    let rrf_results = reciprocal_rank_fusion(
+                    let mut rrf_results = reciprocal_rank_fusion(
                         &keyword_ranked,
                         &vector_ranked,
                         &graph_hits,
                         weights,
                     );
 
-                    // Generate signals for RRF results
+                    // Build lookup maps for original keyword/vector scores (for diagnostics)
+                    let kw_score_map: HashMap<&str, f32> = keyword_ranked
+                        .iter()
+                        .map(|h| (h.id.as_str(), h.score))
+                        .collect();
+                    let vec_score_map: HashMap<&str, f32> = vector_ranked
+                        .iter()
+                        .map(|h| (h.id.as_str(), h.score))
+                        .collect();
+
+                    // Apply structural and intent adjustments post-RRF.
+                    // RRF only considers rank position, not content signals like
+                    // test penalties, intent multipliers, or directory semantics.
                     let mut signals = HashMap::new();
-                    for hit in &rrf_results {
+                    for hit in rrf_results.iter_mut() {
+                        let structural = ranking::structural_adjustment(
+                            &self.config,
+                            hit.exported,
+                            &hit.file_path,
+                            &hit.kind,
+                            &intent,
+                            &query_without_controls,
+                        );
+                        let intent_mult = ranking::intent_adjustment(
+                            &intent,
+                            &hit.kind,
+                            &hit.file_path,
+                            hit.exported,
+                            &hit.name,
+                        );
+
+                        let base_score = hit.score;
+                        let def_bias = ranking::definition_bias(
+                            &query_without_controls,
+                            &hit.name,
+                            &hit.kind,
+                            &intent,
+                        );
+                        // Apply intent_mult to ALL signals (including def_bias) so
+                        // test penalties actually suppress test function scores.
+                        // Previously def_bias was added post-multiplication, bypassing
+                        // the test penalty entirely.
+                        hit.score = (hit.score + structural + def_bias) * intent_mult;
+
                         signals.insert(
                             hit.id.clone(),
                             HitSignals {
-                                keyword_score: 0.0, // RRF doesn't preserve raw scores
-                                vector_score: 0.0,
-                                base_score: hit.score,
-                                structural_adjust: 0.0,
-                                intent_mult: 1.0,
-                                definition_bias: 0.0,
+                                keyword_score: kw_score_map.get(hit.id.as_str()).copied().unwrap_or(0.0),
+                                vector_score: vec_score_map.get(hit.id.as_str()).copied().unwrap_or(0.0),
+                                base_score,
+                                structural_adjust: structural,
+                                intent_mult,
+                                definition_bias: def_bias,
                                 popularity_boost: 0.0,
                                 learning_boost: 0.0,
                                 affinity_boost: 0.0,
@@ -487,6 +528,14 @@ impl Retriever {
                             },
                         );
                     }
+
+                    // Re-sort after structural/intent adjustments
+                    rrf_results.sort_by(|a, b| {
+                        b.score
+                            .total_cmp(&a.score)
+                            .then_with(|| b.exported.cmp(&a.exported))
+                            .then_with(|| a.name.cmp(&b.name))
+                    });
 
                     (rrf_results, signals)
                 } else {
@@ -612,20 +661,48 @@ impl Retriever {
                     self.config.rrf_graph_weight,
                 );
 
-                let ranked =
+                let mut ranked =
                     reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
 
+                // Apply structural and intent adjustments post-RRF (same as single-query path)
                 let mut hit_signals = HashMap::new();
-                for hit in &ranked {
+                for hit in ranked.iter_mut() {
+                    let structural = ranking::structural_adjustment(
+                        &self.config,
+                        hit.exported,
+                        &hit.file_path,
+                        &hit.kind,
+                        &intent,
+                        &query_without_controls,
+                    );
+                    let intent_mult = ranking::intent_adjustment(
+                        &intent,
+                        &hit.kind,
+                        &hit.file_path,
+                        hit.exported,
+                        &hit.name,
+                    );
+
+                    let base_score = hit.score;
+                    hit.score = (hit.score + structural) * intent_mult;
+
+                    let def_bias = ranking::definition_bias(
+                        &query_without_controls,
+                        &hit.name,
+                        &hit.kind,
+                        &intent,
+                    );
+                    hit.score += def_bias;
+
                     hit_signals.insert(
                         hit.id.clone(),
                         HitSignals {
                             keyword_score: 0.0,
                             vector_score: 0.0,
-                            base_score: hit.score,
-                            structural_adjust: 0.0,
-                            intent_mult: 1.0,
-                            definition_bias: 0.0,
+                            base_score,
+                            structural_adjust: structural,
+                            intent_mult,
+                            definition_bias: def_bias,
                             popularity_boost: 0.0,
                             learning_boost: 0.0,
                             affinity_boost: 0.0,
@@ -634,6 +711,14 @@ impl Retriever {
                         },
                     );
                 }
+
+                // Re-sort after structural/intent adjustments
+                ranked.sort_by(|a, b| {
+                    b.score
+                        .total_cmp(&a.score)
+                        .then_with(|| b.exported.cmp(&a.exported))
+                        .then_with(|| a.name.cmp(&b.name))
+                });
 
                 (ranked, hit_signals)
             };
@@ -722,11 +807,15 @@ impl Retriever {
         };
 
         hits = diversify_by_cluster(&sqlite, hits, limit);
-        hits = diversify_by_file(hits, limit);
-        hits = diversify_by_kind(hits, limit);
         hits.truncate(limit);
 
         let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, limit)?;
+
+        // Apply file/kind diversity AFTER edge expansion, since expansion
+        // can re-inject same-file symbols and undo earlier diversity.
+        let mut hits = diversify_by_file(hits, limit);
+        hits = diversify_by_kind(hits, limit);
+        hits.truncate(limit);
 
         let mut roots = Vec::new();
         let mut extra = Vec::new();

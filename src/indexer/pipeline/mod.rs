@@ -464,6 +464,19 @@ impl IndexPipeline {
             ..Default::default()
         };
 
+        // If Tantivy was recreated (schema version mismatch), clear file fingerprints
+        // so every file is treated as "changed" and gets re-indexed into the new index.
+        if self.tantivy.was_recreated() {
+            let sqlite = SqliteStore::open(&self.db_path)?;
+            sqlite.init()?;
+            let cleared = sqlite.clear_all_file_fingerprints()?;
+            tracing::warn!(
+                repo = %self.repo_name(),
+                cleared_fingerprints = cleared,
+                "Tantivy index was recreated — cleared file fingerprints to force full re-index"
+            );
+        }
+
         // Cleanup deleted files first
         if cleanup_deleted {
             let mut scanned_rel: HashSet<String> = HashSet::new();

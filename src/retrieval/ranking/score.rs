@@ -228,29 +228,9 @@ pub fn rank_hits_with_signals(
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
         let base_score = vector_w * v + keyword_w * kw;
         let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
-        let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
-        let mut score = (base_score + structural) * intent_mult;
-
-        // Definition Bias — only for symbol-like queries (1-2 words), not NL queries
-        let mut definition_bias = 0.0;
-        if !matches!(intent, Some(Intent::Callers(_))) {
-            let q = query.trim();
-            let word_count = q.split_whitespace().count();
-            if word_count <= 2 {
-                let q_no_space = q.replace(' ', "");
-                if (h.name.eq_ignore_ascii_case(q) || h.name.eq_ignore_ascii_case(&q_no_space))
-                    && is_definition_kind(&h.kind)
-                {
-                    score += 10.0;
-                    definition_bias += 10.0;
-                } else if h.name.to_lowercase().contains(&q.to_lowercase())
-                    && is_definition_kind(&h.kind)
-                {
-                    score += 1.0;
-                    definition_bias += 1.0;
-                }
-            }
-        }
+        let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
+        let def_bias = definition_bias(query, &h.name, &h.kind, intent);
+        let score = (base_score + structural + def_bias) * intent_mult;
 
         signals.insert(
             h.id.clone(),
@@ -260,7 +240,7 @@ pub fn rank_hits_with_signals(
                 base_score,
                 structural_adjust: structural,
                 intent_mult,
-                definition_bias,
+                definition_bias: def_bias,
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
@@ -290,29 +270,9 @@ pub fn rank_hits_with_signals(
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let base_score = vector_w * v + keyword_w * kw;
         let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
-        let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported);
-        let mut score = (base_score + structural) * intent_mult;
-
-        // Definition Bias — only for symbol-like queries (1-2 words), not NL queries
-        let mut definition_bias = 0.0;
-        if !matches!(intent, Some(Intent::Callers(_))) {
-            let q = query.trim();
-            let word_count = q.split_whitespace().count();
-            if word_count <= 2 {
-                let q_no_space = q.replace(' ', "");
-                if (h.name.eq_ignore_ascii_case(q) || h.name.eq_ignore_ascii_case(&q_no_space))
-                    && is_definition_kind(&h.kind)
-                {
-                    score += 10.0;
-                    definition_bias += 10.0;
-                } else if h.name.to_lowercase().contains(&q.to_lowercase())
-                    && is_definition_kind(&h.kind)
-                {
-                    score += 1.0;
-                    definition_bias += 1.0;
-                }
-            }
-        }
+        let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
+        let def_bias = definition_bias(query, &h.name, &h.kind, intent);
+        let score = (base_score + structural + def_bias) * intent_mult;
 
         signals.insert(
             h.id.clone(),
@@ -322,7 +282,7 @@ pub fn rank_hits_with_signals(
                 base_score,
                 structural_adjust: structural,
                 intent_mult,
-                definition_bias,
+                definition_bias: def_bias,
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
@@ -418,11 +378,22 @@ pub fn apply_popularity_boost_with_signals(
         return Ok(hits);
     }
 
+    // Scale the popularity weight relative to current score magnitudes.
+    // Without scaling, the absolute boost (default 0.05) can dwarf small RRF scores
+    // (~0.01-0.04), causing high-PageRank symbols to dominate unrelated queries.
+    let avg_score = if hits.is_empty() {
+        1.0
+    } else {
+        let sum: f32 = hits.iter().map(|h| h.score.abs()).sum();
+        (sum / hits.len() as f32).max(0.001)
+    };
+    let scaled_weight = config.rank_popularity_weight * avg_score;
+
     // Apply normalized PageRank boost to each hit
     for h in hits.iter_mut() {
         let pagerank = pagerank_map.get(&h.id).copied().unwrap_or(0.0);
         let normalized = pagerank / max_pagerank;
-        let boost = config.rank_popularity_weight * normalized as f32;
+        let boost = scaled_weight * normalized as f32;
 
         h.score += boost;
         hit_signals
@@ -507,6 +478,60 @@ pub fn apply_docstring_boost_with_signals(
     Ok(hits)
 }
 
+/// Compute definition bias for a hit based on query-to-name matching.
+///
+/// For short queries (1-2 words): Strong boost for exact name match (+10) or substring (+1).
+/// For longer queries (3+ words): Check if the symbol name matches any significant query
+/// token. This handles queries like "EmbeddingCache get put" where "EmbeddingCache" should
+/// boost the EmbeddingCache struct.
+pub(crate) fn definition_bias(
+    query: &str,
+    hit_name: &str,
+    hit_kind: &str,
+    intent: &Option<Intent>,
+) -> f32 {
+    if matches!(intent, Some(Intent::Callers(_))) || !is_definition_kind(hit_kind) {
+        return 0.0;
+    }
+
+    let q = query.trim();
+    let word_count = q.split_whitespace().count();
+
+    if word_count <= 2 {
+        // Short query: strong exact match bias
+        let q_no_space = q.replace(' ', "");
+        if hit_name.eq_ignore_ascii_case(q) || hit_name.eq_ignore_ascii_case(&q_no_space) {
+            10.0
+        } else if hit_name.to_lowercase().contains(&q.to_lowercase()) {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        // Multi-word query: check each token for symbol name match.
+        // Look for CamelCase or snake_case tokens that could be symbol names.
+        let name_lower = hit_name.to_lowercase();
+        let mut best = 0.0f32;
+
+        for token in q.split_whitespace() {
+            if token.len() < 3 {
+                continue;
+            }
+            let token_lower = token.to_lowercase();
+
+            // Exact match with a query token
+            if name_lower == token_lower {
+                best = best.max(5.0);
+            }
+            // Symbol name contains the token (e.g. "EmbeddingCache" contains "cache")
+            else if name_lower.contains(&token_lower) && token.len() >= 4 {
+                best = best.max(0.5);
+            }
+        }
+        best
+    }
+}
+
 fn normalize_pair(a: f32, b: f32) -> (f32, f32) {
     let sum = a + b;
     if sum > 0.0 {
@@ -516,7 +541,21 @@ fn normalize_pair(a: f32, b: f32) -> (f32, f32) {
     }
 }
 
-fn structural_adjustment(
+/// Simple morphological stemmer for path segment matching.
+/// Strips common English suffixes so "parsing" and "parser" share stem "pars".
+fn simple_stem(s: &str) -> String {
+    // Try suffixes longest-first to avoid partial strips
+    for suffix in &["tion", "sion", "ing", "ers", "er", "ed", "es", "s"] {
+        if let Some(stem) = s.strip_suffix(suffix) {
+            if stem.len() >= 3 {
+                return stem.to_string();
+            }
+        }
+    }
+    s.to_string()
+}
+
+pub(crate) fn structural_adjustment(
     config: &Config,
     exported: bool,
     file_path: &str,
@@ -553,10 +592,24 @@ fn structural_adjustment(
         score -= 15.0;
     }
 
+    // Penalize non-source helper directories (npm installers, shell scripts, docs)
+    if path.starts_with("npm/")
+        || path.starts_with("scripts/")
+        || path.starts_with("docs/")
+        || path.starts_with("examples/")
+        || path.starts_with(".github/")
+    {
+        score -= 10.0;
+    }
+
     if path.contains("/src/")
+        || path.starts_with("src/")
         || path.contains("/lib/")
+        || path.starts_with("lib/")
         || path.contains("/app/")
+        || path.starts_with("app/")
         || path.contains("/packages/")
+        || path.starts_with("packages/")
     {
         score += 1.0;
     }
@@ -571,16 +624,24 @@ fn structural_adjustment(
     let path_parts: Vec<&str> = file_path.split('/').collect();
     for term in &terms {
         let term_lower = term.to_lowercase();
+        let term_stem = simple_stem(&term_lower);
         if path_parts.iter().any(|p| {
             let p_lower = p.to_lowercase();
             if p_lower == term_lower {
                 return true;
             }
             // Stem match (strip extension)
-            if let Some((stem, _)) = p_lower.rsplit_once('.') {
-                if stem == term_lower {
-                    return true;
-                }
+            let p_stem_src = if let Some((stem, _)) = p_lower.rsplit_once('.') {
+                stem
+            } else {
+                &p_lower
+            };
+            if p_stem_src == term_lower {
+                return true;
+            }
+            // Morphological stem match: "parsing" ↔ "parser" via stem "pars"
+            if simple_stem(p_stem_src) == term_stem && term_stem.len() >= 3 {
+                return true;
             }
             // Prefix/plural match: "handler" matches "handlers", "config" matches "configs"
             if p_lower.starts_with(&term_lower) || term_lower.starts_with(&p_lower) {
@@ -588,14 +649,14 @@ fn structural_adjustment(
             }
             false
         }) {
-            score += 2.0;
+            score += 1.0;
         }
     }
 
     score
 }
 
-fn is_test_file(file_path: &str) -> bool {
+pub(crate) fn is_test_file(file_path: &str) -> bool {
     file_path.contains(".test.")
         || file_path.contains(".spec.")
         || file_path.contains("/__tests__/")
@@ -612,10 +673,31 @@ fn is_test_file(file_path: &str) -> bool {
         || file_path.contains("/conftest")
 }
 
-fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool) -> f32 {
-    // Test Penalty (0.3x multiplier - strong penalty to keep test files out of general results)
+/// Check if a symbol name looks like a test function/helper
+fn is_test_symbol(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.starts_with("test_")
+        || n.starts_with("create_test_")
+        || n.starts_with("make_test_")
+        || n.starts_with("setup_test")
+        || n.starts_with("mock_")
+        || n == "setup"
+        || n == "teardown"
+        || (n.starts_with("test") && n.len() > 4 && n.as_bytes()[4].is_ascii_uppercase())
+}
+
+pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool, name: &str) -> f32 {
+    // Test Penalty (0.15x multiplier - aggressive penalty to keep test files out of general results)
     if is_test_file(file_path) && !matches!(intent, Some(Intent::Test)) {
-        return 0.3;
+        return 0.15;
+    }
+
+    // Symbol-level test penalty: penalize test-named symbols even in production files.
+    // This prevents test functions (test_*, create_test_*) from flooding results
+    // when they live alongside production code in the same file.
+    // Uses same 0.15x as test file penalty — test code is test code regardless of location.
+    if !matches!(intent, Some(Intent::Test)) && is_test_symbol(name) {
+        return 0.15;
     }
 
     let Some(intent) = intent else {
@@ -967,11 +1049,12 @@ mod tests {
 
             // Verify normalization: high should get ~10x more boost than low (0.1/0.01 = 10)
             assert!((high_boost / low_boost - 10.0).abs() < 0.01);
-            // Both boosts should be in 0-0.1 range
-            assert!(high_boost > 0.0 && high_boost <= 0.1);
-            assert!(low_boost > 0.0 && low_boost <= 0.1);
-            // Max PageRank symbol gets normalized to 1.0
-            assert!((high_boost - 0.1).abs() < 0.001);
+            // Both boosts should be positive (scaled relative to avg score of 10.0)
+            // With weight=0.1 and avg_score=10.0, scaled_weight=1.0
+            // So high_boost = 1.0 * 1.0 = 1.0, low_boost = 1.0 * 0.1 = 0.1
+            assert!(high_boost > 0.0);
+            assert!(low_boost > 0.0);
+            assert!((high_boost - 1.0).abs() < 0.001);
         }
 
         let _ = std::fs::remove_file(&db_path);

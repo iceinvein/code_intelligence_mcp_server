@@ -16,7 +16,8 @@ fi
 
 # Environment Configuration
 export BASE_DIR="$REPO_ROOT"
-export EMBEDDINGS_BACKEND="candle"
+# Default backend is JinaCode (768-dim) -- better for code search
+# Override with EMBEDDINGS_BACKEND=fastembed for BGE (384-dim) if needed
 export EMBEDDINGS_AUTO_DOWNLOAD="true"
 
 # Detect OS for Metal support (macOS)

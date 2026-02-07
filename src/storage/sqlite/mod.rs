@@ -169,6 +169,11 @@ impl SqliteStore {
         queries::files::delete_file_fingerprint(&conn, file_path)
     }
 
+    pub fn clear_all_file_fingerprints(&self) -> Result<u64> {
+        let conn = self.write()?;
+        queries::files::clear_all_file_fingerprints(&conn)
+    }
+
     pub fn list_all_file_fingerprints(&self, limit: usize) -> Result<Vec<FileFingerprintRow>> {
         let conn = self.read()?;
         queries::files::list_all_file_fingerprints(&conn, limit)

@@ -49,6 +49,9 @@ jobs:
         with:
           shared-key: "workflow-cache-${{ matrix.target }}"
 
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+
       - name: Build Binary
         run: cargo build --release --target ${{ matrix.target }}
 

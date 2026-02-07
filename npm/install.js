@@ -11,8 +11,7 @@ const VERSION = 'v' + require('./package.json').version;
 
 const MAPPING = {
     'darwin': {
-        'arm64': 'aarch64-apple-darwin',
-        'x64': 'x86_64-apple-darwin'
+        'arm64': 'aarch64-apple-darwin'
     },
     'linux': {
         'x64': 'x86_64-unknown-linux-gnu'

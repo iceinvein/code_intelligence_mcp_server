@@ -8,9 +8,13 @@ on:
 
 jobs:
   test:
-    name: Test
-    runs-on: macos-latest
-    
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -20,11 +24,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "workflow-cache"
-
-      - name: Install Protoc
-        run: brew install protobuf
+          shared-key: "workflow-cache-${{ matrix.os }}"
 
       - name: Run Tests
-        # Run tests with the same features enabled to ensure everything compiles
         run: cargo test

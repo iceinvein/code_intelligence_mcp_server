@@ -21,8 +21,8 @@ jobs:
             target: aarch64-apple-darwin
             binary_name: code-intelligence-mcp-server
 
-          # macOS Intel
-          - os: macos-13
+          # macOS Intel (cross-compiled on ARM runner)
+          - os: macos-latest
             target: x86_64-apple-darwin
             binary_name: code-intelligence-mcp-server
 

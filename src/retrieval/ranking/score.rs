@@ -674,7 +674,7 @@ pub(crate) fn term_coverage_adjustment(
         if in_name || in_path {
             matched += 1.0;
         } else if in_body {
-            matched += 0.5; // body match counts half vs name/path
+            matched += 0.75; // body match counts 3/4 vs name/path (R27: up from 0.5)
         } else if via_synonym {
             matched += 0.35; // synonym match counts less than direct body match
         }
@@ -1584,8 +1584,8 @@ mod tests {
     }
 
     #[test]
-    fn term_coverage_body_text_counts_half() {
-        // Body-only matches should count 0.5x compared to name/path matches
+    fn term_coverage_body_text_counts_three_quarter() {
+        // Body-only matches should count 0.75x compared to name/path matches (R27: up from 0.5)
         // This prevents large functions from being over-boosted just because they mention a term once
         let body_only = term_coverage_adjustment(
             "websocket handler connection protocol",

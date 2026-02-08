@@ -464,6 +464,9 @@ impl Retriever {
                     // Apply RRF with dynamic weights based on query type.
                     // NL queries get higher vector weight because BM25 often
                     // matches irrelevant identifiers for conceptual queries.
+                    // R27 tested equal weights but it regressed Q4 by -4 points
+                    // (vector was correctly finding config.rs, equal weights let
+                    // BM25 noise drown it out). Reverted to original 0.5x/1.5x.
                     let weights = if is_nl_query {
                         (
                             self.config.rrf_keyword_weight * 0.5,
@@ -948,13 +951,18 @@ impl Retriever {
             hits
         };
 
-        hits = diversify_by_cluster(&sqlite, hits, limit);
-        hits.truncate(limit);
+        // R30v2: Gentle diversity — truncate to a larger pool (limit*3) so that
+        // diversify_by_file has room to promote diverse results, but doesn't
+        // aggressively displace relevant same-file results the way pre-truncation
+        // diversity did (which regressed Q14 -3, Q15 -4 by promoting noise).
+        hits = diversify_by_cluster(&sqlite, hits, limit * 3);
+        hits.truncate(limit * 3);
 
         let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, limit)?;
 
-        // Apply file/kind diversity AFTER edge expansion, since expansion
-        // can re-inject same-file symbols and undo earlier diversity.
+        // Apply file/kind diversity on the expanded pool (limit*3 candidates),
+        // then truncate to final limit. This gives diversity enough headroom
+        // to promote cross-file results without destroying same-file clusters.
         let mut hits = diversify_by_file(hits, limit);
         hits = diversify_by_kind(hits, limit);
         hits.truncate(limit);

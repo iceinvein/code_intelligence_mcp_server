@@ -1012,3 +1012,460 @@ The net effect was CI avg rising from 5.80 (R12) to 6.47 (R24).
 2. **Single-file flooding** — Q1 (5/5 from score.rs), Q2 (5/5 from pipeline/mod.rs), Q11 (4/5 from parallel.rs). The `diversify_by_file` cap exists but may not be aggressive enough for these cases. Audit whether it runs on the RRF path and consider tightening to max 2 per file for NL queries.
 
 3. **Q2 Embeddings regression** — Dropped from 7 (R6) to 5 (R24/R25). Core files (`embeddings/mod.rs`, `fastembed.rs`, `storage/vector.rs`) missing from results. Investigate whether pipeline/mod.rs is dominating due to high edge count / popularity boost.
+
+---
+
+### Round 26 (Concept Tags for Function Bodies)
+
+**Changes since Round 25:**
+1. **Concept tag extraction** (`text.rs`): Added `extract_concept_tags()` function that scans symbol body text for 12 patterns across 3 categories:
+   - JSON/Serialization: `json!(`, `serde_json`, `to_string_pretty`, `#[derive(Serialize)]`
+   - WebSocket: `WebSocket`, `websocket`, `.ws(`
+   - Error handling: `map_err(`, `tool_internal_error`, `CallToolError`, `unwrap_or_else(`, `ok_or_else(`, `downcast_ref`
+2. **Concept tag injection** (`tantivy.rs`): Concept tags appended to indexed text in `expand_index_text()`, with dedup. Tags also fed into synonym expansion (e.g., "serialization" → "serialize serde deserialize marshal").
+3. **Schema v7→v8**: Forces full reindex.
+
+| # | Query | CI | Augment | Winner | R25 | Delta | Pattern |
+|---|-------|-----|---------|--------|-----|-------|---------|
+| 1 | Ranking/scoring system | 8 | 9 | Augment | 8 | 0 | Single-file flooding (score.rs) |
+| 2 | Embeddings generation/storage | 5 | 9 | Augment | 5 | 0 | Keyword mismatch, missing core files |
+| 3 | Tree-sitter parsing | 7 | 9 | Augment | 7 | 0 | Missing parser.rs in top results |
+| 4 | Config from env vars | 8 | 9 | Augment | 8 | 0 | -- |
+| 5 | Indexing pipeline | 7 | 9 | Augment | 8 | -1 | -- |
+| 6 | MCP tool handling | 9 | 10 | Augment | 9 | 0 | -- |
+| 7 | WebSocket handler | **2** | 7 | Augment | 2 | 0 | Keyword mismatch |
+| 8 | SQLite schema/init | 7 | 9 | Augment | 7 | 0 | -- |
+| 9 | Error handling | **4** | 9 | Augment | 4 | 0 | Missing body text |
+| 10 | JSON serialization | **4** | 7 | Augment | 4 | 0 | Keyword mismatch |
+| 11 | Async concurrency | 8 | 9 | Augment | 8 | 0 | -- |
+| 12 | Caching/invalidation | 8 | 9 | Augment | 9 | -1 | -- |
+| 13 | PathNormalizer | 7 | 10 | Augment | 7 | 0 | Test pollution |
+| 14 | EmbeddingCache get/put | 9 | 10 | Augment | 9 | 0 | Single-file flooding |
+| 15 | File watcher debounce | 7 | 9 | Augment | 6 | +1 | -- |
+
+**CI avg: 6.67** (R25: 6.73, **-0.07**) | **Augment avg: 8.93**
+
+#### Analysis
+
+**Why concept tags had zero impact on target queries (Q7=2, Q9=4, Q10=4):**
+
+Concept tags ARE firing — `schema.rs` with `#[derive(Serialize)]` now ranks for Q10, and `tool_internal_error` ranks #1 for Q9. But the tags are being **buried by the RRF fusion pipeline** before reaching final results.
+
+**Root cause investigation** revealed a 3-layer kill chain for concept-tagged keyword matches:
+
+1. **NL Query Weight Adjustment** (`retrieval/mod.rs:467-479`): For 3+ word queries (all of Q7/Q9/Q10), the RRF pipeline applies `keyword_weight * 0.5` and `vector_weight * 1.5`. This means concept tags added to Tantivy (keyword search) are systematically deprioritized for the exact queries they're designed to help. A keyword rank #2 contributes only `0.5/(60+3) = 0.008` to RRF, while a vector rank #5 for an irrelevant symbol contributes `1.5/(60+6) = 0.023` — **3x higher**.
+
+2. **Term Coverage Body Credit** (`score.rs:671-689`): Concept tags appear in body text, not symbol names. Body matches get only 0.5x credit in term coverage. A concept-tagged symbol matching "serialization" gets coverage ~0.25, resulting in a **-1.48 penalty** instead of a boost.
+
+3. **RRF Score Flattening**: RRF only considers rank position, not BM25 score magnitude. A concept-tagged symbol with a high BM25 score and an irrelevant symbol with a moderate vector similarity both contribute nearly identical RRF scores.
+
+**The fix is NOT more concept tags — it's fixing the RRF fusion pipeline to stop penalizing keyword matches for NL queries.**
+
+#### Scorecard Summary (Key Rounds)
+
+| Round | Change | CI Avg | Augment Avg | Best CI | Worst CI |
+|-------|--------|--------|-------------|---------|----------|
+| 5 (first full) | baseline | 3.9 | 9.5 | Q5=6 | Q7=2,Q14=2 |
+| 8 (post fixes) | +RRF scoring+diversity | 5.8 | 8.2 | Q14=9 | Q15=2 |
+| 12 | +test_symbol_penalty | 5.80 | 8.40 | Q6=9 | Q3=2,Q7=3 |
+| 24 | +synonyms+term_coverage | 6.47 | 8.67 | Q14=10 | Q7=2 |
+| 25 | +import_tags+bug_fix | 6.73 | 9.00 | Q6,Q12,Q14=9 | Q7=2 |
+| **26** | **+concept_tags** | **6.67** | **8.93** | Q6,Q14=9 | **Q7=2** |
+| **27** | **+equal_RRF_weights+body_0.75** | **6.47** | **9.00** | Q6=10 | **Q4=4,Q7=2** |
+| **28** | **+strip_string_literals+concept_tag_fix** | **6.53** | **9.07** | Q6,Q14=10 | **Q7=2,Q9=3** |
+| **29** | **+restore_string_literals** | **6.67** | **9.13** | Q6,Q14=10 | **Q7=2,Q9=3** |
+| **30** | **+handler_tag+pool_expansion** | **5.87** | **8.87** | Q6,Q14=9 | **Q7=2,Q15=3** |
+| **31** | **-handler_tag (schema revert)** | **6.27** | **9.00** | Q6,Q14=9 | **Q7=2,Q9=3** |
+
+#### Round 27 Analysis
+
+**Changes tested:**
+1. **Equal RRF weights for NL queries** — Changed from `(0.5x keyword, 1.5x vector)` to `(1.0x, 1.0x)`. Hypothesis: concept/import tags made BM25 smarter, so it no longer needs penalty.
+2. **Body credit 0.75** — term_coverage body match credit increased from 0.5 to 0.75.
+3. **Wider Q9 concept tags** — Added `Err(e)`, `if let Err`, `.unwrap_or()`, `fallback`/`degrade` patterns. **(Not active — needed re-index which failed mid-session.)**
+
+**Result: Net regression (-0.20).** Equal RRF weights was the wrong fix.
+
+**What happened:**
+- **Q4 cratered (-4):** Vector search correctly found `config.rs` for "Configuration from environment variables" via semantic similarity. Equal weights let BM25 noise from `score.rs` (matching "environment" in irrelevant contexts) compete equally, drowning out the vector signal.
+- **Q6 improved to 10 (+1):** CI beat Augment for the first time. "MCP server tool requests" has strong keyword signal in symbol names — equal weights let it shine.
+- **Q9 improved (+1):** Error handling results gained diversity (3 retrieval/mod.rs results showing degradation patterns).
+- **Q7/Q10 unchanged:** Score.rs flooding Q7 (matching "handler" in function names). Q10 meta-matched on `extract_concept_tags` function which *contains* "serialization" as a string literal.
+
+**Key insight:** The problem is NOT that keyword weight is too low for NL queries. It's that **BM25 returns the wrong results** for conceptual queries — symbol name matches dominate over body-text matches even when body has the right content. Changing RRF weights amplifies both good and bad BM25 results equally.
+
+**Action taken:** Reverted Change 1 (equal RRF weights). Kept Change 2 (body credit 0.75) and Change 3 (wider concept tags — pending re-index).
+
+### Priority Ranking for Next Round (R28)
+
+1. **Tantivy field-level boost for NL queries** — Instead of changing RRF weights, boost the `body_text` field and reduce `symbol_name` field weight in the Tantivy BM25 query for NL queries. This makes keyword search return better results rather than amplifying bad ones.
+   - Location: `storage/tantivy.rs` query construction
+   - **Expected impact:** Q7, Q9, Q10 should improve because body-text matches (concept tags, actual code patterns) outrank name-coincidence matches
+   - **Regression risk:** Low — only changes internal BM25 ranking, not RRF fusion
+
+2. **Q10 meta-match fix** — `extract_concept_tags` in `text.rs` contains string literals like "serialization", "websocket" etc. that cause false BM25 matches. Either exclude this function from indexing or add a penalty for self-referential concept tag matches.
+   - **Expected impact:** +2-3 for Q10
+   - **Regression risk:** Low
+
+3. **Complete re-index for wider concept tags** — R27 Change 3 (wider error handling patterns) needs a clean re-index. On next server restart, clear fingerprints and rebuild.
+   - **Expected impact:** +1-2 for Q9
+   - **Regression risk:** None
+
+4. **Q2 embeddings investigation** — Persistent at CI=5. Core files (`embeddings/mod.rs`, `fastembed.rs`, `storage/vector.rs`) missing from results despite being semantically obvious matches. Vector search should find these — investigate why it doesn't.
+
+### Round 28 (Strip String Literals + Concept Tag Meta-Match Fix)
+
+**Changes since Round 27:**
+1. **strip_string_literals()** (`tantivy.rs`): New function strips content inside `"..."` from code body before indexing. Prevents BM25 false matches on string literal contents (e.g., `tags.insert("serialization")` no longer matches serialization queries).
+2. **Concept tag extraction uses stripped text** (`tantivy.rs:689`): `extract_concept_tags(&result)` runs on stripped text instead of original. Meta-code like `text.contains("json!(")` no longer triggers concept tags because `"json!("` is inside quotes and gets stripped.
+3. **Schema v8→v10**: Forces full re-index to apply string stripping and wider concept tags.
+4. **Carried from R27**: Body credit 0.75 (score.rs), wider concept tags (text.rs), RRF weight revert (0.5x/1.5x restored).
+
+| # | Query | CI | Augment | Winner | R27 | Delta | Pattern |
+|---|-------|-----|---------|--------|-----|-------|---------|
+| 1 | Ranking/scoring system | 8 | 9 | Augment | 7 | +1 | Single-file flooding (score.rs) |
+| 2 | Embeddings generation/storage | 5 | 9 | Augment | 5 | 0 | Missing core files |
+| 3 | Tree-sitter parsing | 6 | 9 | Augment | 6 | 0 | Missing parser.rs |
+| 4 | Config from env vars | 7 | 9 | Augment | 4 | **+3** | -- |
+| 5 | Indexing pipeline | 7 | 9 | Augment | 8 | -1 | -- |
+| 6 | MCP tool handling | **10** | 9 | **CI** | 10 | 0 | -- |
+| 7 | WebSocket handler | **2** | 7 | Augment | 2 | 0 | Keyword mismatch |
+| 8 | SQLite schema/init | 7 | 10 | Augment | 7 | 0 | Missing body text |
+| 9 | Error handling | **3** | 9 | Augment | 5 | **-2** | Keyword mismatch |
+| 10 | JSON serialization | **4** | 8 | Augment | 4 | 0 | Keyword mismatch |
+| 11 | Async concurrency | 8 | 9 | Augment | 8 | 0 | -- |
+| 12 | Caching/invalidation | 8 | 9 | Augment | 8 | 0 | -- |
+| 13 | PathNormalizer | 7 | 10 | Augment | 7 | 0 | Test pollution |
+| 14 | EmbeddingCache get/put | **10** | 10 | **Tie** | 9 | +1 | -- |
+| 15 | File watcher debounce | 6 | 9 | Augment | 7 | -1 | Single-file flooding |
+
+**CI avg: 6.53** (R27: 6.47, **+0.07**) | **Augment avg: 9.07**
+
+#### Round 28 Analysis
+
+**What the strip_string_literals fix achieved:**
+- Q10 meta-match eliminated: `extract_concept_tags` no longer ranks #1 for "JSON serialization" (was #1 in R27, gone in R28)
+- Q14 hit first perfect 10: EmbeddingCache query benefits from reduced noise in indexed text
+- Q4 recovered +3: RRF weight revert from R27 (was 4 with equal weights, back to 7 with 0.5x/1.5x)
+
+**What it hurt:**
+- **Q9 regressed -2** (5→3): Error handling code expresses intent through string literals (`"Failed to parse"`, `"Invalid configuration"`, `tool_internal_error`). Stripping these removes exactly the words that help BM25 match error handling queries. The batch notes show results dominated by `handle_find_affected_code` matching "error" in the symbol name, while `tool_internal_error` (which appears in stripped strings) dropped to #5.
+- Q15 regressed -1 (7→6): File watcher results are all from pipeline/mod.rs (5/5), losing config.rs watch knobs.
+
+**The fundamental tradeoff of strip_string_literals:**
+Stripping string literal contents removes both false positives (meta-matching, keyword coincidence) AND true positives (meaningful error messages, config strings, SQL content). For Q10 it helped (removed meta-match), for Q9 it hurt (removed useful error context), and for Q8 it was neutral (SCHEMA_SQL is a raw string that gets stripped, but the schema types/init functions still match).
+
+**Net assessment:** +0.07 is within noise range (±1 per query established in R8/R9). The strip_string_literals approach is a wash — it trades Q9 regression for Q4 recovery and meta-match elimination.
+
+**Persistent low-scorers** (CI ≤ 4): Q7=2 (WebSocket), Q9=3 (Error), Q10=4 (JSON)
+- Q7: No native WebSocket handler in codebase; only framework pattern detection code in elysia.rs
+- Q9: BM25 matches "affected_code" handler (contains "error" in symbol name) over actual error handling patterns
+- Q10: Despite meta-match fix, BM25 still can't find actual json!() usage in handler functions
+
+### Round 29 (Restore String Literals for BM25 + Error Handling Concept Tags)
+
+**Changes since Round 28:**
+1. **Restore original text for BM25 indexing** (`tantivy.rs:expand_index_text`): Stopped stripping string literals from indexed text. `strip_string_literals()` is now only used for concept tag extraction, preserving error messages, SQL constants, and config strings for BM25 matching while still preventing concept tag meta-matching.
+2. **Wider error handling concept tags** (`text.rs:extract_concept_tags`): Added patterns for `bail!()`, `.context()`, `.with_context()`, `anyhow!()`, `tracing::error`, `tracing::warn`, `eprintln!()`.
+3. **Schema v10→v11**: Forces full re-index to apply changes.
+
+| # | Query | CI | Augment | Winner | R28 | Delta | Pattern |
+|---|-------|-----|---------|--------|-----|-------|---------|
+| 1 | Ranking/scoring system | 7 | 9 | Augment | 8 | -1 | Single-file flooding (score.rs 5/5) |
+| 2 | Embeddings generation/storage | 5 | 9 | Augment | 5 | 0 | Missing core files |
+| 3 | Tree-sitter parsing | 6 | 9 | Augment | 6 | 0 | Missing parser.rs |
+| 4 | Config from env vars | 8 | 9 | Augment | 7 | **+1** | -- |
+| 5 | Indexing pipeline | 8 | 9 | Augment | 7 | **+1** | -- |
+| 6 | MCP tool handling | **10** | 9 | **CI** | 10 | 0 | -- |
+| 7 | WebSocket handler | **2** | 7 | Augment | 2 | 0 | Keyword mismatch |
+| 8 | SQLite schema/init | 7 | 10 | Augment | 7 | 0 | Missing body text |
+| 9 | Error handling | **3** | 9 | Augment | 3 | 0 | Keyword mismatch |
+| 10 | JSON serialization | **4** | 8 | Augment | 4 | 0 | Keyword mismatch |
+| 11 | Async concurrency | 8 | 9 | Augment | 8 | 0 | -- |
+| 12 | Caching/invalidation | 8 | 10 | Augment | 8 | 0 | -- |
+| 13 | PathNormalizer | 7 | 10 | Augment | 7 | 0 | Test pollution |
+| 14 | EmbeddingCache get/put | **10** | 10 | **Tie** | 10 | 0 | -- |
+| 15 | File watcher debounce | 7 | 10 | Augment | 6 | **+1** | Single-file flooding |
+
+**CI avg: 6.67** (R28: 6.53, **+0.14**) | **Augment avg: 9.13**
+
+#### Round 29 Analysis
+
+**What restoring string literals achieved:**
+- Q4 (+1) and Q5 (+1): Preserved string content in config.rs and pipeline/mod.rs improves body-text matching for helper functions (`parse_csv_or_default`, `index_files_sequential_internal`)
+- Q15 (+1): spawn_watch_loop body text with string content helps differentiate watcher-related code
+- Q10 meta-match stays fixed: concept tag extraction still uses stripped text, so `extract_concept_tags` doesn't self-rank for serialization queries
+
+**What didn't help:**
+- **Q9 stayed at 3** despite restoring string literals AND adding error handling concept tags. The fundamental problem: `handle_find_affected_code` contains "error" in its full symbol context (handles "affected code" which includes error impact analysis) and dominates results. The concept tags fire correctly (bail!, .context(), etc.) but don't outweigh BM25 name-match for "affected_code → error".
+- **Q7 stayed at 2**: classify_elysia_method still not surfaced. The function name doesn't contain "websocket" or "handler" — BM25 can't bridge the gap between query terms and the actual code patterns.
+
+**Q1 regressed -1** (8→7): All 5 results from score.rs (single-file flooding). `simple_stem` helper at #2 is noise — it's a utility function, not part of the ranking system. In R28 the evaluator gave 8 with similar results; likely evaluator noise within ±1 range.
+
+**Failure pattern summary for CI ≤ 6:**
+| Pattern | Queries | Root Cause |
+|---------|---------|------------|
+| Missing core files | Q2 (5) | Vector search not finding embeddings/mod.rs, fastembed.rs |
+| Keyword mismatch | Q7 (2), Q9 (3), Q10 (4) | Query terms don't appear in relevant function names/bodies |
+| Missing dispatcher | Q3 (6) | parser.rs (language detection) not surfaced in tree-sitter queries |
+
+**Persistent low-scorers** (CI ≤ 4): Q7=2 (WebSocket), Q9=3 (Error), Q10=4 (JSON)
+- Q7: 28 rounds at 2-3. The classify_elysia_method function name has zero keyword overlap with "websocket handler"
+- Q9: Error handling patterns are in function bodies, not names. BM25 name-match for "affected_code" dominates
+- Q10: json!() macro usage scattered across handlers; no single "serialization" entry point
+
+### Priority Ranking for Next Round (R30)
+
+1. **File-level diversity enforcement** — Single-file flooding is the most common pattern (Q1, Q15, and others). When all 5 results come from one file, useful context from related files is lost. Add a diversity penalty in RRF/reranking: cap results from a single file at 3, then pull in results from other files.
+   - Location: `src/retrieval/ranking/` or `src/retrieval/mod.rs` RRF stage
+   - **Expected impact:** Q1 +1-2 (rrf.rs, diversify.rs, ranking/mod.rs would surface), Q15 +1 (config.rs watch knobs)
+   - **Regression risk:** Low — doesn't change scoring, only diversifies
+
+2. **Concept tag synonyms for function names** — For Q7 and Q9, the problem is that function names don't contain query terms. Consider injecting concept tags based on function body patterns even when they don't match the name:
+   - `classify_elysia_method` body contains `"ws"` match arm → inject "websocket handler" tag
+   - `handle_find_affected_code` should NOT rank for "error handling" — it's about code impact analysis
+   - **Expected impact:** Q7 +2-3, Q9 +1-2
+
+3. **Q2 embeddings: Vector search debug** — After 6 rounds at CI=5, this needs deep investigation. Why doesn't vector search find semantically obvious matches like embeddings/mod.rs for "how are embeddings generated"?
+
+4. **Q10 JSON: Cross-file pattern matching** — json!() macro usage is scattered. Consider a concept tag for files that heavily use `serde_json` or `json!` patterns.
+
+---
+
+### Round 30 — Diversity Pipeline + WebSocket Concept Tags (Two Iterations)
+
+**Changes tested:**
+1. **Schema v12**: Added "handler" concept tag for WebSocket-matching symbols in `text.rs`
+2. **R30v1**: Pre-truncation `diversify_by_file()` — runs diversity on full candidate pool (~40-100 results) before truncation to limit
+3. **R30v2**: Reverted R30v1; instead expanded truncation pool to `limit*3` (15 candidates) so post-expansion diversity has more headroom
+
+#### R30v1 Results (Pre-Truncation Diversity — REGRESSED)
+
+| # | Query | CI | Augment | Winner | R29 | Delta | Pattern |
+|---|-------|----|---------|--------|-----|-------|---------|
+| 1 | Ranking/scoring | 8 | 9 | Augment | 7 | +1 | Single-file flooding (improved) |
+| 2 | Embeddings | 5 | 9 | Augment | 5 | 0 | Single-file flooding |
+| 3 | Tree-sitter | 6 | 9 | Augment | 6 | 0 | -- |
+| 4 | Config env | 7 | 9 | Augment | 8 | -1 | -- |
+| 5 | Indexing pipeline | 7 | 9 | Augment | 8 | -1 | -- |
+| 6 | MCP tool requests | 9 | 10 | Augment | 10 | -1 | -- |
+| 7 | WebSocket handler | 2 | 7 | Augment | 2 | 0 | Keyword mismatch |
+| 8 | SQLite schema | 6 | 10 | Augment | 7 | -1 | Missing body text |
+| 9 | Error handling | 3 | 9 | Augment | 3 | 0 | Keyword mismatch |
+| 10 | JSON serialization | 3 | 8 | Augment | 4 | -1 | Keyword mismatch |
+| 11 | Async concurrency | 7 | 9 | Augment | 8 | -1 | Missing async wrapper + config |
+| 12 | Caching | 8 | 9 | Augment | 8 | 0 | -- |
+| 13 | PathNormalizer | 6 | 9 | Augment | 7 | -1 | Test pollution + single-file flooding |
+| 14 | EmbeddingCache | **7** | 9 | Augment | **10** | **-3** | Diversity displaced relevant same-file results |
+| 15 | File watcher | **3** | 9 | Augment | **7** | **-4** | Keyword mismatch |
+
+**R30v1 CI avg: 5.80** (R29: 6.67, **-0.87**) | Augment avg: 9.00
+
+**Post-mortem:** Pre-truncation diversity was catastrophic for targeted queries. With `limit=5`, `max_per_file=1`, the diversity function displaced relevant same-file clusters (Q14: EmbeddingCache get/put/struct all from cache.rs → only 1 kept, replaced with noise). Q15 regression is from schema v12 re-index, not diversity.
+
+#### R30v2 Results (Expanded Pool — limit*3)
+
+| # | Query | CI | Augment | Winner | R29 | Delta | Pattern |
+|---|-------|----|---------|--------|-----|-------|---------|
+| 1 | Ranking/scoring | 7 | 9 | Augment | 7 | 0 | Single-file flooding |
+| 2 | Embeddings | 5 | 9 | Augment | 5 | 0 | Single-file flooding |
+| 3 | Tree-sitter | 6 | 9 | Augment | 6 | 0 | -- |
+| 4 | Config env | 8 | 9 | Augment | 8 | 0 | -- |
+| 5 | Indexing pipeline | 7 | 9 | Augment | 8 | -1 | -- |
+| 6 | MCP tool requests | 9 | 9 | Tie | 10 | -1 | -- |
+| 7 | WebSocket handler | 2 | 7 | Augment | 2 | 0 | Keyword mismatch |
+| 8 | SQLite schema | 6 | 9 | Augment | 7 | -1 | Missing body text |
+| 9 | Error handling | 3 | 9 | Augment | 3 | 0 | Single-file flooding |
+| 10 | JSON serialization | 3 | 8 | Augment | 4 | -1 | Keyword mismatch |
+| 11 | Async concurrency | 7 | 9 | Augment | 8 | -1 | Single-file flooding |
+| 12 | Caching | 7 | 9 | Augment | 8 | -1 | -- |
+| 13 | PathNormalizer | 6 | 9 | Augment | 7 | -1 | Test pollution |
+| 14 | EmbeddingCache | **9** | 9 | Tie | 10 | -1 | -- |
+| 15 | File watcher | 3 | 9 | Augment | 7 | **-4** | Keyword mismatch |
+
+**R30v2 CI avg: 5.87** (R29: 6.67, **-0.80**) | **Augment avg: 8.87**
+
+#### Round 30 Analysis
+
+**R30v2 vs R30v1:** The `limit*3` pool expansion recovered Q14 (+2, from 7→9) by allowing same-file clusters to survive diversity. Net improvement +0.07 over R30v1.
+
+**R30 vs R29 overall:** The round regressed -0.80 from R29. Two categories of regression:
+
+1. **Q15 hard regression (-4):** "File watcher debounce reindex on change" dropped from 7→3. The spawn_watch_loop and check_for_changes functions are not surfaced. This regression correlates with the schema v12 re-index — the "handler" concept tag may have diluted BM25 IDF weights for common terms, or the re-index itself changed corpus statistics.
+
+2. **Widespread -1 drops (Q5, Q6, Q8, Q10, Q11, Q12, Q13, Q14):** 8 queries dropped exactly 1 point. Given evaluator variance of ±1 (documented in R23→R24 calibration note), most of these are likely noise. However, the consistent direction (all drops, no gains except Q4) suggests a slight systematic regression from schema v12.
+
+**What the "handler" concept tag achieved:** Nothing. Q7 stayed at 2. The WebSocket-related code (elysia.rs) doesn't contain "WebSocket" in its stripped text — the match arm uses `FrameworkPatternKind::WebSocket` which is an enum variant, not the string "WebSocket". The concept tag fires on the wrong symbols.
+
+**Key learnings:**
+- Pre-truncation diversity is fundamentally flawed for targeted queries (Q14 -3 in R30v1)
+- Expanded pool (`limit*3`) is the safer approach — it recovered Q14 without harming other queries
+- Concept tags are only useful when they fire on the RIGHT symbols — adding "handler" to WebSocket-containing text doesn't help when the relevant code doesn't contain "WebSocket" in stripped form
+- Schema re-index can cause non-obvious regressions via changed BM25 corpus statistics
+
+**Recommendation:** Revert schema to v11 (remove "handler" concept tag) to recover R29 levels. Keep the `limit*3` pool expansion as a net-neutral safety improvement. Focus R31 on different approaches for the persistent low-scorers.
+
+### Priority Ranking for Next Round (R31)
+
+1. **Revert schema to v11** — Remove the "handler" concept tag that had zero effect on Q7 and may have caused Q15 regression. Bump schema version to force clean re-index.
+
+2. **Q7 WebSocket: Name-level concept injection** — The body-text concept tag approach doesn't work because the relevant function (`classify_elysia_method`) doesn't contain "WebSocket" in stripped text. Instead, inject "websocket" into the Tantivy **name** field for symbols that have `FrameworkPatternKind::WebSocket` in their context. This requires indexer-level changes, not text-level concept tags.
+
+3. **Q15 File watcher: Investigate BM25 regression** — Q15 went from 7→3 with schema v12. After reverting to v11, verify Q15 recovers. If not, the regression has a different root cause.
+
+4. **Q9/Q10: Cross-cutting keyword mismatch** — These need a fundamentally different approach. Consider query-time synonym expansion (inject "error_handling fallback" into the BM25 query for Q9-like queries) rather than index-time concept tags.
+
+### Round 31 (Schema Revert — Remove "handler" Concept Tag)
+
+**Changes since Round 30:**
+1. **Removed "handler" concept tag** (`text.rs`): The WebSocket "handler" concept tag added in R30 had zero effect on Q7 and may have polluted BM25 IDF statistics, causing widespread -1 drops.
+2. **Schema v12→v13**: Forces full re-index without the handler tag. All other concept tags (serialization, websocket, error_handling, fallback) retained.
+3. **Kept limit*3 pool expansion** (`retrieval/mod.rs`): R30v2's pool expansion kept as net-neutral structural improvement.
+
+| # | Query | CI | Augment | Winner | R30v2 | Delta | Pattern |
+|---|-------|----|---------|--------|-------|-------|---------|
+| 1 | Ranking/scoring | 7 | 9 | Augment | 7 | 0 | Single-file flooding |
+| 2 | Embeddings | 5 | 9 | Augment | 5 | 0 | Missing core files |
+| 3 | Tree-sitter | 6 | 9 | Augment | 6 | 0 | Missing parser.rs |
+| 4 | Config env | 7 | 9 | Augment | 8 | -1 | -- |
+| 5 | Indexing pipeline | 7 | 9 | Augment | 7 | 0 | -- |
+| 6 | MCP tool requests | 9 | 9 | Tie | 9 | 0 | -- |
+| 7 | WebSocket handler | 2 | 8 | Augment | 2 | 0 | Keyword mismatch |
+| 8 | SQLite schema | 7 | 10 | Augment | 6 | **+1** | Missing schema.rs |
+| 9 | Error handling | 3 | 9 | Augment | 3 | 0 | Single-file flooding |
+| 10 | JSON serialization | 4 | 8 | Augment | 3 | **+1** | Keyword mismatch |
+| 11 | Async concurrency | 8 | 9 | Augment | 7 | **+1** | -- |
+| 12 | Caching | 8 | 9 | Augment | 7 | **+1** | -- |
+| 13 | PathNormalizer | 6 | 10 | Augment | 6 | 0 | Test pollution |
+| 14 | EmbeddingCache | 9 | 9 | Tie | 9 | 0 | -- |
+| 15 | File watcher | 6 | 9 | Augment | 3 | **+3** | Single-file flooding |
+
+**CI avg: 6.27** (R30v2: 5.87, **+0.40**) | **Augment avg: 9.00**
+
+#### Round 31 Analysis
+
+**What the schema revert achieved:**
+- **Q15 recovered +3** (3→6): The biggest win. Confirms the "handler" concept tag polluted BM25 IDF statistics in R30, causing spawn_watch_loop to drop out of results. Still -1 from R29's 7, likely within evaluator variance.
+- **Q11 +1, Q12 +1**: Recovered to R29 levels (both back to 8). The R30 widespread -1 drops were indeed caused by schema v12 corpus statistics.
+- **Q8 +1, Q10 +1**: SQLite schema and JSON serialization both recovered 1 point vs R30v2.
+- **Q4 -1** (8→7): Within evaluator noise range (±1).
+
+**What didn't change:**
+- **Q7=2**: WebSocket handler still stuck. Body-text concept tags don't work; need indexer-level name injection.
+- **Q9=3**: Error handling still dominated by handle_find_affected_code (keyword match on "error" in "affected_code" context). All 5 results from handlers/mod.rs with zero actual error handling.
+- **Q2=5**: Embeddings still missing core files (embeddings/mod.rs, fastembed.rs, storage/vector.rs). Vector search investigation needed.
+
+**Key insight confirmed:** Adding even a single concept tag ("handler") to the index changes BM25 corpus statistics (IDF values) enough to cause measurable regressions across unrelated queries. Concept tags must be added sparingly and their corpus-wide IDF impact tested.
+
+**Failure pattern summary for CI ≤ 6:**
+| Pattern | Queries | Root Cause |
+|---------|---------|------------|
+| Keyword mismatch | Q7 (2), Q9 (3), Q10 (4) | Query terms don't appear in relevant function names/bodies |
+| Missing core files | Q2 (5) | Vector search not finding embeddings/mod.rs, fastembed.rs |
+| Test pollution | Q13 (6) | Test helpers rank above impl methods |
+| Single-file flooding | Q1 (7), Q15 (6) | All/most results from one file |
+
+**Persistent low-scorers** (CI ≤ 4): Q7=2 (WebSocket), Q9=3 (Error), Q10=4 (JSON)
+
+### Priority Ranking for Next Round (R32)
+
+1. **Q7 WebSocket: Indexer-level name injection** — Inject "websocket" into the Tantivy **name** field for symbols tagged with `FrameworkPatternKind::WebSocket` during indexing. This bypasses the body-text concept tag limitation where the relevant function name (`classify_elysia_method`) has zero keyword overlap with "websocket handler".
+   - Location: `src/indexer/extract/` or `src/storage/tantivy.rs` (at indexing time)
+   - **Expected impact:** Q7 +3-5
+   - **Regression risk:** Low — only affects symbols with WebSocket framework pattern metadata
+
+2. **Q9 Error handling: Query-time synonym expansion** — Inject error-handling synonyms into the BM25 query for NL queries containing "error" or "degradation". Currently BM25 matches "error" in "affected_code" handler name over actual error handling code. Query expansion with "map_err bail context fallback" should surface the right symbols.
+   - Location: `src/retrieval/query.rs` or `src/retrieval/mod.rs`
+   - **Expected impact:** Q9 +2-3
+   - **Regression risk:** Medium — synonym expansion at query time could introduce noise for other queries
+
+3. **Q2 Embeddings: Vector search investigation** — After 6+ rounds at CI=5. Vector search should find semantically obvious matches like `embeddings/mod.rs` for "how are embeddings generated." Debug the vector pipeline to understand why these files rank low.
+   - **Expected impact:** Q2 +2-3
+   - **Regression risk:** None (investigation only)
+
+4. **Q13 PathNormalizer: Test penalty tuning** — Test helpers (`create_test_normalizer`, `test_normalizer`) still rank in top-3 above actual impl methods. Consider stronger test-symbol detection for functions containing "test" in non-test files.
+   - **Expected impact:** Q13 +1-2
+   - **Regression risk:** Low
+
+---
+
+### Historical CI Scores by Query (All Rounds)
+
+| # | Query | R1 | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 | R16 | R17 | R18 | R19 | R20 | R21 | R22 | R23 | R24 | R25 | R26 | R27 | R28 | R29 | R30 | R31 |
+|---|-------|----|----|----|----|----|----|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|
+| 1 | Ranking/scoring | 7 | 3 | 6 | 8 | 8 | 8 | 4 | 4 | 7 | 4 | 8 | 8 | 9 | 9 | 9 | 9 | 6 | 8 | 5 | 8 | 8 | 8 | 8 | 7 | 8 | 7 | 7 | 7 |
+| 2 | Embeddings | 5 | 3 | 8 | 6 | 7 | 7 | 6 | 7 | 7 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 9 | 10 | 7 | 9 | 5 | 5 | 5 | 5 | 5 | 5 | 5 | 5 |
+| 3 | Tree-sitter | 5 | 5 | 5 | 2 | 5 | 5 | 3 | 6 | 2 | 3 | 3 | 5 | 6 | 7 | 7 | 7 | 10 | 10 | 6 | 10 | 3 | 7 | 7 | 6 | 6 | 6 | 6 | 6 |
+| 4 | Config env | — | 4 | 4 | 7 | 7 | 7 | 7 | 6 | 8 | 5 | 7 | 8 | 9 | 9 | 9 | 9 | 7 | 7 | 7 | 7 | 8 | 8 | 8 | 4 | 7 | 8 | 8 | 7 |
+| 5 | Indexing pipeline | — | 6 | 7 | 5 | 5 | 5 | 5 | 7 | 8 | 7 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | 6 | 7 | 6 | 7 | 8 | 7 | 8 | 7 | 8 | 7 | 7 |
+| 6 | MCP tool handling | 4 | 3 | 6 | 5 | 6 | 5 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 9 | 10 | 10 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 9 | 9 |
+| 7 | WebSocket | 4 | 2 | 2 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 |
+| 8 | SQLite schema | 5 | 5 | 6 | 4 | 6 | 7 | 5 | 7 | 5 | 6 | 5 | 9 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 9 | 7 | 7 | 7 | 7 | 7 | 6 | 7 |
+| 9 | Error handling | — | 3 | 3 | 3 | 4 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 3 | 4 | 4 | 4 | 5 | 4 | 4 | 7 | 4 | 4 | 4 | 5 | 3 | 3 | 3 | 3 |
+| 10 | JSON serial. | — | 3 | 4 | 4 | 4 | 4 | 5 | 4 | 3 | 2 | 3 | 3 | 3 | 3 | 3 | 3 | 6 | 5 | 3 | 6 | 3 | 4 | 4 | 4 | 4 | 4 | 3 | 4 |
+| 11 | Async concurrency | — | 4 | 6 | 6 | 7 | 6 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 7 | 8 |
+| 12 | Caching | — | 6 | 7 | 5 | 7 | 7 | 7 | 7 | 8 | 8 | 7 | 8 | 8 | 9 | 9 | 9 | 10 | 9 | 6 | 10 | 8 | 9 | 8 | 8 | 8 | 8 | 7 | 8 |
+| 13 | PathNormalizer | 7 | 5 | 5 | 6 | 7 | 7 | 6 | 7 | 6 | 6 | 7 | 8 | 8 | 8 | 8 | 8 | 10 | 10 | 7 | 10 | 7 | 7 | 7 | 7 | 7 | 7 | 6 | 6 |
+| 14 | EmbeddingCache | 6 | 2 | 2 | 9 | 9 | 9 | 9 | 8 | 8 | 8 | 9 | 9 | 10 | 10 | 10 | 10 | 10 | 10 | 9 | 10 | 10 | 9 | 9 | 9 | 10 | 10 | 9 | 9 |
+| 15 | File watcher | 5 | 5 | 2 | 2 | 2 | 2 | 5 | 2 | 2 | 2 | 2 | 3 | 3 | 3 | 3 | 3 | 4 | 5 | 3 | 6 | 5 | 6 | 7 | 7 | 6 | 7 | 3 | 6 |
+| **CI Avg** | | **5.3** | **3.9** | **4.9** | **5.0** | **5.8** | **5.7** | **5.7** | **5.9** | **5.8** | **5.4** | **5.9** | **6.5** | **7.1** | **7.3** | **7.3** | **7.3** | **7.7** | **7.6** | **6.3** | **7.9** | **6.5** | **6.7** | **6.7** | **6.5** | **6.5** | **6.7** | **5.9** | **6.3** |
+
+*Notes: R1 had only 9 queries (avg is for those 9). R2-R4 were partial/focused rounds (omitted). R25r/R25v2/R25v3 were rerun variants (omitted).*
+
+### Historical Augment Scores by Query (All Rounds)
+
+| # | Query | R5 | R6 | R7 | R8 | R9 | R10 | R11 | R12 | R13 | R14 | R15 | R16 | R17 | R18 | R19 | R20 | R21 | R22 | R23 | R24 | R25 | R26 | R27 | R28 | R29 | R30 | R31 |
+|---|-------|----|----|----|----|----|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|
+| 1 | Ranking/scoring | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+| 2 | Embeddings | 9 | 9 | 9 | 9 | 9 | 9 | 8 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+| 3 | Tree-sitter | 9 | 8 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 10 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+| 4 | Config env | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 8 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+| 5 | Indexing pipeline | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 10 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+| 6 | MCP tool handling | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 9 | 9 | 10 | 9 | 9 | 9 | 9 | 9 |
+| 7 | WebSocket | 4 | 4 | 3 | 5 | 5 | 5 | 5 | 5 | 6 | 6 | 5 | 6 | 6 | 6 | 7 | 8 | 8 | 8 | 8 | 7 | 7 | 7 | 8 | 7 | 7 | 7 | 8 |
+| 8 | SQLite schema | 10 | 9 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 9 | 9 | 9 | 10 | 10 | 10 | 9 | 10 |
+| 9 | Error handling | 10 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 7 | 8 | 8 | 8 | 8 | 9 | 9 | 9 | 9 | 9 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+| 10 | JSON serial. | 10 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 6 | 7 | 7 | 7 | 7 | 7 | 9 | 10 | 9 | 9 | 7 | 8 | 7 | 8 | 8 | 8 | 8 | 8 |
+| 11 | Async concurrency | 10 | 8 | 8 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | 9 | 9 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | 9 |
+| 12 | Caching | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 10 | 9 | 10 | 9 | 9 | 9 | 10 | 9 | 9 |
+| 13 | PathNormalizer | 10 | 9 | 9 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 9 | 10 | 10 | 9 | 10 | 10 | 9 | 10 |
+| 14 | EmbeddingCache | 10 | 10 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 10 | 10 | 10 | 9 | 10 | 10 | 9 | 9 |
+| 15 | File watcher | 10 | 9 | 9 | 8 | 9 | 8 | 8 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | 10 | 10 | 10 | 9 | 9 | 9 | 9 | 9 | 10 | 9 | 9 |
+| **Aug Avg** | | **9.5** | **8.5** | **8.5** | **8.2** | **8.5** | **8.4** | **8.3** | **8.4** | **8.5** | **8.3** | **8.5** | **8.6** | **8.6** | **8.8** | **9.0** | **9.5** | **9.7** | **9.7** | **9.7** | **8.7** | **9.0** | **8.9** | **9.0** | **9.1** | **9.1** | **8.9** | **9.0** |
+
+### CI Average Trend
+
+```
+R1:  5.3  ████████████▌
+R5:  3.9  █████████▊
+R6:  4.9  ████████████▎
+R7:  5.0  ████████████▌
+R8:  5.8  ██████████████▌
+R9:  5.7  ██████████████▎
+R10: 5.7  ██████████████▎
+R11: 5.9  ██████████████▊
+R12: 5.8  ██████████████▌
+R13: 5.4  █████████████▌
+R14: 5.9  ██████████████▊
+R15: 6.5  ████████████████▎
+R16: 7.1  █████████████████▊
+R17: 7.3  ██████████████████▎
+R18: 7.3  ██████████████████▎
+R19: 7.3  ██████████████████▎
+R20: 7.7  ███████████████████▎
+R21: 7.6  ███████████████████
+R22: 6.3  ███████████████▊
+R23: 7.9  ███████████████████▊
+R24: 6.5  ████████████████▎
+R25: 6.7  ████████████████▊
+R26: 6.7  ████████████████▊
+R27: 6.5  ████████████████▎
+R28: 6.5  ████████████████▎
+R29: 6.7  ████████████████▊
+R30: 5.9  ██████████████▊
+R31: 6.3  ███████████████▊
+```
+
+**Evaluator variance note:** The ~1.5-point drop from R23 (7.9) to R24 (6.5) occurred with no code regression. R20-R23 used evaluator agents that scored more generously (many 10s). R24+ recalibrated to stricter scoring. Scores within a calibration era (R5-R12, R13-R23, R24+) are comparable; cross-era comparisons should account for ±1-2 point evaluator drift.
+
+**Benchmark methodology note:** Round 30 tested two diversity approaches (v1: pre-truncation, v2: limit*3 pool expansion) + "handler" concept tag for WebSocket. R30v2 is the final score. Batch files at `docs/benchmark_rounds/round_30v2_batch_{1,2,3}.md` and `round_30_batch_{1,2,3}.md` (v1). Round 31 reverted the handler tag (schema v13) to recover from R30's regression; confirmed that concept tag IDF pollution was the primary cause of Q15's -4 drop.

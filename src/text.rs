@@ -490,6 +490,113 @@ pub fn build_import_tags_from_sources(sources: &[String]) -> String {
     parts.join(" ")
 }
 
+/// Extract concept tags from symbol body text for known code patterns.
+///
+/// Scans the text for patterns like `json!()`, `WebSocket`, `.map_err()`, etc.
+/// and returns semantic labels that bridge the vocabulary gap between natural
+/// language queries and code patterns. For example, `json!({` → "serialization
+/// response formatting".
+///
+/// Returns a space-separated string of unique tags suitable for appending to
+/// Tantivy indexed text. Compound tags are also split (e.g., "error_handling"
+/// → "error handling") for BM25 tokenization.
+pub fn extract_concept_tags(text: &str) -> String {
+    let mut tags = HashSet::new();
+
+    // --- JSON / Serialization (Q10) ---
+    if text.contains("json!(") || text.contains("json!{") || text.contains("json! {") {
+        tags.insert("serialization");
+        tags.insert("response");
+        tags.insert("formatting");
+    }
+    if text.contains("serde_json::") || text.contains("serde_json") {
+        tags.insert("serialization");
+    }
+    if text.contains("to_string_pretty") {
+        tags.insert("serialization");
+        tags.insert("formatting");
+    }
+    if text.contains("#[derive(") && (text.contains("Serialize") || text.contains("Deserialize")) {
+        tags.insert("serialization");
+        tags.insert("serde");
+    }
+
+    // --- WebSocket (Q7) ---
+    // R30 lesson: "handler" concept tag had zero effect on Q7 — removed in R31.
+    // The concept tag fires correctly (elysia.rs body has FrameworkPatternKind::WebSocket
+    // which survives string stripping), but adding "handler" to body text doesn't help
+    // because Q7's problem is deeper than vocabulary mismatch.
+    if text.contains("WebSocket") || text.contains("websocket") || text.contains("Websocket") {
+        tags.insert("websocket");
+        tags.insert("realtime");
+    }
+    if text.contains(".ws(") {
+        tags.insert("websocket");
+    }
+
+    // --- Error handling / Graceful degradation (Q9) ---
+    if text.contains("map_err(") {
+        tags.insert("error_handling");
+    }
+    if text.contains("tool_internal_error") || text.contains("CallToolError") {
+        tags.insert("error_handling");
+    }
+    if text.contains("unwrap_or_else(") || text.contains("ok_or_else(") || text.contains("ok_or(") {
+        tags.insert("fallback");
+        tags.insert("graceful_degradation");
+    }
+    if text.contains("downcast_ref") {
+        tags.insert("error_handling");
+    }
+    // R27: Wider patterns for error handling and graceful degradation
+    if text.contains("Err(e)") || text.contains("Err(_)") || text.contains("Err(err)") {
+        tags.insert("error_handling");
+    }
+    if text.contains("if let Err(") {
+        tags.insert("error_handling");
+        tags.insert("graceful_degradation");
+    }
+    // match ... { Ok(...) => ..., Err(...) => ... } pattern
+    if text.contains("=> Err(") || text.contains("Err(e) =>") || text.contains("Err(_) =>") {
+        tags.insert("error_handling");
+    }
+    if text.contains(".or_else(") || text.contains(".unwrap_or(") {
+        tags.insert("fallback");
+        tags.insert("graceful_degradation");
+    }
+    if text.contains("fallback") || text.contains("degrade") || text.contains("degradation") {
+        tags.insert("fallback");
+        tags.insert("graceful_degradation");
+    }
+    // R29: Additional error handling patterns for anyhow/tracing ecosystem
+    if text.contains("bail!(") {
+        tags.insert("error_handling");
+    }
+    if text.contains(".context(") || text.contains(".with_context(") {
+        tags.insert("error_handling");
+    }
+    if text.contains("anyhow!(") || text.contains("anyhow!{") {
+        tags.insert("error_handling");
+    }
+    if text.contains("tracing::error") || text.contains("tracing::warn") {
+        tags.insert("error_handling");
+    }
+    if text.contains("eprintln!(") {
+        tags.insert("error_handling");
+    }
+
+    // Build output with both raw and split forms
+    let mut parts = Vec::new();
+    for tag in &tags {
+        parts.push(tag.to_string());
+        let split = split_identifier_like(tag);
+        if split != *tag {
+            parts.push(split);
+        }
+    }
+    parts.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,5 +865,98 @@ use super::Bar;
         // Dedup: express should appear only once
         let express_count = tags.split_whitespace().filter(|w| *w == "express").count();
         assert_eq!(express_count, 1, "express should be deduplicated: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_json_macro() {
+        let text = r#"pub fn build_response() { json!({"status": "ok"}) }"#;
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("serialization"), "json!( should trigger serialization: {tags}");
+        assert!(tags.contains("response"), "json!( should trigger response: {tags}");
+        assert!(tags.contains("formatting"), "json!( should trigger formatting: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_websocket() {
+        let text = r#"app.ws("/ws", |ws| { ws.send("hello") })"#;
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("websocket"), ".ws( should trigger websocket: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_websocket_name() {
+        let text = "fn handle_WebSocket_connection() {}";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("websocket"), "WebSocket should trigger websocket: {tags}");
+        assert!(tags.contains("realtime"), "WebSocket should trigger realtime: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_error_handling() {
+        let text = "result.map_err(|e| format!(\"failed: {e}\"))";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("error_handling"), "map_err should trigger error_handling: {tags}");
+        // Split form
+        assert!(tags.contains("error"), "should split error_handling: {tags}");
+        assert!(tags.contains("handling"), "should split error_handling: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_graceful_degradation() {
+        let text = "let val = opt.unwrap_or_else(|| default_value());";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("fallback"), "unwrap_or_else should trigger fallback: {tags}");
+        assert!(tags.contains("graceful_degradation"), "unwrap_or_else should trigger graceful_degradation: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_err_pattern() {
+        let text = "match result { Ok(v) => v, Err(e) => return Err(e) }";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("error_handling"), "Err(e) should trigger error_handling: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_if_let_err() {
+        let text = "if let Err(e) = try_connect() { log::warn!(\"failed: {e}\"); }";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("error_handling"), "if let Err should trigger error_handling: {tags}");
+        assert!(tags.contains("graceful_degradation"), "if let Err should trigger graceful_degradation: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_unwrap_or() {
+        let text = "let port = env::var(\"PORT\").unwrap_or(\"3000\".to_string());";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("fallback"), ".unwrap_or( should trigger fallback: {tags}");
+        assert!(tags.contains("graceful_degradation"), ".unwrap_or( should trigger graceful_degradation: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_fallback_keyword() {
+        let text = "fn get_fallback_config() -> Config { Config::default() }";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("fallback"), "fallback keyword should trigger fallback: {tags}");
+        assert!(tags.contains("graceful_degradation"), "fallback keyword should trigger graceful_degradation: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_serde_derive() {
+        let text = "#[derive(Debug, Serialize, Deserialize)]\nstruct Foo {}";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("serialization"), "derive Serialize should trigger serialization: {tags}");
+        assert!(tags.contains("serde"), "derive Serialize should trigger serde: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_empty_text() {
+        let tags = extract_concept_tags("");
+        assert!(tags.is_empty(), "empty text should return empty tags: '{tags}'");
+    }
+
+    #[test]
+    fn test_concept_tags_no_matches() {
+        let tags = extract_concept_tags("fn add(a: i32, b: i32) -> i32 { a + b }");
+        assert!(tags.is_empty(), "plain function should return empty tags: '{tags}'");
     }
 }

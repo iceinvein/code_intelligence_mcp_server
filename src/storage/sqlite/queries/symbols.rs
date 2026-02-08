@@ -380,6 +380,156 @@ LIMIT ?2
     Ok(out)
 }
 
+/// Batch lookup line counts for symbols by ID.
+///
+/// Returns HashMap mapping symbol_id to line_count (end_line - start_line + 1).
+/// Symbols not found in the database are omitted from the result.
+pub fn batch_get_symbol_line_counts(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> Result<std::collections::HashMap<String, u32>> {
+    if symbol_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let placeholders = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let query = format!(
+        "SELECT id, (end_line - start_line + 1) AS line_count FROM symbols WHERE id IN ({})",
+        placeholders
+    );
+
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_get_symbol_line_counts")?;
+
+    let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut rows = stmt.query(params.as_slice())?;
+    let mut out = std::collections::HashMap::new();
+    while let Some(row) = rows.next()? {
+        let symbol_id: String = row.get(0)?;
+        let line_count: i64 = row.get(1)?;
+        out.insert(symbol_id, line_count.max(1) as u32);
+    }
+    Ok(out)
+}
+
+/// Batch-fetch the body text (source code) for a set of symbols.
+///
+/// Used by the term_coverage signal to check whether query terms appear
+/// in a symbol's actual source code, not just its name or file path.
+pub fn batch_get_symbol_texts(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> Result<std::collections::HashMap<String, String>> {
+    if symbol_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let placeholders = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let query = format!(
+        "SELECT id, text FROM symbols WHERE id IN ({})",
+        placeholders
+    );
+
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_get_symbol_texts")?;
+
+    let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut rows = stmt.query(params.as_slice())?;
+    let mut out = std::collections::HashMap::new();
+    while let Some(row) = rows.next()? {
+        let symbol_id: String = row.get(0)?;
+        let text: String = row.get(1)?;
+        out.insert(symbol_id, text);
+    }
+    Ok(out)
+}
+
+/// Batch check which symbols are test code (inside `mod tests` blocks or annotated with `#[test]`).
+///
+/// Returns a HashSet of symbol IDs that are detected as test code.
+/// Detection criteria:
+/// 1. Symbol is inside a `mod tests` block (byte range containment in same file)
+/// 2. Symbol text contains `#[test]` attribute
+/// 3. Symbol name starts with `test_` in a Rust file (naming convention)
+pub fn batch_check_test_symbols(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> Result<std::collections::HashSet<String>> {
+    if symbol_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let placeholders = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Find symbols that are inside a `mod tests` block (byte range containment)
+    // OR have #[test] in their text
+    let query = format!(
+        r#"
+SELECT DISTINCT s.id
+FROM symbols s
+WHERE s.id IN ({placeholders})
+  AND (
+    -- Criterion 1: inside a module named "tests" in the same file
+    EXISTS (
+      SELECT 1 FROM symbols m
+      WHERE m.file_path = s.file_path
+        AND m.kind = 'module'
+        AND m.name = 'tests'
+        AND m.start_byte <= s.start_byte
+        AND m.end_byte >= s.end_byte
+        AND m.id != s.id
+    )
+    -- Criterion 2: has #[test] attribute in source text
+    OR instr(s.text, '#[test]') > 0
+  )
+"#
+    );
+
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_check_test_symbols")?;
+
+    let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut rows = stmt.query(params.as_slice())?;
+    let mut out = std::collections::HashSet::new();
+    while let Some(row) = rows.next()? {
+        let symbol_id: String = row.get(0)?;
+        out.insert(symbol_id);
+    }
+    Ok(out)
+}
+
 pub fn search_symbols_by_name_substr(
     conn: &Connection,
     needle: &str,

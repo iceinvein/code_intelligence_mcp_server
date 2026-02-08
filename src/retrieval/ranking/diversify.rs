@@ -4,21 +4,26 @@ use std::collections::HashMap;
 
 /// Diversify results by file path to prevent any single file from dominating results.
 ///
-/// Caps the number of results from any single file to `max_per_file` in the
-/// primary pass. Deferred hits get a relaxed cap of `2 * max_per_file` total
-/// (primary + deferred combined) to prevent single-file flooding even in the
-/// overflow slots.
+/// Three-pass strategy:
+/// 1. **Primary pass:** Up to `max_per_file` results per file (diverse selection)
+/// 2. **Overflow pass:** Up to `max_per_file + 1` total per file (controlled relaxation)
+/// 3. **Backfill pass:** Fill remaining slots ignoring caps (never return fewer than available)
+///
+/// This ensures diversity is *preferred* but slots are never wasted when the
+/// underlying search legitimately returns results concentrated in one file.
 pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     if hits.is_empty() {
         return hits;
     }
 
-    let max_per_file = (limit / 5).max(2);
-    let total_cap_per_file = max_per_file * 2; // absolute cap across primary + deferred
+    let max_per_file = (limit / 5).max(1);
+    let total_cap_per_file = max_per_file + 1;
     let mut out = Vec::with_capacity(limit.min(hits.len()));
     let mut deferred = Vec::new();
+    let mut backfill = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
 
+    // Pass 1: diverse selection (up to max_per_file per file)
     for h in &hits {
         let n = counts.get(&h.file_path).copied().unwrap_or(0);
         if n < max_per_file {
@@ -29,6 +34,7 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
         }
     }
 
+    // Pass 2: controlled overflow (up to total_cap per file)
     for h in deferred {
         if out.len() >= limit {
             break;
@@ -37,7 +43,17 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
         if n < total_cap_per_file {
             *counts.entry(h.file_path.clone()).or_insert(0) += 1;
             out.push(h);
+        } else {
+            backfill.push(h);
         }
+    }
+
+    // Pass 3: backfill remaining slots (never waste a slot)
+    for h in backfill {
+        if out.len() >= limit {
+            break;
+        }
+        out.push(h);
     }
 
     out
@@ -85,6 +101,113 @@ pub fn diversify_by_cluster(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(id: &str, score: f32, file: &str) -> RankedHit {
+        RankedHit {
+            id: id.to_string(),
+            score,
+            name: id.to_string(),
+            kind: "function".to_string(),
+            file_path: file.to_string(),
+            exported: true,
+            language: "rust".to_string(),
+        }
+    }
+
+    #[test]
+    fn diversify_prefers_diverse_results_at_limit_5() {
+        // 4 from score.rs + 1 from rrf.rs, limit=5
+        // max_per_file=1, total_cap=2
+        // Pass 1: a1(score.rs), b1(rrf.rs) → 2 diverse
+        // Pass 2: a2(score.rs, count=1<2) → 1 overflow
+        // Pass 3: a3, a4 backfill → 2 more
+        // Total: 5 results, rrf.rs promoted above a2-a4 despite lower score
+        let hits = vec![
+            hit("a1", 10.0, "score.rs"),
+            hit("a2", 9.0, "score.rs"),
+            hit("a3", 8.0, "score.rs"),
+            hit("a4", 7.0, "score.rs"),
+            hit("b1", 6.0, "rrf.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 5, "Should return all 5 results");
+        // rrf.rs should be promoted into early results
+        assert!(result.iter().any(|h| h.file_path == "rrf.rs"));
+        // First 3 results should include rrf.rs (promoted by diversity)
+        let top3_files: Vec<&str> = result[..3].iter().map(|h| h.file_path.as_str()).collect();
+        assert!(top3_files.contains(&"rrf.rs"), "rrf.rs should be in top 3");
+    }
+
+    #[test]
+    fn diversify_backfills_when_single_file_dominates() {
+        // All 5 results from one file, limit=5
+        // max_per_file=1, total_cap=2
+        // Pass 1: a1 → 1 result
+        // Pass 2: a2 (count=1<2) → 1 overflow
+        // Pass 3: a3, a4, a5 backfill → 3 more
+        // Total: 5 results (never waste slots)
+        let hits = vec![
+            hit("a1", 10.0, "score.rs"),
+            hit("a2", 9.0, "score.rs"),
+            hit("a3", 8.0, "score.rs"),
+            hit("a4", 7.0, "score.rs"),
+            hit("a5", 6.0, "score.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 5, "Should return all 5 results via backfill");
+    }
+
+    #[test]
+    fn diversify_promotes_diverse_files_at_limit_10() {
+        // limit=10: max_per_file=2, total_cap=3
+        // Pass 1: 2 each from 4 files = 8 results
+        // Pass 2: a3 (overflow, count 2<3) = 9 results
+        // Pass 3: a4 backfill = 10 results
+        // Key: all 4 files represented in top 8 despite score.rs dominating by score
+        let hits = vec![
+            hit("a1", 10.0, "score.rs"),
+            hit("a2", 9.5, "score.rs"),
+            hit("a3", 9.0, "score.rs"),
+            hit("a4", 8.5, "score.rs"),
+            hit("b1", 8.0, "rrf.rs"),
+            hit("b2", 7.5, "rrf.rs"),
+            hit("c1", 7.0, "mod.rs"),
+            hit("c2", 6.5, "mod.rs"),
+            hit("d1", 6.0, "diversify.rs"),
+            hit("d2", 5.5, "diversify.rs"),
+        ];
+        let result = diversify_by_file(hits, 10);
+        assert_eq!(result.len(), 10, "Should return all 10 results");
+        // All 4 files should be represented
+        let unique_files: std::collections::HashSet<&str> =
+            result.iter().map(|h| h.file_path.as_str()).collect();
+        assert_eq!(unique_files.len(), 4, "All 4 files should be present");
+        // rrf.rs, mod.rs, diversify.rs should all appear in the first 8 (primary pass)
+        let top8_files: std::collections::HashSet<&str> =
+            result[..8].iter().map(|h| h.file_path.as_str()).collect();
+        assert!(top8_files.contains("rrf.rs"), "rrf.rs in primary pass");
+        assert!(top8_files.contains("mod.rs"), "mod.rs in primary pass");
+        assert!(top8_files.contains("diversify.rs"), "diversify.rs in primary pass");
+    }
+
+    #[test]
+    fn diversify_preserves_all_when_diverse() {
+        // All hits from different files — nothing should be dropped
+        let hits = vec![
+            hit("a", 10.0, "a.rs"),
+            hit("b", 9.0, "b.rs"),
+            hit("c", 8.0, "c.rs"),
+            hit("d", 7.0, "d.rs"),
+            hit("e", 6.0, "e.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 5);
+    }
 }
 
 /// Check if a kind represents a definition

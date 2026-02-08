@@ -254,6 +254,12 @@ pub fn normalize_and_expand_query(
         result = text_module::expand_acronyms(&result);
     }
 
+    // Step 4: Expand stems for NL queries.
+    // Code identifiers split into base forms during indexing (handle_search_code → "handle search code")
+    // but NL queries use derived forms ("handler", "watcher"). Stems bridge this gap.
+    // Also affects vector embeddings — stem tokens shift the semantic representation.
+    result = text_module::expand_stems(&result);
+
     result
 }
 
@@ -603,5 +609,62 @@ mod tests {
         // Ensure trimming works correctly
         let parts = decompose_query("  auth  and  database  ", 2);
         assert_eq!(parts, vec!["auth", "database"]);
+    }
+
+    #[test]
+    fn test_full_pipeline_websocket_query() {
+        // Q7: "How does the WebSocket handler work?"
+        // normalize splits WebSocket → "Web Socket"
+        // synonym: "socket" → adds "ws", "websocket"
+        // synonym: "handler" (is synonym of callback) → adds "callback"
+        let result = normalize_and_expand_query("How does the WebSocket handler work?", true, false);
+        assert!(result.contains("ws"), "Should expand socket→ws: {result}");
+    }
+
+    #[test]
+    fn test_full_pipeline_degradation_query() {
+        // Q9: "Error handling and graceful degradation"
+        // decompose splits into ["Error handling ...", "graceful degradation ..."]
+        // synonym: "error" → adds "exception failure err fault"
+        // synonym: "degradation" (is synonym of fallback) → adds "fallback"
+        let expanded = normalize_and_expand_query(
+            "Error handling and graceful degradation",
+            true,
+            false,
+        );
+        // The full expanded query should contain fallback
+        assert!(
+            expanded.contains("fallback"),
+            "Should add fallback from degradation: {expanded}"
+        );
+    }
+
+    #[test]
+    fn test_full_pipeline_serialization_query() {
+        // Q10: "JSON serialization and response formatting"
+        let expanded = normalize_and_expand_query(
+            "JSON serialization and response formatting",
+            true,
+            false,
+        );
+        assert!(
+            expanded.contains("serde"),
+            "Should expand serialization→serde: {expanded}"
+        );
+    }
+
+    #[test]
+    fn test_full_pipeline_watcher_query() {
+        // Q15: "File watcher debounce reindex on change"
+        let expanded = normalize_and_expand_query(
+            "File watcher debounce reindex on change",
+            true,
+            false,
+        );
+        assert!(expanded.contains("watch"), "Should expand watcher→watch: {expanded}");
+        assert!(
+            expanded.contains("throttle"),
+            "Should expand debounce→throttle: {expanded}"
+        );
     }
 }

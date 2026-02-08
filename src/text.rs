@@ -1,5 +1,5 @@
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Common programming synonyms (FNDN-18)
 /// Maps a term to its synonyms - all terms that mean similar things in code
@@ -37,6 +37,33 @@ static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
     m.insert("delete", &["remove", "drop", "destroy", "erase"][..]);
     m.insert("update", &["modify", "change", "edit", "patch"][..]);
     m.insert("read", &["get", "fetch", "retrieve", "load"][..]);
+    // Domain-specific synonyms for semantic gap coverage
+    m.insert("websocket", &["ws", "socket", "realtime"][..]);
+    m.insert("socket", &["ws", "websocket"][..]); // catches camelCase-split "Web Socket"
+    m.insert(
+        "serialization",
+        &["serialize", "serde", "deserialize", "marshal"][..],
+    );
+    m.insert("watcher", &["watch", "observe", "monitor", "notify"][..]);
+    m.insert("debounce", &["throttle", "delay", "timer"][..]);
+    m.insert("fallback", &["degradation", "recovery", "retry"][..]);
+    m.insert("schema", &["table", "ddl", "migration", "create_table"][..]);
+    m.insert("parse", &["parser", "parsing", "tokenize", "lex"][..]);
+    m.insert("format", &["formatting", "render", "pretty"][..]);
+    m.insert(
+        "initialization",
+        &["init", "initialize", "setup", "create", "new"][..],
+    );
+    m.insert(
+        "detection",
+        &["detect", "identify", "recognize", "classify"][..],
+    );
+    m.insert("reindex", &["index", "rebuild", "refresh"][..]);
+    // Cross-link serde ecosystem so import-injected "serde" bridges to query terms
+    m.insert("serde", &["serialize", "deserialize", "json", "serialization"][..]);
+    // Tree-sitter hyphenation bridging: "tree" alone is too generic,
+    // but "sitter" as a token should link to parser/parsing concepts
+    m.insert("sitter", &["tree_sitter", "parser", "parsing", "ast"][..]);
     m
 });
 
@@ -145,6 +172,63 @@ pub fn split_identifier_like(s: &str) -> String {
     normalize_query_text(s).replace('"', "")
 }
 
+/// Common English stop words that dilute BM25 scoring in NL queries.
+/// Conservative list: articles, be-verbs, auxiliaries, pronouns, prepositions, question words.
+/// Only applied to 3+ word queries to avoid removing meaningful short queries.
+static STOP_WORDS: &[&str] = &[
+    // Articles
+    "a", "an", "the",
+    // Be-verbs
+    "is", "are", "was", "were", "be", "been", "being",
+    // Auxiliaries
+    "do", "does", "did", "has", "have", "had", "will", "would", "shall", "should",
+    "can", "could", "may", "might", "must",
+    // Pronouns
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "its", "our", "their",
+    "this", "that", "these", "those",
+    // Prepositions
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "about", "into",
+    "through", "during", "before", "after", "above", "below", "between", "under",
+    // Conjunctions
+    "and", "but", "or", "nor", "so", "yet",
+    // Question words
+    "how", "what", "where", "when", "who", "which", "why",
+    // Other function words
+    "not", "no", "all", "each", "every", "both", "few", "more", "most",
+    "other", "some", "such", "only", "own", "same", "than", "too", "very",
+];
+
+/// Remove stop words from a query string.
+/// Only removes stop words from queries with 3+ words (NL-style queries).
+/// Preserves quoted phrases untouched.
+pub fn remove_stop_words(query: &str) -> String {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    // Only apply to NL queries (3+ words)
+    if words.len() < 3 {
+        return query.to_string();
+    }
+
+    let filtered: Vec<&str> = words
+        .into_iter()
+        .filter(|w| {
+            // Preserve quoted words
+            if w.starts_with('"') || w.ends_with('"') {
+                return true;
+            }
+            // Check against stop word list (case-insensitive)
+            !STOP_WORDS.contains(&w.to_lowercase().as_str())
+        })
+        .collect();
+
+    // Safety: if we'd remove ALL words, return original
+    if filtered.is_empty() {
+        return query.to_string();
+    }
+
+    filtered.join(" ")
+}
+
 pub fn simple_stems(token: &str) -> Vec<String> {
     let mut out = Vec::new();
     for suffix in ["ing", "ed", "es", "s"] {
@@ -157,6 +241,115 @@ pub fn simple_stems(token: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Expand query terms with their stems to improve BM25 recall.
+///
+/// Code identifiers are split into base forms during indexing (e.g. `spawn_watch_loop` →
+/// tokens `spawn`, `watch`, `loop`), but NL queries use derived forms (`watcher`,
+/// `handler`, `formatting`). This function bridges the gap by adding stems:
+/// "watcher" → also search "watch", "handler" → "handle", "formatting" → "format".
+///
+/// Only applied to 3+ word queries (NL queries). Short queries are left untouched.
+pub fn expand_stems(query: &str) -> String {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.len() < 3 {
+        return query.to_string();
+    }
+
+    let mut result = query.to_string();
+    let lower = query.to_lowercase();
+
+    for word in &words {
+        // Skip short words, quoted words, and hyphenated compounds (e.g. "tree-sitter")
+        if word.len() < 5 || word.starts_with('"') || word.ends_with('"') || word.contains('-') {
+            continue;
+        }
+
+        let w = word.to_lowercase();
+
+        // Try suffix stripping in priority order (longest match first)
+        let stem = if w.ends_with("ation") && w.len() > 7 {
+            Some(w[..w.len() - 5].to_string()) // "serialization" → "serializ"
+        } else if w.ends_with("tion") && w.len() > 6 {
+            Some(w[..w.len() - 4].to_string()) // "generation" → "genera"
+        } else if w.ends_with("ment") && w.len() > 6 {
+            Some(w[..w.len() - 4].to_string()) // "management" → "manage"
+        } else if w.ends_with("ness") && w.len() > 6 {
+            Some(w[..w.len() - 4].to_string()) // "readiness" → "readi"
+        } else if w.ends_with("ling") && w.len() > 6 {
+            Some(w[..w.len() - 4].to_string()) // "handling" → "hand"
+        } else if w.ends_with("ting") && w.len() > 6 {
+            Some(w[..w.len() - 4].to_string()) // "formatting" → "format"
+        } else if w.ends_with("ning") && w.len() > 6 {
+            Some(w[..w.len() - 4].to_string()) // "scanning" → "scan"
+        } else if w.ends_with("ding") && w.len() > 6 {
+            Some(w[..w.len() - 4].to_string()) // "loading" → "loa" — hmm, too short
+        } else if w.ends_with("ing") && w.len() > 5 {
+            Some(w[..w.len() - 3].to_string()) // "caching" → "cach"
+        } else if w.ends_with("ers") && w.len() > 5 {
+            Some(w[..w.len() - 3].to_string()) // "handlers" → "handl"
+        } else if w.ends_with("er") && w.len() > 4 {
+            Some(w[..w.len() - 2].to_string()) // "watcher" → "watch", "handler" → "handl"
+        } else if w.ends_with("ed") && w.len() > 4 {
+            Some(w[..w.len() - 2].to_string()) // "cached" → "cach"
+        } else if w.ends_with("es") && w.len() > 4 {
+            Some(w[..w.len() - 2].to_string()) // "caches" → "cach"
+        } else if w.ends_with("ly") && w.len() > 4 {
+            Some(w[..w.len() - 2].to_string()) // "gracefully" → "graceful"
+        } else if w.ends_with("s") && w.len() > 4 && !w.ends_with("ss") {
+            Some(w[..w.len() - 1].to_string()) // "requests" → "request"
+        } else {
+            None
+        };
+
+        if let Some(s) = stem {
+            if s.len() >= 5 && !lower.contains(&s) {
+                result.push(' ');
+                result.push_str(&s);
+            }
+        }
+    }
+
+    result
+}
+
+/// Look up synonyms for a single word (key-only, used for index-time expansion).
+///
+/// Returns the synonym list if the word is a known KEY in the SYNONYMS table.
+/// Used by index-time text expansion to enrich BM25-indexed content.
+pub fn get_synonyms(word: &str) -> Option<&'static [&'static str]> {
+    SYNONYMS.get(word).copied()
+}
+
+/// Bidirectional synonym lookup for a single word.
+///
+/// Returns related terms whether the word is a KEY or a VALUE in the SYNONYMS table.
+/// For example, "handler" (a value under "callback") returns ["callback", "listener", "hook", "delegate"].
+/// Used by term_coverage scoring to bridge vocabulary gaps.
+pub fn get_related_terms(word: &str) -> Vec<&'static str> {
+    let mut related = Vec::new();
+
+    // Forward: word is a key → return its values
+    if let Some(synonyms) = SYNONYMS.get(word) {
+        related.extend_from_slice(synonyms);
+    }
+
+    // Reverse: word is a value → return the key + sibling values
+    for (key, values) in SYNONYMS.iter() {
+        if values.iter().any(|v| *v == word) {
+            if *key != word && !related.contains(key) {
+                related.push(key);
+            }
+            for v in *values {
+                if *v != word && !related.contains(v) {
+                    related.push(v);
+                }
+            }
+        }
+    }
+
+    related
 }
 
 /// Expand query with synonyms (FNDN-18)
@@ -213,6 +406,88 @@ pub fn expand_acronyms(query: &str) -> String {
     }
 
     result
+}
+
+/// Extract import crate/module names from file source code.
+///
+/// For Rust files, scans for `use` statements and extracts the first path segment
+/// (the crate name). Skips internal references (crate, self, super) and std.
+///
+/// For other languages, pass the already-extracted imports from `ExtractedFile.imports`.
+///
+/// Returns a space-separated string of unique crate/module names suitable for
+/// appending to Tantivy indexed text. Each crate name is also split so that
+/// e.g. "serde_json" produces both "serde_json" and split tokens "serde json".
+pub fn extract_rust_import_tags(source: &str) -> String {
+    let mut crates = HashSet::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Match `use crate_name::...` and `extern crate crate_name;`
+        let rest = if let Some(r) = trimmed.strip_prefix("use ") {
+            Some(r)
+        } else if let Some(r) = trimmed.strip_prefix("pub use ") {
+            Some(r)
+        } else {
+            trimmed
+                .strip_prefix("extern crate ")
+                .map(|r| r.trim_end_matches(';'))
+        };
+        if let Some(rest) = rest {
+            // Extract first path segment: "tree_sitter::Language" → "tree_sitter"
+            let first_segment = rest.split("::").next().unwrap_or("").trim();
+            // Also handle `use {serde, anyhow}` grouped imports
+            let first_segment = first_segment.trim_start_matches('{');
+            let first_segment = first_segment.trim_end_matches(|c: char| c == ';' || c == ',');
+            let first_segment = first_segment.trim();
+            // Skip internal references and std (too generic)
+            match first_segment {
+                "crate" | "self" | "super" | "std" | "" => continue,
+                s if s.contains(' ') => continue, // malformed
+                s => {
+                    crates.insert(s.to_string());
+                }
+            }
+        }
+    }
+
+    // Build output: raw crate name + split form for BM25 tokenization
+    let mut parts = Vec::new();
+    for crate_name in &crates {
+        parts.push(crate_name.clone());
+        // Also add split form: "serde_json" → "serde json", "tree_sitter" → "tree sitter"
+        let split = split_identifier_like(crate_name);
+        if split != *crate_name {
+            parts.push(split);
+        }
+    }
+    parts.join(" ")
+}
+
+/// Build import tags string from already-extracted imports (for non-Rust languages).
+///
+/// Takes the `source` field from each `Import` and deduplicates.
+pub fn build_import_tags_from_sources(sources: &[String]) -> String {
+    let mut seen = HashSet::new();
+    let mut parts = Vec::new();
+    for source in sources {
+        // Extract the package/module name (e.g., "express" from "express",
+        // "react" from "react", "os" from "os")
+        let module_name = source
+            .split('/')
+            .next()
+            .unwrap_or(source)
+            .trim_start_matches('@');
+        if module_name.is_empty() || seen.contains(module_name) {
+            continue;
+        }
+        seen.insert(module_name.to_string());
+        parts.push(module_name.to_string());
+        let split = split_identifier_like(module_name);
+        if split != module_name {
+            parts.push(split);
+        }
+    }
+    parts.join(" ")
 }
 
 #[cfg(test)]
@@ -281,5 +556,207 @@ mod tests {
         assert_eq!(simple_stems("running"), vec!["runn"]);
         assert_eq!(simple_stems("called"), vec!["call"]);
         assert_eq!(simple_stems("functions"), vec!["function"]);
+    }
+
+    #[test]
+    fn test_expand_synonyms_websocket() {
+        let result = expand_synonyms("websocket handler");
+        assert!(result.contains("ws"), "should expand websocket→ws");
+        assert!(result.contains("callback"), "should expand handler→callback");
+    }
+
+    #[test]
+    fn test_expand_synonyms_serialization() {
+        let result = expand_synonyms("serialization format");
+        assert!(result.contains("serde"), "should expand serialization→serde");
+        assert!(result.contains("serialize"), "should expand serialization→serialize");
+        assert!(result.contains("formatting"), "should expand format→formatting");
+    }
+
+    #[test]
+    fn test_expand_synonyms_watcher_debounce() {
+        let result = expand_synonyms("watcher debounce");
+        assert!(result.contains("watch"), "should expand watcher→watch");
+        assert!(result.contains("throttle"), "should expand debounce→throttle");
+    }
+
+    #[test]
+    fn test_expand_synonyms_fallback_reverse() {
+        // "degradation" is a synonym of "fallback", so querying "degradation"
+        // should add the main term "fallback"
+        let result = expand_synonyms("graceful degradation");
+        assert!(result.contains("fallback"), "should add fallback from degradation synonym");
+    }
+
+    #[test]
+    fn test_expand_synonyms_schema() {
+        let result = expand_synonyms("schema initialization");
+        assert!(result.contains("table"), "should expand schema→table");
+        assert!(result.contains("ddl"), "should expand schema→ddl");
+    }
+
+    #[test]
+    fn test_remove_stop_words_nl_query() {
+        let result = remove_stop_words("How does the WebSocket handler work");
+        assert_eq!(result, "WebSocket handler work");
+    }
+
+    #[test]
+    fn test_remove_stop_words_preserves_short_queries() {
+        // 1-2 word queries should be untouched
+        assert_eq!(remove_stop_words("get"), "get");
+        assert_eq!(remove_stop_words("the handler"), "the handler");
+    }
+
+    #[test]
+    fn test_remove_stop_words_error_handling_query() {
+        let result = remove_stop_words("Error handling and graceful degradation");
+        assert_eq!(result, "Error handling graceful degradation");
+    }
+
+    #[test]
+    fn test_remove_stop_words_json_query() {
+        let result = remove_stop_words("JSON serialization and response formatting");
+        assert_eq!(result, "JSON serialization response formatting");
+    }
+
+    #[test]
+    fn test_remove_stop_words_preserves_all_if_empty() {
+        // If ALL words are stop words, return original
+        let result = remove_stop_words("how does the");
+        // "how", "does", "the" are all stop words, but we return original
+        assert_eq!(result, "how does the");
+    }
+
+    #[test]
+    fn test_remove_stop_words_with_expanded_queries() {
+        // Q7 expanded: "How does the Web Socket handler work? ws websocket callback listener hook delegate"
+        // After stop word removal: Web Socket handler work? ws websocket callback listener hook delegate
+        let q7 = "How does the Web Socket handler work? ws websocket callback listener hook delegate";
+        let r7 = remove_stop_words(q7);
+        assert!(!r7.contains("How "), "should remove 'How': {r7}");
+        assert!(!r7.contains(" does "), "should remove 'does': {r7}");
+        assert!(!r7.contains(" the "), "should remove 'the': {r7}");
+        assert!(r7.contains("Socket"), "should keep 'Socket': {r7}");
+        assert!(r7.contains("handler"), "should keep 'handler': {r7}");
+        assert!(r7.contains("websocket"), "should keep 'websocket': {r7}");
+
+        // Q9 expanded: "Error handling and graceful degradation exception failure err fault fallback recovery retry"
+        let q9 = "Error handling and graceful degradation exception failure err fault fallback recovery retry";
+        let r9 = remove_stop_words(q9);
+        assert!(!r9.contains(" and "), "should remove 'and': {r9}");
+        assert!(r9.contains("Error"), "should keep 'Error': {r9}");
+        assert!(r9.contains("fallback"), "should keep 'fallback': {r9}");
+        assert!(r9.contains("degradation"), "should keep 'degradation': {r9}");
+    }
+
+    #[test]
+    fn test_expand_stems_short_queries_untouched() {
+        assert_eq!(expand_stems("get"), "get");
+        assert_eq!(expand_stems("get user"), "get user");
+    }
+
+    #[test]
+    fn test_expand_stems_er_suffix() {
+        let result = expand_stems("file watcher debounce reindex");
+        assert!(result.contains("watch"), "should stem watcher→watch: {result}");
+    }
+
+    #[test]
+    fn test_expand_stems_ing_suffix() {
+        let result = expand_stems("JSON serialization response formatting");
+        assert!(result.contains("format"), "should stem formatting→format: {result}");
+    }
+
+    #[test]
+    fn test_expand_stems_s_suffix() {
+        let result = expand_stems("find function handles search requests");
+        assert!(result.contains("request"), "should stem requests→request: {result}");
+        assert!(result.contains("handle"), "should stem handles→handle: {result}");
+    }
+
+    #[test]
+    fn test_expand_stems_no_duplicates() {
+        // "handle" is already in the query, shouldn't be added again
+        let result = expand_stems("handle search code handler");
+        let handle_count = result.matches("handle").count();
+        // "handle" appears once naturally + "handler" stems to "handl" not "handle"
+        assert!(handle_count <= 3, "should not add duplicate stems: {result}");
+    }
+
+    #[test]
+    fn test_expand_stems_tion_suffix() {
+        let result = expand_stems("vector embedding generation and storage");
+        // "generation" → strip "ation" → "gener" (5 chars, valid)
+        assert!(result.contains("gener"), "should stem generation→gener: {result}");
+    }
+
+    #[test]
+    fn test_expand_stems_skips_hyphenated_words() {
+        let result = expand_stems("tree-sitter parser initialization and language");
+        // "tree-sitter" should not be stemmed (hyphen skip)
+        let words: Vec<&str> = result.split_whitespace().collect();
+        assert!(!words.contains(&"tree-sitt"), "should not stem hyphenated words: {result}");
+    }
+
+    #[test]
+    fn test_expand_stems_filters_short_stems() {
+        let result = expand_stems("caching and cache invalidation patterns");
+        // "caching" → "cach" (4 chars) should be filtered by min stem length 5
+        let words: Vec<&str> = result.split_whitespace().collect();
+        assert!(!words.contains(&"cach"), "should filter stems < 5 chars: {result}");
+    }
+
+    #[test]
+    fn test_extract_rust_import_tags_basic() {
+        let source = r#"
+use tree_sitter::{Language, Node, Parser, Tree};
+use serde_json::Value;
+use anyhow::{Context, Result};
+use std::path::Path;
+use crate::storage::sqlite::SymbolRow;
+"#;
+        let tags = extract_rust_import_tags(source);
+        assert!(tags.contains("tree_sitter"), "should extract tree_sitter: {tags}");
+        assert!(tags.contains("serde_json"), "should extract serde_json: {tags}");
+        assert!(tags.contains("anyhow"), "should extract anyhow: {tags}");
+        // Split forms
+        assert!(tags.contains("tree") && tags.contains("sitter"), "should split tree_sitter: {tags}");
+        assert!(tags.contains("serde") && tags.contains("json"), "should split serde_json: {tags}");
+        // Should NOT include internal references or std
+        assert!(!tags.split_whitespace().any(|w| w == "crate"), "should skip crate: {tags}");
+        assert!(!tags.split_whitespace().any(|w| w == "std"), "should skip std: {tags}");
+    }
+
+    #[test]
+    fn test_extract_rust_import_tags_pub_use_and_extern() {
+        let source = r#"
+pub use once_cell::sync::Lazy;
+extern crate tokio;
+use self::inner::Foo;
+use super::Bar;
+"#;
+        let tags = extract_rust_import_tags(source);
+        assert!(tags.contains("once_cell"), "should extract once_cell: {tags}");
+        assert!(tags.contains("tokio"), "should extract tokio: {tags}");
+        assert!(!tags.split_whitespace().any(|w| w == "self"), "should skip self: {tags}");
+        assert!(!tags.split_whitespace().any(|w| w == "super"), "should skip super: {tags}");
+    }
+
+    #[test]
+    fn test_build_import_tags_from_sources() {
+        let sources = vec![
+            "express".to_string(),
+            "react".to_string(),
+            "@types/node".to_string(),
+            "express".to_string(), // duplicate
+        ];
+        let tags = build_import_tags_from_sources(&sources);
+        assert!(tags.contains("express"), "should include express: {tags}");
+        assert!(tags.contains("react"), "should include react: {tags}");
+        assert!(tags.contains("types"), "should include types (from @types/node): {tags}");
+        // Dedup: express should appear only once
+        let express_count = tags.split_whitespace().filter(|w| *w == "express").count();
+        assert_eq!(express_count, 1, "express should be deduplicated: {tags}");
     }
 }

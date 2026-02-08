@@ -105,11 +105,14 @@ pub fn apply_package_boost_with_signals(
                         structural_adjust: 0.0,
                         intent_mult: 1.0,
                         definition_bias: 0.0,
+                        term_coverage: 0.0,
                         popularity_boost: 0.0,
                         learning_boost: 0.0,
                         affinity_boost: 0.0,
                         docstring_boost: 0.0,
                         package_boost: boost_amount,
+                        symbol_importance: 0.0,
+                        test_symbol_penalty: 0.0,
                     });
             }
         }

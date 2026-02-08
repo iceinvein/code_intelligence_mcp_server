@@ -18,6 +18,12 @@ ON CONFLICT(symbol_id) DO UPDATE SET
     Ok(())
 }
 
+pub fn clear_similarity_clusters(conn: &Connection) -> Result<u64> {
+    conn.execute("DELETE FROM similarity_clusters", [])
+        .context("Failed to clear similarity_clusters")?;
+    Ok(conn.changes())
+}
+
 pub fn get_similarity_cluster_key(conn: &Connection, symbol_id: &str) -> Result<Option<String>> {
     conn.query_row(
         "SELECT cluster_key FROM similarity_clusters WHERE symbol_id = ?1",

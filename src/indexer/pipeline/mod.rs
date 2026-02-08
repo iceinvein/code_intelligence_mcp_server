@@ -732,6 +732,21 @@ impl IndexPipeline {
 
             let mut symbol_rows = Vec::new();
 
+            // Extract file-level import tags for Tantivy enrichment.
+            // This gives every symbol in a file the context of what external
+            // crates/modules the file uses, so queries like "tree-sitter" match
+            // functions in files that import tree_sitter.
+            let import_tags = if language_id == crate::indexer::parser::LanguageId::Rust {
+                crate::text::extract_rust_import_tags(&source)
+            } else {
+                let sources: Vec<String> = extracted
+                    .imports
+                    .iter()
+                    .map(|imp| imp.source.clone())
+                    .collect();
+                crate::text::build_import_tags_from_sources(&sources)
+            };
+
             // 1. Add File-Level Symbol (Document Indexing)
             // We index the file itself as a symbol to allow retrieval of the "whole file" concept.
             let file_symbol_id = stable_symbol_id(&rel, "FILE_ROOT", 0);
@@ -788,7 +803,7 @@ impl IndexPipeline {
                     .with_context(|| format!("Failed to embed symbols for {rel}"))?;
 
                 for row in &symbol_rows {
-                    self.tantivy.upsert_symbol(row)?;
+                    self.tantivy.upsert_symbol(row, &import_tags)?;
                     upsert_name_mapping(&mut name_to_id, row);
                 }
 
@@ -1076,6 +1091,7 @@ impl IndexPipeline {
         Ok(stats)
     }
 
+    /// Build enriched text for embedding that includes semantic context.
     async fn embed_and_build_vector_records(
         &self,
         rows: &[SymbolRow],

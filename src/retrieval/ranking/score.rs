@@ -4,6 +4,7 @@ use crate::retrieval::{HitSignals, RankedHit};
 use crate::storage::sqlite::SqliteStore;
 use crate::storage::tantivy::SearchHit as KeywordHit;
 use crate::storage::vector::VectorHit;
+use crate::text;
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -67,6 +68,9 @@ pub fn apply_selection_boost_with_signals(
                     structural_adjust: 0.0,
                     intent_mult: 1.0,
                     definition_bias: 0.0,
+                    term_coverage: 0.0,
+                    symbol_importance: 0.0,
+                    test_symbol_penalty: 0.0,
                     popularity_boost: 0.0,
                     learning_boost: final_boost,
                     affinity_boost: 0.0,
@@ -161,6 +165,9 @@ pub fn apply_file_affinity_boost_with_signals(
                     structural_adjust: 0.0,
                     intent_mult: 1.0,
                     definition_bias: 0.0,
+                    term_coverage: 0.0,
+                    symbol_importance: 0.0,
+                    test_symbol_penalty: 0.0,
                     popularity_boost: 0.0,
                     learning_boost: 0.0,
                     affinity_boost: final_boost,
@@ -230,7 +237,8 @@ pub fn rank_hits_with_signals(
         let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
         let def_bias = definition_bias(query, &h.name, &h.kind, intent);
-        let score = (base_score + structural + def_bias) * intent_mult;
+        let tc = term_coverage_adjustment(query, &h.name, &h.file_path, None);
+        let score = (base_score + structural + def_bias + tc) * intent_mult;
 
         signals.insert(
             h.id.clone(),
@@ -241,6 +249,9 @@ pub fn rank_hits_with_signals(
                 structural_adjust: structural,
                 intent_mult,
                 definition_bias: def_bias,
+                term_coverage: tc,
+                symbol_importance: 0.0,
+                test_symbol_penalty: 0.0,
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
@@ -272,7 +283,8 @@ pub fn rank_hits_with_signals(
         let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
         let def_bias = definition_bias(query, &h.name, &h.kind, intent);
-        let score = (base_score + structural + def_bias) * intent_mult;
+        let tc = term_coverage_adjustment(query, &h.name, &h.file_path, None);
+        let score = (base_score + structural + def_bias + tc) * intent_mult;
 
         signals.insert(
             h.id.clone(),
@@ -283,6 +295,9 @@ pub fn rank_hits_with_signals(
                 structural_adjust: structural,
                 intent_mult,
                 definition_bias: def_bias,
+                term_coverage: tc,
+                symbol_importance: 0.0,
+                test_symbol_penalty: 0.0,
                 popularity_boost: 0.0,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
@@ -406,11 +421,14 @@ pub fn apply_popularity_boost_with_signals(
                 structural_adjust: 0.0,
                 intent_mult: 1.0,
                 definition_bias: 0.0,
+                term_coverage: 0.0,
                 popularity_boost: boost,
                 learning_boost: 0.0,
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
                 package_boost: 0.0,
+                symbol_importance: 0.0,
+                test_symbol_penalty: 0.0,
             });
     }
 
@@ -456,11 +474,14 @@ pub fn apply_docstring_boost_with_signals(
                     structural_adjust: 0.0,
                     intent_mult: 1.0,
                     definition_bias: 0.0,
+                    term_coverage: 0.0,
                     popularity_boost: 0.0,
                     learning_boost: 0.0,
                     affinity_boost: 0.0,
                     docstring_boost: DOCSTRING_BOOST,
                     package_boost: 0.0,
+                    symbol_importance: 0.0,
+                    test_symbol_penalty: 0.0,
                 });
         }
     }
@@ -532,6 +553,168 @@ pub(crate) fn definition_bias(
     }
 }
 
+/// Stopwords to exclude from term-coverage computation.
+/// These are common English words that appear in NL queries but carry no
+/// discriminative power for matching symbols or file paths.
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "from", "how", "does", "what", "this", "that", "with",
+    "are", "was", "were", "been", "has", "have", "had", "not", "but", "its",
+    "can", "all", "will", "into", "when", "which", "where", "who", "why",
+];
+
+/// Compute a term-coverage multiplier for multi-word NL queries.
+///
+/// For queries with 3+ significant terms, measures what fraction of the query
+/// terms appear in the hit's name + file path. Results that only match a single
+/// common word (e.g., "file" in "file watcher debounce") get penalized, while
+/// results matching multiple terms get boosted.
+///
+/// Returns an additive score adjustment:
+/// - 0.0 for short queries (≤2 significant terms) — no effect
+/// - Positive for high coverage, negative for low coverage on NL queries
+pub(crate) fn term_coverage_adjustment(
+    query: &str,
+    hit_name: &str,
+    file_path: &str,
+    body_text: Option<&str>,
+) -> f32 {
+    let terms: Vec<&str> = query
+        .split_whitespace()
+        .filter(|t| t.len() >= 3)
+        .filter(|t| !STOPWORDS.contains(&t.to_lowercase().as_str()))
+        .collect();
+
+    // Only apply to multi-word NL queries (2+ meaningful terms)
+    if terms.len() < 2 {
+        return 0.0;
+    }
+
+    let name_lower = hit_name.to_lowercase();
+    // Split CamelCase name into parts for matching: "EmbeddingCache" → ["embedding", "cache"]
+    // Pass the original name (before lowercasing) so CamelCase detection works
+    let name_parts = split_camel_case(hit_name);
+
+    let path_parts: Vec<String> = file_path
+        .split('/')
+        .map(|p| {
+            // Strip file extension
+            if let Some((stem, _)) = p.rsplit_once('.') {
+                stem.to_lowercase()
+            } else {
+                p.to_lowercase()
+            }
+        })
+        .collect();
+
+    // Pre-tokenize body text: split identifiers and lowercase for matching.
+    // This captures terms like "debounce" from `watch_debounce_ms` in function bodies.
+    let body_tokens: String = body_text
+        .map(|t| crate::text::split_identifier_like(t).to_lowercase())
+        .unwrap_or_default();
+
+    let total = terms.len() as f32;
+    let mut matched = 0.0f32;
+
+    for term in &terms {
+        let term_lower = term.to_lowercase();
+        let term_stem = simple_stem(&term_lower);
+
+        // Collect synonyms for this term bidirectionally (used as fallback matching below).
+        // "handler" → ["callback", "listener", "hook", "delegate"] even though
+        // "handler" is a value (not a key) in the SYNONYMS table.
+        let synonyms: Vec<&str> = text::get_related_terms(&term_lower);
+
+        // Check 1: term appears in symbol name (exact or substring)
+        let in_name = name_lower.contains(&term_lower)
+            || name_parts.iter().any(|p| {
+                p == &term_lower
+                    || (term_stem.len() >= 3 && stems_match(&simple_stem(p), &term_stem))
+            });
+
+        // Check 2: term appears in file path segments (exact, stem, or prefix)
+        let in_path = path_parts.iter().any(|p| {
+            p == &term_lower
+                || p.contains(&term_lower)
+                || term_lower.contains(p.as_str())
+                || (term_stem.len() >= 3 && stems_match(&simple_stem(p), &term_stem))
+                || p.starts_with(&term_lower)
+                || term_lower.starts_with(p.as_str())
+        });
+
+        // Check 3: term appears in body text (tokenized source code)
+        // Worth less than name/path to avoid over-boosting large functions
+        // that happen to mention a term once in 200 lines.
+        let in_body = !body_tokens.is_empty()
+            && body_tokens.split_whitespace().any(|tok| {
+                tok == term_lower
+                    || (term_stem.len() >= 3 && stems_match(&simple_stem(tok), &term_stem))
+            });
+
+        // Check 4: synonym of query term appears in name/path/body.
+        // This bridges vocabulary gaps: "websocket" query matches "socket"
+        // in body, "serialization" matches "serde" in body, etc.
+        // Worth less than direct matches to avoid false positives.
+        let via_synonym = if !in_name && !in_path && !in_body && !synonyms.is_empty() {
+            let in_name_syn = synonyms.iter().any(|syn| {
+                name_lower.contains(syn)
+                    || name_parts.iter().any(|p| p == syn)
+            });
+            let in_path_syn = synonyms.iter().any(|syn| {
+                path_parts.iter().any(|p| p.contains(syn) || syn.contains(p.as_str()))
+            });
+            let in_body_syn = !body_tokens.is_empty()
+                && synonyms.iter().any(|syn| {
+                    body_tokens.split_whitespace().any(|tok| tok == *syn)
+                });
+            in_name_syn || in_path_syn || in_body_syn
+        } else {
+            false
+        };
+
+        if in_name || in_path {
+            matched += 1.0;
+        } else if in_body {
+            matched += 0.5; // body match counts half vs name/path
+        } else if via_synonym {
+            matched += 0.35; // synonym match counts less than direct body match
+        }
+    }
+
+    let coverage = matched / total;
+
+    // Scale: coverage 0.0 → -3.0 penalty, coverage 0.33 → -1.0, coverage 0.67+ → +1.0 to +2.0
+    // Linear interpolation: adjustment = (coverage - 0.33) * 6.0 - 1.0
+    // Clamped to [-3.0, +2.0]
+    let raw = (coverage - 0.33) * 6.0 - 1.0;
+    raw.clamp(-3.0, 2.0)
+}
+
+/// Split a CamelCase or snake_case identifier into lowercase parts.
+/// "EmbeddingCache" → ["embedding", "cache"]
+/// "upsert_file_fingerprint" → ["upsert", "file", "fingerprint"]
+fn split_camel_case(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    // First split by underscores
+    for segment in s.split('_') {
+        if segment.is_empty() {
+            continue;
+        }
+        // Then split CamelCase
+        let mut current = String::new();
+        for ch in segment.chars() {
+            if ch.is_uppercase() && !current.is_empty() {
+                parts.push(current.to_lowercase());
+                current = String::new();
+            }
+            current.push(ch);
+        }
+        if !current.is_empty() {
+            parts.push(current.to_lowercase());
+        }
+    }
+    parts
+}
+
 fn normalize_pair(a: f32, b: f32) -> (f32, f32) {
     let sum = a + b;
     if sum > 0.0 {
@@ -539,6 +722,21 @@ fn normalize_pair(a: f32, b: f32) -> (f32, f32) {
     } else {
         (0.5, 0.5)
     }
+}
+
+/// Compare two stems with prefix tolerance.
+/// "scor" (from "scoring") and "score" share prefix "scor" (len 4 ≥ 3), so they match.
+/// This handles cases where different suffixes strip to slightly different lengths.
+fn stems_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    // Check if one stem is a prefix of the other (min prefix len 3)
+    let min_len = a.len().min(b.len());
+    if min_len >= 3 && (a.starts_with(b) || b.starts_with(a)) {
+        return true;
+    }
+    false
 }
 
 /// Simple morphological stemmer for path segment matching.
@@ -553,6 +751,54 @@ fn simple_stem(s: &str) -> String {
         }
     }
     s.to_string()
+}
+
+/// Compute a scoring adjustment based on symbol size (line count) and export status.
+///
+/// BM25 gives disproportionately high scores to short documents — a 5-line private
+/// helper can outrank a 200-line core function. This signal compensates by boosting
+/// larger, more important symbols and penalizing trivial helpers.
+///
+/// Uses log2(line_count) centered at ~45 lines (log2(45) ≈ 5.5):
+/// - 5 lines → ~-1.3 (small helper penalty)
+/// - 20 lines → ~-0.5 (small function)
+/// - 45 lines → ~0.0 (neutral)
+/// - 100 lines → ~+0.5 (substantial function)
+/// - 200 lines → ~+0.9 (core function)
+///
+/// Private (non-exported) functions with ≤10 lines get an additional -0.5 penalty
+/// to suppress small test helpers and internal utilities.
+///
+/// Returns 0.0 when line_count is unavailable (0).
+pub(crate) fn symbol_importance_adjustment(line_count: u32, exported: bool) -> f32 {
+    if line_count == 0 {
+        return 0.0;
+    }
+
+    let log_lines = (line_count as f32).log2();
+    // Center at ~45 lines (log2(45) ≈ 5.5), scale by 0.4
+    let raw = (log_lines - 5.5) * 0.4;
+    let mut adj = raw.clamp(-1.5, 1.0);
+
+    // Extra penalty for small private helpers (test utilities, internal helpers)
+    if !exported && line_count <= 10 {
+        adj -= 0.5;
+    }
+
+    adj
+}
+
+/// Penalty for test symbols that live inside production files.
+///
+/// When a symbol is detected as test code (inside `#[cfg(test)] mod tests` or
+/// annotated with `#[test]`), it should be penalized in search results since
+/// users searching for "how does X work" want production code, not test code.
+///
+/// Returns a negative value (-5.0) for test symbols, 0.0 otherwise.
+/// The penalty is deliberately strong because BM25 gives test functions
+/// artificially high scores (short document bias + keyword density).
+pub(crate) fn test_symbol_penalty(is_test: bool) -> f32 {
+    if is_test { -5.0 } else { 0.0 }
 }
 
 pub(crate) fn structural_adjustment(
@@ -612,6 +858,14 @@ pub(crate) fn structural_adjustment(
         || path.starts_with("packages/")
     {
         score += 1.0;
+    }
+
+    // Test file penalty: integration/unit test files should rank below production code.
+    // This is separate from the intent_adjustment 0.15x multiplier — that handles
+    // the case where intent is non-Test. This penalty applies structurally so that
+    // test files don't outrank production files via term_coverage alone.
+    if is_test_file(file_path) {
+        score -= 2.0;
     }
 
     // Subdirectory Semantics — boost when query terms match path segments
@@ -1204,6 +1458,322 @@ mod tests {
             assert!(hit_signals
                 .get("symbol1")
                 .is_none_or(|s| s.popularity_boost == 0.0));
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    // ── term_coverage_adjustment tests ──
+
+    #[test]
+    fn term_coverage_no_effect_on_short_queries() {
+        // Single-word queries should return 0.0 (no effect)
+        assert_eq!(term_coverage_adjustment("EmbeddingCache", "EmbeddingCache", "src/storage/cache.rs", None), 0.0);
+        // 2-word queries now DO get term_coverage (threshold lowered to 2)
+        let adj = term_coverage_adjustment("get put", "get", "src/cache.rs", None);
+        assert!(adj != 0.0, "2-word queries should now have term_coverage effect, got {adj}");
+    }
+
+    #[test]
+    fn term_coverage_penalizes_single_term_match() {
+        // "file watcher debounce" matching only "file" → low coverage → negative
+        let adj = term_coverage_adjustment(
+            "file watcher debounce reindex",
+            "upsert_file_fingerprint",
+            "src/storage/sqlite/queries/files.rs",
+            None,
+        );
+        assert!(adj < 0.0, "expected penalty for single-term match, got {adj}");
+    }
+
+    #[test]
+    fn term_coverage_boosts_multi_term_match() {
+        // Symbol matching 2+ terms should score higher than one matching 1 term
+        // "embedding cache storage vector" → "EmbeddingCache" matches 2 terms (embedding, cache)
+        let multi = term_coverage_adjustment(
+            "embedding cache storage vector",
+            "EmbeddingCache",
+            "src/storage/cache.rs",
+            None,
+        );
+        // vs a symbol that only matches "storage" via path
+        let single = term_coverage_adjustment(
+            "embedding cache storage vector",
+            "SqliteStore",
+            "src/storage/sqlite/operations.rs",
+            None,
+        );
+        assert!(multi > single, "multi-term match ({multi}) should score higher than single-term ({single})");
+    }
+
+    #[test]
+    fn term_coverage_rewards_high_coverage() {
+        // "ranking scoring system" with terms matching via stems
+        let adj = term_coverage_adjustment(
+            "ranking and scoring system work",
+            "rank_hits_with_signals",
+            "src/retrieval/ranking/score.rs",
+            None,
+        );
+        // "ranking" matches path "ranking", "scoring" matches path "score" via stem
+        // That's 2/4 = 0.50 coverage → should be close to 0 or slightly positive
+        assert!(adj > -2.0, "good coverage match should not be strongly penalized, got {adj}");
+
+        // Compare against a result that matches nothing
+        let bad = term_coverage_adjustment(
+            "ranking and scoring system work",
+            "parse_go_mod",
+            "src/package/parsers/go.rs",
+            None,
+        );
+        assert!(adj > bad, "matched result ({adj}) should score higher than unmatched ({bad})");
+    }
+
+    #[test]
+    fn term_coverage_handles_camel_case_names() {
+        // CamelCase: "EmbeddingCache" should split into ["embedding", "cache"]
+        let adj = term_coverage_adjustment(
+            "embedding cache get put",
+            "EmbeddingCache",
+            "src/storage/cache.rs",
+            None,
+        );
+        // "embedding" and "cache" both match the name parts
+        assert!(adj > -1.0, "CamelCase name matching multiple terms should score well, got {adj}");
+    }
+
+    #[test]
+    fn term_coverage_uses_morphological_stemming() {
+        // "parsing" should match "parser" via stemming
+        let adj = term_coverage_adjustment(
+            "tree sitter parsing extractors",
+            "language_for_id",
+            "src/indexer/parser.rs",
+            None,
+        );
+        let adj2 = term_coverage_adjustment(
+            "tree sitter parsing extractors",
+            "parse_go_mod",
+            "src/package/parsers/go.rs",
+            None,
+        );
+        // parser.rs should do better because "parser" stem-matches "parsing" and "indexer" is related
+        // Both have some matching but parser.rs path matches more terms
+        // At minimum, neither should be strongly penalized
+        assert!(adj >= adj2 || (adj - adj2).abs() < 1.0,
+            "parser.rs ({adj}) should score >= go.rs ({adj2}) or be close");
+    }
+
+    #[test]
+    fn term_coverage_body_text_boosts_relevant_symbols() {
+        // spawn_watch_loop's body contains "debounce" via watch_debounce_ms
+        let with_body = term_coverage_adjustment(
+            "file watcher debounce reindex change",
+            "spawn_watch_loop",
+            "src/indexer/pipeline/mod.rs",
+            Some("pub fn spawn_watch_loop() { let interval = config.watch_debounce_ms; check_for_changes(); }"),
+        );
+        let without_body = term_coverage_adjustment(
+            "file watcher debounce reindex change",
+            "spawn_watch_loop",
+            "src/indexer/pipeline/mod.rs",
+            None,
+        );
+        assert!(with_body > without_body,
+            "body text should boost coverage: with={with_body}, without={without_body}");
+    }
+
+    #[test]
+    fn term_coverage_body_text_counts_half() {
+        // Body-only matches should count 0.5x compared to name/path matches
+        // This prevents large functions from being over-boosted just because they mention a term once
+        let body_only = term_coverage_adjustment(
+            "websocket handler connection protocol",
+            "classify_elysia_method",
+            "src/indexer/extract/elysia.rs",
+            Some("fn classify_elysia_method() { match m { \"ws\" => WebSocket, _ => Route } }"),
+        );
+        // "websocket" matches body (WebSocket splits to web socket), "handler" no match,
+        // "connection" no match, "protocol" no match → low coverage but not zero
+        assert!(body_only > -3.0, "body text match should reduce penalty, got {body_only}");
+    }
+
+    #[test]
+    fn split_camel_case_works() {
+        assert_eq!(split_camel_case("embeddingcache"), vec!["embeddingcache"]);
+        assert_eq!(split_camel_case("EmbeddingCache"), vec!["embedding", "cache"]);
+        assert_eq!(split_camel_case("upsert_file_fingerprint"), vec!["upsert", "file", "fingerprint"]);
+        // All-caps sequences split into individual chars (expected for acronyms)
+        assert_eq!(split_camel_case("HTMLParser"), vec!["h", "t", "m", "l", "parser"]);
+    }
+
+    #[test]
+    fn stems_match_works() {
+        assert!(stems_match("rank", "rank"));
+        assert!(stems_match("scor", "score")); // "scoring" stem vs "score" stem
+        assert!(stems_match("pars", "pars"));  // "parsing" and "parser" share stem
+        assert!(!stems_match("ab", "abc"));    // too short prefix
+        assert!(!stems_match("rank", "file")); // unrelated
+    }
+
+    // ── symbol_importance_adjustment tests ──
+
+    #[test]
+    fn symbol_importance_zero_lines_returns_zero() {
+        assert_eq!(symbol_importance_adjustment(0, true), 0.0);
+        assert_eq!(symbol_importance_adjustment(0, false), 0.0);
+    }
+
+    #[test]
+    fn symbol_importance_penalizes_tiny_functions() {
+        // 5-line function: log2(5) ≈ 2.32 → (2.32 - 5.5) * 0.4 ≈ -1.27
+        let adj = symbol_importance_adjustment(5, true);
+        assert!(adj < -1.0, "5-line exported function should be penalized, got {adj}");
+
+        // Private 5-line helper gets additional -0.5 penalty
+        let adj_priv = symbol_importance_adjustment(5, false);
+        assert!(adj_priv < adj, "private helper ({adj_priv}) should be penalized more than exported ({adj})");
+        assert!((adj_priv - (adj - 0.5)).abs() < 0.01, "private penalty should be -0.5 extra");
+    }
+
+    #[test]
+    fn symbol_importance_boosts_large_functions() {
+        // 200-line function: log2(200) ≈ 7.64 → (7.64 - 5.5) * 0.4 ≈ 0.86
+        let adj = symbol_importance_adjustment(200, true);
+        assert!(adj > 0.5, "200-line function should get a boost, got {adj}");
+        assert!(adj <= 1.0, "boost should be clamped at 1.0, got {adj}");
+    }
+
+    #[test]
+    fn symbol_importance_neutral_around_45_lines() {
+        // 45 lines: log2(45) ≈ 5.49 → (5.49 - 5.5) * 0.4 ≈ -0.004 ≈ 0
+        let adj = symbol_importance_adjustment(45, true);
+        assert!(adj.abs() < 0.1, "45-line function should be near-neutral, got {adj}");
+    }
+
+    #[test]
+    fn symbol_importance_private_small_extra_penalty() {
+        // Private ≤10 lines gets -0.5 extra
+        let exported_10 = symbol_importance_adjustment(10, true);
+        let private_10 = symbol_importance_adjustment(10, false);
+        assert!((private_10 - (exported_10 - 0.5)).abs() < 0.01);
+
+        // Private 11 lines does NOT get extra penalty
+        let exported_11 = symbol_importance_adjustment(11, true);
+        let private_11 = symbol_importance_adjustment(11, false);
+        assert_eq!(exported_11, private_11, "private >10 lines should not get extra penalty");
+    }
+
+    #[test]
+    fn symbol_importance_clamp_bounds() {
+        // Very small: 1 line → log2(1) = 0 → (0 - 5.5) * 0.4 = -2.2, clamped to -1.5
+        let adj = symbol_importance_adjustment(1, true);
+        assert_eq!(adj, -1.5, "should be clamped to -1.5, got {adj}");
+
+        // Very large: 10000 lines → log2(10000) ≈ 13.29 → (13.29 - 5.5) * 0.4 ≈ 3.12, clamped to 1.0
+        let adj = symbol_importance_adjustment(10000, true);
+        assert_eq!(adj, 1.0, "should be clamped to 1.0, got {adj}");
+    }
+
+    // ── test_symbol_penalty tests ──
+
+    #[test]
+    fn test_symbol_penalty_penalizes_test_code() {
+        assert_eq!(test_symbol_penalty(true), -5.0);
+        assert_eq!(test_symbol_penalty(false), 0.0);
+    }
+
+    #[test]
+    fn test_symbol_detection_via_batch_query() {
+        let db_path_buf = std::env::temp_dir().join("test_batch_check_test_symbols.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            // Insert a mod tests module that spans bytes 100-500
+            let test_mod = SymbolRow {
+                id: "mod_tests".to_string(),
+                file_path: "src/foo.rs".to_string(),
+                language: "rust".to_string(),
+                kind: "module".to_string(),
+                name: "tests".to_string(),
+                exported: false,
+                start_byte: 100,
+                end_byte: 500,
+                start_line: 10,
+                end_line: 50,
+                text: "#[cfg(test)]\nmod tests {\n}".to_string(),
+            };
+            sqlite.upsert_symbol(&test_mod).unwrap();
+
+            // A test helper INSIDE mod tests (byte range 150-200)
+            let test_helper = SymbolRow {
+                id: "test_helper".to_string(),
+                file_path: "src/foo.rs".to_string(),
+                language: "rust".to_string(),
+                kind: "function".to_string(),
+                name: "make_hit".to_string(),
+                exported: false,
+                start_byte: 150,
+                end_byte: 200,
+                start_line: 15,
+                end_line: 20,
+                text: "fn make_hit() {}".to_string(),
+            };
+            sqlite.upsert_symbol(&test_helper).unwrap();
+
+            // A #[test] function INSIDE mod tests
+            let test_fn = SymbolRow {
+                id: "test_fn".to_string(),
+                file_path: "src/foo.rs".to_string(),
+                language: "rust".to_string(),
+                kind: "function".to_string(),
+                name: "it_works".to_string(),
+                exported: false,
+                start_byte: 250,
+                end_byte: 400,
+                start_line: 25,
+                end_line: 45,
+                text: "#[test]\nfn it_works() { assert!(true); }".to_string(),
+            };
+            sqlite.upsert_symbol(&test_fn).unwrap();
+
+            // A production function OUTSIDE mod tests (byte range 10-90)
+            let prod_fn = SymbolRow {
+                id: "prod_fn".to_string(),
+                file_path: "src/foo.rs".to_string(),
+                language: "rust".to_string(),
+                kind: "function".to_string(),
+                name: "do_work".to_string(),
+                exported: true,
+                start_byte: 10,
+                end_byte: 90,
+                start_line: 1,
+                end_line: 8,
+                text: "pub fn do_work() { /* real code */ }".to_string(),
+            };
+            sqlite.upsert_symbol(&prod_fn).unwrap();
+
+            let ids = vec![
+                "test_helper".to_string(),
+                "test_fn".to_string(),
+                "prod_fn".to_string(),
+                "mod_tests".to_string(),
+            ];
+            let test_set = sqlite.batch_check_test_symbols(&ids).unwrap();
+
+            // test_helper: inside mod tests → detected
+            assert!(test_set.contains("test_helper"), "helper inside mod tests should be detected");
+            // test_fn: has #[test] in text → detected
+            assert!(test_set.contains("test_fn"), "#[test] function should be detected");
+            // mod_tests itself: NOT inside itself (excluded by m.id != s.id) — this is correct
+            // because we only want to penalize functions inside the mod, not the mod declaration
+            assert!(!test_set.contains("mod_tests"), "mod tests declaration should not self-match");
+            // prod_fn: outside mod tests, no #[test] → NOT detected
+            assert!(!test_set.contains("prod_fn"), "production function should not be detected");
         }
 
         let _ = std::fs::remove_file(&db_path);

@@ -226,11 +226,15 @@ async fn run() -> SdkResult<()> {
     // Trigger automatic re-index if vector dimension migration occurred
     if needs_reindex {
         tracing::info!(
-            "Vector table migration completed. Clearing file fingerprints to force full re-index..."
+            "Vector table migration completed. Clearing fingerprints and similarity clusters to force full re-index..."
         );
         // Clear fingerprints so the indexer treats all files as new
         if let Err(e) = state.sqlite.clear_all_file_fingerprints() {
             tracing::error!("Failed to clear fingerprints after vector migration: {}", e);
+        }
+        // Clear similarity clusters so embeddings are regenerated for all symbols
+        if let Err(e) = state.sqlite.clear_similarity_clusters() {
+            tracing::error!("Failed to clear similarity clusters after vector migration: {}", e);
         }
         match state.indexer.index_all().await {
             Ok(stats) => {

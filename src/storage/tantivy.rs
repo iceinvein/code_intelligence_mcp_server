@@ -15,7 +15,7 @@ use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
-const TANTIVY_SCHEMA_VERSION: &str = "5";
+const TANTIVY_SCHEMA_VERSION: &str = "7";
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -287,7 +287,7 @@ impl TantivyIndex {
         Self::open_or_create(&index_dir_utf8)
     }
 
-    pub fn upsert_symbol(&self, symbol: &SymbolRow) -> Result<()> {
+    pub fn upsert_symbol(&self, symbol: &SymbolRow, import_tags: &str) -> Result<()> {
         let writer = self
             .writer
             .lock()
@@ -301,7 +301,7 @@ impl TantivyIndex {
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
-        let expanded_text = expand_index_text(&symbol.name, &symbol.text, &symbol.file_path);
+        let expanded_text = expand_index_text(&symbol.name, &symbol.text, &symbol.file_path, import_tags);
 
         writer.add_document(doc!(
             self.fields.id => symbol.id.as_str(),
@@ -352,7 +352,9 @@ impl TantivyIndex {
     pub fn rebuild(index_dir: &Path, symbols: impl IntoIterator<Item = SymbolRow>) -> Result<Self> {
         let fresh = TantivyIndex::recreate(index_dir)?;
         for symbol in symbols {
-            fresh.upsert_symbol(&symbol)?;
+            // Rebuild from SQLite doesn't have import tags; pass empty.
+            // Import tags are only available during live indexing from source.
+            fresh.upsert_symbol(&symbol, "")?;
         }
         fresh.commit()?;
         Ok(fresh)
@@ -360,6 +362,12 @@ impl TantivyIndex {
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let searcher = self.reader.searcher();
+
+        // Remove stop words from NL queries to concentrate BM25 scoring
+        // on discriminative terms (e.g. "How does the WebSocket handler work?"
+        // becomes "WebSocket handler work" — stop words dilute TF-IDF weights)
+        let cleaned = text::remove_stop_words(query);
+        let query = &cleaned;
 
         // 3-tier field boosts based on query length:
         // - 1 word: Likely a symbol lookup → favor name field
@@ -520,7 +528,7 @@ fn register_tokenizers(index: &Index) {
         .register("code_ngram", CodeNgramTokenizer);
 }
 
-fn expand_index_text(name: &str, text: &str, file_path: &str) -> String {
+fn expand_index_text(name: &str, text: &str, file_path: &str, import_tags: &str) -> String {
     let mut result = text.to_string();
 
     // Append split symbol name if not already present
@@ -543,6 +551,50 @@ fn expand_index_text(name: &str, text: &str, file_path: &str) -> String {
             if !split_seg.is_empty() && !result.contains(&split_seg) {
                 result.push(' ');
                 result.push_str(&split_seg);
+            }
+        }
+    }
+
+    // Append file-level import tags so that symbols inherit their file's
+    // import context. This allows queries like "tree-sitter" to match
+    // functions in files that `use tree_sitter::*`, even if the function
+    // name doesn't contain "tree_sitter".
+    if !import_tags.is_empty() {
+        let result_lower = result.to_lowercase();
+        let import_lower = import_tags.to_lowercase();
+        for tag in import_lower.split_whitespace() {
+            if !result_lower.contains(tag) {
+                result.push(' ');
+                result.push_str(tag);
+            }
+        }
+    }
+
+    // Append synonym expansions for name tokens AND import tag tokens.
+    // This bridges terminology gaps at index time so that queries like
+    // "JSON serialization" match handlers using serde_json, and
+    // "file watcher" matches spawn_watch_loop.
+    let result_lower = result.to_lowercase();
+    // Collect all tokens to expand: from name + from import tags
+    let mut tokens_to_expand: Vec<String> = split_name
+        .split_whitespace()
+        .map(|t| t.to_lowercase())
+        .collect();
+    if !import_tags.is_empty() {
+        for tag in import_tags.split_whitespace() {
+            let tag_lower = tag.to_lowercase();
+            if !tokens_to_expand.contains(&tag_lower) {
+                tokens_to_expand.push(tag_lower);
+            }
+        }
+    }
+    for token_lower in &tokens_to_expand {
+        if let Some(synonyms) = text::get_synonyms(token_lower) {
+            for syn in synonyms {
+                if !result_lower.contains(syn) {
+                    result.push(' ');
+                    result.push_str(syn);
+                }
             }
         }
     }
@@ -602,14 +654,14 @@ mod tests {
 
         let index = TantivyIndex::open_or_create(&dir).unwrap();
         index
-            .upsert_symbol(&sample_symbol("id1", "alpha", "export function alpha() {}"))
+            .upsert_symbol(&sample_symbol("id1", "alpha", "export function alpha() {}"), "")
             .unwrap();
         index
             .upsert_symbol(&sample_symbol(
                 "id2",
                 "beta",
                 "export const beta = { nested: { a: 1 } }",
-            ))
+            ), "")
             .unwrap();
         index.commit().unwrap();
 
@@ -633,7 +685,7 @@ mod tests {
                 "id1",
                 "DBConnection",
                 "class DBConnection {}",
-            ))
+            ), "")
             .unwrap();
         index.commit().unwrap();
 
@@ -659,7 +711,7 @@ mod tests {
                 "id1",
                 "HTTP2Server_v1",
                 "class HTTP2Server_v1 {}",
-            ))
+            ), "")
             .unwrap();
         index.commit().unwrap();
 
@@ -681,7 +733,7 @@ mod tests {
                 "id1",
                 "alpha",
                 "export function alpha() { return foo_bar(); }",
-            ))
+            ), "")
             .unwrap();
         index.commit().unwrap();
 
@@ -699,7 +751,7 @@ mod tests {
                 "id1",
                 "DBConnection",
                 "class DBConnection { connect() {} }",
-            ))
+            ), "")
             .unwrap();
         index.commit().unwrap();
 

@@ -218,6 +218,11 @@ impl SqliteStore {
         queries::misc::list_symbols_in_cluster(&conn, cluster_key, limit)
     }
 
+    pub fn clear_similarity_clusters(&self) -> Result<u64> {
+        let conn = self.write()?;
+        queries::misc::clear_similarity_clusters(&conn)
+    }
+
     pub fn list_symbols_without_similarity_clusters(
         &self,
         limit: usize,
@@ -261,6 +266,30 @@ impl SqliteStore {
     pub fn get_symbol_metrics(&self, symbol_id: &str) -> Result<Option<SymbolMetricsRow>> {
         let conn = self.read()?;
         queries::metrics::get_symbol_metrics(&conn, symbol_id)
+    }
+
+    pub fn batch_get_symbol_line_counts(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, u32>> {
+        let conn = self.read()?;
+        queries::symbols::batch_get_symbol_line_counts(&conn, symbol_ids)
+    }
+
+    pub fn batch_get_symbol_texts(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let conn = self.read()?;
+        queries::symbols::batch_get_symbol_texts(&conn, symbol_ids)
+    }
+
+    pub fn batch_check_test_symbols(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        let conn = self.read()?;
+        queries::symbols::batch_check_test_symbols(&conn, symbol_ids)
     }
 
     pub fn insert_query_selection(

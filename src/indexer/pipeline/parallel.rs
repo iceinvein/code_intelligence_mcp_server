@@ -215,6 +215,18 @@ fn index_file_single(
     let mut name_to_id: HashMap<String, String> = HashMap::new();
     let mut symbol_rows = Vec::new();
 
+    // Extract file-level import tags for Tantivy enrichment
+    let import_tags = if language_id == crate::indexer::parser::LanguageId::Rust {
+        crate::text::extract_rust_import_tags(&source)
+    } else {
+        let sources: Vec<String> = extracted
+            .imports
+            .iter()
+            .map(|imp| imp.source.clone())
+            .collect();
+        crate::text::build_import_tags_from_sources(&sources)
+    };
+
     // Add file-level symbol
     let file_symbol_id = stable_symbol_id(&rel, "FILE_ROOT", 0);
     symbol_rows.push(SymbolRow {
@@ -269,7 +281,7 @@ fn index_file_single(
 
     // Update Tantivy
     for row in &symbol_rows {
-        tantivy.upsert_symbol(row)?;
+        tantivy.upsert_symbol(row, &import_tags)?;
         upsert_name_mapping(&mut name_to_id, row);
     }
     tantivy.commit()?;

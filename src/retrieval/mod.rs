@@ -81,6 +81,9 @@ pub struct HitSignals {
     pub structural_adjust: f32,
     pub intent_mult: f32,
     pub definition_bias: f32,
+    pub term_coverage: f32,
+    pub symbol_importance: f32,
+    pub test_symbol_penalty: f32,
     pub popularity_boost: f32,
     pub learning_boost: f32,
     pub affinity_boost: f32,
@@ -250,6 +253,13 @@ impl Retriever {
         // Intent Detection
         let intent = detect_intent(&query_without_controls);
 
+        // Detect NL queries for dynamic RRF weight adjustment.
+        // NL queries (3+ words, not code) benefit from higher vector weight
+        // because BM25 often matches irrelevant identifiers while vector search
+        // captures semantic intent (e.g., "WebSocket handler" → elysia.rs WS code).
+        let is_nl_query = !contains_code_snippet(&query_without_controls)
+            && query_without_controls.split_whitespace().count() >= 3;
+
         // Normalize and expand query
         let expanded_query = normalize_and_expand_query(
             &query_without_controls,
@@ -348,8 +358,6 @@ impl Retriever {
                 // SINGLE-QUERY PATH: Use existing logic unchanged
                 let search_query = &sub_queries[0];
 
-                // For natural language queries, use a larger retrieval pool
-                // to give the ranking pipeline more candidates to work with
                 let k = if contains_code_snippet(search_query) {
                     self.config.vector_search_limit.max(limit).max(5)
                 } else {
@@ -453,12 +461,22 @@ impl Retriever {
                             keyword_ranked.clone()
                         };
 
-                    // Apply RRF
-                    let weights = (
-                        self.config.rrf_keyword_weight,
-                        self.config.rrf_vector_weight,
-                        self.config.rrf_graph_weight,
-                    );
+                    // Apply RRF with dynamic weights based on query type.
+                    // NL queries get higher vector weight because BM25 often
+                    // matches irrelevant identifiers for conceptual queries.
+                    let weights = if is_nl_query {
+                        (
+                            self.config.rrf_keyword_weight * 0.5,
+                            self.config.rrf_vector_weight * 1.5,
+                            self.config.rrf_graph_weight,
+                        )
+                    } else {
+                        (
+                            self.config.rrf_keyword_weight,
+                            self.config.rrf_vector_weight,
+                            self.config.rrf_graph_weight,
+                        )
+                    };
 
                     let mut rrf_results = reciprocal_rank_fusion(
                         &keyword_ranked,
@@ -480,6 +498,11 @@ impl Retriever {
                     // Apply structural and intent adjustments post-RRF.
                     // RRF only considers rank position, not content signals like
                     // test penalties, intent multipliers, or directory semantics.
+                    let line_count_ids: Vec<String> = rrf_results.iter().map(|h| h.id.clone()).collect();
+                    let line_counts = sqlite.batch_get_symbol_line_counts(&line_count_ids).unwrap_or_default();
+                    let test_symbols = sqlite.batch_check_test_symbols(&line_count_ids).unwrap_or_default();
+                    let symbol_texts = sqlite.batch_get_symbol_texts(&line_count_ids).unwrap_or_default();
+
                     let mut signals = HashMap::new();
                     for hit in rrf_results.iter_mut() {
                         let structural = ranking::structural_adjustment(
@@ -505,11 +528,18 @@ impl Retriever {
                             &hit.kind,
                             &intent,
                         );
-                        // Apply intent_mult to ALL signals (including def_bias) so
-                        // test penalties actually suppress test function scores.
-                        // Previously def_bias was added post-multiplication, bypassing
-                        // the test penalty entirely.
-                        hit.score = (hit.score + structural + def_bias) * intent_mult;
+                        let body = symbol_texts.get(&hit.id).map(|s| s.as_str());
+                        let tc = ranking::term_coverage_adjustment(
+                            &query_without_controls,
+                            &hit.name,
+                            &hit.file_path,
+                            body,
+                        );
+                        let lc = line_counts.get(&hit.id).copied().unwrap_or(0);
+                        let si = ranking::symbol_importance_adjustment(lc, hit.exported);
+                        let is_test = test_symbols.contains(&hit.id);
+                        let tp = ranking::test_symbol_penalty(is_test);
+                        hit.score = (hit.score + structural + def_bias + tc + si + tp) * intent_mult;
 
                         signals.insert(
                             hit.id.clone(),
@@ -520,6 +550,9 @@ impl Retriever {
                                 structural_adjust: structural,
                                 intent_mult,
                                 definition_bias: def_bias,
+                                term_coverage: tc,
+                                symbol_importance: si,
+                                test_symbol_penalty: tp,
                                 popularity_boost: 0.0,
                                 learning_boost: 0.0,
                                 affinity_boost: 0.0,
@@ -654,17 +687,30 @@ impl Retriever {
                     keyword_ranked.clone()
                 };
 
-                // Single RRF pass over combined results
-                let weights = (
-                    self.config.rrf_keyword_weight,
-                    self.config.rrf_vector_weight,
-                    self.config.rrf_graph_weight,
-                );
+                // Single RRF pass over combined results (dynamic weights for NL queries)
+                let weights = if is_nl_query {
+                    (
+                        self.config.rrf_keyword_weight * 0.5,
+                        self.config.rrf_vector_weight * 1.5,
+                        self.config.rrf_graph_weight,
+                    )
+                } else {
+                    (
+                        self.config.rrf_keyword_weight,
+                        self.config.rrf_vector_weight,
+                        self.config.rrf_graph_weight,
+                    )
+                };
 
                 let mut ranked =
                     reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
 
                 // Apply structural and intent adjustments post-RRF (same as single-query path)
+                let line_count_ids: Vec<String> = ranked.iter().map(|h| h.id.clone()).collect();
+                let line_counts = sqlite.batch_get_symbol_line_counts(&line_count_ids).unwrap_or_default();
+                let test_symbols = sqlite.batch_check_test_symbols(&line_count_ids).unwrap_or_default();
+                let symbol_texts = sqlite.batch_get_symbol_texts(&line_count_ids).unwrap_or_default();
+
                 let mut hit_signals = HashMap::new();
                 for hit in ranked.iter_mut() {
                     let structural = ranking::structural_adjustment(
@@ -692,7 +738,18 @@ impl Retriever {
                         &hit.kind,
                         &intent,
                     );
-                    hit.score += def_bias;
+                    let body = symbol_texts.get(&hit.id).map(|s| s.as_str());
+                    let tc = ranking::term_coverage_adjustment(
+                        &query_without_controls,
+                        &hit.name,
+                        &hit.file_path,
+                        body,
+                    );
+                    let lc = line_counts.get(&hit.id).copied().unwrap_or(0);
+                    let si = ranking::symbol_importance_adjustment(lc, hit.exported);
+                    let is_test = test_symbols.contains(&hit.id);
+                    let tp = ranking::test_symbol_penalty(is_test);
+                    hit.score += def_bias + tc + si + tp;
 
                     hit_signals.insert(
                         hit.id.clone(),
@@ -703,6 +760,9 @@ impl Retriever {
                             structural_adjust: structural,
                             intent_mult,
                             definition_bias: def_bias,
+                            term_coverage: tc,
+                            symbol_importance: si,
+                            test_symbol_penalty: tp,
                             popularity_boost: 0.0,
                             learning_boost: 0.0,
                             affinity_boost: 0.0,
@@ -742,6 +802,88 @@ impl Retriever {
         for hit in ranked {
             if seen.insert(hit.id.clone()) {
                 uniq.push(hit);
+            }
+        }
+
+        // Inject framework pattern matches for NL queries.
+        // Framework patterns (WebSocket handlers, routes, middleware) live in a
+        // separate table and aren't directly searchable via BM25/vector. This
+        // post-merge step queries them and boosts/injects matching parent symbols.
+        if is_nl_query {
+            if let Ok(patterns) = sqlite.search_framework_patterns(
+                None, None, None, None, None, None, 200,
+            ) {
+                let query_lower = query_without_controls.to_lowercase();
+                let mut fw_file_lines: Vec<(String, u32)> = Vec::new();
+
+                for pattern in &patterns {
+                    let kind_lower = pattern.kind.to_lowercase();
+                    let matches = query_lower.contains(&kind_lower)
+                        || (kind_lower == "websocket"
+                            && (query_lower.contains("websocket")
+                                || query_lower.contains("ws")
+                                || query_lower.contains("socket")))
+                        || (kind_lower == "route"
+                            && (query_lower.contains("route")
+                                || query_lower.contains("endpoint")
+                                || query_lower.contains("api")))
+                        || (kind_lower == "middleware"
+                            && query_lower.contains("middleware"))
+                        || (kind_lower == "plugin"
+                            && query_lower.contains("plugin"));
+
+                    if matches {
+                        fw_file_lines.push((pattern.file_path.clone(), pattern.line));
+                    }
+                }
+
+                // Find parent symbols for matched framework patterns
+                let mut fw_files: HashSet<String> = HashSet::new();
+                for (fp, _) in &fw_file_lines {
+                    fw_files.insert(fp.clone());
+                }
+
+                for fw_file in &fw_files {
+                    if let Ok(file_symbols) = sqlite.list_symbols_by_file(fw_file) {
+                        // For each framework pattern in this file, find the
+                        // smallest enclosing symbol (closest start_line <= pattern line)
+                        for &(ref fp, line) in &fw_file_lines {
+                            if fp != fw_file {
+                                continue;
+                            }
+                            // Find best enclosing symbol: start_line <= line <= end_line,
+                            // preferring the smallest span (most specific)
+                            let enclosing = file_symbols
+                                .iter()
+                                .filter(|s| {
+                                    s.start_line <= line && s.end_line >= line
+                                })
+                                .min_by_key(|s| s.end_line - s.start_line);
+
+                            if let Some(sym) = enclosing {
+                                if seen.contains(&sym.id) {
+                                    // Already in results — boost its score
+                                    if let Some(hit) = uniq.iter_mut().find(|h| h.id == sym.id) {
+                                        hit.score += 0.15;
+                                    }
+                                } else {
+                                    // Inject as new result with moderate score
+                                    let top_score = uniq.first().map(|h| h.score).unwrap_or(1.0);
+                                    seen.insert(sym.id.clone());
+                                    uniq.push(RankedHit {
+                                        id: sym.id.clone(),
+                                        score: top_score * 0.7,
+                                        name: sym.name.clone(),
+                                        kind: sym.kind.clone(),
+                                        file_path: sym.file_path.clone(),
+                                        exported: sym.exported,
+                                        language: sym.language.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

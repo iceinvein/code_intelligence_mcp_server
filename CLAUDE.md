@@ -28,6 +28,39 @@ BASE_DIR=/path/to/repo ./target/release/code-intelligence-mcp-server
 EMBEDDINGS_BACKEND=hash cargo test
 ```
 
+## Standalone Server Mode
+
+The server can run as a long-lived HTTP daemon serving multiple repos via Streamable HTTP transport. This is ideal when running multiple MCP clients (e.g. 5-6 Claude Code instances) — the embedding model (~500MB) is loaded once and shared.
+
+```bash
+# Start standalone server (default: localhost:3333)
+./target/release/code-intelligence-mcp-server --standalone
+
+# Custom port/host
+./target/release/code-intelligence-mcp-server --standalone --port 4444 --host 0.0.0.0
+
+# Via npx
+npx @iceinvein/code-intelligence-mcp-standalone
+
+# Via env var
+CIMCP_MODE=standalone ./target/release/code-intelligence-mcp-server
+```
+
+Configure MCP clients to connect:
+```json
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "type": "streamable-http",
+      "url": "http://localhost:3333/mcp"
+    }
+  }
+}
+```
+
+Data stored in `~/.code-intelligence/` (repos, models, config).
+Optional config: `~/.code-intelligence/server.toml`.
+
 ## Architecture
 
 ### Data Flow

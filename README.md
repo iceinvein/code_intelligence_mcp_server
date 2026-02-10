@@ -49,6 +49,158 @@ Add to your `opencode.json` (or global config):
 
 ---
 
+## Standalone Server Mode
+
+By default, each MCP client spawns its own server process (stdio transport). If you run multiple clients — say 5-6 Claude Code instances — each loads its own copy of the embedding model (~500MB), consuming ~3.6GB total.
+
+**Standalone mode** runs a single long-lived HTTP server that all clients share. One embedding model, one process, ~70% memory reduction.
+
+### Starting the Server
+
+```bash
+# Default: localhost:3333
+npx @iceinvein/code-intelligence-mcp-standalone
+
+# Custom host/port
+npx @iceinvein/code-intelligence-mcp-standalone --port 4444 --host 0.0.0.0
+
+# From source
+./target/release/code-intelligence-mcp-server --standalone
+./target/release/code-intelligence-mcp-server --standalone --port 4444
+
+# Via environment variable
+CIMCP_MODE=standalone ./target/release/code-intelligence-mcp-server
+```
+
+### Connecting MCP Clients
+
+Point your MCP clients to the standalone server using Streamable HTTP transport:
+
+**Claude Code** (`~/.claude/claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "type": "streamable-http",
+      "url": "http://localhost:3333/mcp"
+    }
+  }
+}
+```
+
+**OpenCode** (`opencode.json`):
+```json
+{
+  "mcp": {
+    "code-intelligence": {
+      "type": "remote",
+      "url": "http://localhost:3333/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+**Cursor** (`.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "url": "http://localhost:3333/mcp"
+    }
+  }
+}
+```
+
+The server auto-detects each client's workspace root via the MCP `roots` capability — no `BASE_DIR` needed.
+
+### How It Works
+
+```
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ Claude Code  │  │   Cursor    │  │    Trae     │
+│  Session A   │  │  Session B  │  │  Session C  │
+└──────┬───────┘  └──────┬──────┘  └──────┬──────┘
+       │ POST /mcp       │                │
+       └─────────┬───────┘────────────────┘
+                 │  Streamable HTTP
+        ┌────────▼────────┐
+        │  Standalone MCP │  ← Single process, shared embedding model
+        │     Server      │
+        └────────┬────────┘
+                 │
+    ┌────────────┼────────────┐
+    ▼            ▼            ▼
+┌────────┐ ┌────────┐ ┌────────┐
+│ Repo A │ │ Repo B │ │ Repo C │  ← Per-repo SQLite + Tantivy + LanceDB
+│indexes │ │indexes │ │indexes │
+└────────┘ └────────┘ └────────┘
+```
+
+Each client session is bound to its workspace root. The server maintains separate indexes per repo but shares the embedding model across all of them.
+
+### Data Storage
+
+All standalone data lives in `~/.code-intelligence/`:
+
+```
+~/.code-intelligence/
+├── server.toml              # Optional config file
+├── models/                  # Shared embedding model (~500MB, loaded once)
+│   └── jina-code-onnx/
+├── logs/
+│   └── server.log
+└── repos/
+    ├── registry.json        # Tracks all known repos
+    ├── a1b2c3d4e5f6a7b8/   # Per-repo data (SHA256 hash of path)
+    │   ├── code-intelligence.db
+    │   ├── tantivy-index/
+    │   └── vectors/
+    └── f8e7d6c5b4a3f2e1/
+        └── ...
+```
+
+### Configuration
+
+Standalone mode is configured via `~/.code-intelligence/server.toml` (created on first run with defaults). Environment variables and CLI flags override TOML settings.
+
+**Priority:** CLI flags > Environment variables > `server.toml` > Defaults
+
+**Example `server.toml`:**
+
+```toml
+[server]
+host = "127.0.0.1"
+port = 3333
+
+[embeddings]
+backend = "jinacode"        # jinacode (default), fastembed, hash
+device = "metal"            # cpu or metal (macOS GPU)
+auto_download = false
+model_repo = "jinaai/jina-embeddings-v2-base-code"
+
+[repos.defaults]
+index_patterns = "**/*.ts,**/*.tsx,**/*.rs,**/*.py,**/*.go"
+exclude_patterns = "**/node_modules/**,**/dist/**,**/.git/**"
+watch_mode = true           # Auto-reindex on file changes
+
+[lifecycle]
+warm_ttl_seconds = 300      # How long idle repos stay in memory
+```
+
+**Environment variable overrides (same as embedded mode):**
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `CIMCP_MODE` | `standalone` | Alternative to `--standalone` flag |
+| `EMBEDDINGS_BACKEND` | `hash` | Override embedding backend |
+| `EMBEDDINGS_DEVICE` | `metal` | Override device (cpu/metal) |
+| `EMBEDDINGS_MODEL_REPO` | `jinaai/...` | Override model repo |
+| `EMBEDDINGS_MODEL_DIR` | `/path/to/model` | Override model directory |
+| `EMBEDDINGS_MAX_THREADS` | `4` | Limit embedding threads |
+
+---
+
 ## Capabilities
 
 Available tools for the agent (19 tools total):
@@ -303,12 +455,16 @@ src/
 ├── retrieval/         # Hybrid search, ranking, context assembly
 ├── graph/             # PageRank, call hierarchy, type graphs
 ├── handlers/          # MCP tool handlers
-├── server/            # MCP protocol routing
+├── server/            # MCP protocol routing (embedded + standalone)
+│   ├── mod.rs         # Shared tool dispatch, embedded handler
+│   └── standalone.rs  # Standalone HTTP handler with session routing
 ├── tools/             # Tool definitions
 ├── embeddings/        # Jina Code model wrapper
 ├── reranker/          # Cross-encoder ORT implementation
 ├── metrics/           # Prometheus metrics
-└── config.rs          # Environment-based configuration
+├── config.rs          # Configuration (embedded + standalone)
+├── session.rs         # Multi-repo session management (standalone)
+└── registry.rs        # Repo registry with path hashing (standalone)
 ```
 
 ## License

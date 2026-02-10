@@ -25,6 +25,8 @@ pub struct SessionManager {
     pub registry: Arc<RepoRegistry>,
     embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
     repos: DashMap<String, Arc<AppState>>,  // keyed by canonical repo path string
+    /// Per-key init locks to prevent TOCTOU races when two sessions init the same repo
+    init_locks: DashMap<String, Arc<Mutex<()>>>,
     metrics: Arc<MetricsRegistry>,
 }
 
@@ -42,6 +44,7 @@ impl SessionManager {
             registry: Arc::new(registry),
             embedder: Arc::new(Mutex::new(embedder)),
             repos: DashMap::new(),
+            init_locks: DashMap::new(),
             metrics,
         })
     }
@@ -49,14 +52,26 @@ impl SessionManager {
     pub async fn get_or_create_repo(&self, repo_path: &Utf8PathBuf) -> Result<Arc<AppState>> {
         let canonical = repo_path.as_str().to_string();
 
-        // Fast path: check if already exists
+        // Fast path: check if already exists (no lock needed)
         if let Some(state) = self.repos.get(&canonical) {
-            // Touch last_accessed
             let _ = self.registry.touch(&canonical);
             return Ok(state.clone());
         }
 
-        // Slow path: register and initialize
+        // Slow path: acquire per-key init lock to prevent TOCTOU race
+        // (two sessions binding to the same repo simultaneously)
+        let lock = self.init_locks
+            .entry(canonical.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+
+        // Re-check after acquiring lock (another task may have initialized it)
+        if let Some(state) = self.repos.get(&canonical) {
+            let _ = self.registry.touch(&canonical);
+            return Ok(state.clone());
+        }
+
         let entry = self.registry.register(&canonical)
             .context("Failed to register repository")?;
 
@@ -77,8 +92,10 @@ impl SessionManager {
         // Create storage directories
         std::fs::create_dir_all(&entry.data_dir)
             .context("Failed to create repo data directory")?;
-        std::fs::create_dir_all(&config_arc.db_path.parent().unwrap())
-            .context("Failed to create db parent directory")?;
+        if let Some(db_parent) = config_arc.db_path.parent() {
+            std::fs::create_dir_all(db_parent)
+                .context("Failed to create db parent directory")?;
+        }
         std::fs::create_dir_all(&config_arc.vector_db_path)
             .context("Failed to create vector db directory")?;
         std::fs::create_dir_all(&config_arc.tantivy_index_path)
@@ -102,9 +119,11 @@ impl SessionManager {
             embedder.dim()
         };
 
-        // Connect LanceDB and open/create table
+        // Connect LanceDB, migrate if embedding dimension changed, then open table
         let lancedb = LanceDbStore::connect(&config_arc.vector_db_path).await
             .context("Failed to connect to LanceDB")?;
+        let _migrated = lancedb.migrate_vector_table("symbols", embedding_dim).await
+            .context("Failed to migrate vector table")?;
         let vectors = lancedb.open_or_create_table("symbols", embedding_dim).await
             .context("Failed to open or create LanceDB table")?;
         let vectors_arc = Arc::new(vectors);
@@ -129,12 +148,19 @@ impl SessionManager {
             self.metrics.clone(),
         );
 
-        Ok(AppState {
+        let state = AppState {
             config: config_arc,
             indexer,
             retriever,
             sqlite: sqlite_arc,
-        })
+        };
+
+        // Start file watcher for auto-reindexing
+        if state.config.watch_mode {
+            state.indexer.spawn_watch_loop();
+        }
+
+        Ok(state)
     }
 
     #[cfg(test)]

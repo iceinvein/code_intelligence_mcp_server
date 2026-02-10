@@ -15,6 +15,34 @@ use rust_mcp_sdk::{
 };
 use std::sync::Arc;
 
+/// All tools advertised by both embedded and standalone handlers
+pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
+    vec![
+        SearchCodeTool::tool(),
+        RefreshIndexTool::tool(),
+        GetDefinitionTool::tool(),
+        FindReferencesTool::tool(),
+        GetFileSymbolsTool::tool(),
+        GetCallHierarchyTool::tool(),
+        ExploreDependencyGraphTool::tool(),
+        GetTypeGraphTool::tool(),
+        GetUsageExamplesTool::tool(),
+        GetIndexStatsTool::tool(),
+        HydrateSymbolsTool::tool(),
+        ReportSelectionTool::tool(),
+        ExplainSearchTool::tool(),
+        FindSimilarCodeTool::tool(),
+        SummarizeFileTool::tool(),
+        GetModuleSummaryTool::tool(),
+        TraceDataFlowTool::tool(),
+        FindAffectedCodeTool::tool(),
+        SearchTodosTool::tool(),
+        FindTestsForSymbolTool::tool(),
+        SearchDecoratorsTool::tool(),
+        SearchFrameworkPatternsTool::tool(),
+    ]
+}
+
 /// Shared tool dispatch — used by both embedded and standalone handlers
 pub async fn dispatch_tool_call(
     state: &AppState,
@@ -274,30 +302,7 @@ impl ServerHandler for CodeIntelligenceHandler {
         _runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<ListToolsResult, RpcError> {
         Ok(ListToolsResult {
-            tools: vec![
-                SearchCodeTool::tool(),
-                RefreshIndexTool::tool(),
-                GetDefinitionTool::tool(),
-                FindReferencesTool::tool(),
-                GetFileSymbolsTool::tool(),
-                GetCallHierarchyTool::tool(),
-                ExploreDependencyGraphTool::tool(),
-                GetTypeGraphTool::tool(),
-                GetUsageExamplesTool::tool(),
-                GetIndexStatsTool::tool(),
-                HydrateSymbolsTool::tool(),
-                ReportSelectionTool::tool(),
-                ExplainSearchTool::tool(),
-                FindSimilarCodeTool::tool(),
-                SummarizeFileTool::tool(),
-                GetModuleSummaryTool::tool(),
-                TraceDataFlowTool::tool(),
-                FindAffectedCodeTool::tool(),
-                SearchTodosTool::tool(),
-                FindTestsForSymbolTool::tool(),
-                SearchDecoratorsTool::tool(),
-                SearchFrameworkPatternsTool::tool(),
-            ],
+            tools: all_tools(),
             meta: None,
             next_cursor: None,
         })

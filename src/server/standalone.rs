@@ -2,9 +2,8 @@
 
 use crate::handlers::AppState;
 use crate::path::Utf8PathBuf;
-use crate::server::dispatch_tool_call;
+use crate::server::{all_tools, dispatch_tool_call};
 use crate::session::SessionManager;
-use crate::tools::*;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rust_mcp_sdk::{
@@ -84,9 +83,28 @@ impl ServerHandler for StandaloneHandler {
         match runtime.request_root_list(None).await {
             Ok(roots_result) => {
                 if let Some(root) = roots_result.roots.first() {
-                    // root.uri format: "file:///Users/dev/project"
-                    let path = root.uri.strip_prefix("file://").unwrap_or(&root.uri);
-                    let repo_path = Utf8PathBuf::from(path);
+                    // Parse file:// URI properly (handles Windows paths like file:///C:/...)
+                    let repo_path = match url::Url::parse(&root.uri) {
+                        Ok(parsed) => match parsed.to_file_path() {
+                            Ok(std_path) => match Utf8PathBuf::from_path_buf(std_path) {
+                                Ok(p) => p,
+                                Err(non_utf8) => {
+                                    tracing::warn!(
+                                        session = %session_id,
+                                        path = ?non_utf8,
+                                        "Root URI contains non-UTF-8 path, using raw URI"
+                                    );
+                                    Utf8PathBuf::from(
+                                        root.uri.strip_prefix("file://").unwrap_or(&root.uri)
+                                    )
+                                }
+                            },
+                            Err(_) => Utf8PathBuf::from(
+                                root.uri.strip_prefix("file://").unwrap_or(&root.uri)
+                            ),
+                        },
+                        Err(_) => Utf8PathBuf::from(&root.uri),
+                    };
 
                     tracing::info!(
                         session = %session_id,
@@ -129,30 +147,7 @@ impl ServerHandler for StandaloneHandler {
         _runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<ListToolsResult, RpcError> {
         Ok(ListToolsResult {
-            tools: vec![
-                SearchCodeTool::tool(),
-                RefreshIndexTool::tool(),
-                GetDefinitionTool::tool(),
-                FindReferencesTool::tool(),
-                GetFileSymbolsTool::tool(),
-                GetCallHierarchyTool::tool(),
-                ExploreDependencyGraphTool::tool(),
-                GetTypeGraphTool::tool(),
-                GetUsageExamplesTool::tool(),
-                GetIndexStatsTool::tool(),
-                HydrateSymbolsTool::tool(),
-                ReportSelectionTool::tool(),
-                ExplainSearchTool::tool(),
-                FindSimilarCodeTool::tool(),
-                SummarizeFileTool::tool(),
-                GetModuleSummaryTool::tool(),
-                TraceDataFlowTool::tool(),
-                FindAffectedCodeTool::tool(),
-                SearchTodosTool::tool(),
-                FindTestsForSymbolTool::tool(),
-                SearchDecoratorsTool::tool(),
-                SearchFrameworkPatternsTool::tool(),
-            ],
+            tools: all_tools(),
             meta: None,
             next_cursor: None,
         })

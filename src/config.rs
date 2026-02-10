@@ -216,7 +216,9 @@ impl StandaloneConfig {
         Ok(config)
     }
 
-    /// Load standalone config from ~/.code-intelligence/server.toml with CLI overrides
+    /// Load standalone config from ~/.code-intelligence/server.toml with env var and CLI overrides
+    ///
+    /// Priority: CLI args > env vars > server.toml > defaults
     pub fn load(cli_host: Option<&str>, cli_port: Option<u16>) -> Result<Self> {
         let mut config = Self::default();
 
@@ -228,7 +230,40 @@ impl StandaloneConfig {
             config = Self::from_toml_str(&toml_str)?;
         }
 
-        // Apply CLI overrides
+        // Apply env var overrides
+        if let Ok(backend) = std::env::var("EMBEDDINGS_BACKEND") {
+            match backend.to_lowercase().as_str() {
+                "hash" => config.embeddings_backend = EmbeddingsBackend::Hash,
+                "fastembed" => config.embeddings_backend = EmbeddingsBackend::FastEmbed,
+                "jinacode" => config.embeddings_backend = EmbeddingsBackend::JinaCode,
+                other => tracing::warn!("Unknown EMBEDDINGS_BACKEND: {}", other),
+            }
+        }
+        if let Ok(device) = std::env::var("EMBEDDINGS_DEVICE") {
+            match device.to_lowercase().as_str() {
+                "cpu" => config.embeddings_device = EmbeddingsDevice::Cpu,
+                "metal" => config.embeddings_device = EmbeddingsDevice::Metal,
+                other => tracing::warn!("Unknown EMBEDDINGS_DEVICE: {}", other),
+            }
+        }
+        if let Ok(model_repo) = std::env::var("EMBEDDINGS_MODEL_REPO") {
+            config.embeddings_model_repo = Some(model_repo);
+        }
+        if let Ok(model_dir) = std::env::var("EMBEDDINGS_MODEL_DIR") {
+            config.embeddings_model_dir = Some(Utf8PathBuf::from(model_dir));
+        }
+        if let Ok(val) = std::env::var("EMBEDDINGS_MAX_THREADS") {
+            if let Ok(threads) = val.parse::<usize>() {
+                config.embedding_max_threads = threads;
+            }
+        }
+        if let Ok(val) = std::env::var("HASH_EMBEDDING_DIM") {
+            if let Ok(dim) = val.parse::<usize>() {
+                config.hash_embedding_dim = dim;
+            }
+        }
+
+        // Apply CLI overrides (highest priority)
         if let Some(host) = cli_host {
             config.host = host.to_string();
         }

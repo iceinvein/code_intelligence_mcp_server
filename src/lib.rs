@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod config;
 pub mod embeddings;
 pub mod graph;
@@ -5,6 +6,7 @@ pub mod handlers;
 pub mod indexer;
 pub mod metrics;
 pub mod path;
+pub mod registry;
 pub mod reranker;
 pub mod retrieval;
 pub mod server;

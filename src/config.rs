@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -50,6 +51,265 @@ pub enum EmbeddingsBackend {
     FastEmbed,
     Hash,
     JinaCode,
+}
+
+/// Returns the standalone data directory (~/.code-intelligence)
+pub fn get_standalone_data_dir() -> Utf8PathBuf {
+    env::var("HOME")
+        .ok()
+        .and_then(|home| {
+            Utf8PathBuf::from_path_buf(PathBuf::from(home).join(".code-intelligence")).ok()
+        })
+        .unwrap_or_else(|| {
+            let fallback = Utf8PathBuf::from("/tmp/.code-intelligence");
+            tracing::warn!(
+                path = %fallback,
+                "HOME not set, using temp fallback for standalone data"
+            );
+            fallback
+        })
+}
+
+// TOML parsing structs (private, for deserialization)
+#[derive(Debug, Deserialize)]
+struct ServerToml {
+    server: Option<ServerTomlServer>,
+    embeddings: Option<ServerTomlEmbeddings>,
+    repos: Option<ServerTomlRepos>,
+    lifecycle: Option<ServerTomlLifecycle>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlServer {
+    host: Option<String>,
+    port: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlEmbeddings {
+    backend: Option<EmbeddingsBackend>,
+    device: Option<EmbeddingsDevice>,
+    auto_download: Option<bool>,
+    model_repo: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlRepos {
+    defaults: Option<ServerTomlRepoDefaults>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlRepoDefaults {
+    index_patterns: Option<String>,
+    exclude_patterns: Option<String>,
+    watch_mode: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlLifecycle {
+    warm_ttl_seconds: Option<u64>,
+}
+
+/// Configuration for standalone HTTP server mode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandaloneConfig {
+    pub host: String,
+    pub port: u16,
+    pub data_dir: Utf8PathBuf,
+    pub warm_ttl_seconds: u64,
+    pub embeddings_backend: EmbeddingsBackend,
+    pub embeddings_device: EmbeddingsDevice,
+    pub embeddings_auto_download: bool,
+    pub embeddings_model_repo: Option<String>,
+    pub embeddings_model_dir: Option<Utf8PathBuf>,
+    pub embedding_max_threads: usize,
+    pub hash_embedding_dim: usize,
+    pub default_index_patterns: Vec<String>,
+    pub default_exclude_patterns: Vec<String>,
+    pub default_watch_mode: bool,
+}
+
+impl Default for StandaloneConfig {
+    fn default() -> Self {
+        let data_dir = get_standalone_data_dir();
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 3333,
+            data_dir: data_dir.clone(),
+            warm_ttl_seconds: 300,
+            embeddings_backend: EmbeddingsBackend::JinaCode,
+            embeddings_device: EmbeddingsDevice::Cpu,
+            embeddings_auto_download: false,
+            embeddings_model_repo: Some("jinaai/jina-embeddings-v2-base-code".to_string()),
+            embeddings_model_dir: Some(data_dir.join("models/jina-code-onnx")),
+            embedding_max_threads: 0,
+            hash_embedding_dim: 64,
+            default_index_patterns: vec![
+                "**/*.ts".to_string(),
+                "**/*.tsx".to_string(),
+                "**/*.rs".to_string(),
+            ],
+            default_exclude_patterns: vec![
+                "**/node_modules/**".to_string(),
+                "**/dist/**".to_string(),
+                "**/build/**".to_string(),
+                "**/.git/**".to_string(),
+                "**/*.test.*".to_string(),
+            ],
+            default_watch_mode: true,
+        }
+    }
+}
+
+impl StandaloneConfig {
+    /// Parse standalone config from TOML string
+    pub fn from_toml_str(toml_str: &str) -> Result<Self> {
+        let parsed: ServerToml = toml::from_str(toml_str)
+            .context("Failed to parse server.toml")?;
+
+        let mut config = Self::default();
+
+        if let Some(server) = parsed.server {
+            if let Some(host) = server.host {
+                config.host = host;
+            }
+            if let Some(port) = server.port {
+                config.port = port;
+            }
+        }
+
+        if let Some(embeddings) = parsed.embeddings {
+            if let Some(backend) = embeddings.backend {
+                config.embeddings_backend = backend;
+            }
+            if let Some(device) = embeddings.device {
+                config.embeddings_device = device;
+            }
+            if let Some(auto_download) = embeddings.auto_download {
+                config.embeddings_auto_download = auto_download;
+            }
+            if let Some(model_repo) = embeddings.model_repo {
+                config.embeddings_model_repo = Some(model_repo);
+            }
+        }
+
+        if let Some(repos) = parsed.repos {
+            if let Some(defaults) = repos.defaults {
+                if let Some(patterns) = defaults.index_patterns {
+                    config.default_index_patterns = parse_csv(&patterns);
+                }
+                if let Some(patterns) = defaults.exclude_patterns {
+                    config.default_exclude_patterns = parse_csv(&patterns);
+                }
+                if let Some(watch_mode) = defaults.watch_mode {
+                    config.default_watch_mode = watch_mode;
+                }
+            }
+        }
+
+        if let Some(lifecycle) = parsed.lifecycle {
+            if let Some(warm_ttl) = lifecycle.warm_ttl_seconds {
+                config.warm_ttl_seconds = warm_ttl;
+            }
+        }
+
+        Ok(config)
+    }
+
+    /// Load standalone config from ~/.code-intelligence/server.toml with CLI overrides
+    pub fn load(cli_host: Option<&str>, cli_port: Option<u16>) -> Result<Self> {
+        let mut config = Self::default();
+
+        // Try to load from server.toml
+        let config_path = config.data_dir.join("server.toml");
+        if config_path.exists() {
+            let toml_str = fs::read_to_string(config_path.as_std_path())
+                .context("Failed to read server.toml")?;
+            config = Self::from_toml_str(&toml_str)?;
+        }
+
+        // Apply CLI overrides
+        if let Some(host) = cli_host {
+            config.host = host.to_string();
+        }
+        if let Some(port) = cli_port {
+            config.port = port;
+        }
+
+        Ok(config)
+    }
+
+    /// Build a per-repo Config from standalone settings
+    pub fn repo_config(&self, repo_path: Utf8PathBuf, repo_data_dir: &Utf8PathBuf) -> Config {
+        let db_path = repo_data_dir.join("code-intelligence.db");
+        let vector_db_path = repo_data_dir.join("vectors");
+        let tantivy_index_path = repo_data_dir.join("tantivy-index");
+
+        // Get global cimcp for shared resources
+        let global_dir = get_global_cimcp_dir();
+
+        Config {
+            base_dir: repo_path.clone(),
+            db_path,
+            vector_db_path,
+            tantivy_index_path,
+            embeddings_backend: self.embeddings_backend,
+            embeddings_model_dir: self.embeddings_model_dir.clone(),
+            embeddings_model_url: None,
+            embeddings_model_sha256: None,
+            embeddings_auto_download: self.embeddings_auto_download,
+            embeddings_model_repo: self.embeddings_model_repo.clone(),
+            embeddings_model_revision: None,
+            embeddings_model_hf_token: None,
+            embeddings_device: self.embeddings_device,
+            embedding_batch_size: 32,
+            hash_embedding_dim: self.hash_embedding_dim,
+            vector_search_limit: 20,
+            hybrid_alpha: 0.7,
+            rank_vector_weight: 0.7,
+            rank_keyword_weight: 0.3,
+            rank_exported_boost: 0.1,
+            rank_index_file_boost: 0.05,
+            rank_test_penalty: 0.1,
+            rank_popularity_weight: 0.05,
+            rank_popularity_cap: 50,
+            index_patterns: self.default_index_patterns.clone(),
+            exclude_patterns: self.default_exclude_patterns.clone(),
+            watch_mode: self.default_watch_mode,
+            watch_debounce_ms: 250,
+            watch_min_index_interval_ms: 5000,
+            max_context_bytes: 200_000,
+            index_node_modules: false,
+            repo_roots: vec![repo_path],
+            reranker_model_path: None,
+            reranker_top_k: 20,
+            reranker_cache_dir: Some(global_dir.join("reranker-cache")),
+            learning_enabled: false,
+            learning_selection_boost: 0.1,
+            learning_file_affinity_boost: 0.05,
+            max_context_tokens: 8192,
+            token_encoding: "o200k_base".to_string(),
+            parallel_workers: 1,
+            embedding_cache_enabled: true,
+            embedding_max_threads: self.embedding_max_threads,
+            pagerank_damping: 0.85,
+            pagerank_iterations: 20,
+            synonym_expansion_enabled: true,
+            acronym_expansion_enabled: true,
+            rrf_enabled: true,
+            rrf_k: 60.0,
+            rrf_keyword_weight: 1.0,
+            rrf_vector_weight: 1.0,
+            rrf_graph_weight: 0.5,
+            hyde_enabled: false,
+            hyde_llm_backend: "openai".to_string(),
+            hyde_api_key: None,
+            hyde_max_tokens: 512,
+            metrics_enabled: true,
+            metrics_port: 9090,
+            package_detection_enabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1021,5 +1281,52 @@ mod tests {
         assert_eq!(cfg.parallel_workers, 4);
         assert!(!cfg.synonym_expansion_enabled);
         assert!(!cfg.acronym_expansion_enabled);
+    }
+
+    #[test]
+    fn standalone_config_defaults() {
+        let cfg = StandaloneConfig::default();
+        assert_eq!(cfg.host, "127.0.0.1");
+        assert_eq!(cfg.port, 3333);
+        assert_eq!(cfg.warm_ttl_seconds, 300);
+        assert!(cfg.data_dir.to_string().contains("code-intelligence"));
+    }
+
+    #[test]
+    fn standalone_config_from_toml() {
+        let toml_str = r#"
+[server]
+host = "0.0.0.0"
+port = 4444
+
+[lifecycle]
+warm_ttl_seconds = 600
+"#;
+        let cfg = StandaloneConfig::from_toml_str(toml_str).unwrap();
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.port, 4444);
+        assert_eq!(cfg.warm_ttl_seconds, 600);
+    }
+
+    #[test]
+    fn standalone_config_repo_config_has_all_fields() {
+        let standalone = StandaloneConfig::default();
+        let repo_path = tmp_dir();
+        let repo_data_dir = tmp_dir();
+
+        let cfg = standalone.repo_config(repo_path.clone(), &repo_data_dir);
+
+        // Verify all Config fields are properly set
+        assert_eq!(cfg.base_dir, repo_path);
+        assert_eq!(cfg.db_path, repo_data_dir.join("code-intelligence.db"));
+        assert_eq!(cfg.vector_db_path, repo_data_dir.join("vectors"));
+        assert_eq!(cfg.tantivy_index_path, repo_data_dir.join("tantivy-index"));
+        assert_eq!(cfg.embeddings_backend, standalone.embeddings_backend);
+        assert_eq!(cfg.embeddings_device, standalone.embeddings_device);
+        assert_eq!(cfg.index_patterns, standalone.default_index_patterns);
+        assert_eq!(cfg.exclude_patterns, standalone.default_exclude_patterns);
+        assert_eq!(cfg.watch_mode, standalone.default_watch_mode);
+        assert_eq!(cfg.embedding_max_threads, standalone.embedding_max_threads);
+        assert_eq!(cfg.hash_embedding_dim, standalone.hash_embedding_dim);
     }
 }

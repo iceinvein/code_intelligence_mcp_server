@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::config::Config;
 use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
@@ -28,8 +29,6 @@ use code_intelligence_mcp_server::server::CodeIntelligenceHandler;
 use code_intelligence_mcp_server::storage::sqlite::SqliteStore;
 use code_intelligence_mcp_server::storage::tantivy::TantivyIndex;
 use code_intelligence_mcp_server::storage::vector::LanceDbStore;
-
-mod cli;
 
 #[cfg(feature = "web-ui")]
 mod web_ui;
@@ -45,13 +44,21 @@ fn env_true(key: &str) -> bool {
 #[tokio::main]
 async fn main() -> SdkResult<()> {
     let args = std::env::args().collect::<Vec<_>>();
-    if cli::wants_help(&args) {
+    let cli_args = cli::parse_args(&args);
+
+    if cli_args.help {
         cli::print_help();
         return Ok(());
     }
-    if cli::wants_version(&args) {
+    if cli_args.version {
         cli::print_version();
         return Ok(());
+    }
+
+    // For now, we only support embedded mode until Task 3+ are complete
+    if cli_args.standalone {
+        eprintln!("Error: Standalone mode not yet implemented");
+        std::process::exit(1);
     }
 
     // Set up file logging to global ~/.cimcp/logs directory

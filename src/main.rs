@@ -55,12 +55,6 @@ async fn main() -> SdkResult<()> {
         return Ok(());
     }
 
-    // For now, we only support embedded mode until Task 3+ are complete
-    if cli_args.standalone {
-        eprintln!("Error: Standalone mode not yet implemented");
-        std::process::exit(1);
-    }
-
     // Set up file logging to global ~/.cimcp/logs directory
     let global_dir = code_intelligence_mcp_server::config::get_global_cimcp_dir();
     let logs_dir = global_dir.join("logs");
@@ -101,14 +95,102 @@ async fn main() -> SdkResult<()> {
         "Starting code-intelligence-mcp-server"
     );
 
-    if let Err(err) = run().await {
+    // Branch into standalone or embedded mode
+    if cli_args.standalone {
+        return run_standalone(cli_args.host.as_deref(), cli_args.port).await;
+    }
+
+    if let Err(err) = run_embedded().await {
         error!(error = %err, "Server exited with error");
         return Err(err);
     }
     Ok(())
 }
 
-async fn run() -> SdkResult<()> {
+async fn run_standalone(host: Option<&str>, port: Option<u16>) -> SdkResult<()> {
+    let standalone_config = code_intelligence_mcp_server::config::StandaloneConfig::load(host, port)
+        .map_err(|e| McpSdkError::Internal { description: e.to_string() })?;
+
+    // Ensure data directories exist
+    let data_dir = &standalone_config.data_dir;
+    std::fs::create_dir_all(data_dir.join("repos").as_std_path())
+        .map_err(|e| McpSdkError::Internal { description: format!("Failed to create data dir: {}", e) })?;
+    std::fs::create_dir_all(data_dir.join("logs").as_std_path())
+        .map_err(|e| McpSdkError::Internal { description: format!("Failed to create logs dir: {}", e) })?;
+
+    // Create shared embedder (loaded once, shared across all repos)
+    let embedder = create_embedder(
+        standalone_config.embeddings_backend,
+        standalone_config.embeddings_model_dir.as_deref(),
+        standalone_config.embeddings_model_repo.as_deref(),
+        standalone_config.embeddings_device,
+        standalone_config.embedding_max_threads,
+        standalone_config.hash_embedding_dim,
+    ).map_err(|e| McpSdkError::Internal { description: format!("Failed to create embedder: {}", e) })?;
+
+    info!("Shared embedder loaded with dimension: {}", embedder.dim());
+
+    // Create registry and session manager
+    let registry = code_intelligence_mcp_server::registry::RepoRegistry::new(
+        data_dir.join("repos/registry.json"),
+        data_dir.join("repos"),
+    );
+
+    let session_manager = code_intelligence_mcp_server::session::SessionManager::new(
+        standalone_config.clone(), registry, embedder,
+    )
+    .await
+    .map_err(|e| McpSdkError::Internal { description: e.to_string() })?;
+    let session_manager = Arc::new(session_manager);
+
+    let server_details = InitializeResult {
+        server_info: Implementation {
+            name: "code-intelligence".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            title: Some("Code Intelligence MCP (Standalone)".into()),
+            description: Some("Multi-repo code intelligence server".into()),
+            icons: vec![],
+            website_url: None,
+        },
+        capabilities: ServerCapabilities {
+            tools: Some(ServerCapabilitiesTools { list_changed: None }),
+            ..Default::default()
+        },
+        protocol_version: ProtocolVersion::V2025_11_25.into(),
+        instructions: None,
+        meta: None,
+    };
+
+    let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
+        session_manager, server_details.clone(),
+    );
+    let bind_host = standalone_config.host.clone();
+    let bind_port = standalone_config.port;
+
+    // Use SDK's hyper server for Streamable HTTP transport
+    use rust_mcp_sdk::mcp_server::{hyper_server, HyperServerOptions, ToMcpServerHandler};
+    let server = hyper_server::create_server(
+        server_details,
+        handler.to_mcp_server_handler(),
+        HyperServerOptions {
+            host: bind_host.clone(),
+            port: bind_port,
+            ..Default::default()
+        },
+    );
+
+    info!(
+        host = %bind_host,
+        port = bind_port,
+        data_dir = %standalone_config.data_dir,
+        "Starting standalone server on http://{}:{}",
+        bind_host, bind_port,
+    );
+
+    server.start().await
+}
+
+async fn run_embedded() -> SdkResult<()> {
     let config = Config::from_env().map_err(|err| McpSdkError::Internal {
         description: err.to_string(),
     })?;

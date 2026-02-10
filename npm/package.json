@@ -3,7 +3,8 @@
   "version": "1.0.14",
   "description": "Code Intelligence MCP Server - Smart context for your LLM coding agent",
   "bin": {
-    "code-intelligence-mcp": "bin/run.js"
+    "code-intelligence-mcp": "bin/run.js",
+    "code-intelligence-mcp-standalone": "bin/standalone.js"
   },
   "scripts": {
     "postinstall": "node install.js"

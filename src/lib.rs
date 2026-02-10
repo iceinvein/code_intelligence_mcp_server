@@ -10,6 +10,7 @@ pub mod registry;
 pub mod reranker;
 pub mod retrieval;
 pub mod server;
+pub mod session;
 pub mod storage;
 pub mod text;
 pub mod tools;

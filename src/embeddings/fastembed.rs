@@ -99,4 +99,20 @@ impl Embedder for FastEmbedder {
             .embed(texts.to_vec(), None) // batch_size default is usually 256
             .map_err(|e| anyhow!("Embedding failed: {}", e))
     }
+
+    fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        // BGE-base-en-v1.5 was trained with this prefix for retrieval queries.
+        // Documents are embedded without prefix (via `embed()`), but queries
+        // should be prefixed to land in the correct embedding subspace.
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|t| {
+                format!(
+                    "Represent this sentence for searching relevant code passages: {}",
+                    t
+                )
+            })
+            .collect();
+        self.embed(&prefixed)
+    }
 }

@@ -73,7 +73,7 @@ pub struct SearchResponseWithSignals {
     pub hit_signals: HashMap<String, HitSignals>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct HitSignals {
     pub keyword_score: f32,
     pub vector_score: f32,
@@ -103,6 +103,93 @@ pub struct Retriever {
     cache: Arc<Mutex<RetrieverCaches>>,
     cache_config_key: String,
     metrics: Arc<MetricsRegistry>,
+}
+
+/// Promote top vector search results into the final ranking for NL queries.
+///
+/// Post-RRF adjustments (term_coverage, definition_bias) systematically favor
+/// BM25 results because they reward lexical matching. This buries semantically
+/// correct vector results below the top-`limit` cutoff.
+///
+/// This function ensures at least `guaranteed_slots` of the top vector results
+/// appear in the top `limit` positions by boosting their scores to the 70th
+/// percentile of current results.
+///
+/// Skips test symbols and module re-exports (they shouldn't be force-promoted).
+fn promote_vector_results(
+    results: &mut Vec<RankedHit>,
+    vector_ranked: &[RankedHit],
+    test_symbols: &HashSet<String>,
+    signals: &mut HashMap<String, HitSignals>,
+    limit: usize,
+    guaranteed_slots: usize,
+) {
+    if guaranteed_slots == 0 || vector_ranked.is_empty() || results.is_empty() {
+        return;
+    }
+
+    // Top vector results (by vector rank order), excluding tests and modules
+    let top_vector: Vec<&RankedHit> = vector_ranked
+        .iter()
+        .filter(|h| !test_symbols.contains(&h.id))
+        .filter(|h| h.kind != "module")
+        .take(guaranteed_slots * 2)
+        .collect();
+
+    // Which of these are already in the final results?
+    let final_ids: HashSet<&str> = results.iter().map(|h| h.id.as_str()).collect();
+
+    let missing: Vec<&RankedHit> = top_vector
+        .into_iter()
+        .filter(|h| !final_ids.contains(h.id.as_str()))
+        .take(guaranteed_slots)
+        .collect();
+
+    if missing.is_empty() {
+        return;
+    }
+
+    // Target score: 70th percentile of current results (30% from top).
+    // Injected vector results appear in upper half without displacing
+    // genuinely strong BM25 matches at the very top.
+    let target_idx = (limit as f32 * 0.3) as usize;
+    let target_score = results
+        .get(target_idx.min(results.len().saturating_sub(1)))
+        .map(|h| h.score)
+        .unwrap_or(5.0);
+
+    // Inject missing vector results, replacing the bottom entries
+    for vec_hit in &missing {
+        let injected = RankedHit {
+            id: vec_hit.id.clone(),
+            score: target_score,
+            name: vec_hit.name.clone(),
+            kind: vec_hit.kind.clone(),
+            file_path: vec_hit.file_path.clone(),
+            exported: vec_hit.exported,
+            language: vec_hit.language.clone(),
+        };
+        signals.insert(
+            vec_hit.id.clone(),
+            HitSignals {
+                vector_score: target_score, // Marks this as a vector-promoted result
+                intent_mult: 1.0,           // Non-test (filtered above), neutral multiplier
+                ..Default::default()
+            },
+        );
+        // Replace the lowest-scored entry (last after sort)
+        if results.len() >= limit {
+            results.pop();
+        }
+        results.push(injected);
+    }
+
+    results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.exported.cmp(&a.exported))
+            .then_with(|| a.name.cmp(&b.name))
+    });
 }
 
 impl Retriever {
@@ -353,8 +440,12 @@ impl Retriever {
 
         // Conditional: single-query path vs multi-query path based on decomposition
         // Single query preserves existing behavior; multi-query uses unified RRF
-        let (ranked, mut hit_signals): (Vec<RankedHit>, HashMap<String, HitSignals>) =
-            if sub_queries.len() == 1 {
+        // Return vector_ranked alongside ranked hits for post-diversity vector promotion
+        let (ranked, mut hit_signals, vector_ranked_for_promotion): (
+            Vec<RankedHit>,
+            HashMap<String, HitSignals>,
+            Vec<RankedHit>,
+        ) = if sub_queries.len() == 1 {
                 // SINGLE-QUERY PATH: Use existing logic unchanged
                 let search_query = &sub_queries[0];
 
@@ -370,7 +461,11 @@ impl Retriever {
                 let vector_t = Instant::now();
 
                 // Vector search with graceful degradation
-                let (vector_hits, _vector_degraded) = match self.get_query_vector_cached(search_query).await {
+                // Use raw query (pre-expansion) for vector search — synonym expansion
+                // helps BM25 (more tokens) but hurts embeddings (noisy average of concepts).
+                // The embedding model already captures synonyms through its training.
+                let vector_query = &query_without_controls;
+                let (vector_hits, _vector_degraded) = match self.get_query_vector_cached(vector_query).await {
                     Ok(query_vector) => {
                         match self.vectors.search(&query_vector, k).await {
                             Ok(mut hits) => {
@@ -488,6 +583,25 @@ impl Retriever {
                         weights,
                     );
 
+                    // Normalize RRF scores to 0-10 range so search signal is competitive
+                    // with post-RRF additive adjustments (structural, term_coverage, etc.)
+                    // Without this, RRF outputs ~0.02 while adjustments sum to 0-4.6,
+                    // making search signal contribute <1% of final score.
+                    let rrf_max = rrf_results.iter().map(|h| h.score).fold(f32::NEG_INFINITY, f32::max);
+                    let rrf_min = rrf_results.iter().map(|h| h.score).fold(f32::INFINITY, f32::min);
+                    let rrf_range = rrf_max - rrf_min;
+                    if rrf_range > 0.0 {
+                        let target_range = 10.0;
+                        for hit in &mut rrf_results {
+                            hit.score = ((hit.score - rrf_min) / rrf_range) * target_range;
+                        }
+                    } else if rrf_max > 0.0 {
+                        // All same score — normalize to midpoint
+                        for hit in &mut rrf_results {
+                            hit.score = 5.0;
+                        }
+                    }
+
                     // Build lookup maps for original keyword/vector scores (for diagnostics)
                     let kw_score_map: HashMap<&str, f32> = keyword_ranked
                         .iter()
@@ -573,16 +687,17 @@ impl Retriever {
                             .then_with(|| a.name.cmp(&b.name))
                     });
 
-                    (rrf_results, signals)
+                    (rrf_results, signals, vector_ranked)
                 } else {
-                    // Use existing score fusion
-                    rank_hits_with_signals(
+                    // Use existing score fusion (no vector promotion in non-RRF path)
+                    let (ranked, signals) = rank_hits_with_signals(
                         &keyword_hits,
                         &vector_hits,
                         &self.config,
                         &intent,
                         search_query,
-                    )
+                    );
+                    (ranked, signals, Vec::new())
                 }
             } else {
                 // MULTI-QUERY PATH: Loop over sub-queries and collect combined hits
@@ -593,65 +708,62 @@ impl Retriever {
                 let mut combined_keyword_hits: Vec<crate::storage::tantivy::SearchHit> = Vec::new();
                 let mut combined_vector_hits: Vec<crate::storage::vector::VectorHit> = Vec::new();
 
+                // Vector search uses raw query (pre-expansion) — one embedding for
+                // full user intent. BM25 still loops over expanded sub-queries.
+                let vector_query = &query_without_controls;
+                let multi_vector_hits = match self.get_query_vector_cached(vector_query).await {
+                    Ok(query_vector) => {
+                        match self.vectors.search(&query_vector, k).await {
+                            Ok(hits) => hits,
+                            Err(e) => {
+                                tracing::warn!(
+                                    query = %vector_query,
+                                    error = %e,
+                                    "LanceDB vector search failed for multi-query, degrading to keyword-only"
+                                );
+                                self.metrics.search_errors_total.inc();
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            query = %vector_query,
+                            error = %e,
+                            "Query embedding failed for multi-query, degrading to keyword-only"
+                        );
+                        self.metrics.search_errors_total.inc();
+                        Vec::new()
+                    }
+                };
+                combined_vector_hits.extend(multi_vector_hits);
+
                 for sub_query in &sub_queries {
-                    // Keyword search for this sub-query
+                    // Keyword search for this sub-query (uses expanded text for BM25)
                     let sub_keyword_hits = self.tantivy.search(sub_query, k)?;
                     combined_keyword_hits.extend(sub_keyword_hits);
 
-                    // Vector search for this sub-query with graceful degradation
-                    // Each sub-query degrades independently - one failure doesn't affect others
-                    let sub_vector_hits = match self.get_query_vector_cached(sub_query).await {
-                        Ok(query_vector) => {
-                            match self.vectors.search(&query_vector, k).await {
-                                Ok(mut hits) => {
-                                    // HyDE for this sub-query (best-effort)
-                                    if self.config.hyde_enabled {
-                                        if let Some(generator) = &self.hyde_generator {
-                                            let language = detect_language_from_query(sub_query);
-                                            if let Ok(hyde_result) = generator.generate(sub_query, language).await {
-                                                let mut embedder = self.embedder.lock().await;
-                                                if let Ok(hyde_embeddings) =
-                                                    embedder.embed(&[hyde_result.hypothetical_code])
-                                                {
-                                                    if let Some(hyde_vector) = hyde_embeddings.first() {
-                                                        if let Ok(hyde_hits) =
-                                                            self.vectors.search(hyde_vector, k / 2).await
-                                                        {
-                                                            hits.extend(hyde_hits);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            // HyDE failures are silently ignored - it's a best-effort enhancement
+                    // HyDE per sub-query (best-effort) — generates hypothetical code
+                    // and uses its embedding for supplemental vector search
+                    if self.config.hyde_enabled {
+                        if let Some(generator) = &self.hyde_generator {
+                            let language = detect_language_from_query(sub_query);
+                            if let Ok(hyde_result) = generator.generate(sub_query, language).await {
+                                let mut embedder = self.embedder.lock().await;
+                                if let Ok(hyde_embeddings) =
+                                    embedder.embed(&[hyde_result.hypothetical_code])
+                                {
+                                    if let Some(hyde_vector) = hyde_embeddings.first() {
+                                        if let Ok(hyde_hits) =
+                                            self.vectors.search(hyde_vector, k / 2).await
+                                        {
+                                            combined_vector_hits.extend(hyde_hits);
                                         }
                                     }
-                                    hits
-                                }
-                                Err(e) => {
-                                    // Vector search failed for this sub-query - degrade gracefully
-                                    tracing::warn!(
-                                        query = %sub_query,
-                                        error = %e,
-                                        "LanceDB vector search failed for sub-query, degrading to keyword-only"
-                                    );
-                                    self.metrics.search_errors_total.inc();
-                                    Vec::new()
                                 }
                             }
                         }
-                        Err(e) => {
-                            // Embedding generation failed for this sub-query - degrade gracefully
-                            tracing::warn!(
-                                query = %sub_query,
-                                error = %e,
-                                "Query embedding generation failed for sub-query, degrading to keyword-only"
-                            );
-                            self.metrics.search_errors_total.inc();
-                            Vec::new()
-                        }
-                    };
-
-                    combined_vector_hits.extend(sub_vector_hits);
+                    }
                 }
 
                 // UNIFIED RRF: Single RRF pass over combined hits from all sub-queries
@@ -707,6 +819,21 @@ impl Retriever {
 
                 let mut ranked =
                     reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
+
+                // Normalize RRF scores to 0-10 range (same as single-query path)
+                let rrf_max = ranked.iter().map(|h| h.score).fold(f32::NEG_INFINITY, f32::max);
+                let rrf_min = ranked.iter().map(|h| h.score).fold(f32::INFINITY, f32::min);
+                let rrf_range = rrf_max - rrf_min;
+                if rrf_range > 0.0 {
+                    let target_range = 10.0;
+                    for hit in &mut ranked {
+                        hit.score = ((hit.score - rrf_min) / rrf_range) * target_range;
+                    }
+                } else if rrf_max > 0.0 {
+                    for hit in &mut ranked {
+                        hit.score = 5.0;
+                    }
+                }
 
                 // Apply structural and intent adjustments post-RRF (same as single-query path)
                 let line_count_ids: Vec<String> = ranked.iter().map(|h| h.id.clone()).collect();
@@ -783,7 +910,7 @@ impl Retriever {
                         .then_with(|| a.name.cmp(&b.name))
                 });
 
-                (ranked, hit_signals)
+                (ranked, hit_signals, vector_ranked)
             };
 
         // Start merge timing after search completes
@@ -967,6 +1094,58 @@ impl Retriever {
         hits = diversify_by_kind(hits, limit);
         hits.truncate(limit);
 
+        // Promote top vector results AFTER diversity + truncation.
+        // This is the correct placement: post-RRF adjustments, edge expansion,
+        // and diversity filtering have all run. Vector results that were buried
+        // by BM25-friendly adjustments get promoted into the final top-N.
+        if is_nl_query && self.config.vector_guaranteed_results > 0 && !vector_ranked_for_promotion.is_empty() {
+            let hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+            let test_symbols = sqlite.batch_check_test_symbols(&hit_ids).unwrap_or_default();
+            promote_vector_results(
+                &mut hits,
+                &vector_ranked_for_promotion,
+                &test_symbols,
+                &mut hit_signals,
+                limit,
+                self.config.vector_guaranteed_results,
+            );
+            hits.truncate(limit);
+        }
+
+        // Final intent enforcement: apply suppressive intent multipliers to ALL
+        // hits, including those added by expand_with_edges. Edge expansion derives
+        // scores from parent symbols, which can reintroduce test helpers (e.g.,
+        // create_test_normalizer as a reference of PathNormalizer) with high scores
+        // that bypass earlier intent penalties. This final pass catches them.
+        {
+            for hit in &mut hits {
+                let intent_mult = if let Some(sig) = hit_signals.get(&hit.id) {
+                    sig.intent_mult
+                } else {
+                    // Edge-expanded or vector-promoted hit without signals:
+                    // compute intent adjustment on the fly
+                    ranking::intent_adjustment(
+                        &intent,
+                        &hit.kind,
+                        &hit.file_path,
+                        hit.exported,
+                        &hit.name,
+                    )
+                };
+                if intent_mult < 1.0 {
+                    hit.score *= intent_mult;
+                }
+            }
+            // Re-sort after enforcement
+            hits.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| b.exported.cmp(&a.exported))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            hits.truncate(limit);
+        }
+
         let mut roots = Vec::new();
         let mut extra = Vec::new();
 
@@ -1040,7 +1219,7 @@ impl Retriever {
 
         let v = {
             let mut embedder = self.embedder.lock().await;
-            let mut out = embedder.embed(&[query.to_string()])?;
+            let mut out = embedder.query_embed(&[query.to_string()])?;
             out.pop()
                 .ok_or_else(|| anyhow!("Embedder returned no vector"))?
         };

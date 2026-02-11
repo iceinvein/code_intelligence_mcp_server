@@ -1,4 +1,5 @@
 use crate::retrieval::RankedHit;
+use crate::retrieval::ranking::score::{is_test_file, is_test_symbol};
 use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
 
@@ -33,6 +34,12 @@ pub fn expand_with_edges(
                 }
                 if seen.insert(edge.to_symbol_id.clone()) {
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
+                        // Skip test symbols/files — they were already penalized and
+                        // truncated by the scoring pipeline. Re-adding them via edge
+                        // expansion would bypass intent penalties.
+                        if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
+                            continue;
+                        }
                         let evidence_boost =
                             (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
                         let resolution_multiplier = match edge.resolution.as_str() {
@@ -72,6 +79,10 @@ pub fn expand_with_edges(
                 }
                 if seen.insert(edge.from_symbol_id.clone()) {
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
+                        // Skip test symbols/files — same rationale as above
+                        if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
+                            continue;
+                        }
                         let evidence_boost =
                             (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
                         let resolution_multiplier = match edge.resolution.as_str() {

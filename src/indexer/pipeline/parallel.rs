@@ -279,9 +279,20 @@ fn index_file_single(
         return Ok(IndexFileResult::Processed { symbols_count: 0 });
     }
 
+    // Build framework vocabulary tags for BM25 enrichment.
+    // Maps framework pattern kinds (e.g., WebSocket, Route) to natural-language
+    // phrases so queries like "websocket handler" match via BM25.
+    let framework_tags = crate::text::build_framework_vocab_tags(
+        &extracted
+            .framework_patterns
+            .iter()
+            .map(|p| (p.kind.to_string(), p.http_method.clone()))
+            .collect::<Vec<_>>(),
+    );
+
     // Update Tantivy
     for row in &symbol_rows {
-        tantivy.upsert_symbol(row, &import_tags)?;
+        tantivy.upsert_symbol(row, &import_tags, &framework_tags)?;
         upsert_name_mapping(&mut name_to_id, row);
     }
     tantivy.commit()?;

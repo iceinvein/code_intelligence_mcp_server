@@ -6,6 +6,14 @@ use anyhow::Result;
 pub trait Embedder {
     fn dim(&self) -> usize;
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+
+    /// Embed query texts with model-specific instruction prefix for retrieval.
+    ///
+    /// BGE-base-en-v1.5 uses asymmetric embeddings: queries get an instruction
+    /// prefix while documents don't. Default implementation falls back to `embed()`.
+    fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.embed(texts)
+    }
 }
 
 /// Factory function to create an embedder based on the backend configuration.

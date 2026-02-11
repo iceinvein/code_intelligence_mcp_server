@@ -284,6 +284,7 @@ mod tests {
             embedding_batch_size: 32,
             hash_embedding_dim: 8,
             vector_search_limit: 10,
+            vector_guaranteed_results: 3,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.7,
             rank_keyword_weight: 0.3,

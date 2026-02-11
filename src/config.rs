@@ -300,6 +300,7 @@ impl StandaloneConfig {
             embedding_batch_size: 32,
             hash_embedding_dim: self.hash_embedding_dim,
             vector_search_limit: 20,
+            vector_guaranteed_results: 3,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.7,
             rank_keyword_weight: 0.3,
@@ -365,6 +366,7 @@ pub struct Config {
     pub embedding_batch_size: usize,
     pub hash_embedding_dim: usize,
     pub vector_search_limit: usize,
+    pub vector_guaranteed_results: usize,
     pub hybrid_alpha: f32,
     pub rank_vector_weight: f32,
     pub rank_keyword_weight: f32,
@@ -532,6 +534,12 @@ impl Config {
             .map(parse_usize)
             .transpose()?
             .unwrap_or(20);
+
+        let vector_guaranteed_results = optional_env("VECTOR_GUARANTEED_RESULTS")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(3);
 
         let hybrid_alpha = optional_env("HYBRID_ALPHA")
             .as_deref()
@@ -795,6 +803,7 @@ impl Config {
             embedding_batch_size,
             hash_embedding_dim,
             vector_search_limit,
+            vector_guaranteed_results,
             hybrid_alpha,
             rank_vector_weight,
             rank_keyword_weight,

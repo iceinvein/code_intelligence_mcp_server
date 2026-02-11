@@ -794,11 +794,13 @@ pub(crate) fn symbol_importance_adjustment(line_count: u32, exported: bool) -> f
 /// annotated with `#[test]`), it should be penalized in search results since
 /// users searching for "how does X work" want production code, not test code.
 ///
-/// Returns a negative value (-5.0) for test symbols, 0.0 otherwise.
+/// Returns a negative value (-10.0) for test symbols, 0.0 otherwise.
 /// The penalty is deliberately strong because BM25 gives test functions
 /// artificially high scores (short document bias + keyword density).
+/// R34: Increased from -5.0 to -10.0 so test helpers don't survive into
+/// the final top-5 via diversity backfill.
 pub(crate) fn test_symbol_penalty(is_test: bool) -> f32 {
-    if is_test { -5.0 } else { 0.0 }
+    if is_test { -10.0 } else { 0.0 }
 }
 
 pub(crate) fn structural_adjustment(
@@ -861,7 +863,7 @@ pub(crate) fn structural_adjustment(
     }
 
     // Test file penalty: integration/unit test files should rank below production code.
-    // This is separate from the intent_adjustment 0.15x multiplier — that handles
+    // This is separate from the intent_adjustment 0.05x multiplier — that handles
     // the case where intent is non-Test. This penalty applies structurally so that
     // test files don't outrank production files via term_coverage alone.
     if is_test_file(file_path) {
@@ -928,7 +930,7 @@ pub(crate) fn is_test_file(file_path: &str) -> bool {
 }
 
 /// Check if a symbol name looks like a test function/helper
-fn is_test_symbol(name: &str) -> bool {
+pub(crate) fn is_test_symbol(name: &str) -> bool {
     let n = name.to_lowercase();
     n.starts_with("test_")
         || n.starts_with("create_test_")
@@ -940,18 +942,19 @@ fn is_test_symbol(name: &str) -> bool {
         || (n.starts_with("test") && n.len() > 4 && n.as_bytes()[4].is_ascii_uppercase())
 }
 
-pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, exported: bool, name: &str) -> f32 {
-    // Test Penalty (0.15x multiplier - aggressive penalty to keep test files out of general results)
+pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, _exported: bool, name: &str) -> f32 {
+    // Test Penalty (0.05x multiplier): aggressively suppress test code in non-test queries.
+    // Combined with expand_with_edges test filtering and final intent enforcement,
+    // this prevents test helpers from appearing in production-focused results.
     if is_test_file(file_path) && !matches!(intent, Some(Intent::Test)) {
-        return 0.15;
+        return 0.05;
     }
 
     // Symbol-level test penalty: penalize test-named symbols even in production files.
     // This prevents test functions (test_*, create_test_*) from flooding results
     // when they live alongside production code in the same file.
-    // Uses same 0.15x as test file penalty — test code is test code regardless of location.
     if !matches!(intent, Some(Intent::Test)) && is_test_symbol(name) {
-        return 0.15;
+        return 0.05;
     }
 
     let Some(intent) = intent else {
@@ -962,9 +965,11 @@ pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: 
         Intent::Definition => {
             let is_def = matches!(
                 kind,
-                "class" | "interface" | "type_alias" | "struct" | "enum" | "const"
+                "class" | "interface" | "type_alias" | "struct" | "enum" | "const" | "impl"
             );
-            if is_def && exported {
+            if is_def {
+                // Boost definition-like symbols. Impl blocks aren't "exported" per se
+                // but are equally relevant when user asks for struct/type definitions.
                 1.5
             } else {
                 1.0
@@ -1115,6 +1120,7 @@ mod tests {
             embedding_batch_size: 32,
             hash_embedding_dim: 64,
             vector_search_limit: 20,
+            vector_guaranteed_results: 3,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.5,
             rank_keyword_weight: 0.5,
@@ -1679,7 +1685,7 @@ mod tests {
 
     #[test]
     fn test_symbol_penalty_penalizes_test_code() {
-        assert_eq!(test_symbol_penalty(true), -5.0);
+        assert_eq!(test_symbol_penalty(true), -10.0);
         assert_eq!(test_symbol_penalty(false), 0.0);
     }
 

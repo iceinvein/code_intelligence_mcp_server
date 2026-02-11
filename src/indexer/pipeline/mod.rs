@@ -796,6 +796,15 @@ impl IndexPipeline {
                 });
             }
 
+            // Build framework vocabulary tags for BM25 enrichment.
+            let framework_tags = crate::text::build_framework_vocab_tags(
+                &extracted
+                    .framework_patterns
+                    .iter()
+                    .map(|p| (p.kind.to_string(), p.http_method.clone()))
+                    .collect::<Vec<_>>(),
+            );
+
             if !symbol_rows.is_empty() {
                 let vectors = self
                     .embed_and_build_vector_records(&symbol_rows)
@@ -803,7 +812,7 @@ impl IndexPipeline {
                     .with_context(|| format!("Failed to embed symbols for {rel}"))?;
 
                 for row in &symbol_rows {
-                    self.tantivy.upsert_symbol(row, &import_tags)?;
+                    self.tantivy.upsert_symbol(row, &import_tags, &framework_tags)?;
                     upsert_name_mapping(&mut name_to_id, row);
                 }
 
@@ -1100,12 +1109,21 @@ impl IndexPipeline {
         let mut uncached_texts = Vec::new();
         let mut uncached_indices = Vec::new();
 
-        // Check cache for each text
-        for (i, row) in rows.iter().enumerate() {
-            if let Some(cached) = self.cache.get(&row.text) {
+        // Preprocess text for embedding: semantic header + comment-stripped body.
+        // Cache keys use preprocessed text (old raw-text entries become automatic misses).
+        let embedding_texts: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                crate::text::prepare_embedding_text(&row.name, &row.kind, &row.file_path, &row.text)
+            })
+            .collect();
+
+        // Check cache for each preprocessed text
+        for (i, emb_text) in embedding_texts.iter().enumerate() {
+            if let Some(cached) = self.cache.get(emb_text) {
                 vectors.push((i, cached));
             } else {
-                uncached_texts.push(row.text.clone());
+                uncached_texts.push(emb_text.clone());
                 uncached_indices.push(i);
             }
         }
@@ -1118,9 +1136,9 @@ impl IndexPipeline {
             Vec::new()
         };
 
-        // Store new embeddings in cache
-        for (text, embedding) in uncached_texts.iter().zip(&new_embeddings) {
-            let _ = self.cache.put(text, embedding);
+        // Store new embeddings in cache (keyed on preprocessed text)
+        for (emb_text, embedding) in uncached_texts.iter().zip(&new_embeddings) {
+            let _ = self.cache.put(emb_text, embedding);
         }
 
         // Merge cached and new embeddings

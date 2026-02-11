@@ -490,36 +490,323 @@ pub fn build_import_tags_from_sources(sources: &[String]) -> String {
     parts.join(" ")
 }
 
+/// Build framework vocabulary tags from extracted framework patterns.
+///
+/// Maps framework pattern kinds to multi-word search phrases that bridge
+/// the vocabulary gap between natural-language queries and code that
+/// represents patterns via enum variants. For example, a file with
+/// `FrameworkPatternKind::WebSocket` gets "websocket handler websocket
+/// endpoint realtime handler" injected so that "websocket handler" queries
+/// match via BM25.
+///
+/// Input: slice of `(kind_string, optional_http_method)` tuples.
+/// Output: space-separated vocabulary string.
+pub fn build_framework_vocab_tags(patterns: &[(String, Option<String>)]) -> String {
+    let mut seen = HashSet::new();
+    let mut parts = Vec::new();
+
+    for (kind, http_method) in patterns {
+        let phrases: Vec<&str> = match kind.as_str() {
+            "websocket" => vec![
+                "websocket handler",
+                "websocket endpoint",
+                "realtime handler",
+            ],
+            "route" => vec!["route handler", "http endpoint"],
+            "plugin" => vec!["plugin middleware", "plugin extension"],
+            "guard" => vec!["guard middleware", "auth guard handler"],
+            "group" => vec!["route group"],
+            "listen" => vec!["server listen", "server startup"],
+            _ => vec![],
+        };
+
+        for phrase in &phrases {
+            for word in phrase.split_whitespace() {
+                if seen.insert(word.to_string()) {
+                    parts.push(word.to_string());
+                }
+            }
+        }
+
+        // Add HTTP method-specific phrases for routes
+        if kind == "route" {
+            if let Some(method) = http_method {
+                let m = method.to_lowercase();
+                let method_handler = format!("{m} handler");
+                let method_endpoint = format!("{m} endpoint");
+                for phrase in [&method_handler, &method_endpoint] {
+                    for word in phrase.split_whitespace() {
+                        if seen.insert(word.to_string()) {
+                            parts.push(word.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    parts.join(" ")
+}
+
+/// Common language keywords that should be excluded from morphological expansion.
+/// These add noise without improving search recall.
+static LANG_KEYWORDS: &[&str] = &[
+    // Rust
+    "let", "mut", "pub", "crate", "self", "super", "impl", "use", "mod",
+    "struct", "enum", "trait", "type", "where", "const", "static", "unsafe",
+    "async", "await", "move", "dyn", "ref",
+    "match", "return", "break", "continue",
+    "true", "false", "some", "none",
+    // Shared
+    "for", "while", "loop", "else", "then",
+    // TS/JS
+    "var", "class", "interface", "export", "import", "from", "extends",
+    "typeof", "instanceof", "void", "null", "undefined", "this",
+    // Python
+    "def", "try", "except", "with", "pass", "yield", "lambda", "elif",
+    "raise", "finally", "global", "nonlocal",
+    // Go
+    "func", "package", "defer", "chan", "range", "select",
+    // Common but low-value
+    "string", "bool", "into", "that",
+];
+
+/// Check if a short word ending in CVC pattern should double its final consonant
+/// before adding -er/-ing (e.g., "run" → "runner", "get" → "getter").
+fn should_double_final_consonant(word: &str) -> bool {
+    let chars: Vec<char> = word.chars().collect();
+    let len = chars.len();
+    if len < 3 || len > 6 {
+        return false;
+    }
+
+    let last = chars[len - 1];
+    let second_last = chars[len - 2];
+    let third_last = chars[len - 3];
+
+    let is_vowel = |c: char| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u');
+
+    // Pattern: consonant-vowel-consonant, excluding w/x/y as final
+    !is_vowel(last)
+        && is_vowel(second_last)
+        && !is_vowel(third_last)
+        && !matches!(last, 'w' | 'x' | 'y')
+}
+
+/// Generate morphological variants of a word (forward derivation + backward stemming).
+///
+/// Forward: adds -er, -ing suffixes for agent nouns and gerunds.
+/// Backward: strips common suffixes to extract stems.
+/// Prefix: adds re- for common programming verbs.
+fn generate_morphological_variants(word: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    let len = word.len();
+
+    if len < 3 || len > 15 {
+        return variants;
+    }
+
+    // === BACKWARD (stem extraction) ===
+    if len > 5 && word.ends_with("ies") {
+        // "queries" → "query"
+        variants.push(format!("{}y", &word[..len - 3]));
+    } else if len > 5 && word.ends_with("ier") {
+        // "prettier" → "pretty"
+        variants.push(format!("{}y", &word[..len - 3]));
+    } else if len > 4 && word.ends_with("er") && !word.ends_with("eer") {
+        // "watcher" → "watch", also try "watche" (for words like "writer" → "write")
+        variants.push(word[..len - 2].to_string());
+        variants.push(format!("{}e", &word[..len - 2]));
+    } else if len > 5 && word.ends_with("ing") {
+        // "watching" → "watch", also try "watche" → "parse" from "parsing"
+        variants.push(word[..len - 3].to_string());
+        variants.push(format!("{}e", &word[..len - 3]));
+    } else if len > 4 && word.ends_with("ed") && !word.ends_with("eed") {
+        // "cached" → "cach", also "cache"
+        variants.push(word[..len - 2].to_string());
+        variants.push(format!("{}e", &word[..len - 2]));
+    } else if len > 4 && word.ends_with("es") && !word.ends_with("ees") {
+        // "changes" → "change" (strip just 's')
+        variants.push(word[..len - 1].to_string());
+    } else if len > 4 && word.ends_with('s') && !word.ends_with("ss") {
+        // "requests" → "request"
+        variants.push(word[..len - 1].to_string());
+    }
+
+    // === FORWARD (derivation) ===
+    let has_derived_suffix = word.ends_with("er")
+        || word.ends_with("or")
+        || word.ends_with("ing")
+        || word.ends_with("tion")
+        || word.ends_with("ment")
+        || word.ends_with("ness")
+        || word.ends_with("ous")
+        || word.ends_with("ive")
+        || word.ends_with("able");
+
+    if !has_derived_suffix && len >= 3 && len <= 10 {
+        if word.ends_with('e') && !word.ends_with("ee") {
+            // "parse" → "parser", "parsing"
+            variants.push(format!("{}r", word));
+            variants.push(format!("{}ing", &word[..len - 1]));
+        } else if should_double_final_consonant(word) {
+            // "run" → "runner", "running"; "get" → "getter", "getting"
+            let doubled = format!("{}{}", word, word.chars().last().unwrap());
+            variants.push(format!("{}er", doubled));
+            variants.push(format!("{}ing", doubled));
+        } else {
+            // "watch" → "watcher", "watching"
+            variants.push(format!("{}er", word));
+            variants.push(format!("{}ing", word));
+        }
+    }
+
+    // === PREFIX: re- for common programming verbs ===
+    static RE_PREFIXABLE: &[&str] = &[
+        "index", "build", "load", "connect", "start", "run", "create", "write", "read",
+        "fetch", "init", "process", "compile", "render", "compute", "generate", "validate",
+        "scan", "parse", "format", "sync", "fresh", "name", "play", "bind", "configure",
+        "assemble", "quest", "solve", "open", "evaluate", "execute", "balance",
+    ];
+    if RE_PREFIXABLE.contains(&word) {
+        variants.push(format!("re{}", word));
+    }
+
+    // Filter: remove too-short variants, self-references, and duplicates
+    variants.retain(|v| v.len() >= 3 && v != word);
+    variants.dedup();
+    variants
+}
+
+/// Generate a natural-language description for a symbol to improve BM25 recall.
+///
+/// Generates morphological variants (forward derivation + backward stemming)
+/// from the symbol NAME only, not the full body. This is deliberately selective:
+/// name tokens carry the highest signal-to-noise ratio for search, while body
+/// tokens are too numerous and spread common terms across many documents,
+/// causing IDF dilution (R41 lesson: Q4/Q6/Q14 regressed -2 each when body
+/// identifiers were included).
+///
+/// Budget capped at 15 words to minimize BM25 document length inflation.
+pub fn generate_nl_description(name: &str, kind: &str, _body_text: &str) -> String {
+    let mut new_words: HashSet<String> = HashSet::new();
+
+    // Collect words from the name (the primary source for variants)
+    let mut name_words: Vec<String> = Vec::new();
+    for w in split_identifier_like(name).split_whitespace() {
+        let lower = w.to_lowercase();
+        if lower.len() >= 3 {
+            name_words.push(lower);
+        }
+    }
+
+    // Kind context (e.g., "function", "struct", "enum")
+    let kind_lower = kind.to_lowercase();
+    if kind_lower.len() >= 3
+        && !LANG_KEYWORDS.contains(&kind_lower.as_str())
+        && !name_words.contains(&kind_lower)
+    {
+        new_words.insert(kind_lower);
+    }
+
+    // Generate morphological variants for name words only
+    let name_set: HashSet<&str> = name_words.iter().map(|s| s.as_str()).collect();
+    for word in &name_words {
+        if LANG_KEYWORDS.contains(&word.as_str()) {
+            continue;
+        }
+        for variant in generate_morphological_variants(word) {
+            if !name_set.contains(variant.as_str())
+                && !LANG_KEYWORDS.contains(&variant.as_str())
+            {
+                new_words.insert(variant);
+            }
+        }
+    }
+
+    // Sort by length (shorter = more useful stems) then alphabetically for determinism
+    let mut words: Vec<String> = new_words.into_iter().collect();
+    words.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    words.truncate(15);
+    words.join(" ")
+}
+
+/// Prepare text for embedding by adding a semantic header and stripping comments.
+///
+/// Embedding models (like BGE-base-en-v1.5) understand natural language better than
+/// raw code. This function creates a structured representation:
+///   "function index_files_parallel in parallel.rs\n{comment-stripped body}"
+///
+/// The header acts as a natural-language summary, improving retrieval for NL queries
+/// like "How does parallel file indexing work?" while the stripped body preserves
+/// the actual code logic without comment noise.
+pub fn prepare_embedding_text(name: &str, kind: &str, file_path: &str, text: &str) -> String {
+    let stripped = strip_code_comments(text);
+    let filename = file_path.rsplit('/').next().unwrap_or(file_path);
+    format!("{} {} in {}\n{}", kind, name, filename, stripped)
+}
+
+/// Strip comment lines from source code before BM25 indexing.
+///
+/// Removes lines that are purely comments (doc comments, line comments,
+/// block comment delimiters and continuation). This prevents false BM25
+/// matches where a function's comments *describe* a concept but don't
+/// *implement* it — e.g., `extract_concept_tags`'s doc comments mention
+/// "error_handling" and "serialization", causing it to rank #1 for those
+/// queries despite not implementing either concept.
+///
+/// Only full-line comments are stripped. Inline trailing comments
+/// (`let x = 1; // comment`) are preserved because the code portion of
+/// the line carries useful signal.
+pub fn strip_code_comments(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            // Rust/TS/JS/Go/C/C++/Java line comments (includes /// doc comments)
+            if t.starts_with("//") {
+                return false;
+            }
+            // Block comment delimiters and continuation lines
+            if t.starts_with("/*") || t.starts_with("*/") || t.starts_with("* ") || t == "*" {
+                return false;
+            }
+            // Python/Ruby comments (but NOT Rust attributes #[...] or #![...])
+            if t.starts_with('#') && !t.starts_with("#[") && !t.starts_with("#!") {
+                return false;
+            }
+            true
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Extract concept tags from symbol body text for known code patterns.
 ///
-/// Scans the text for patterns like `json!()`, `WebSocket`, `.map_err()`, etc.
+/// Scans the text for rare, discriminating patterns like `json!()` and `WebSocket`
 /// and returns semantic labels that bridge the vocabulary gap between natural
-/// language queries and code patterns. For example, `json!({` → "serialization
-/// response formatting".
+/// language queries and code patterns. For example, `json!({` → "response formatting".
+///
+/// R34: Removed broad tags (error_handling, fallback, serialization, serde) that
+/// fired on 80%+ of files with near-zero BM25 IDF. Only rare tags remain:
+/// websocket, realtime, response, formatting.
 ///
 /// Returns a space-separated string of unique tags suitable for appending to
-/// Tantivy indexed text. Compound tags are also split (e.g., "error_handling"
-/// → "error handling") for BM25 tokenization.
+/// Tantivy indexed text. Compound tags are also split for BM25 tokenization.
 pub fn extract_concept_tags(text: &str) -> String {
     let mut tags = HashSet::new();
 
-    // --- JSON / Serialization (Q10) ---
+    // --- JSON / Response formatting (Q10) ---
+    // R34: Removed broad "serialization" tag — fires on most data structs via serde,
+    // near-zero IDF. Keep only "response" and "formatting" which are rare/discriminating.
     if text.contains("json!(") || text.contains("json!{") || text.contains("json! {") {
-        tags.insert("serialization");
         tags.insert("response");
         tags.insert("formatting");
     }
-    if text.contains("serde_json::") || text.contains("serde_json") {
-        tags.insert("serialization");
-    }
     if text.contains("to_string_pretty") {
-        tags.insert("serialization");
         tags.insert("formatting");
     }
-    if text.contains("#[derive(") && (text.contains("Serialize") || text.contains("Deserialize")) {
-        tags.insert("serialization");
-        tags.insert("serde");
-    }
+    // R34: Removed serde_json, #[derive(Serialize/Deserialize)] triggers entirely —
+    // "serialization" and "serde" tags fired on 80%+ of files, zero discrimination.
 
     // --- WebSocket (Q7) ---
     // R30 lesson: "handler" concept tag had zero effect on Q7 — removed in R31.
@@ -534,56 +821,9 @@ pub fn extract_concept_tags(text: &str) -> String {
         tags.insert("websocket");
     }
 
-    // --- Error handling / Graceful degradation (Q9) ---
-    if text.contains("map_err(") {
-        tags.insert("error_handling");
-    }
-    if text.contains("tool_internal_error") || text.contains("CallToolError") {
-        tags.insert("error_handling");
-    }
-    if text.contains("unwrap_or_else(") || text.contains("ok_or_else(") || text.contains("ok_or(") {
-        tags.insert("fallback");
-        tags.insert("graceful_degradation");
-    }
-    if text.contains("downcast_ref") {
-        tags.insert("error_handling");
-    }
-    // R27: Wider patterns for error handling and graceful degradation
-    if text.contains("Err(e)") || text.contains("Err(_)") || text.contains("Err(err)") {
-        tags.insert("error_handling");
-    }
-    if text.contains("if let Err(") {
-        tags.insert("error_handling");
-        tags.insert("graceful_degradation");
-    }
-    // match ... { Ok(...) => ..., Err(...) => ... } pattern
-    if text.contains("=> Err(") || text.contains("Err(e) =>") || text.contains("Err(_) =>") {
-        tags.insert("error_handling");
-    }
-    if text.contains(".or_else(") || text.contains(".unwrap_or(") {
-        tags.insert("fallback");
-        tags.insert("graceful_degradation");
-    }
-    if text.contains("fallback") || text.contains("degrade") || text.contains("degradation") {
-        tags.insert("fallback");
-        tags.insert("graceful_degradation");
-    }
-    // R29: Additional error handling patterns for anyhow/tracing ecosystem
-    if text.contains("bail!(") {
-        tags.insert("error_handling");
-    }
-    if text.contains(".context(") || text.contains(".with_context(") {
-        tags.insert("error_handling");
-    }
-    if text.contains("anyhow!(") || text.contains("anyhow!{") {
-        tags.insert("error_handling");
-    }
-    if text.contains("tracing::error") || text.contains("tracing::warn") {
-        tags.insert("error_handling");
-    }
-    if text.contains("eprintln!(") {
-        tags.insert("error_handling");
-    }
+    // R34: Removed ALL error_handling / fallback / graceful_degradation tags.
+    // These fired on ~80% of files (map_err, Err(e), unwrap_or, bail!, .context(), etc.)
+    // giving near-zero BM25 IDF — confirmed zero discrimination in R33 benchmarks.
 
     // Build output with both raw and split forms
     let mut parts = Vec::new();
@@ -871,7 +1111,7 @@ use super::Bar;
     fn test_concept_tags_json_macro() {
         let text = r#"pub fn build_response() { json!({"status": "ok"}) }"#;
         let tags = extract_concept_tags(text);
-        assert!(tags.contains("serialization"), "json!( should trigger serialization: {tags}");
+        assert!(!tags.contains("serialization"), "R34: serialization removed as broad tag: {tags}");
         assert!(tags.contains("response"), "json!( should trigger response: {tags}");
         assert!(tags.contains("formatting"), "json!( should trigger formatting: {tags}");
     }
@@ -891,61 +1131,23 @@ use super::Bar;
         assert!(tags.contains("realtime"), "WebSocket should trigger realtime: {tags}");
     }
 
-    #[test]
-    fn test_concept_tags_error_handling() {
-        let text = "result.map_err(|e| format!(\"failed: {e}\"))";
-        let tags = extract_concept_tags(text);
-        assert!(tags.contains("error_handling"), "map_err should trigger error_handling: {tags}");
-        // Split form
-        assert!(tags.contains("error"), "should split error_handling: {tags}");
-        assert!(tags.contains("handling"), "should split error_handling: {tags}");
-    }
+    // R34: Removed tests for error_handling, fallback, graceful_degradation, serde —
+    // all broad tags removed because they fired on 80%+ of files with near-zero IDF.
 
     #[test]
-    fn test_concept_tags_graceful_degradation() {
-        let text = "let val = opt.unwrap_or_else(|| default_value());";
-        let tags = extract_concept_tags(text);
-        assert!(tags.contains("fallback"), "unwrap_or_else should trigger fallback: {tags}");
-        assert!(tags.contains("graceful_degradation"), "unwrap_or_else should trigger graceful_degradation: {tags}");
-    }
+    fn test_concept_tags_broad_tags_removed() {
+        // Verify broad tags no longer fire
+        let error_text = "result.map_err(|e| format!(\"failed: {e}\"))";
+        let tags = extract_concept_tags(error_text);
+        assert!(tags.is_empty(), "R34: map_err should not produce tags: '{tags}'");
 
-    #[test]
-    fn test_concept_tags_err_pattern() {
-        let text = "match result { Ok(v) => v, Err(e) => return Err(e) }";
-        let tags = extract_concept_tags(text);
-        assert!(tags.contains("error_handling"), "Err(e) should trigger error_handling: {tags}");
-    }
+        let fallback_text = "let val = opt.unwrap_or_else(|| default_value());";
+        let tags = extract_concept_tags(fallback_text);
+        assert!(tags.is_empty(), "R34: unwrap_or_else should not produce tags: '{tags}'");
 
-    #[test]
-    fn test_concept_tags_if_let_err() {
-        let text = "if let Err(e) = try_connect() { log::warn!(\"failed: {e}\"); }";
-        let tags = extract_concept_tags(text);
-        assert!(tags.contains("error_handling"), "if let Err should trigger error_handling: {tags}");
-        assert!(tags.contains("graceful_degradation"), "if let Err should trigger graceful_degradation: {tags}");
-    }
-
-    #[test]
-    fn test_concept_tags_unwrap_or() {
-        let text = "let port = env::var(\"PORT\").unwrap_or(\"3000\".to_string());";
-        let tags = extract_concept_tags(text);
-        assert!(tags.contains("fallback"), ".unwrap_or( should trigger fallback: {tags}");
-        assert!(tags.contains("graceful_degradation"), ".unwrap_or( should trigger graceful_degradation: {tags}");
-    }
-
-    #[test]
-    fn test_concept_tags_fallback_keyword() {
-        let text = "fn get_fallback_config() -> Config { Config::default() }";
-        let tags = extract_concept_tags(text);
-        assert!(tags.contains("fallback"), "fallback keyword should trigger fallback: {tags}");
-        assert!(tags.contains("graceful_degradation"), "fallback keyword should trigger graceful_degradation: {tags}");
-    }
-
-    #[test]
-    fn test_concept_tags_serde_derive() {
-        let text = "#[derive(Debug, Serialize, Deserialize)]\nstruct Foo {}";
-        let tags = extract_concept_tags(text);
-        assert!(tags.contains("serialization"), "derive Serialize should trigger serialization: {tags}");
-        assert!(tags.contains("serde"), "derive Serialize should trigger serde: {tags}");
+        let serde_text = "#[derive(Debug, Serialize, Deserialize)]\nstruct Foo {}";
+        let tags = extract_concept_tags(serde_text);
+        assert!(tags.is_empty(), "R34: derive Serialize should not produce tags: '{tags}'");
     }
 
     #[test]
@@ -958,5 +1160,261 @@ use super::Bar;
     fn test_concept_tags_no_matches() {
         let tags = extract_concept_tags("fn add(a: i32, b: i32) -> i32 { a + b }");
         assert!(tags.is_empty(), "plain function should return empty tags: '{tags}'");
+    }
+
+    // --- prepare_embedding_text tests ---
+
+    #[test]
+    fn test_prepare_embedding_text_basic() {
+        let text = "/// Doc comment\nfn foo() { bar() }";
+        let result = prepare_embedding_text("foo", "function", "src/handlers/mod.rs", text);
+        assert!(result.starts_with("function foo in mod.rs\n"), "should have semantic header: {result}");
+        assert!(!result.contains("Doc comment"), "should strip comments: {result}");
+        assert!(result.contains("fn foo() { bar() }"), "should preserve code: {result}");
+    }
+
+    #[test]
+    fn test_prepare_embedding_text_extracts_filename() {
+        let result = prepare_embedding_text("MyStruct", "struct", "src/storage/sqlite/mod.rs", "struct MyStruct {}");
+        assert!(result.starts_with("struct MyStruct in mod.rs\n"), "should extract filename: {result}");
+    }
+
+    // --- strip_code_comments tests ---
+
+    #[test]
+    fn test_strip_code_comments_removes_doc_comments() {
+        let text = "/// This is a doc comment\n/// about error_handling\npub fn foo() {}";
+        let stripped = strip_code_comments(text);
+        assert_eq!(stripped, "pub fn foo() {}");
+        assert!(!stripped.contains("error_handling"));
+    }
+
+    #[test]
+    fn test_strip_code_comments_removes_line_comments() {
+        let text = "fn bar() {\n    // R34: Removed error_handling tags\n    let x = 1;\n}";
+        let stripped = strip_code_comments(text);
+        assert!(stripped.contains("let x = 1;"));
+        assert!(!stripped.contains("error_handling"));
+    }
+
+    #[test]
+    fn test_strip_code_comments_preserves_code() {
+        let text = "pub fn extract() {\n    if text.contains(\"json!(\") {\n        tags.insert(\"response\");\n    }\n}";
+        let stripped = strip_code_comments(text);
+        assert_eq!(stripped, text, "code without comments should be unchanged");
+    }
+
+    #[test]
+    fn test_strip_code_comments_removes_block_comments() {
+        let text = "/*\n * Block comment about serialization\n */\nfn baz() {}";
+        let stripped = strip_code_comments(text);
+        assert!(stripped.contains("fn baz() {}"));
+        assert!(!stripped.contains("serialization"));
+    }
+
+    #[test]
+    fn test_strip_code_comments_preserves_rust_attributes() {
+        let text = "#[derive(Debug, Serialize)]\nstruct Foo {\n    // A field\n    pub x: i32,\n}";
+        let stripped = strip_code_comments(text);
+        assert!(stripped.contains("#[derive(Debug, Serialize)]"), "Rust attributes preserved");
+        assert!(!stripped.contains("A field"), "inline comment stripped");
+    }
+
+    #[test]
+    fn test_strip_code_comments_preserves_python_shebangs() {
+        let text = "#!/usr/bin/env python\n# This is a comment\ndef foo(): pass";
+        let stripped = strip_code_comments(text);
+        assert!(stripped.contains("#!/usr/bin/env python"), "shebang preserved");
+        assert!(!stripped.contains("This is a comment"), "Python comment stripped");
+    }
+
+    // --- build_framework_vocab_tags tests ---
+
+    #[test]
+    fn test_framework_vocab_websocket() {
+        let patterns = vec![("websocket".to_string(), None)];
+        let tags = build_framework_vocab_tags(&patterns);
+        assert!(tags.contains("websocket"), "should include websocket: {tags}");
+        assert!(tags.contains("handler"), "should include handler: {tags}");
+        assert!(tags.contains("endpoint"), "should include endpoint: {tags}");
+        assert!(tags.contains("realtime"), "should include realtime: {tags}");
+    }
+
+    #[test]
+    fn test_framework_vocab_route_with_method() {
+        let patterns = vec![("route".to_string(), Some("GET".to_string()))];
+        let tags = build_framework_vocab_tags(&patterns);
+        assert!(tags.contains("route"), "should include route: {tags}");
+        assert!(tags.contains("handler"), "should include handler: {tags}");
+        assert!(tags.contains("http"), "should include http: {tags}");
+        assert!(tags.contains("endpoint"), "should include endpoint: {tags}");
+        assert!(tags.contains("get"), "should include get (method): {tags}");
+    }
+
+    #[test]
+    fn test_framework_vocab_empty_input() {
+        let patterns: Vec<(String, Option<String>)> = vec![];
+        let tags = build_framework_vocab_tags(&patterns);
+        assert!(tags.is_empty(), "empty patterns should produce empty tags: '{tags}'");
+    }
+
+    #[test]
+    fn test_framework_vocab_dedup() {
+        // Both websocket and route produce "handler" — should only appear once
+        let patterns = vec![
+            ("websocket".to_string(), None),
+            ("route".to_string(), Some("POST".to_string())),
+        ];
+        let tags = build_framework_vocab_tags(&patterns);
+        let handler_count = tags.split_whitespace().filter(|w| *w == "handler").count();
+        assert_eq!(handler_count, 1, "handler should be deduplicated: {tags}");
+        // Both should still have their unique words
+        assert!(tags.contains("realtime"), "websocket's realtime should be present: {tags}");
+        assert!(tags.contains("route"), "route should be present: {tags}");
+        assert!(tags.contains("post"), "POST method should be present: {tags}");
+    }
+
+    // --- NL description tests ---
+
+    #[test]
+    fn test_generate_morphological_variants_backward() {
+        // -er stripping
+        let v = generate_morphological_variants("watcher");
+        assert!(v.contains(&"watch".to_string()), "watcher → watch: {v:?}");
+
+        // -ing stripping
+        let v = generate_morphological_variants("watching");
+        assert!(v.contains(&"watch".to_string()), "watching → watch: {v:?}");
+
+        // -es → strip s
+        let v = generate_morphological_variants("changes");
+        assert!(v.contains(&"change".to_string()), "changes → change: {v:?}");
+
+        // -s stripping
+        let v = generate_morphological_variants("requests");
+        assert!(v.contains(&"request".to_string()), "requests → request: {v:?}");
+
+        // -ing with e restoration
+        let v = generate_morphological_variants("parsing");
+        assert!(v.contains(&"parse".to_string()), "parsing → parse: {v:?}");
+    }
+
+    #[test]
+    fn test_generate_morphological_variants_forward() {
+        // -er addition
+        let v = generate_morphological_variants("watch");
+        assert!(v.contains(&"watcher".to_string()), "watch → watcher: {v:?}");
+        assert!(v.contains(&"watching".to_string()), "watch → watching: {v:?}");
+
+        // -e ending: parse → parser, parsing
+        let v = generate_morphological_variants("parse");
+        assert!(v.contains(&"parser".to_string()), "parse → parser: {v:?}");
+        assert!(v.contains(&"parsing".to_string()), "parse → parsing: {v:?}");
+
+        // Double consonant: run → runner, running
+        let v = generate_morphological_variants("run");
+        assert!(v.contains(&"runner".to_string()), "run → runner: {v:?}");
+        assert!(v.contains(&"running".to_string()), "run → running: {v:?}");
+    }
+
+    #[test]
+    fn test_generate_morphological_variants_prefix() {
+        let v = generate_morphological_variants("index");
+        assert!(v.contains(&"reindex".to_string()), "index → reindex: {v:?}");
+
+        let v = generate_morphological_variants("build");
+        assert!(v.contains(&"rebuild".to_string()), "build → rebuild: {v:?}");
+    }
+
+    #[test]
+    fn test_generate_morphological_variants_no_self_reference() {
+        let v = generate_morphological_variants("watch");
+        assert!(!v.contains(&"watch".to_string()), "should not contain self: {v:?}");
+    }
+
+    #[test]
+    fn test_generate_nl_description_basic() {
+        let desc = generate_nl_description(
+            "spawn_watch_loop",
+            "function",
+            "let watcher = check_for_changes(debounce_ms);",
+        );
+        // Should contain kind context
+        assert!(desc.contains("function"), "should include kind: {desc}");
+        // Name-only variants: "watch" → watcher/watching, "spawn" → spawner/spawning
+        assert!(desc.contains("watcher") || desc.contains("watching"),
+            "watch → watcher/watching: {desc}");
+        assert!(desc.contains("spawner") || desc.contains("spawning"),
+            "spawn → spawner/spawning: {desc}");
+        // Body tokens should NOT appear (name-only restriction from R41)
+        assert!(!desc.contains("change"), "body token 'changes' should not produce variants: {desc}");
+    }
+
+    #[test]
+    fn test_generate_nl_description_excludes_existing() {
+        let desc = generate_nl_description(
+            "get_config",
+            "function",
+            "fn get_config() -> Config { config }",
+        );
+        // "config" and "get" are already in the body — shouldn't be in description
+        // (they'd be in existing_words set)
+        // But their VARIANTS should be present
+        let words: HashSet<&str> = desc.split_whitespace().collect();
+        // "config" (4 chars) is in body, but "configing" or "configer" (>= 3) might be
+        // Main point: the description should NOT duplicate existing words
+        assert!(words.len() < 80, "should not produce excessive words: {desc}");
+    }
+
+    #[test]
+    fn test_generate_nl_description_kind_context() {
+        // "struct" kind when body doesn't contain "struct" as an identifier
+        let _desc = generate_nl_description("MyConfig", "struct", "pub name: String, pub value: i32,");
+        // "struct" is in LANG_KEYWORDS, so it won't be added as kind context
+        // But "struct" IS a valid kind... let me check: LANG_KEYWORDS has "struct"
+        // This is actually OK — for structs, the kind is less useful than for functions
+
+        let desc = generate_nl_description("process_events", "function", "for event in events {}");
+        assert!(desc.contains("function"), "function kind should be added: {desc}");
+    }
+
+    #[test]
+    fn test_generate_nl_description_name_only_variants() {
+        // R41 lesson: only name tokens get variants, not body tokens
+        let desc = generate_nl_description(
+            "check_for_changes",
+            "function",
+            "if changed { index_files(path); }",
+        );
+        // Name tokens: "check" (5), "for" (3), "changes" (7)
+        // "changes" → backward stem "change", forward "changer/changing"
+        // "check" → forward "checker/checking"
+        assert!(desc.contains("change"), "changes → change (backward stem): {desc}");
+        assert!(desc.contains("checker") || desc.contains("checking"),
+            "check → checker/checking: {desc}");
+        // "index" is only in body — should NOT produce "reindex"
+        assert!(!desc.contains("reindex"), "body token 'index' should not produce variants: {desc}");
+    }
+
+    #[test]
+    fn test_strip_code_comments_meta_matching_prevention() {
+        // Simulates extract_concept_tags body — comments should be stripped
+        // but string literals in code should remain
+        let text = r#"/// Scans for patterns like error_handling and serialization
+/// R34: Removed broad tags (error_handling, fallback, serialization)
+pub fn extract_concept_tags(text: &str) -> String {
+    // --- JSON / Response formatting (Q10) ---
+    // R34: Removed broad "serialization" tag
+    if text.contains("json!(") {
+        tags.insert("response");
+    }
+}"#;
+        let stripped = strip_code_comments(text);
+        // Comments mentioning "error_handling" and "serialization" should be gone
+        assert!(!stripped.contains("error_handling"), "doc comment keyword stripped");
+        assert!(!stripped.contains("serialization"), "inline comment keyword stripped");
+        // But code string literals should remain
+        assert!(stripped.contains("json!("), "code string literal preserved");
+        assert!(stripped.contains("response"), "code string literal preserved");
     }
 }

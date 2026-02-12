@@ -219,6 +219,11 @@ mod tests {
             metrics_enabled: true,
             metrics_port: 9090,
             package_detection_enabled: true,
+            llm_enabled: true,
+            llm_device: crate::config::EmbeddingsDevice::Cpu,
+            llm_model_dir: None,
+            llm_max_tokens: 30,
+            llm_batch_commit: 10,
         }
     }
 

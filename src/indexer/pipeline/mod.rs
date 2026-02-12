@@ -1,3 +1,4 @@
+pub mod describe;
 pub mod edges;
 pub mod parallel;
 pub mod parsing;

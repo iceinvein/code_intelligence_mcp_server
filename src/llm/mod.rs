@@ -6,6 +6,8 @@
 
 use anyhow::Result;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use crate::path::Utf8Path;
 
 pub mod ort;
 
@@ -107,6 +109,50 @@ pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
     let result = hasher.finalize();
 
     hex::encode(result)
+}
+
+/// Create an LLM generator based on config.
+///
+/// Returns `None` if:
+/// - LLM is disabled (`LLM_ENABLED=false`)
+/// - No model directory is configured
+/// - Model files are not present on disk
+pub fn create_llm_generator(
+    config: &crate::config::Config,
+) -> anyhow::Result<Option<Arc<dyn LlmGenerator>>> {
+    if !config.llm_enabled {
+        tracing::info!("LLM descriptions disabled (LLM_ENABLED=false)");
+        return Ok(None);
+    }
+
+    let model_dir = match &config.llm_model_dir {
+        Some(dir) => dir.clone(),
+        None => {
+            tracing::info!("No LLM model directory configured, descriptions disabled");
+            return Ok(None);
+        }
+    };
+
+    // Check if model files exist
+    if !model_dir.exists() || !model_dir.join("tokenizer.json").exists() {
+        tracing::warn!(
+            "LLM model not found at {}. Run with LLM_ENABLED=false to suppress, or download the model.",
+            model_dir
+        );
+        return Ok(None);
+    }
+
+    let generator = ort::OrtLlmGenerator::new(&model_dir, config.llm_device)?;
+    Ok(Some(Arc::new(generator)))
+}
+
+/// Download the Qwen2.5-Coder-1.5B-Instruct ONNX model from HuggingFace.
+///
+/// TODO: Implement in a follow-up task. For now, users must manually download.
+pub fn download_model(_target_dir: &Utf8Path) -> anyhow::Result<()> {
+    Err(anyhow::anyhow!(
+        "Auto-download not yet implemented. Please download the model manually."
+    ))
 }
 
 #[cfg(test)]

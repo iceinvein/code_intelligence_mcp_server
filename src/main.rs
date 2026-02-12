@@ -346,6 +346,21 @@ async fn run_embedded() -> SdkResult<()> {
         state.indexer.spawn_watch_loop();
     }
 
+    // Spawn LLM description worker if enabled and model available
+    match code_intelligence_mcp_server::llm::create_llm_generator(&config) {
+        Ok(Some(llm)) => {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let _desc_handle = state.indexer.spawn_description_worker(llm, cancel);
+            tracing::info!("LLM description worker spawned");
+        }
+        Ok(None) => {
+            tracing::debug!("LLM descriptions not available, skipping description worker");
+        }
+        Err(e) => {
+            tracing::warn!("Failed to create LLM generator: {}", e);
+        }
+    }
+
     #[cfg(feature = "web-ui")]
     if env_true("WEB_UI") {
         web_ui::spawn(state.clone())

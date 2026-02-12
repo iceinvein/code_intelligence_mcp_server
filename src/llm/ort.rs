@@ -267,7 +267,7 @@ fn argmax_last(logits: &[f32], vocab_size: usize) -> Result<u32> {
 /// Find the best ONNX model file in the directory.
 /// Prefers quantized models for speed.
 fn find_model_file(model_dir: &Utf8Path) -> Result<Utf8PathBuf> {
-    for name in &["model_q4.onnx", "model_q8.onnx", "model_fp16.onnx", "model.onnx"] {
+    for name in &["model_q4.onnx", "model_q4f16.onnx", "model_q8.onnx", "model_fp16.onnx", "model.onnx"] {
         let path = model_dir.join(name);
         if path.exists() {
             return Ok(path);

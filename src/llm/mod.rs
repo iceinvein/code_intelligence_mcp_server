@@ -111,12 +111,16 @@ pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
     hex::encode(result)
 }
 
+/// HuggingFace repository for the ONNX-exported Qwen2.5-Coder model.
+const HF_REPO: &str = "onnx-community/Qwen2.5-Coder-1.5B-Instruct";
+/// Quantized model file (Q4+FP16 mixed, ~1.34 GB — smallest available variant).
+const HF_MODEL_FILE: &str = "onnx/model_q4f16.onnx";
+const HF_TOKENIZER_FILE: &str = "tokenizer.json";
+
 /// Create an LLM generator based on config.
 ///
-/// Returns `None` if:
-/// - LLM is disabled (`LLM_ENABLED=false`)
-/// - No model directory is configured
-/// - Model files are not present on disk
+/// Returns `None` if LLM is disabled or model directory is not configured.
+/// Auto-downloads the model from HuggingFace on first launch if not present.
 pub fn create_llm_generator(
     config: &crate::config::Config,
 ) -> anyhow::Result<Option<Arc<dyn LlmGenerator>>> {
@@ -133,13 +137,21 @@ pub fn create_llm_generator(
         }
     };
 
-    // Check if model files exist
+    // Auto-download if model not found
     if !model_dir.exists() || !model_dir.join("tokenizer.json").exists() {
-        tracing::warn!(
-            "LLM model not found at {}. Run with LLM_ENABLED=false to suppress, or download the model.",
-            model_dir
-        );
-        return Ok(None);
+        tracing::info!("LLM model not found at {}, attempting auto-download...", model_dir);
+        match download_model(&model_dir) {
+            Ok(()) => {
+                tracing::info!("LLM model downloaded successfully");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to download LLM model: {}. Set LLM_ENABLED=false to suppress.",
+                    e
+                );
+                return Ok(None);
+            }
+        }
     }
 
     let generator = ort::OrtLlmGenerator::new(&model_dir, config.llm_device)?;
@@ -148,11 +160,63 @@ pub fn create_llm_generator(
 
 /// Download the Qwen2.5-Coder-1.5B-Instruct ONNX model from HuggingFace.
 ///
-/// TODO: Implement in a follow-up task. For now, users must manually download.
-pub fn download_model(_target_dir: &Utf8Path) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!(
-        "Auto-download not yet implemented. Please download the model manually."
-    ))
+/// Downloads `tokenizer.json` (~11 MB) and `onnx/model_q4f16.onnx` (~1.34 GB)
+/// into the HuggingFace cache (`~/.cache/huggingface/hub/`), then creates
+/// symlinks in `target_dir` to avoid duplicating disk space.
+pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    tracing::info!("Downloading LLM model from huggingface.co/{}", HF_REPO);
+
+    let api = hf_hub::api::sync::Api::new()
+        .context("Failed to initialize HuggingFace Hub API")?;
+    let repo = api.model(HF_REPO.to_string());
+
+    // Download tokenizer (~11 MB)
+    tracing::info!("Downloading {}...", HF_TOKENIZER_FILE);
+    let tokenizer_cached = repo.get(HF_TOKENIZER_FILE)
+        .context("Failed to download tokenizer.json")?;
+
+    // Download quantized model (~1.34 GB)
+    tracing::info!("Downloading {} (~1.3 GB, this may take a few minutes)...", HF_MODEL_FILE);
+    let model_cached = repo.get(HF_MODEL_FILE)
+        .context("Failed to download ONNX model file")?;
+
+    // Create target directory
+    std::fs::create_dir_all(target_dir.as_std_path())
+        .context("Failed to create model directory")?;
+
+    // Symlink files from HF cache into our model directory
+    let target_tokenizer = target_dir.join("tokenizer.json");
+    let target_model = target_dir.join("model_q4f16.onnx");
+
+    symlink_or_copy(&tokenizer_cached, target_tokenizer.as_std_path())
+        .context("Failed to link tokenizer.json")?;
+    symlink_or_copy(&model_cached, target_model.as_std_path())
+        .context("Failed to link model file")?;
+
+    tracing::info!("LLM model ready at {}", target_dir);
+    Ok(())
+}
+
+/// Create a symlink from `source` to `target`. Falls back to copy on non-Unix.
+fn symlink_or_copy(source: &std::path::Path, target: &std::path::Path) -> anyhow::Result<()> {
+    // Remove existing target (stale symlink or old file)
+    if target.exists() || target.symlink_metadata().is_ok() {
+        std::fs::remove_file(target).ok();
+    }
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, target)?;
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::copy(source, target)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

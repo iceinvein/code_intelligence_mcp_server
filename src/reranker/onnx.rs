@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 /// Cross-encoder reranker using ONNX Runtime
 pub struct CrossEncoderReranker {
-    session: Session,
+    session: Mutex<Session>,
     tokenizer: Mutex<Tokenizer>,
     max_length: usize,
     top_k: usize,
@@ -51,7 +51,7 @@ impl CrossEncoderReranker {
         };
 
         Ok(Self {
-            session,
+            session: Mutex::new(session),
             tokenizer: Mutex::new(tokenizer),
             max_length: 512,
             top_k: top_k.min(50), // Cap at 50 for performance
@@ -152,40 +152,41 @@ impl CrossEncoderReranker {
         let type_ids_array = Array::from_shape_vec((1, seq_len), token_type_ids)?;
 
         // Run inference with ort 2.0 API
-        // Create input values using the session's allocator
-        let input_ids_value = ort::value::Value::from_array(ids_array)?;
-        let attention_mask_value = ort::value::Value::from_array(mask_array)?;
-        let token_type_ids_value = ort::value::Value::from_array(type_ids_array)?;
-
-        // Convert to SessionInputValue
         let inputs: Vec<ort::session::SessionInputValue> = vec![
-            input_ids_value.into(),
-            attention_mask_value.into(),
-            token_type_ids_value.into(),
+            ort::value::Tensor::from_array(ids_array)?.into(),
+            ort::value::Tensor::from_array(mask_array)?.into(),
+            ort::value::Tensor::from_array(type_ids_array)?.into(),
         ];
 
-        match self.session.run(inputs.as_slice()) {
-            Ok(outputs) => {
-                // Extract logits - cross-encoders output relevance score
-                // SessionOutputs implements Index<usize> to get outputs by position
-                if outputs.len() > 0 {
-                    let output = &outputs[0]; // Get first output
-                    if let Ok(tensor) = output.try_extract_tensor::<f32>() {
-                        let score = tensor.first().copied().unwrap_or(0.0);
-
-                        // Apply sigmoid if output is logits (not probability)
-                        // Using 1 / (1 + exp(-score)) for sigmoid
-                        let sigmoid_score = 1.0 / (1.0 + (-score).exp());
-                        return Ok(sigmoid_score);
-                    }
+        let score = {
+            let mut session = self.session.lock().await;
+            let outputs = match session.run(inputs.as_slice()) {
+                Ok(outputs) => outputs,
+                Err(e) => {
+                    tracing::warn!("Reranker inference failed: {}, returning neutral score", e);
+                    return Ok(0.5);
                 }
-                Ok(0.0)
+            };
+
+            // Extract logits - cross-encoders output relevance score
+            // SessionOutputs implements Index<usize> to get outputs by position
+            if outputs.len() > 0 {
+                let output = &outputs[0]; // Get first output
+                if let Ok((_shape, data)) = output.try_extract_tensor::<f32>() {
+                    // Copy the first value to avoid borrowing issues
+                    data.first().copied().unwrap_or(0.0)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
             }
-            Err(e) => {
-                tracing::warn!("Reranker inference failed: {}, returning neutral score", e);
-                Ok(0.5)
-            }
-        }
+        };
+
+        // Apply sigmoid if output is logits (not probability)
+        // Using 1 / (1 + exp(-score)) for sigmoid
+        let sigmoid_score = 1.0 / (1.0 + (-score).exp());
+        Ok(sigmoid_score)
     }
 }
 

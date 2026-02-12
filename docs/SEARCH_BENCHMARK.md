@@ -2120,3 +2120,46 @@ Morphological variants applied to ALL body identifiers spread common programming
 1. **Phase 2: LLM descriptions** — Wire Qwen 1.5B descriptions into BM25 index text. Primary target: Q9/Q10 (meta-matching), Q3 (vocabulary gap), Q1 (vocabulary gap). The LLM engine is merged but descriptions aren't yet part of the indexed text.
 2. **Phase 3: Jina Code v2** — Better embedding model for vector search arm. Primary target: Q1/Q7.
 3. **Q4 test pollution** — `clear_env` test helper persists at #3 despite -10 penalty.
+
+### Round 45 — Stability check (LLM description infrastructure merged, no search changes)
+
+**Changes:** None since R44. LLM description engine (Qwen2.5-Coder-1.5B ONNX) is merged with auto-download and background worker, but descriptions are not yet actively influencing search results for this codebase. This round confirms pipeline stability.
+
+| # | Query (short) | R44 CI | R45 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 1 | Ranking/scoring | 4 | 4 | 0 | `format_scoring_breakdown` at #1, core scoring functions absent |
+| 2 | Embeddings | 7 | 7 | 0 | Good generation coverage, `storage/vector.rs` absent |
+| 3 | Tree-sitter parsing | 3 | 3 | 0 | `expand_stems` at #1, tree-sitter code absent |
+| 4 | Config env vars | 5 | 5 | 0 | `from_env` at #5, `clear_env` test at #3 |
+| 5 | Indexing pipeline | 6 | 6 | 0 | ExtractedSymbol at #1, pipeline orchestrator absent |
+| 6 | MCP tool requests | 9 | 9 | 0 | dispatch_tool_call at #1, excellent |
+| 7 | WebSocket handler | 3 | 3 | 0 | Single-file flooding in elysia.rs |
+| 8 | SQLite schema | 9 | 9 | 0 | schema.rs + init() at #1-#2 |
+| 9 | Error handling | 3 | 3 | 0 | `expand_stems` at #1 — "gracefully" stem meta-match |
+| 10 | JSON serialization | 3 | 3 | 0 | `extract_concept_tags` meta-matching persists |
+| 11 | Async parallel | 6 | 6 | 0 | index_files_parallel_async at #1 |
+| 12 | Caching | 7 | 7 | 0 | Good cache coverage across 3 files |
+| 13 | PathNormalizer | 8 | 7 | -1 | Struct+impl at #1-#2; keyword noise at #3-#5 |
+| 14 | EmbeddingCache | 7 | 7 | 0 | put/get at #1-#2, content_hash at #3 |
+| 15 | File watcher | 6 | 5 | -1 | spawn_watch_loop at #1 but 4/5 from same file |
+
+**CI avg: 5.60** (R44: 5.73, **-0.13**) | Augment avg: 8.53 | Gap: 2.93
+
+#### Round 45 Analysis
+
+**Overall:** Net -0.13 (0 improvements, 2 regressions, 13 stable). This is a **stability check** — no search algorithm changes since R43. The -0.13 delta is well within the established ±0.3-0.5 evaluator noise floor. Five stability rounds (R32/R36/R38/R44/R45) now establish a consistent noise profile.
+
+**Stability confirmation:** 13/15 queries returned identical scores to R44. The two -1 movements (Q13: 8→7, Q15: 6→5) are evaluator noise — both have the same top results and failure patterns as R44. Q13 still shows PathNormalizer struct+impl at #1-#2 with keyword noise at #3-#5; Q15 still shows spawn_watch_loop at #1 with single-file flooding.
+
+**Persistent low-scorers (CI ≤ 4):** Q1=4, Q3=3, Q7=3, Q9=3, Q10=3 — unchanged across R42→R43→R44→R45. These are structurally blocked:
+- **Q3, Q9, Q10:** Meta-matching — functions that _detect_ patterns rank for queries about those patterns
+- **Q1:** Vocabulary gap — "ranking and scoring" doesn't match `rank_hits_with_signals` or `structural_adjustment`
+- **Q7:** WebSocket handler code buried in framework extractor, BM25 can't bridge "WebSocket handler" → `classify_elysia_method`
+
+**LLM descriptions status:** The Qwen2.5-Coder-1.5B ONNX engine is merged with auto-download and background description worker, but descriptions need to be actually generated and indexed for this codebase to impact search. The description worker runs after initial indexing and re-upserts symbols to Tantivy with descriptions appended to the text field. Next step is to verify the model is downloading and generating descriptions, then run R46 to measure impact.
+
+**Next steps:**
+1. **Verify LLM descriptions are active** — Check if Qwen model downloaded successfully, if descriptions are being generated, and if they appear in Tantivy index text. If not, debug the pipeline.
+2. **Phase 2: LLM descriptions (search impact)** — Once descriptions are confirmed active, run R46 to measure impact on Q1/Q3/Q9/Q10.
+3. **Phase 3: Jina Code v2** — Better embedding model for vector search arm. Primary target: Q1/Q7.
+4. **Q4 test pollution** — `clear_env` test helper persists at #3 despite -10 penalty.

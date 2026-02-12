@@ -1,12 +1,13 @@
 //! ONNX Runtime LLM generation backend (Qwen2.5-Coder-1.5B-Instruct)
 //!
-//! Implements autoregressive text generation with KV cache for GQA.
+//! Implements autoregressive text generation with KV cache for efficient inference.
+//! Uses the model_q4.onnx variant (pure int4 quantization with f32 KV cache) to
+//! avoid ORT buffer reuse bugs that occur with mixed-precision models (q4f16).
 //! Supports CPU and Metal (CoreML) execution providers.
 
 use anyhow::{anyhow, Context, Result};
-use half::f16;
-use ndarray::{Array2, Array4, IxDyn};
 use ort::session::Session;
+use std::sync::Mutex;
 use tokenizers::Tokenizer;
 
 use crate::config::EmbeddingsDevice;
@@ -36,11 +37,12 @@ impl Default for ModelConfig {
 
 /// ONNX Runtime-based LLM generator for Qwen2.5-Coder-1.5B-Instruct.
 ///
-/// Uses autoregressive generation with KV cache for efficient token-by-token output.
-/// The model uses Grouped Query Attention (GQA) with 2 KV heads (vs 12 attention heads).
+/// Uses KV-cached autoregressive generation: the prompt pass processes the full
+/// input and populates the KV cache, then each subsequent token pass processes
+/// only the new token with the accumulated cache. This is O(n) in output length.
 pub struct OrtLlmGenerator {
-    session: Session,
-    tokenizer: Tokenizer,
+    session: Mutex<Session>,
+    tokenizer: Mutex<Tokenizer>,
     config: ModelConfig,
 }
 
@@ -48,7 +50,7 @@ impl OrtLlmGenerator {
     /// Load the ONNX model and tokenizer from a directory.
     ///
     /// Expected files in `model_dir`:
-    /// - `model.onnx` (or quantized variants: `model_q4.onnx`, `model_q8.onnx`, etc.)
+    /// - `model_q4.onnx` (or other quantized variants)
     /// - `tokenizer.json`
     pub fn new(model_dir: &Utf8Path, device: EmbeddingsDevice) -> Result<Self> {
         tracing::info!("Loading LLM from: {}", model_dir);
@@ -56,8 +58,9 @@ impl OrtLlmGenerator {
         let model_path = find_model_file(model_dir)?;
         tracing::info!("Using model file: {}", model_path);
 
-        // Build ONNX session with appropriate execution provider
-        let builder = Session::builder()?;
+        // Disable memory pattern optimization since input sequence lengths vary between calls.
+        let builder = Session::builder()?
+            .with_memory_pattern(false)?;
 
         let session = match device {
             EmbeddingsDevice::Metal => {
@@ -96,16 +99,14 @@ impl OrtLlmGenerator {
         let tokenizer = Tokenizer::from_file(tokenizer_path.as_str())
             .map_err(|e| anyhow!("Failed to load LLM tokenizer: {}", e))?;
 
-        tracing::info!("LLM loaded successfully ({} inputs, {} outputs, {} layers, GQA with {} KV heads)",
-            session.inputs.len(),
-            session.outputs.len(),
+        tracing::info!("LLM loaded successfully ({} layers, GQA with {} KV heads)",
             ModelConfig::default().num_layers,
             ModelConfig::default().num_kv_heads,
         );
 
         Ok(Self {
-            session,
-            tokenizer,
+            session: Mutex::new(session),
+            tokenizer: Mutex::new(tokenizer),
             config: ModelConfig::default(),
         })
     }
@@ -113,138 +114,149 @@ impl OrtLlmGenerator {
 
 impl LlmGenerator for OrtLlmGenerator {
     fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String> {
-        // 1. Tokenize
-        let encoding = self.tokenizer.encode(prompt, false)
+        let tokenizer = self.tokenizer.lock().unwrap();
+        let encoding = tokenizer.encode(prompt, false)
             .map_err(|e| anyhow!("Tokenization failed: {}", e))?;
         let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
-        let seq_len = input_ids.len();
 
-        if seq_len == 0 {
+        if input_ids.is_empty() {
             return Ok(String::new());
         }
 
-        // 2. First forward pass (prompt processing)
-        let mut generated_tokens: Vec<u32> = Vec::new();
-        let (mut logits, mut kv_cache) = self.forward_prompt(&input_ids)?;
+        let prompt_len = input_ids.len();
 
-        // 3. Autoregressive loop
-        let mut total_len = seq_len;
-        for _ in 0..max_tokens {
-            let next_token = argmax_last(&logits, self.config.vocab_size)?;
+        // Prompt pass: process full sequence, get initial KV cache
+        let (logits, mut kv_cache) = self.forward_prompt(&input_ids)?;
+        let mut next_token = argmax_last(&logits, self.config.vocab_size)?;
 
+        if self.config.eos_token_ids.contains(&next_token) {
+            return Ok(String::new());
+        }
+
+        let mut generated_tokens: Vec<u32> = vec![next_token];
+        let mut total_seq_len = prompt_len;
+
+        // Token passes: generate one token at a time using KV cache
+        for _ in 1..max_tokens {
+            total_seq_len += 1;
+            let (logits, new_kv) = self.forward_token(next_token as i64, total_seq_len, &kv_cache)?;
+            kv_cache = new_kv;
+
+            next_token = argmax_last(&logits, self.config.vocab_size)?;
             if self.config.eos_token_ids.contains(&next_token) {
                 break;
             }
-
             generated_tokens.push(next_token);
-            total_len += 1;
-
-            let (new_logits, new_kv_cache) = self.forward_token(
-                next_token as i64,
-                total_len,
-                kv_cache,
-            )?;
-            logits = new_logits;
-            kv_cache = new_kv_cache;
         }
 
-        // 4. Detokenize
-        let output = self.tokenizer.decode(&generated_tokens, true)
+        let output = tokenizer.decode(&generated_tokens, true)
             .map_err(|e| anyhow!("Detokenization failed: {}", e))?;
 
         Ok(output.trim().to_string())
     }
 }
 
+/// KV cache: Vec of (key, value) tensors per layer.
+type KvCache = Vec<(ort::value::Value, ort::value::Value)>;
+
 impl OrtLlmGenerator {
-    /// First forward pass: process entire prompt, return logits and initial KV cache.
-    fn forward_prompt(&self, input_ids: &[i64]) -> Result<(Vec<f32>, Vec<ort::value::Value>)> {
+    /// Prompt pass: process the full input sequence with empty KV cache.
+    /// Returns logits for the last position and the populated KV cache.
+    fn forward_prompt(&self, input_ids: &[i64]) -> Result<(Vec<f32>, KvCache)> {
         let seq_len = input_ids.len();
 
-        let ids_array = Array2::from_shape_vec((1, seq_len), input_ids.to_vec())?;
-        let attention_mask = Array2::from_elem((1, seq_len), 1i64);
-        let position_ids = Array2::from_shape_fn((1, seq_len), |(_, j)| j as i64);
+        let ids_array = ndarray::Array::from_shape_vec((1, seq_len), input_ids.to_vec())?;
+        let attention_mask = ndarray::Array::from_elem((1, seq_len), 1i64);
 
         let empty_kv = self.empty_kv_cache()?;
 
+        // model_q4.onnx inputs: input_ids, attention_mask, past_key_values.*.{key,value}
         let mut inputs: Vec<ort::session::SessionInputValue> = vec![
-            ort::value::Value::from_array(ids_array)?.into(),
-            ort::value::Value::from_array(attention_mask)?.into(),
-            ort::value::Value::from_array(position_ids)?.into(),
+            ort::value::Tensor::from_array(ids_array)?.into(),
+            ort::value::Tensor::from_array(attention_mask)?.into(),
         ];
         inputs.extend(empty_kv.into_iter().map(|v| v.into()));
 
-        let outputs = self.session.run(inputs.as_slice())
-            .context("LLM forward pass (prompt) failed")?;
+        let mut session = self.session.lock().unwrap();
+        let outputs = session.run(inputs.as_slice())
+            .context("LLM prompt pass failed")?;
 
         let logits = extract_logits(&outputs[0])?;
-        let kv_cache = extract_kv_cache(&outputs, self.config.num_layers)?;
-
-        Ok((logits, kv_cache))
+        let kv = self.extract_kv_cache(&outputs)?;
+        Ok((logits, kv))
     }
 
-    /// Subsequent forward pass: single token with KV cache.
-    fn forward_token(
-        &self,
-        token_id: i64,
-        total_len: usize,
-        kv_cache: Vec<ort::value::Value>,
-    ) -> Result<(Vec<f32>, Vec<ort::value::Value>)> {
-        let ids_array = Array2::from_elem((1, 1), token_id);
-        let attention_mask = Array2::from_elem((1, total_len), 1i64);
-        let position_ids = Array2::from_elem((1, 1), (total_len - 1) as i64);
+    /// Token pass: process a single new token with the accumulated KV cache.
+    /// `total_seq_len` is the total sequence length including the new token (for attention mask).
+    fn forward_token(&self, token_id: i64, total_seq_len: usize, kv_cache: &KvCache) -> Result<(Vec<f32>, KvCache)> {
+        let ids_array = ndarray::Array::from_shape_vec((1, 1), vec![token_id])?;
+        let attention_mask = ndarray::Array::from_elem((1, total_seq_len), 1i64);
 
         let mut inputs: Vec<ort::session::SessionInputValue> = vec![
-            ort::value::Value::from_array(ids_array)?.into(),
-            ort::value::Value::from_array(attention_mask)?.into(),
-            ort::value::Value::from_array(position_ids)?.into(),
+            ort::value::Tensor::from_array(ids_array)?.into(),
+            ort::value::Tensor::from_array(attention_mask)?.into(),
         ];
-        inputs.extend(kv_cache.into_iter().map(|v| v.into()));
 
-        let outputs = self.session.run(inputs.as_slice())
-            .context("LLM forward pass (token) failed")?;
+        // Pass existing KV cache as past_key_values
+        for (k, v) in kv_cache {
+            inputs.push(extract_tensor_copy(k)?.into());
+            inputs.push(extract_tensor_copy(v)?.into());
+        }
+
+        let mut session = self.session.lock().unwrap();
+        let outputs = session.run(inputs.as_slice())
+            .context("LLM token pass failed")?;
 
         let logits = extract_logits(&outputs[0])?;
-        let new_kv_cache = extract_kv_cache(&outputs, self.config.num_layers)?;
-
-        Ok((logits, new_kv_cache))
+        let kv = self.extract_kv_cache(&outputs)?;
+        Ok((logits, kv))
     }
 
-    /// Create empty KV cache tensors for the first forward pass.
-    /// Uses f16 to match the q4f16 model's KV cache precision.
+    /// Create empty KV cache tensors (past_sequence_length=0).
+    /// Uses ndarray because ort rc.11 rejects 0-size dims in tuple-form tensors.
     fn empty_kv_cache(&self) -> Result<Vec<ort::value::Value>> {
         let mut kv = Vec::with_capacity(self.config.num_layers * 2);
         for _ in 0..self.config.num_layers {
-            let empty_k = Array4::<f16>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
-            let empty_v = Array4::<f16>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
-            kv.push(ort::value::Value::from_array(empty_k)?.into());
-            kv.push(ort::value::Value::from_array(empty_v)?.into());
+            let k = ndarray::Array4::<f32>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
+            kv.push(ort::value::Tensor::from_array(k)?.into_dyn());
+            let v = ndarray::Array4::<f32>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
+            kv.push(ort::value::Tensor::from_array(v)?.into_dyn());
+        }
+        Ok(kv)
+    }
+
+    /// Extract KV cache from model outputs.
+    /// Outputs: [logits, present_kv.0.key, present_kv.0.value, ..., present_kv.27.key, present_kv.27.value]
+    fn extract_kv_cache(&self, outputs: &ort::session::SessionOutputs) -> Result<KvCache> {
+        let mut kv = Vec::with_capacity(self.config.num_layers);
+        for i in 0..self.config.num_layers {
+            let k_idx = 1 + i * 2;
+            let v_idx = 2 + i * 2;
+
+            let k_tensor = extract_tensor_copy(&outputs[k_idx])?;
+            let v_tensor = extract_tensor_copy(&outputs[v_idx])?;
+            kv.push((k_tensor, v_tensor));
         }
         Ok(kv)
     }
 }
 
-/// Extract logits from the first output tensor.
-fn extract_logits(output: &ort::value::Value) -> Result<Vec<f32>> {
-    let tensor = output.try_extract_tensor::<f32>()
-        .context("Failed to extract logits tensor")?;
-    Ok(tensor.as_slice().unwrap_or(&[]).to_vec())
+/// Deep-copy a tensor Value, preserving its shape.
+/// ORT output tensors borrow from session memory; we need owned copies for reuse.
+fn extract_tensor_copy(tensor: &ort::value::Value) -> Result<ort::value::Value> {
+    let (shape, data) = tensor.try_extract_tensor::<f32>()
+        .context("Failed to extract tensor for copy")?;
+    let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+    let array = ndarray::ArrayD::from_shape_vec(dims, data.to_vec())
+        .context("Shape/data mismatch in tensor copy")?;
+    Ok(ort::value::Tensor::from_array(array)?.into_dyn())
 }
 
-/// Extract KV cache tensors from model outputs (indices 1..=num_layers*2).
-/// Uses f16 to match the q4f16 model's KV cache precision.
-fn extract_kv_cache(outputs: &ort::session::SessionOutputs, num_layers: usize) -> Result<Vec<ort::value::Value>> {
-    let mut kv = Vec::with_capacity(num_layers * 2);
-    for i in 1..=(num_layers * 2) {
-        let tensor = outputs[i].try_extract_tensor::<f16>()
-            .context(format!("Failed to extract KV cache tensor {}", i))?;
-        let shape: Vec<usize> = tensor.shape().to_vec();
-        let data = tensor.as_slice().unwrap_or(&[]).to_vec();
-        let arr = ndarray::Array::from_shape_vec(IxDyn(&shape), data)
-            .context(format!("Failed to reshape KV cache tensor {}", i))?;
-        kv.push(ort::value::Value::from_array(arr)?.into());
-    }
-    Ok(kv)
+/// Extract logits from the first output tensor.
+fn extract_logits(output: &ort::value::Value) -> Result<Vec<f32>> {
+    let (_shape, data) = output.try_extract_tensor::<f32>()
+        .context("Failed to extract logits tensor")?;
+    Ok(data.to_vec())
 }
 
 /// Greedy decoding: argmax of last token's logits.
@@ -270,7 +282,8 @@ fn argmax_last(logits: &[f32], vocab_size: usize) -> Result<u32> {
 }
 
 /// Find the best ONNX model file in the directory.
-/// Prefers quantized models for speed.
+/// Prefers model_q4.onnx (pure int4, f32 KV cache) over model_q4f16.onnx
+/// (mixed precision, f16 KV cache) to avoid ORT buffer reuse bugs.
 fn find_model_file(model_dir: &Utf8Path) -> Result<Utf8PathBuf> {
     for name in &["model_q4.onnx", "model_q4f16.onnx", "model_q8.onnx", "model_fp16.onnx", "model.onnx"] {
         let path = model_dir.join(name);

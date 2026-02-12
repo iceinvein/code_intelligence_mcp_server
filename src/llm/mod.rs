@@ -113,8 +113,10 @@ pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
 
 /// HuggingFace repository for the ONNX-exported Qwen2.5-Coder model.
 const HF_REPO: &str = "onnx-community/Qwen2.5-Coder-1.5B-Instruct";
-/// Quantized model file (Q4+FP16 mixed, ~1.34 GB — smallest available variant).
-const HF_MODEL_FILE: &str = "onnx/model_q4f16.onnx";
+/// Quantized model file (pure int4, f32 KV cache, ~1.8 GB).
+/// We use model_q4 over model_q4f16 because the mixed-precision q4f16 model
+/// triggers ORT buffer reuse bugs with its InsertedPrecisionFreeCast nodes.
+const HF_MODEL_FILE: &str = "onnx/model_q4.onnx";
 const HF_TOKENIZER_FILE: &str = "tokenizer.json";
 
 /// Create an LLM generator based on config.
@@ -160,7 +162,7 @@ pub fn create_llm_generator(
 
 /// Download the Qwen2.5-Coder-1.5B-Instruct ONNX model from HuggingFace.
 ///
-/// Downloads `tokenizer.json` (~11 MB) and `onnx/model_q4f16.onnx` (~1.34 GB)
+/// Downloads `tokenizer.json` (~11 MB) and `onnx/model_q4.onnx` (~1.8 GB)
 /// into the HuggingFace cache (`~/.cache/huggingface/hub/`), then creates
 /// symlinks in `target_dir` to avoid duplicating disk space.
 pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
@@ -177,8 +179,8 @@ pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
     let tokenizer_cached = repo.get(HF_TOKENIZER_FILE)
         .context("Failed to download tokenizer.json")?;
 
-    // Download quantized model (~1.34 GB)
-    tracing::info!("Downloading {} (~1.3 GB, this may take a few minutes)...", HF_MODEL_FILE);
+    // Download quantized model (~1.8 GB)
+    tracing::info!("Downloading {} (~1.8 GB, this may take a few minutes)...", HF_MODEL_FILE);
     let model_cached = repo.get(HF_MODEL_FILE)
         .context("Failed to download ONNX model file")?;
 
@@ -188,7 +190,7 @@ pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
 
     // Symlink files from HF cache into our model directory
     let target_tokenizer = target_dir.join("tokenizer.json");
-    let target_model = target_dir.join("model_q4f16.onnx");
+    let target_model = target_dir.join("model_q4.onnx");
 
     symlink_or_copy(&tokenizer_cached, target_tokenizer.as_std_path())
         .context("Failed to link tokenizer.json")?;

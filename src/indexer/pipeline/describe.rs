@@ -71,7 +71,7 @@ pub async fn run_description_worker(
         let description = match llm.generate(&prompt, max_tokens) {
             Ok(desc) => desc,
             Err(e) => {
-                tracing::warn!("Failed to generate description for {}: {}", sym.name, e);
+                tracing::warn!("Failed to generate description for {}: {:#}", sym.name, e);
                 continue;
             }
         };

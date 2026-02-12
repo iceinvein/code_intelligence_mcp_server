@@ -2080,3 +2080,43 @@ Morphological variants applied to ALL body identifiers spread common programming
 3. **Q4 test pollution** — `clear_env` (test helper) at #3 despite -10 test penalty. May need stronger penalty for symbol-lookup queries.
 
 **Benchmark methodology note:** Round 30 tested two diversity approaches (v1: pre-truncation, v2: limit*3 pool expansion) + "handler" concept tag for WebSocket. R30v2 is the final score. Batch files at `docs/benchmark_rounds/round_30v2_batch_{1,2,3}.md` and `round_30_batch_{1,2,3}.md` (v1). Round 31 reverted the handler tag (schema v13) to recover from R30's regression; confirmed that concept tag IDF pollution was the primary cause of Q15's -4 drop. Round 32 was a stability check (no code changes) establishing ~±0.5 point evaluator noise floor. Round 33 activated concept tags (dead code since R26) — modest +0.40 gain but target queries Q7/Q9/Q10 unchanged due to low-IDF broad tags. Round 34 removed broad concept tags (error_handling, fallback, serialization, serde) and doubled test penalty (-5→-10). Q13 improved +2 from test penalty; overall -0.27 within noise floor. Round 35 added comment stripping (`strip_code_comments`) to BM25 indexing pipeline (schema v10). This surgically fixed `extract_concept_tags` meta-matching in Q9/Q10, but scores unchanged (3/4) — the underlying BM25 vocabulary gap remains. CI avg +0.07 (5.93→6.00), flat. Round 36 was a no-code-change stability check. CI avg -0.20 (6.00→5.80), confirming ±0.3-0.5 evaluator noise floor. Q10 anomaly: `extract_concept_tags` reportedly returned at #1 despite comment stripping — warrants investigation. Round 37 added concept-tag-based name enrichment for WebSocket symbols (schema v12). Symbols in `indexer/extract/` with "websocket" concept tag get "websocket_handler" in name field. Q7 improved 2→3 (+1, first movement in 32 rounds). `extract_pattern_details` reached #1 but `classify_elysia_method` only #8 — infrastructure body-text contamination caps further BM25 gains. CI avg -0.27 (5.80→5.53), within noise. Round 38 was a no-code-change stability check. CI avg -0.20 (5.53→5.33). 11/15 queries identical to R37. Q3 swung -3 (evaluator noise on ambiguous "parsing" query). Three stability rounds (R32/R36/R38) establish mean noise drift of -0.29 with range [-0.47, -0.20], suggesting slight evaluator strictness drift over time.
+
+### Round 44 — Stability check (LLM description code merged but not yet active in search)
+
+**Changes:** LLM description infrastructure merged (Qwen2.5-Coder-1.5B ONNX engine, auto-download, background model loading). No changes to search/ranking pipeline code. LLM descriptions not yet wired into BM25 index text — this round establishes pre-LLM-description baseline.
+
+| # | Query (short) | R43 CI | R44 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 1 | Ranking/scoring | 4 | 4 | 0 | `format_scoring_breakdown` at #1, core scoring functions absent |
+| 2 | Embeddings | 8 | 7 | -1 | Good generation coverage, but `storage/vector.rs` absent |
+| 3 | Tree-sitter parsing | 3 | 3 | 0 | `expand_stems` at #1, tree-sitter code absent |
+| 4 | Config env vars | 6 | 5 | -1 | `from_env` buried at #5, `clear_env` test at #3 |
+| 5 | Indexing pipeline | 7 | 6 | -1 | ExtractedSymbol at #1 but pipeline orchestrator absent |
+| 6 | MCP tool requests | 8 | 9 | **+1** | dispatch_tool_call at #1, excellent coverage |
+| 7 | WebSocket handler | 3 | 3 | 0 | Single-file flooding in elysia.rs |
+| 8 | SQLite schema | 8 | 9 | **+1** | schema.rs + init() at #1-#2 |
+| 9 | Error handling | 3 | 3 | 0 | `expand_stems` at #1 — "gracefully" stem meta-match |
+| 10 | JSON serialization | 3 | 3 | 0 | `extract_concept_tags` meta-matching persists |
+| 11 | Async parallel | 6 | 6 | 0 | index_files_parallel_async at #1 |
+| 12 | Caching | 7 | 7 | 0 | Good cache coverage across 3 files |
+| 13 | PathNormalizer | 6 | 8 | **+2** | Struct+impl at #1-#2; evaluator may have scored generously |
+| 14 | EmbeddingCache | 7 | 7 | 0 | put/get at #1-#2, content_hash at #3 |
+| 15 | File watcher | 7 | 6 | -1 | spawn_watch_loop at #1 but 4/5 from same file |
+
+**CI avg: 5.73** (R43: 5.73, **+0.00**) | Augment avg: 8.53 | Gap: 2.80
+
+#### Round 44 Analysis
+
+**Overall:** Net +0.00 (3 improvements, 4 regressions, 8 stable). This is a **stability check round** — no search algorithm changes since R43. The identical average (5.73) confirms the pipeline is stable.
+
+**Evaluator noise:** All per-query movements are ±1 except Q13 (+2). The +1/-1 movements are within the established ±0.3-0.5 noise floor. Q13's +2 is likely evaluator variance — R43 and R44 both report PathNormalizer struct+impl at #1-#2 with keyword noise at #3-#5, but R44 evaluator scored more generously. Four stability rounds (R32/R36/R38/R44) now establish that ±1 point per-query and ±0.3 average are normal fluctuation.
+
+**Persistent low-scorers (CI ≤ 4):** Q1=4, Q3=3, Q7=3, Q9=3, Q10=3 — unchanged across R42→R43→R44. These are structurally blocked:
+- **Q3, Q9, Q10:** Meta-matching — functions that _detect_ patterns rank for queries about those patterns (expand_stems for "gracefully", extract_concept_tags for "json"/"response"/"formatting")
+- **Q1:** Vocabulary gap — "ranking and scoring" doesn't match `rank_hits_with_signals` or `structural_adjustment`
+- **Q7:** WebSocket handler code buried in framework extractor, BM25 can't bridge "WebSocket handler" → `classify_elysia_method`
+
+**Next steps (unchanged from R43):**
+1. **Phase 2: LLM descriptions** — Wire Qwen 1.5B descriptions into BM25 index text. Primary target: Q9/Q10 (meta-matching), Q3 (vocabulary gap), Q1 (vocabulary gap). The LLM engine is merged but descriptions aren't yet part of the indexed text.
+2. **Phase 3: Jina Code v2** — Better embedding model for vector search arm. Primary target: Q1/Q7.
+3. **Q4 test pollution** — `clear_env` test helper persists at #3 despite -10 penalty.

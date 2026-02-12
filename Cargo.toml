@@ -49,6 +49,7 @@ rayon = "1"
 tiktoken-rs = "0.7"
 
 # Phase 3 Reranker dependencies (03-02)
+half = "2"
 ndarray = "0.16"
 tokenizers = "0.21"
 

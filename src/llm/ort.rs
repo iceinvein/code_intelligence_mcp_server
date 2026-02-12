@@ -4,6 +4,7 @@
 //! Supports CPU and Metal (CoreML) execution providers.
 
 use anyhow::{anyhow, Context, Result};
+use half::f16;
 use ndarray::{Array2, Array4, IxDyn};
 use ort::session::Session;
 use tokenizers::Tokenizer;
@@ -95,7 +96,9 @@ impl OrtLlmGenerator {
         let tokenizer = Tokenizer::from_file(tokenizer_path.as_str())
             .map_err(|e| anyhow!("Failed to load LLM tokenizer: {}", e))?;
 
-        tracing::info!("LLM loaded successfully ({} layers, GQA with {} KV heads)",
+        tracing::info!("LLM loaded successfully ({} inputs, {} outputs, {} layers, GQA with {} KV heads)",
+            session.inputs.len(),
+            session.outputs.len(),
             ModelConfig::default().num_layers,
             ModelConfig::default().num_kv_heads,
         );
@@ -208,11 +211,12 @@ impl OrtLlmGenerator {
     }
 
     /// Create empty KV cache tensors for the first forward pass.
+    /// Uses f16 to match the q4f16 model's KV cache precision.
     fn empty_kv_cache(&self) -> Result<Vec<ort::value::Value>> {
         let mut kv = Vec::with_capacity(self.config.num_layers * 2);
         for _ in 0..self.config.num_layers {
-            let empty_k = Array4::<f32>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
-            let empty_v = Array4::<f32>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
+            let empty_k = Array4::<f16>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
+            let empty_v = Array4::<f16>::zeros((1, self.config.num_kv_heads, 0, self.config.head_dim));
             kv.push(ort::value::Value::from_array(empty_k)?.into());
             kv.push(ort::value::Value::from_array(empty_v)?.into());
         }
@@ -228,10 +232,11 @@ fn extract_logits(output: &ort::value::Value) -> Result<Vec<f32>> {
 }
 
 /// Extract KV cache tensors from model outputs (indices 1..=num_layers*2).
+/// Uses f16 to match the q4f16 model's KV cache precision.
 fn extract_kv_cache(outputs: &ort::session::SessionOutputs, num_layers: usize) -> Result<Vec<ort::value::Value>> {
     let mut kv = Vec::with_capacity(num_layers * 2);
     for i in 1..=(num_layers * 2) {
-        let tensor = outputs[i].try_extract_tensor::<f32>()
+        let tensor = outputs[i].try_extract_tensor::<f16>()
             .context(format!("Failed to extract KV cache tensor {}", i))?;
         let shape: Vec<usize> = tensor.shape().to_vec();
         let data = tensor.as_slice().unwrap_or(&[]).to_vec();

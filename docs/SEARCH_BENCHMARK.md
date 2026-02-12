@@ -2028,4 +2028,55 @@ Morphological variants applied to ALL body identifiers spread common programming
 2. **Phase 2: LLM descriptions** — Qwen 1.5B to generate richer semantic descriptions that can address meta-matching by describing what code DOES rather than what terms it MENTIONS.
 3. **Phase 3: Jina Code v2** — Better embedding model to improve vector search arm of hybrid retrieval.
 
+### Round 43 — Intent enforcement pipeline fix + vector promotion bug fix (schema v14)
+
+**Changes:**
+1. **Intent enforcement moved to END of pipeline** — Root cause of R42's Q13 regression: `expand_with_edges` followed type edges from high-ranking PathNormalizer struct (score=21.74) and re-added test helpers with parent-derived scores (~17.74), bypassing the 0.05x test penalty applied earlier. Fix: moved intent enforcement to run AFTER `expand_with_edges`, `diversify_by_file`, and `promote_vector_results`. Edge-expanded hits without `hit_signals` entries get `intent_adjustment` computed on the fly.
+2. **Vector promotion `intent_mult` bug fix** — `promote_vector_results` created `HitSignals` with `..Default::default()` → `intent_mult = 0.0` (f32 default). Final enforcement then multiplied promoted results by 0, zeroing their scores. Fix: explicitly set `intent_mult: 1.0` for promoted hits.
+3. **Scoring tweaks** — `intent_adjustment` 0.15→0.05x for test symbols, `test_penalty` -5→-10, "impl" added to Definition kinds.
+
+| # | Query (short) | R42 CI | R43 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 1 | Ranking/scoring | 4 | 4 | 0 | `format_scoring_breakdown` at #1 instead of core scoring functions |
+| 2 | Embeddings | 7 | 8 | **+1** | fastembed.rs file at #1, good generation coverage |
+| 3 | Tree-sitter parsing | 3 | 3 | 0 | "parsing" matches tokenization/stemming, not tree-sitter |
+| 4 | Config env vars | 7 | 7 | 0 | `from_env` at #5 instead of #1; `clear_env` test at #3 |
+| 5 | Indexing pipeline | 6 | 7 | **+1** | ExtractedSymbol + typescript extractor + parsing pipeline |
+| 6 | MCP tool requests | 8 | 8 | 0 | dispatch_tool_call at #1, stable |
+| 7 | WebSocket handler | 3 | 3 | 0 | Single-file flooding in elysia.rs |
+| 8 | SQLite schema | 8 | 8 | 0 | schema.rs with SCHEMA_SQL at #1, stable |
+| 9 | Error handling | 3 | 3 | 0 | `expand_stems` at #1 — "gracefully" stem matched |
+| 10 | JSON serialization | 3 | 3 | 0 | `extract_concept_tags` meta-matching persists |
+| 11 | Async parallel | 6 | 6 | 0 | index_files_parallel_async at #1, test at #3 |
+| 12 | Caching | 7 | 7 | 0 | Good cache coverage across 3 files |
+| 13 | PathNormalizer | 5 | 6 | **+1** | Struct+impl at #1-#2 (intent fix worked); keyword noise at #3-#5 |
+| 14 | EmbeddingCache | 6 | 7 | **+1** | put/get methods at #1-#2, content_hash at #3 |
+| 15 | File watcher | 6 | 6 | 0 | spawn_watch_loop at #2, stats module noise at #1 |
+
+**CI avg: 5.73** (R42: 5.47*, **+0.27**) | Augment avg: 8.80 | Gap: 3.07
+
+*Note: R42 was previously reported as 5.73 but actual sum (82/15) = 5.47. The discrepancy was a calculation error in R42 compilation.
+
+#### Round 43 Analysis
+
+**Overall:** Net +0.27 (4 improvements, 0 regressions, 11 stable). The intent enforcement pipeline fix eliminated regressions while producing modest gains. This is the **first round with zero regressions** since R39.
+
+**Intent enforcement fix (Q13: +1, 5→6):**
+- PathNormalizer struct and impl block now rank #1-#2 (previously test helpers dominated #2-#5). The fix correctly prevents `expand_with_edges` from reintroducing penalized test symbols.
+- Remaining noise: `contains_code_snippet` (#3), `is_definition_kind` (#4), `ExtractedFrameworkPattern` (#5) — these are BM25 keyword matches on "definition" and "struct" terms in the query, not test pollution. Different failure mode than R42.
+
+**Vector promotion bug fix (Q2: +1, Q5: +1, Q14: +1):**
+- With `intent_mult` correctly set to 1.0, promoted vector results no longer get zeroed. This likely contributed to Q2 (embeddings), Q5 (indexing pipeline), and Q14 (EmbeddingCache) improvements where vector search found relevant symbols that BM25 missed or ranked lower.
+
+**Persistent low-scorers (CI ≤ 4):** Q1=4, Q3=3, Q7=3, Q9=3, Q10=3 — all BM25 vocabulary mismatch or meta-matching. These cannot improve further without:
+- **Phase 2 (LLM descriptions):** Semantic descriptions from Qwen 1.5B to describe what code DOES, addressing meta-matching (Q9, Q10) and vocabulary gaps (Q3).
+- **Phase 3 (Jina Code v2):** Better embedding model for vector search arm, addressing cases where BGE-base-en-v1.5 has the same vocabulary gap as BM25 (Q1, Q3).
+
+**Q9 new failure mode:** `expand_stems` now ranks #1 for "error handling and graceful degradation" because the word "gracefully" in the query triggers stem matching against "graceful"→"grace" variants. This is a different kind of meta-matching — the stemming function itself contains stem-related terms.
+
+**Next steps:**
+1. **Phase 2: LLM descriptions** — Qwen 1.5B for semantic descriptions. Primary target: Q9/Q10 (meta-matching) and Q3 (vocabulary gap). Expected: +2-3 points on these queries.
+2. **Phase 3: Jina Code v2** — Better embedding model for vector search. Primary target: Q1/Q7 where neither BM25 nor BGE-base embeddings find the right symbols.
+3. **Q4 test pollution** — `clear_env` (test helper) at #3 despite -10 test penalty. May need stronger penalty for symbol-lookup queries.
+
 **Benchmark methodology note:** Round 30 tested two diversity approaches (v1: pre-truncation, v2: limit*3 pool expansion) + "handler" concept tag for WebSocket. R30v2 is the final score. Batch files at `docs/benchmark_rounds/round_30v2_batch_{1,2,3}.md` and `round_30_batch_{1,2,3}.md` (v1). Round 31 reverted the handler tag (schema v13) to recover from R30's regression; confirmed that concept tag IDF pollution was the primary cause of Q15's -4 drop. Round 32 was a stability check (no code changes) establishing ~±0.5 point evaluator noise floor. Round 33 activated concept tags (dead code since R26) — modest +0.40 gain but target queries Q7/Q9/Q10 unchanged due to low-IDF broad tags. Round 34 removed broad concept tags (error_handling, fallback, serialization, serde) and doubled test penalty (-5→-10). Q13 improved +2 from test penalty; overall -0.27 within noise floor. Round 35 added comment stripping (`strip_code_comments`) to BM25 indexing pipeline (schema v10). This surgically fixed `extract_concept_tags` meta-matching in Q9/Q10, but scores unchanged (3/4) — the underlying BM25 vocabulary gap remains. CI avg +0.07 (5.93→6.00), flat. Round 36 was a no-code-change stability check. CI avg -0.20 (6.00→5.80), confirming ±0.3-0.5 evaluator noise floor. Q10 anomaly: `extract_concept_tags` reportedly returned at #1 despite comment stripping — warrants investigation. Round 37 added concept-tag-based name enrichment for WebSocket symbols (schema v12). Symbols in `indexer/extract/` with "websocket" concept tag get "websocket_handler" in name field. Q7 improved 2→3 (+1, first movement in 32 rounds). `extract_pattern_details` reached #1 but `classify_elysia_method` only #8 — infrastructure body-text contamination caps further BM25 gains. CI avg -0.27 (5.80→5.53), within noise. Round 38 was a no-code-change stability check. CI avg -0.20 (5.53→5.33). 11/15 queries identical to R37. Q3 swung -3 (evaluator noise on ambiguous "parsing" query). Three stability rounds (R32/R36/R38) establish mean noise drift of -0.29 with range [-0.47, -0.20], suggesting slight evaluator strictness drift over time.

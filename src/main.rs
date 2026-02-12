@@ -346,19 +346,33 @@ async fn run_embedded() -> SdkResult<()> {
         state.indexer.spawn_watch_loop();
     }
 
-    // Spawn LLM description worker if enabled and model available
-    match code_intelligence_mcp_server::llm::create_llm_generator(&config) {
-        Ok(Some(llm)) => {
+    // Spawn LLM description worker in background — model download (potentially
+    // 1+ GB) must not block MCP server startup on stdio transport.
+    if config.llm_enabled {
+        let llm_config = config.clone();
+        let llm_indexer = state.indexer.clone();
+        tokio::spawn(async move {
+            let generator = match tokio::task::spawn_blocking(move || {
+                code_intelligence_mcp_server::llm::create_llm_generator(&llm_config)
+            }).await {
+                Ok(Ok(Some(llm))) => llm,
+                Ok(Ok(None)) => {
+                    tracing::debug!("LLM descriptions not available, skipping description worker");
+                    return;
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!("Failed to create LLM generator: {}", e);
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!("LLM generator task panicked: {}", e);
+                    return;
+                }
+            };
             let cancel = tokio_util::sync::CancellationToken::new();
-            let _desc_handle = state.indexer.spawn_description_worker(llm, cancel);
+            let _desc_handle = llm_indexer.spawn_description_worker(generator, cancel);
             tracing::info!("LLM description worker spawned");
-        }
-        Ok(None) => {
-            tracing::debug!("LLM descriptions not available, skipping description worker");
-        }
-        Err(e) => {
-            tracing::warn!("Failed to create LLM generator: {}", e);
-        }
+        });
     }
 
     #[cfg(feature = "web-ui")]

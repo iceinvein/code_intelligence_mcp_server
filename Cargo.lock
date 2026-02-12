@@ -1429,6 +1429,7 @@ dependencies = [
  "tiktoken-rs",
  "tokenizers",
  "tokio",
+ "tokio-util",
  "toml",
  "tower-http",
  "tracing",
@@ -8295,6 +8296,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

@@ -292,7 +292,7 @@ fn index_file_single(
 
     // Update Tantivy
     for row in &symbol_rows {
-        tantivy.upsert_symbol(row, &import_tags, &framework_tags)?;
+        tantivy.upsert_symbol(row, &import_tags, &framework_tags, None)?;
         upsert_name_mapping(&mut name_to_id, row);
     }
     tantivy.commit()?;

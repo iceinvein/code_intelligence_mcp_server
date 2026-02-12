@@ -1,3 +1,4 @@
+pub mod describe;
 pub mod edges;
 pub mod parallel;
 pub mod parsing;
@@ -423,6 +424,31 @@ impl IndexPipeline {
         })
     }
 
+    /// Spawn the background description worker.
+    ///
+    /// Generates LLM descriptions for all undescribed symbols, updates Tantivy
+    /// index with descriptions appended to the text field.
+    pub fn spawn_description_worker(
+        &self,
+        llm: std::sync::Arc<dyn crate::llm::LlmGenerator>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        let db = std::sync::Arc::new(
+            SqliteStore::open(&self.db_path).expect("Failed to open SQLite for description worker")
+        );
+        let tantivy = self.tantivy.clone();
+        let max_tokens = self.config.llm_max_tokens;
+        let batch_size = self.config.llm_batch_commit;
+
+        tokio::spawn(async move {
+            if let Err(e) = describe::run_description_worker(
+                db, tantivy, llm, max_tokens, batch_size, cancel,
+            ).await {
+                tracing::error!("Description worker failed: {}", e);
+            }
+        })
+    }
+
     fn persist_index_run_metrics(
         &self,
         started_at_unix_s: i64,
@@ -812,7 +838,7 @@ impl IndexPipeline {
                     .with_context(|| format!("Failed to embed symbols for {rel}"))?;
 
                 for row in &symbol_rows {
-                    self.tantivy.upsert_symbol(row, &import_tags, &framework_tags)?;
+                    self.tantivy.upsert_symbol(row, &import_tags, &framework_tags, None)?;
                     upsert_name_mapping(&mut name_to_id, row);
                 }
 

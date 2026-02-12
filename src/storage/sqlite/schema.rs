@@ -475,4 +475,13 @@ CREATE INDEX IF NOT EXISTS idx_fp_framework ON framework_patterns(framework);
 CREATE INDEX IF NOT EXISTS idx_fp_kind ON framework_patterns(kind);
 CREATE INDEX IF NOT EXISTS idx_fp_http_method ON framework_patterns(http_method);
 CREATE INDEX IF NOT EXISTS idx_fp_path ON framework_patterns(path);
+
+-- LLM-generated symbol descriptions cache
+CREATE TABLE IF NOT EXISTS descriptions (
+    symbol_id TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    description TEXT NOT NULL,
+    generated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_descriptions_hash ON descriptions(content_hash);
 "#;

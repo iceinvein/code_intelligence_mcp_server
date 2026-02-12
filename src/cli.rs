@@ -97,6 +97,13 @@ pub fn print_help() {
     println!("    WATCH_MODE=true|false                (default: true)");
     println!("    REPO_ROOTS=/path/a,/path/b           (default: BASE_DIR only)");
     println!();
+    println!("  LLM description generation:");
+    println!("    LLM_ENABLED=true|false               (default: true)");
+    println!("    LLM_DEVICE=cpu|metal                  (default: cpu)");
+    println!("    LLM_MODEL_DIR=/path/to/model          (default: ~/.cimcp/models/qwen2.5-coder-1.5b-onnx)");
+    println!("    LLM_MAX_TOKENS=30                     (default: 30)");
+    println!("    LLM_BATCH_COMMIT=10                   (default: 10)");
+    println!();
     println!("Standalone mode:");
     println!("  Configuration file: ~/.code-intelligence/server.toml");
     println!("  Default host: 127.0.0.1");

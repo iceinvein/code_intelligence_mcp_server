@@ -344,6 +344,11 @@ impl StandaloneConfig {
             metrics_enabled: true,
             metrics_port: 9090,
             package_detection_enabled: true,
+            llm_enabled: true,
+            llm_device: EmbeddingsDevice::Cpu,
+            llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-onnx")),
+            llm_max_tokens: 30,
+            llm_batch_commit: 10,
         }
     }
 }
@@ -430,6 +435,13 @@ pub struct Config {
 
     // Package detection config (09-04)
     pub package_detection_enabled: bool,
+
+    // LLM description generation config
+    pub llm_enabled: bool,
+    pub llm_device: EmbeddingsDevice,  // Reuse existing enum (Cpu/Metal)
+    pub llm_model_dir: Option<Utf8PathBuf>,
+    pub llm_max_tokens: u32,
+    pub llm_batch_commit: usize,
 }
 
 impl Config {
@@ -785,6 +797,31 @@ impl Config {
             .transpose()?
             .unwrap_or(true); // Default enabled
 
+        // LLM description generation config
+        let llm_enabled = optional_env("LLM_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true);
+        let llm_device = optional_env("LLM_DEVICE")
+            .as_deref()
+            .map(parse_embeddings_device)
+            .transpose()?
+            .unwrap_or(EmbeddingsDevice::Cpu);
+        let llm_model_dir = optional_env("LLM_MODEL_DIR")
+            .map(|p| to_utf8_pathbuf(Path::new(&p)))
+            .transpose()?
+            .or_else(|| Some(global_dir.join("models/qwen2.5-coder-1.5b-onnx")));
+        let llm_max_tokens: u32 = optional_env("LLM_MAX_TOKENS")
+            .as_deref()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        let llm_batch_commit = optional_env("LLM_BATCH_COMMIT")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(10);
+
         Ok(Self {
             base_dir,
             db_path,
@@ -867,6 +904,13 @@ impl Config {
 
             // Package detection config (09-04)
             package_detection_enabled,
+
+            // LLM description generation
+            llm_enabled,
+            llm_device,
+            llm_model_dir,
+            llm_max_tokens,
+            llm_batch_commit,
         })
     }
 
@@ -1120,6 +1164,12 @@ mod tests {
             "METRICS_PORT",
             // Package detection config (09-04)
             "PACKAGE_DETECTION_ENABLED",
+            // LLM config
+            "LLM_ENABLED",
+            "LLM_DEVICE",
+            "LLM_MODEL_DIR",
+            "LLM_MAX_TOKENS",
+            "LLM_BATCH_COMMIT",
         ] {
             std::env::remove_var(k);
         }
@@ -1302,6 +1352,13 @@ mod tests {
         // Query expansion defaults (FNDN-02)
         assert!(cfg.synonym_expansion_enabled);
         assert!(cfg.acronym_expansion_enabled);
+
+        // LLM defaults
+        assert!(cfg.llm_enabled);
+        assert_eq!(cfg.llm_device, EmbeddingsDevice::Cpu);
+        assert!(cfg.llm_model_dir.is_some());
+        assert_eq!(cfg.llm_max_tokens, 30);
+        assert_eq!(cfg.llm_batch_commit, 10);
     }
 
     #[test]

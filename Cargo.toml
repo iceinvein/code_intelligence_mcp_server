@@ -64,6 +64,9 @@ regex = "1"
 camino = { version = "1.1", features = ["serde1"] }
 dunce = "1.0"
 
+# Background worker utilities
+tokio-util = { version = "0.7", features = ["rt"] }
+
 [dev-dependencies]
 bytes = "1"
 http-body-util = "0.1"

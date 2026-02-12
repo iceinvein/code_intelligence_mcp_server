@@ -856,6 +856,11 @@ fn test_config(base_dir: &Path) -> Config {
         metrics_enabled: false,
         metrics_port: 9090,
         package_detection_enabled: false,
+        llm_enabled: false,
+        llm_device: EmbeddingsDevice::Cpu,
+        llm_model_dir: None,
+        llm_max_tokens: 30,
+        llm_batch_commit: 10,
     }
 }
 

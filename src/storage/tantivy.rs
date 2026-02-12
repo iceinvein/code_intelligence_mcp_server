@@ -287,7 +287,7 @@ impl TantivyIndex {
         Self::open_or_create(&index_dir_utf8)
     }
 
-    pub fn upsert_symbol(&self, symbol: &SymbolRow, import_tags: &str, framework_tags: &str) -> Result<()> {
+    pub fn upsert_symbol(&self, symbol: &SymbolRow, import_tags: &str, framework_tags: &str, llm_description: Option<&str>) -> Result<()> {
         let writer = self
             .writer
             .lock()
@@ -301,7 +301,7 @@ impl TantivyIndex {
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
-        let expanded_text = expand_index_text(&symbol.name, &symbol.kind, &symbol.text, &symbol.file_path, import_tags, framework_tags);
+        let expanded_text = expand_index_text(&symbol.name, &symbol.kind, &symbol.text, &symbol.file_path, import_tags, framework_tags, llm_description);
 
         // Enrich the indexed name for symbols whose body text contains WebSocket patterns.
         // This injects "websocket_handler" into the high-boost name field so that NL queries
@@ -372,7 +372,7 @@ impl TantivyIndex {
         for symbol in symbols {
             // Rebuild from SQLite doesn't have import/framework tags; pass empty.
             // These tags are only available during live indexing from source.
-            fresh.upsert_symbol(&symbol, "", "")?;
+            fresh.upsert_symbol(&symbol, "", "", None)?;
         }
         fresh.commit()?;
         Ok(fresh)
@@ -546,7 +546,7 @@ fn register_tokenizers(index: &Index) {
         .register("code_ngram", CodeNgramTokenizer);
 }
 
-fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import_tags: &str, framework_tags: &str) -> String {
+fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import_tags: &str, framework_tags: &str, llm_description: Option<&str>) -> String {
     // Strip comment lines from body text before BM25 indexing.
     // Comments describe concepts but don't implement them — e.g.,
     // extract_concept_tags's doc comments mention "error_handling" and
@@ -661,6 +661,15 @@ fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import
         result.push_str(&nl_description);
     }
 
+    // Append LLM-generated semantic description if available.
+    // Bridges the gap between code terms and natural language queries —
+    // e.g., "Spawns a file watcher loop" matches "file watcher" queries
+    // even when the function name is spawn_watch_loop.
+    if let Some(desc) = llm_description {
+        result.push(' ');
+        result.push_str(desc);
+    }
+
     result
 }
 
@@ -716,14 +725,14 @@ mod tests {
 
         let index = TantivyIndex::open_or_create(&dir).unwrap();
         index
-            .upsert_symbol(&sample_symbol("id1", "alpha", "export function alpha() {}"), "", "")
+            .upsert_symbol(&sample_symbol("id1", "alpha", "export function alpha() {}"), "", "", None)
             .unwrap();
         index
             .upsert_symbol(&sample_symbol(
                 "id2",
                 "beta",
                 "export const beta = { nested: { a: 1 } }",
-            ), "", "")
+            ), "", "", None)
             .unwrap();
         index.commit().unwrap();
 
@@ -747,7 +756,7 @@ mod tests {
                 "id1",
                 "DBConnection",
                 "class DBConnection {}",
-            ), "", "")
+            ), "", "", None)
             .unwrap();
         index.commit().unwrap();
 
@@ -773,7 +782,7 @@ mod tests {
                 "id1",
                 "HTTP2Server_v1",
                 "class HTTP2Server_v1 {}",
-            ), "", "")
+            ), "", "", None)
             .unwrap();
         index.commit().unwrap();
 
@@ -795,7 +804,7 @@ mod tests {
                 "id1",
                 "alpha",
                 "export function alpha() { return foo_bar(); }",
-            ), "", "")
+            ), "", "", None)
             .unwrap();
         index.commit().unwrap();
 
@@ -813,7 +822,7 @@ mod tests {
                 "id1",
                 "DBConnection",
                 "class DBConnection { connect() {} }",
-            ), "", "")
+            ), "", "", None)
             .unwrap();
         index.commit().unwrap();
 
@@ -839,6 +848,7 @@ mod tests {
                 ),
                 "",
                 "",
+                None,
             )
             .unwrap();
 
@@ -848,6 +858,7 @@ mod tests {
                 &sample_symbol("ctrl", "parse_config", "fn parse_config() { let x = 1; }"),
                 "",
                 "",
+                None,
             )
             .unwrap();
         index.commit().unwrap();
@@ -876,6 +887,7 @@ mod tests {
                 ),
                 "",
                 "websocket handler websocket endpoint realtime handler",
+                None,
             )
             .unwrap();
 
@@ -885,6 +897,7 @@ mod tests {
                 &sample_symbol("ctrl", "parse_config", "fn parse_config() { let x = 1; }"),
                 "",
                 "",
+                None,
             )
             .unwrap();
         index.commit().unwrap();

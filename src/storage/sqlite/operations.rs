@@ -79,6 +79,17 @@ impl SqliteStore {
         }
     }
 
+    /// Create an in-memory SQLite database (for testing).
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()
+            .context("Failed to open in-memory SQLite")?;
+        conn.execute("PRAGMA foreign_keys = ON", [])
+            .context("Failed to enable foreign keys on in-memory connection")?;
+        Ok(Self {
+            conn: RwLock::new(conn),
+        })
+    }
+
     pub fn init(&self) -> Result<()> {
         {
             // Write lock needed for migration functions that modify schema

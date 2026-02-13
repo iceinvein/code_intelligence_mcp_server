@@ -14,14 +14,16 @@ This server indexes your codebase locally to provide **fast, semantic, and struc
 
 Unlike basic text search, this server builds a local knowledge graph to understand your code.
 
-* 🔍 **Advanced Hybrid Search**: Combines **Tantivy** (keyword BM25) + **LanceDB** (semantic vector) + **Jina Code embeddings** (768-dim code-specific model) with Reciprocal Rank Fusion (RRF).
-* 🎯 **Cross-Encoder Reranking**: Always-on ORT-based reranker for precision result ranking.
-* 🧠 **Smart Context Assembly**: Token-aware budgeting with query-aware truncation that keeps relevant lines within context limits.
-* 📊 **PageRank Scoring**: Graph-based symbol importance scoring that identifies central, heavily-used components.
-* 🎓 **Learns from Feedback**: Optional learning system that adapts to user selections over time.
-* 🚀 **Production First**: Ranking heuristics prioritize implementation code over tests and glue code (`index.ts`).
-* 🔗 **Multi-Repo Support**: Index and search across multiple repositories/monorepos simultaneously.
-* ⚡ **Fast & Local**: Written in **Rust**. Uses Metal GPU acceleration on macOS. Parallel indexing with persistent caching.
+* **Advanced Hybrid Search**: Combines **Tantivy** (keyword BM25) + **LanceDB** (semantic vector) + **Jina Code embeddings** (768-dim code-specific model) with Reciprocal Rank Fusion (RRF).
+* **Cross-Encoder Reranking**: Always-on ORT-based reranker for precision result ranking.
+* **Smart Context Assembly**: Token-aware budgeting with query-aware truncation that keeps relevant lines within context limits.
+* **On-Device LLM Descriptions**: Automatically generates natural-language descriptions for every symbol using a local **Qwen2.5-Coder-1.5B** model (ONNX Runtime), enriching search with human-readable summaries.
+* **PageRank Scoring**: Graph-based symbol importance scoring that identifies central, heavily-used components.
+* **Learns from Feedback**: Optional learning system that adapts to user selections over time.
+* **Production First**: Multi-layer test detection (file paths, symbol names, and AST-level `#[test]`/`mod tests` analysis) ensures implementation code ranks above test helpers.
+* **Multi-Repo Support**: Index and search across multiple repositories/monorepos simultaneously.
+* **OS-Native File Watching**: Uses the `notify` crate for instant re-indexing on file changes (fsevents on macOS, inotify on Linux).
+* **Fast & Local**: Written in **Rust**. Uses Metal GPU acceleration on macOS. Parallel indexing with persistent caching.
 
 ---
 
@@ -45,7 +47,7 @@ Add to your `opencode.json` (or global config):
 }
 ```
 
-*The server will automatically download the AI model (~300MB) and index your project in the background.*
+*The server will automatically download the embedding model (~300MB) and LLM (~1.8GB) on first launch, then index your project in the background.*
 
 ---
 
@@ -116,25 +118,16 @@ The server auto-detects each client's workspace root via the MCP `roots` capabil
 
 ### How It Works
 
-```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│ Claude Code  │  │   Cursor    │  │    Trae     │
-│  Session A   │  │  Session B  │  │  Session C  │
-└──────┬───────┘  └──────┬──────┘  └──────┬──────┘
-       │ POST /mcp       │                │
-       └─────────┬───────┘────────────────┘
-                 │  Streamable HTTP
-        ┌────────▼────────┐
-        │  Standalone MCP │  ← Single process, shared embedding model
-        │     Server      │
-        └────────┬────────┘
-                 │
-    ┌────────────┼────────────┐
-    ▼            ▼            ▼
-┌────────┐ ┌────────┐ ┌────────┐
-│ Repo A │ │ Repo B │ │ Repo C │  ← Per-repo SQLite + Tantivy + LanceDB
-│indexes │ │indexes │ │indexes │
-└────────┘ └────────┘ └────────┘
+```mermaid
+flowchart TB
+  A[Claude Code - Session A] & B[Cursor - Session B] & C[Trae - Session C]
+  A & B & C -- "POST /mcp (Streamable HTTP)" --> Server
+
+  Server["Standalone MCP Server<br/>(single process, shared embedding model)"]
+
+  Server --> RA["Repo A indexes<br/>SQLite + Tantivy + LanceDB"]
+  Server --> RB["Repo B indexes<br/>SQLite + Tantivy + LanceDB"]
+  Server --> RC["Repo C indexes<br/>SQLite + Tantivy + LanceDB"]
 ```
 
 Each client session is bound to its workspace root. The server maintains separate indexes per repo but shares the embedding model across all of them.
@@ -143,7 +136,7 @@ Each client session is bound to its workspace root. The server maintains separat
 
 All standalone data lives in `~/.code-intelligence/`:
 
-```
+```text
 ~/.code-intelligence/
 ├── server.toml              # Optional config file
 ├── models/                  # Shared embedding model (~500MB, loaded once)
@@ -191,7 +184,7 @@ warm_ttl_seconds = 300      # How long idle repos stay in memory
 **Environment variable overrides (same as embedded mode):**
 
 | Variable | Example | Description |
-|----------|---------|-------------|
+| -------- | ------- | ----------- |
 | `CIMCP_MODE` | `standalone` | Alternative to `--standalone` flag |
 | `EMBEDDINGS_BACKEND` | `hash` | Override embedding backend |
 | `EMBEDDINGS_DEVICE` | `metal` | Override device (cpu/metal) |
@@ -203,7 +196,7 @@ warm_ttl_seconds = 300      # How long idle repos stay in memory
 
 ## Capabilities
 
-Available tools for the agent (19 tools total):
+Available tools for the agent (23 tools total):
 
 ### Core Search & Navigation
 
@@ -230,13 +223,14 @@ Available tools for the agent (19 tools total):
 | `summarize_file`         | Generates a summary of file contents including symbol counts, structure, and key exports. |
 | `get_module_summary`     | Lists all exported symbols from a module/file with their signatures.                      |
 
-### Testing & Documentation
+### Testing, Frameworks & Documentation
 
-| Tool                    | Description                                                                                 |
-| :---------------------- | :------------------------------------------------------------------------------------------ |
-| `search_todos`          | Searches for TODO and FIXME comments to track technical debt.                               |
-| `find_tests_for_symbol` | Finds test files that test a given symbol or source file.                                   |
-| `search_decorators`     | Searches for TypeScript/JavaScript decorators (@Component, @Controller, @Get, @Post, etc.). |
+| Tool                       | Description                                                                                                               |
+| :------------------------- | :------------------------------------------------------------------------------------------------------------------------ |
+| `search_todos`             | Searches for TODO and FIXME comments to track technical debt.                                                             |
+| `find_tests_for_symbol`    | Finds test files that test a given symbol or source file.                                                                 |
+| `search_decorators`        | Searches for TypeScript/JavaScript decorators (@Component, @Controller, @Get, @Post, etc.).                               |
+| `search_framework_patterns`| Searches for framework-specific patterns (e.g., Elysia routes, WebSocket handlers, middleware) with method/path filtering.|
 
 ### Context & Learning
 
@@ -273,12 +267,16 @@ The ranking engine optimizes results for relevance using sophisticated signals:
 3. **Reciprocal Rank Fusion (RRF)**: Combines keyword, vector, and graph search results using statistically optimal rank fusion.
 4. **Query Decomposition**: Complex queries ("X and Y") are automatically split into sub-queries for better coverage.
 5. **Token-Aware Truncation**: Context assembly keeps query-relevant lines within token budgets using BM25-style relevance scoring.
-6. **Directory Semantics**: Implementation directories (`src`, `lib`, `app`) are boosted, while build artifacts (`dist`, `build`) and `node_modules` are penalized.
-7. **Test Penalty**: Test files (`*.test.ts`, `__tests__`) are ranked lower by default, but are boosted if the query intent implies testing.
-8. **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
-9. **JSDoc Boost**: Symbols with documentation receive a ranking boost, and examples are included in search results.
-10. **Learning from Feedback** (optional): Tracks user selections to personalize future search results.
-11. **Package-Aware Scoring** (multi-repo): Boosts results from the same package when working in monorepos.
+6. **LLM-Enriched Indexing**: On-device Qwen2.5-Coder generates natural-language descriptions for each symbol, bridging the vocabulary gap between how developers search and how code is named.
+7. **Morphological Variants**: Function names are expanded with stems and derivations (e.g., `watch` → `watcher`, `index` → `reindex`) to improve recall for natural-language queries.
+8. **Multi-Layer Test Detection**: Three mechanisms — file path patterns (`*.test.ts`), symbol name heuristics (`test_*`), and SQL-based AST analysis (`#[test]`, `mod tests`) — with a final enforcement pass that prevents test code from escaping via edge expansion.
+9. **Edge Expansion**: High-ranking symbols pull in structurally related code (callers, type members) with importance filtering to avoid noise from private helpers.
+10. **Directory Semantics**: Implementation directories (`src`, `lib`, `app`) are boosted, while build artifacts (`dist`, `build`) and `node_modules` are penalized.
+11. **Exported Symbol Boost**: Exported/public symbols receive a ranking boost as they represent the primary API surface.
+12. **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
+13. **JSDoc Boost**: Symbols with documentation receive a ranking boost, and examples are included in search results.
+14. **Learning from Feedback** (optional): Tracks user selections to personalize future search results.
+15. **Package-Aware Scoring** (multi-repo): Boosts results from the same package when working in monorepos.
 
 ### Intent Detection
 
@@ -336,7 +334,7 @@ Works without configuration by default. You can customize behavior via environme
 
 ```json
 "env": {
-  "RANK_EXPORTED_BOOST": "0.1",          // Boost for exported symbols
+  "RANK_EXPORTED_BOOST": "1.0",          // Boost for exported symbols
   "RANK_TEST_PENALTY": "0.1",            // Penalty for test files
   "RANK_POPULARITY_WEIGHT": "0.05",      // PageRank influence
   "RRF_ENABLED": "true",                 // Enable Reciprocal Rank Fusion
@@ -389,10 +387,12 @@ flowchart LR
 
     subgraph Indexer [Indexing Pipeline]
       direction TB
-      Scan[File Scan] --> Parse[Tree-Sitter]
+      Watch[OS-Native File Watcher] --> Scan[File Scan]
+      Scan --> Parse[Tree-Sitter]
       Parse --> Extract[Symbol Extraction]
       Extract --> PageRank[PageRank Compute]
       Extract --> Embed[Jina Code Embeddings]
+      Extract --> LLMDesc[LLM Descriptions - Qwen2.5-Coder]
       Extract --> JSDoc[JSDoc/Decorator/TODO Extract]
     end
 
@@ -414,10 +414,11 @@ flowchart LR
     end
 
     %% Data Flow
-    Tools -- Index --> Scan
+    Tools -- Index --> Watch
     PageRank --> SQLite
     Embed --> Lance
     Embed --> Cache
+    LLMDesc --> SQLite
     JSDoc --> SQLite
 
     Tools -- Query --> QueryExpand
@@ -448,19 +449,34 @@ EMBEDDINGS_BACKEND=hash BASE_DIR=/path/to/repo ./target/release/code-intelligenc
 
 ### Project Structure
 
-```
+```text
 src/
-├── indexer/           # File scanning, parsing, symbol extraction
-├── storage/           # SQLite, Tantivy, LanceDB layers
-├── retrieval/         # Hybrid search, ranking, context assembly
+├── indexer/
+│   ├── extract/       # Language-specific symbol extractors (Rust, TS, Python, Go, Java, C, C++)
+│   ├── pipeline/      # Indexing pipeline stages (scan, parse, embed, watch, describe)
+│   └── package/       # Package detection (npm, Cargo, Go, Python)
+├── storage/
+│   ├── sqlite/        # SQLite schema, queries, operations
+│   ├── tantivy.rs     # BM25 full-text search with n-gram tokenization
+│   └── vector.rs      # LanceDB vector embeddings
+├── retrieval/
+│   ├── ranking/       # Scoring signals, RRF, diversity, edge expansion, reranker
+│   ├── assembler/     # Token-aware context assembly and formatting
+│   ├── hyde/          # Hypothetical document expansion
+│   ├── mod.rs         # Search pipeline orchestrator
+│   ├── hybrid.rs      # Hybrid BM25 + vector scoring loop
+│   └── postprocess.rs # Final enforcement, vector promotion
 ├── graph/             # PageRank, call hierarchy, type graphs
 ├── handlers/          # MCP tool handlers
 ├── server/            # MCP protocol routing (embedded + standalone)
 │   ├── mod.rs         # Shared tool dispatch, embedded handler
 │   └── standalone.rs  # Standalone HTTP handler with session routing
-├── tools/             # Tool definitions
-├── embeddings/        # Jina Code model wrapper
+├── tools/             # Tool definitions (23 MCP tools)
+├── embeddings/        # Jina Code embedding model wrapper
+├── llm/               # On-device LLM (Qwen2.5-Coder-1.5B via ONNX Runtime)
 ├── reranker/          # Cross-encoder ORT implementation
+├── path/              # Cross-platform path normalization (camino)
+├── text.rs            # Text processing (synonym expansion, morphological variants)
 ├── metrics/           # Prometheus metrics
 ├── config.rs          # Configuration (embedded + standalone)
 ├── session.rs         # Multi-repo session management (standalone)

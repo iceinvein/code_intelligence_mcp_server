@@ -33,7 +33,7 @@ pub struct MockLlmGenerator;
 impl LlmGenerator for MockLlmGenerator {
     fn generate(&self, prompt: &str, _max_tokens: u32) -> Result<String> {
         // Extract the first line from the user section
-        // Format: <|im_start|>user\n{kind} {name} in {filename}:\n{body}<|im_end|>
+        // Format: <|im_start|>user\n{kind} {name} in {module_path}:\n{body}<|im_end|>
         let user_start = prompt.find("<|im_start|>user\n");
         let user_end = prompt.find("<|im_end|>\n<|im_start|>assistant\n");
 
@@ -65,10 +65,12 @@ impl LlmGenerator for MockLlmGenerator {
 /// # Returns
 /// Formatted prompt using Qwen2.5 chat template
 pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &str) -> String {
-    // Extract filename from path
-    let filename = std::path::Path::new(file_path)
-        .file_name()
-        .and_then(|s| s.to_str())
+    // Use the full module path (e.g., "src/retrieval/ranking/score.rs") instead of
+    // just the filename. This gives the LLM critical context about the module's
+    // purpose — "score.rs" is ambiguous, but "retrieval/ranking/score.rs" tells
+    // the model this is about search ranking and scoring.
+    let module_path = file_path
+        .strip_prefix("src/")
         .unwrap_or(file_path);
 
     // Truncate body to first 10 lines
@@ -78,16 +80,25 @@ pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Build Qwen2.5 chat template
+    // Build Qwen2.5 chat template with an enhanced system prompt that requests
+    // domain-specific vocabulary and technology names. The generic "Describe what
+    // this code does" prompt produced descriptions like "This function ranks hits
+    // based on signals" — missing "scoring", "BM25", "search ranking" etc.
     format!(
-        "<|im_start|>system\nDescribe what this code does in one sentence.<|im_end|>\n\
+        "<|im_start|>system\nDescribe this code in one sentence. \
+         Name specific libraries, technologies, and domain concepts. \
+         Use terms a developer would search for.<|im_end|>\n\
          <|im_start|>user\n{} {} in {}:\n{}<|im_end|>\n\
          <|im_start|>assistant\n",
-        kind, name, filename, truncated_body
+        kind, name, module_path, truncated_body
     )
 }
 
 /// Compute a content hash for caching LLM descriptions.
+///
+/// Includes a version prefix so that prompt changes invalidate all cached
+/// descriptions and trigger regeneration. Bump PROMPT_VERSION when the
+/// prompt format in `build_description_prompt` changes materially.
 ///
 /// # Arguments
 /// * `name` - Symbol name
@@ -95,15 +106,19 @@ pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &
 /// * `body` - Symbol body text (will be truncated to first 10 lines)
 ///
 /// # Returns
-/// SHA-256 hex string of format "name:kind:first_10_lines"
+/// SHA-256 hex string of format "v{N}:name:kind:first_10_lines"
 pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
+    // Bump when prompt format changes to invalidate cached descriptions.
+    // v2: Enhanced system prompt + full module path (was filename-only).
+    const PROMPT_VERSION: &str = "v2";
+
     let truncated_body: String = body
         .lines()
         .take(10)
         .collect::<Vec<_>>()
         .join("\n");
 
-    let input = format!("{}:{}:{}", name, kind, truncated_body);
+    let input = format!("{}:{}:{}:{}", PROMPT_VERSION, name, kind, truncated_body);
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     let result = hasher.finalize();
@@ -236,14 +251,16 @@ mod tests {
 
         // Check structure
         assert!(prompt.contains("<|im_start|>system\n"));
-        assert!(prompt.contains("Describe what this code does in one sentence."));
+        assert!(prompt.contains("Describe this code in one sentence."));
+        assert!(prompt.contains("Name specific libraries"));
         assert!(prompt.contains("<|im_end|>\n<|im_start|>user\n"));
-        assert!(prompt.contains("struct PathNormalizer in mod.rs:"));
+        // Uses full module path (strip "src/" prefix)
+        assert!(prompt.contains("struct PathNormalizer in path/mod.rs:"));
         assert!(prompt.contains("pub struct PathNormalizer"));
         assert!(prompt.contains("<|im_end|>\n<|im_start|>assistant\n"));
 
         // Verify truncation (should have first 10 lines)
-        let body_section = prompt.split("in mod.rs:\n").nth(1).unwrap();
+        let body_section = prompt.split("in path/mod.rs:\n").nth(1).unwrap();
         let body_section = body_section.split("<|im_end|>").next().unwrap();
         let line_count = body_section.lines().count();
         assert_eq!(line_count, 10, "Body should be truncated to 10 lines");
@@ -262,13 +279,27 @@ mod tests {
             "fn foo() {\n    println!(\"hello\");\n}",
         );
 
+        // "src/lib.rs" → strip "src/" → "lib.rs"
         assert!(prompt.contains("function foo in lib.rs:"));
         assert!(prompt.contains("fn foo()"));
         assert!(prompt.contains("println!"));
     }
 
     #[test]
-    fn test_build_description_prompt_extracts_filename() {
+    fn test_build_description_prompt_uses_module_path() {
+        let prompt = build_description_prompt(
+            "test",
+            "function",
+            "src/retrieval/ranking/score.rs",
+            "fn test() {}",
+        );
+
+        // Full module path with "src/" stripped — gives LLM context about the module
+        assert!(prompt.contains("in retrieval/ranking/score.rs:"));
+    }
+
+    #[test]
+    fn test_build_description_prompt_non_src_path() {
         let prompt = build_description_prompt(
             "test",
             "function",
@@ -276,8 +307,8 @@ mod tests {
             "fn test() {}",
         );
 
-        assert!(prompt.contains("in file.rs:"));
-        assert!(!prompt.contains("very/long/path"));
+        // No "src/" prefix to strip — uses full path as-is
+        assert!(prompt.contains("in very/long/path/to/file.rs:"));
     }
 
     #[test]
@@ -340,7 +371,8 @@ mod tests {
         );
 
         let result = generator.generate(&prompt, 50).unwrap();
-        assert!(result.contains("Mock description for function handle_request in handler.rs"));
+        // Module path is "server/handler.rs" (src/ stripped)
+        assert!(result.contains("Mock description for function handle_request in server/handler.rs"));
     }
 
     #[test]

@@ -598,7 +598,7 @@ fn should_double_final_consonant(word: &str) -> bool {
 /// Forward: adds -er, -ing suffixes for agent nouns and gerunds.
 /// Backward: strips common suffixes to extract stems.
 /// Prefix: adds re- for common programming verbs.
-fn generate_morphological_variants(word: &str) -> Vec<String> {
+pub(crate) fn generate_morphological_variants(word: &str) -> Vec<String> {
     let mut variants = Vec::new();
     let len = word.len();
 
@@ -746,38 +746,80 @@ pub fn prepare_embedding_text(name: &str, kind: &str, file_path: &str, text: &st
     format!("{} {} in {}\n{}", kind, name, filename, stripped)
 }
 
-/// Strip comment lines from source code before BM25 indexing.
+/// Strip comments from source code before BM25 indexing.
 ///
-/// Removes lines that are purely comments (doc comments, line comments,
-/// block comment delimiters and continuation). This prevents false BM25
-/// matches where a function's comments *describe* a concept but don't
-/// *implement* it — e.g., `extract_concept_tags`'s doc comments mention
-/// "error_handling" and "serialization", causing it to rank #1 for those
-/// queries despite not implementing either concept.
+/// Removes:
+/// 1. Full-line comments (`//`, `///`, `/* */` delimiters, `* ` continuation, `#`)
+/// 2. Inline trailing comments (`code; // comment` → `code;`)
 ///
-/// Only full-line comments are stripped. Inline trailing comments
-/// (`let x = 1; // comment`) are preserved because the code portion of
-/// the line carries useful signal.
+/// This prevents false BM25 matches where a function's comments *describe*
+/// a concept but don't *implement* it. For example, `expand_stems` in text.rs
+/// has inline comments like `// "handling" → "hand"` that cause it to rank #1
+/// for "error handling" queries.
+///
+/// Inline comment detection uses a simple quote-tracking state machine to avoid
+/// stripping `//` inside string literals (e.g., `"http://example.com"`).
 pub fn strip_code_comments(text: &str) -> String {
     text.lines()
-        .filter(|line| {
+        .filter_map(|line| {
             let t = line.trim_start();
-            // Rust/TS/JS/Go/C/C++/Java line comments (includes /// doc comments)
+            // Full-line comments: remove entirely
             if t.starts_with("//") {
-                return false;
+                return None;
             }
             // Block comment delimiters and continuation lines
             if t.starts_with("/*") || t.starts_with("*/") || t.starts_with("* ") || t == "*" {
-                return false;
+                return None;
             }
             // Python/Ruby comments (but NOT Rust attributes #[...] or #![...])
             if t.starts_with('#') && !t.starts_with("#[") && !t.starts_with("#!") {
-                return false;
+                return None;
             }
-            true
+
+            // Inline trailing comments: strip the comment portion
+            if let Some(pos) = find_inline_comment(line) {
+                let trimmed = line[..pos].trim_end();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                return Some(trimmed);
+            }
+
+            Some(line)
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Find the byte position of an inline `//` comment outside string literals.
+///
+/// Returns `None` if no inline comment is found. Tracks double-quote and
+/// single-quote (char literal) boundaries with backslash escape handling.
+fn find_inline_comment(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' && (in_string || in_char) {
+            i += 2; // skip escaped character
+            continue;
+        }
+        if b == b'"' && !in_char {
+            in_string = !in_string;
+        } else if b == b'\'' && !in_string {
+            in_char = !in_char;
+        } else if !in_string && !in_char && b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            // Found // outside any string — only if there's code before it
+            let before = &line[..i];
+            if !before.trim().is_empty() {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Extract concept tags from symbol body text for known code patterns.
@@ -1416,5 +1458,30 @@ pub fn extract_concept_tags(text: &str) -> String {
         // But code string literals should remain
         assert!(stripped.contains("json!("), "code string literal preserved");
         assert!(stripped.contains("response"), "code string literal preserved");
+    }
+
+    #[test]
+    fn test_strip_code_comments_inline_trailing() {
+        // Inline trailing comments should be stripped
+        let text = r#"Some(w[..w.len() - 4].to_string()) // "handling" → "hand"
+Some(w[..w.len() - 2].to_string()) // "gracefully" → "graceful"
+let x = 1; // this is a trailing comment"#;
+        let stripped = strip_code_comments(text);
+        assert!(!stripped.contains("handling"), "inline comment word stripped");
+        assert!(!stripped.contains("gracefully"), "inline comment word stripped");
+        assert!(!stripped.contains("trailing comment"), "inline comment stripped");
+        assert!(stripped.contains("Some(w[..w.len() - 4].to_string())"), "code preserved");
+        assert!(stripped.contains("let x = 1;"), "code preserved");
+    }
+
+    #[test]
+    fn test_strip_code_comments_preserves_url_in_string() {
+        // // inside a string literal should NOT be treated as a comment
+        let text = r#"let url = "http://example.com"; // a comment
+let path = "file:///tmp/test";"#;
+        let stripped = strip_code_comments(text);
+        assert!(stripped.contains("http://example.com"), "URL in string preserved");
+        assert!(!stripped.contains("a comment"), "trailing comment stripped");
+        assert!(stripped.contains("file:///tmp/test"), "file URL in string preserved");
     }
 }

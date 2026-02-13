@@ -119,24 +119,24 @@ Results in live mode are **fully deterministic** — verified by diffing consecu
 
 ### CI Score by Query (Key Rounds)
 
-| # | Query | R5 | R12 | R25 | R37 | R43 | R45 | **R47** |
-|---|-------|----|-----|-----|-----|-----|-----|---------|
-| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | **4** |
-| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | **7** |
-| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | **3** |
-| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 5 | **9** |
-| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 6 | **7** |
-| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 9 | **8** |
-| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 3 | **5** |
-| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | **9** |
-| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | **3** |
-| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 3 | **4** |
-| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 6 | **8** |
-| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | **7** |
-| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | **7** |
-| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 7 | **8** |
-| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 5 | **7** |
-| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **5.6** | **6.4** |
+| # | Query | R5 | R12 | R25 | R37 | R43 | R45 | R47 | R49 | R50 | **R55** |
+|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
+| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 4 | 5 | 5 | **5** |
+| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | **7** |
+| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | **3** |
+| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 5 | 9 | 9 | 9 | **9** |
+| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 6 | 7 | 7 | 7 | **7** |
+| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 9 | 8 | 8 | 8 | **8** |
+| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 3 | 5 | 5 | 5 | **5** |
+| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | **9** |
+| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 3 | 2 | 1 | **5** |
+| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 3 | 4 | 3 | 4 | **4** |
+| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 6 | 8 | 8 | 8 | **8** |
+| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | **7** |
+| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 7 | 9 | 8 | **8** |
+| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 7 | 8 | 8 | 8 | **8** |
+| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 5 | 7 | 7 | 7 | **7** |
+| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **5.6** | **6.4** | **6.5** | **6.4** | **6.7** |
 
 ### CI Average Trend
 
@@ -154,6 +154,9 @@ R43: 5.7  ██████████████▎
 R44: 5.7  ██████████████▎
 R45: 5.6  ██████████████
 R47: 6.4  ████████████████   ← LLM descriptions active
+R49: 6.5  ████████████████▎  ← path variants + inline comment strip
+R50: 6.4  ████████████████   ← LLM v2 descriptions (no measurable impact)
+R55: 6.7  ████████████████▊  ← Intent::Error fix (Q9: 1→5)
 ```
 
 **Key milestones:**
@@ -162,7 +165,8 @@ R47: 6.4  ████████████████   ← LLM description
 - R25 (6.7): Import tags + synonym expansion peak
 - R37 (5.5): Post-cleanup baseline (comment stripping, concept tags settled)
 - R43 (5.7): Intent enforcement pipeline fix + vector promotion bug fix
-- **R47 (6.4): LLM descriptions active — largest single-round improvement (+0.80)**
+- R47 (6.4): LLM descriptions active — largest single-round improvement (+0.80)
+- **R55 (6.7): Intent::Error suppression + pool expansion fixed Q9 (1→5). Ties R25 all-time high.**
 
 ### Recent Rounds (Detail)
 
@@ -212,24 +216,36 @@ R47: 6.4  ████████████████   ← LLM description
 
 **CI avg: 6.40** (+0.80 vs R45) — largest single-round improvement. 6 improvements, 1 regression, 8 stable.
 
+#### Round 55 — Intent::Error suppression + pool expansion (Q9 fix)
+
+**Changes:** (1) Intent::Error multiplier: 0.2x for non-error symbols (was 1.0 neutral), 2.5x for error-named, 3.0x for error-path files. (2) BM25 pool expansion k=500 for Intent::Error (was 40). LLM descriptions dilute IDF("error"), pushing PathError below k=40 threshold.
+
+| # | Query (short) | R50 CI | R55 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 9 | Error handling | 1 | 5 | **+4** | PathError #1 (fresh) / tool_internal_error #1 (live). 4/5 relevant. expand_stems meta-match persists at #2 |
+
+**CI avg: 6.67** (+0.27 vs R50) — Q9 only change. Fresh-mode validated, live-mode Q9-only confirmed. Full live-mode blocked by running server contamination.
+
+**Note:** R55 Q9 score based on live-mode Q9-only benchmark (tool_internal_error #1, expand_stems #2, PathError Display #3, PathError #4, fmt #5). Fresh mode shows PathError #1 (16.04), tool_internal_error #2 (12.99). Non-Q9 queries unchanged (Intent::Error changes only affect Q9).
+
 ## Current Status & Next Steps
 
-**Current: R47** | CI avg: **6.40** | Schema v14 | LLM descriptions active (1663 symbols)
+**Current: R55** | CI avg: **6.67** | Schema v15 | LLM v2 descriptions active (1682 symbols)
 
 ### Persistent Low Scorers (CI ≤ 4)
 
 | Query | CI | Root Cause | Fix Path |
 |-------|----|-----------|----------|
-| Q1: Ranking/scoring | 4 | Vocabulary gap — "ranking" doesn't match `rank_hits_with_signals` | Check if LLM descriptions mention "ranking"/"scoring" for score.rs functions |
-| Q3: Tree-sitter | 3 | `expand_stems` meta-match at #1; parser.rs buried | Check if parser.rs descriptions mention "tree-sitter" |
-| Q9: Error handling | 3 | "gracefully" triggers stem-matching on `expand_stems` | Vector search (Phase 3) or BM25 negative signal for stem-processing functions |
-| Q10: JSON serial. | 4 | `extract_concept_tags` CODE contains pattern-detection strings | Unfixable by BM25 — need vector search to outrank meta-matches |
+| Q1: Ranking/scoring | 5 | Path variants helped (score.rs 4/5). Missing `compute_combined_score` / ranking pipeline | Larger LLM or manual description enrichment |
+| Q3: Tree-sitter | 3 | 8 descriptions mention tree-sitter but scores too low vs noise. `expand_stems` at #1 | Better embedding model (Jina Code v2) to bridge vocabulary gap |
+| Q10: JSON serial. | 4 | `extract_concept_tags` meta-match at #1. expand_stems dropped (improvement). handle_explain_search at #5 | Vector search to outrank meta-matches |
 
 ### Priorities
 
-1. **Investigate descriptions for Q1/Q3** — If LLM descriptions for score.rs/parser.rs don't mention the right terms, tune the description prompt
-2. **Phase 3: Jina Code v2** — Better embedding model for vector search arm. Primary target: Q9/Q10 (meta-matching unfixable by BM25), Q1/Q7
-3. **Q6 noise** — Python script `call_tool` at #2; exclude `scripts/` from indexing or add script-file penalty
+1. **Phase 3: Jina Code v2** — Better embedding model. Primary target: Q3 (tree-sitter vocab gap), Q10 (meta-matching unfixable by BM25)
+2. **Q6 noise** — Python script `call_tool` at #3; add script-file penalty in scoring
+3. **LLM model upgrade** — 1.5B Qwen generates too-generic descriptions. Consider 3B+ model or description post-processing
+4. **Q9 remaining noise** — expand_stems meta-match at #2. Needs either string-literal stripping or vector search improvement
 
 ## Reference
 

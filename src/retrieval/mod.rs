@@ -702,7 +702,15 @@ impl Retriever {
             } else {
                 // MULTI-QUERY PATH: Loop over sub-queries and collect combined hits
                 // Always use larger pool for multi-query (compound NL queries)
-                let k = self.config.vector_search_limit.max(limit * 3).max(40);
+                let base_k = self.config.vector_search_limit.max(limit * 3).max(40);
+                // Cross-cutting intent queries (Error) need larger pools because
+                // LLM descriptions dilute IDF for common terms like "error",
+                // pushing specialized symbols (PathError) below normal k threshold.
+                let k = if matches!(&intent, Some(Intent::Error)) {
+                    base_k.max(500)
+                } else {
+                    base_k
+                };
 
                 // Combined accumulators for ALL sub-queries
                 let mut combined_keyword_hits: Vec<crate::storage::tantivy::SearchHit> = Vec::new();

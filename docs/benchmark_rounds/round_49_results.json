@@ -1,0 +1,819 @@
+{
+  "round": 49,
+  "mode": "live",
+  "timestamp": "2026-02-13T11:52:16.218303",
+  "symbol_count": 1682,
+  "elapsed_seconds": 3.7611048221588135,
+  "results": [
+    {
+      "query": {
+        "id": 1,
+        "query": "How does the ranking and scoring system work?",
+        "expected": "retrieval/ranking/score.rs, retrieval/ranking/mod.rs, retrieval/ranking/diversify.rs, retrieval/ranking/rrf.rs"
+      },
+      "results": [
+        {
+          "name": "simple_stem",
+          "kind": "function",
+          "score": 18.52,
+          "file": "ranking/score.rs",
+          "file_full": "src/retrieval/ranking/score.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "stems_match",
+          "kind": "function",
+          "score": 17.78,
+          "file": "ranking/score.rs",
+          "file_full": "src/retrieval/ranking/score.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "rank_lines_by_relevance",
+          "kind": "function",
+          "score": 16.59,
+          "file": "assembler/formatting.rs",
+          "file_full": "src/retrieval/assembler/formatting.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "format_scoring_breakdown",
+          "kind": "function",
+          "score": 16.59,
+          "file": "handlers/mod.rs",
+          "file_full": "src/handlers/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "term_coverage_adjustment",
+          "kind": "function",
+          "score": 16.51,
+          "file": "ranking/score.rs",
+          "file_full": "src/retrieval/ranking/score.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 2,
+        "query": "How are embeddings generated and stored?",
+        "expected": "storage/vector.rs, embedding backend files, storage/ layer"
+      },
+      "results": [
+        {
+          "name": "impl Embedder for FastEmbedder",
+          "kind": "impl",
+          "score": 10.88,
+          "file": "embeddings/fastembed.rs",
+          "file_full": "src/embeddings/fastembed.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "query_embed",
+          "kind": "function",
+          "score": 9.97,
+          "file": "embeddings/fastembed.rs",
+          "file_full": "src/embeddings/fastembed.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "FastEmbedder",
+          "kind": "struct",
+          "score": 8.53,
+          "file": "embeddings/fastembed.rs",
+          "file_full": "src/embeddings/fastembed.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "generate_nl_description",
+          "kind": "function",
+          "score": 7.8,
+          "file": "src/text.rs",
+          "file_full": "src/text.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "prepare_embedding_text",
+          "kind": "function",
+          "score": 7.8,
+          "file": "src/text.rs",
+          "file_full": "src/text.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 3,
+        "query": "How does tree-sitter parsing work in this codebase?",
+        "expected": "indexer/parser.rs, indexer/extract/ language extractors"
+      },
+      "results": [
+        {
+          "name": "expand_stems",
+          "kind": "function",
+          "score": 14.35,
+          "file": "src/text.rs",
+          "file_full": "src/text.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "CodeNgramTokenizer",
+          "kind": "struct",
+          "score": 12.95,
+          "file": "storage/tantivy.rs",
+          "file_full": "src/storage/tantivy.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "token_stream",
+          "kind": "function",
+          "score": 12.95,
+          "file": "storage/tantivy.rs",
+          "file_full": "src/storage/tantivy.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/pipeline/parsing.rs",
+          "kind": "file",
+          "score": 10.64,
+          "file": "pipeline/parsing.rs",
+          "file_full": "src/indexer/pipeline/parsing.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "build_prompt",
+          "kind": "function",
+          "score": 10.37,
+          "file": "hyde/generator.rs",
+          "file_full": "src/retrieval/hyde/generator.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 4,
+        "query": "Configuration from environment variables",
+        "expected": "Config/settings module, main entry point with env var reads"
+      },
+      "results": [
+        {
+          "name": "to_utf8_pathbuf",
+          "kind": "function",
+          "score": 41.02,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "get_global_cimcp_dir",
+          "kind": "function",
+          "score": 37.13,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "new_config_fields_parsed_from_env",
+          "kind": "function",
+          "score": 37.13,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "canonicalize_dir",
+          "kind": "function",
+          "score": 33.75,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "from_env",
+          "kind": "function",
+          "score": 33.1,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "intent_mult": 3.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 5,
+        "query": "Indexing pipeline file scanning and symbol extraction",
+        "expected": "indexer/mod.rs, indexer/extract/mod.rs, file scanner, symbol types"
+      },
+      "results": [
+        {
+          "name": "src/indexer/pipeline/parsing.rs",
+          "kind": "file",
+          "score": 14.46,
+          "file": "pipeline/parsing.rs",
+          "file_full": "src/indexer/pipeline/parsing.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "extract_python_symbols",
+          "kind": "function",
+          "score": 10.04,
+          "file": "extract/python.rs",
+          "file_full": "src/indexer/extract/python.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/extract/python.rs",
+          "kind": "file",
+          "score": 10.04,
+          "file": "extract/python.rs",
+          "file_full": "src/indexer/extract/python.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "extract_go_symbols",
+          "kind": "function",
+          "score": 9.09,
+          "file": "extract/go.rs",
+          "file_full": "src/indexer/extract/go.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "extract_c_symbols",
+          "kind": "function",
+          "score": 8.43,
+          "file": "extract/c.rs",
+          "file_full": "src/indexer/extract/c.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 6,
+        "query": "How does the MCP server handle incoming tool requests?",
+        "expected": "server/mod.rs, handlers/mod.rs, tool dispatch/routing logic"
+      },
+      "results": [
+        {
+          "name": "dispatch_tool_call",
+          "kind": "function",
+          "score": 18.36,
+          "file": "server/mod.rs",
+          "file_full": "src/server/mod.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_call_tool_request",
+          "kind": "function",
+          "score": 17.32,
+          "file": "server/mod.rs",
+          "file_full": "src/server/mod.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "call_tool",
+          "kind": "function",
+          "score": 16.91,
+          "file": "scripts/test_scoring.py",
+          "file_full": "scripts/test_scoring.py",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_call_tool_request",
+          "kind": "function",
+          "score": 16.91,
+          "file": "server/standalone.rs",
+          "file_full": "src/server/standalone.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "resolve_state",
+          "kind": "function",
+          "score": 15.87,
+          "file": "server/standalone.rs",
+          "file_full": "src/server/standalone.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 7,
+        "query": "How does the WebSocket handler work?",
+        "expected": "WebSocket-related handler code, connection management"
+      },
+      "results": [
+        {
+          "name": "extract_pattern_details",
+          "kind": "function",
+          "score": 10.17,
+          "file": "extract/elysia.rs",
+          "file_full": "src/indexer/extract/elysia.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "extract_plugin_name",
+          "kind": "function",
+          "score": 9.54,
+          "file": "extract/elysia.rs",
+          "file_full": "src/indexer/extract/elysia.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "truncate_text",
+          "kind": "function",
+          "score": 9.54,
+          "file": "extract/elysia.rs",
+          "file_full": "src/indexer/extract/elysia.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "framework_tags_make_websocket_handler_searchable",
+          "kind": "function",
+          "score": 8.76,
+          "file": "storage/tantivy.rs",
+          "file_full": "src/storage/tantivy.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "text_for_node",
+          "kind": "function",
+          "score": 8.76,
+          "file": "extract/typescript.rs",
+          "file_full": "src/indexer/extract/typescript.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 8,
+        "query": "SQLite database schema tables initialization",
+        "expected": "storage/sqlite/ schema definitions, migration/init code"
+      },
+      "results": [
+        {
+          "name": "src/storage/sqlite/schema.rs",
+          "kind": "file",
+          "score": 843.2,
+          "file": "sqlite/schema.rs",
+          "file_full": "src/storage/sqlite/schema.rs",
+          "intent_mult": 75.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "init",
+          "kind": "function",
+          "score": 6.53,
+          "file": "sqlite/operations.rs",
+          "file_full": "src/storage/sqlite/operations.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "migrate_add_edges_confidence_column",
+          "kind": "function",
+          "score": 3.26,
+          "file": "sqlite/operations.rs",
+          "file_full": "src/storage/sqlite/operations.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "migrate_add_edges_evidence_count_column",
+          "kind": "function",
+          "score": 3.26,
+          "file": "sqlite/operations.rs",
+          "file_full": "src/storage/sqlite/operations.rs",
+          "intent_mult": 0.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "migrate_add_edges_location_columns",
+          "kind": "function",
+          "score": 3.26,
+          "file": "sqlite/operations.rs",
+          "file_full": "src/storage/sqlite/operations.rs",
+          "intent_mult": 0.5,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 9,
+        "query": "Error handling and graceful degradation",
+        "expected": "Error types, fallback logic across multiple modules"
+      },
+      "results": [
+        {
+          "name": "expand_stems",
+          "kind": "function",
+          "score": 10.01,
+          "file": "src/text.rs",
+          "file_full": "src/text.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "contains_code_snippet",
+          "kind": "function",
+          "score": 8.19,
+          "file": "retrieval/query.rs",
+          "file_full": "src/retrieval/query.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "test_remove_stop_words_error_handling_query",
+          "kind": "function",
+          "score": 8.19,
+          "file": "src/text.rs",
+          "file_full": "src/text.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "build_prompt",
+          "kind": "function",
+          "score": 7.39,
+          "file": "hyde/generator.rs",
+          "file_full": "src/retrieval/hyde/generator.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/pipeline/parsing.rs",
+          "kind": "file",
+          "score": 6.66,
+          "file": "pipeline/parsing.rs",
+          "file_full": "src/indexer/pipeline/parsing.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 10,
+        "query": "JSON serialization and response formatting",
+        "expected": "Serde derive usage, response builders, MCP protocol formatting"
+      },
+      "results": [
+        {
+          "name": "expand_stems",
+          "kind": "function",
+          "score": 11.37,
+          "file": "src/text.rs",
+          "file_full": "src/text.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "extract_concept_tags",
+          "kind": "function",
+          "score": 11.18,
+          "file": "src/text.rs",
+          "file_full": "src/text.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "HyDEQuery",
+          "kind": "struct",
+          "score": 8.92,
+          "file": "hyde/generator.rs",
+          "file_full": "src/retrieval/hyde/generator.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "format_similar_results",
+          "kind": "function",
+          "score": 8.92,
+          "file": "handlers/mod.rs",
+          "file_full": "src/handlers/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "get",
+          "kind": "function",
+          "score": 8.01,
+          "file": "src/registry.rs",
+          "file_full": "src/registry.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 11,
+        "query": "Async concurrency and parallel processing",
+        "expected": "Async mutex usage, parallel indexing, concurrent operations"
+      },
+      "results": [
+        {
+          "name": "src/indexer/pipeline/parallel.rs",
+          "kind": "file",
+          "score": 12.57,
+          "file": "pipeline/parallel.rs",
+          "file_full": "src/indexer/pipeline/parallel.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_search_code",
+          "kind": "function",
+          "score": 12.43,
+          "file": "handlers/mod.rs",
+          "file_full": "src/handlers/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "index_files_parallel_async",
+          "kind": "function",
+          "score": 12.43,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "index_files_parallel",
+          "kind": "function",
+          "score": 11.54,
+          "file": "pipeline/parallel.rs",
+          "file_full": "src/indexer/pipeline/parallel.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "generate_embeddings_for_parallel_indexed_files",
+          "kind": "function",
+          "score": 9.6,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 12,
+        "query": "Caching and cache invalidation",
+        "expected": "retrieval/cache.rs, embedding cache, TTL/invalidation logic"
+      },
+      "results": [
+        {
+          "name": "put",
+          "kind": "function",
+          "score": 11.63,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "content_hash",
+          "kind": "function",
+          "score": 10.91,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "RetrieverCaches",
+          "kind": "struct",
+          "score": 9.92,
+          "file": "retrieval/cache.rs",
+          "file_full": "src/retrieval/cache.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "test_content_hash",
+          "kind": "function",
+          "score": 9.92,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "put_cached_embedding",
+          "kind": "function",
+          "score": 8.18,
+          "file": "sqlite/mod.rs",
+          "file_full": "src/storage/sqlite/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 13,
+        "query": "PathNormalizer struct definition and methods",
+        "expected": "path/mod.rs -- the struct and its impl block"
+      },
+      "results": [
+        {
+          "name": "PathNormalizer",
+          "kind": "struct",
+          "score": 21.85,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "impl PathNormalizer",
+          "kind": "impl",
+          "score": 17.97,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "normalize_for_compare",
+          "kind": "function",
+          "score": 7.91,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "from",
+          "kind": "function",
+          "score": 7.42,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "path_strategy",
+          "kind": "function",
+          "score": 4.48,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 14,
+        "query": "EmbeddingCache get put cached embedding",
+        "expected": "The cache struct and its get/put methods"
+      },
+      "results": [
+        {
+          "name": "put",
+          "kind": "function",
+          "score": 16.93,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "get",
+          "kind": "function",
+          "score": 15.98,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "content_hash",
+          "kind": "function",
+          "score": 15.89,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "put_cached_embedding",
+          "kind": "function",
+          "score": 11.69,
+          "file": "sqlite/mod.rs",
+          "file_full": "src/storage/sqlite/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "embed",
+          "kind": "function",
+          "score": 11.69,
+          "file": "embeddings/fastembed.rs",
+          "file_full": "src/embeddings/fastembed.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 15,
+        "query": "File watcher debounce reindex on change",
+        "expected": "Watcher module, debounce logic"
+      },
+      "results": [
+        {
+          "name": "src/indexer/pipeline/watch.rs",
+          "kind": "file",
+          "score": 12.79,
+          "file": "pipeline/watch.rs",
+          "file_full": "src/indexer/pipeline/watch.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "spawn_watch_loop",
+          "kind": "function",
+          "score": 10.72,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "incremental_index_skips_unchanged_and_removes_deleted_files",
+          "kind": "function",
+          "score": 10.72,
+          "file": "tests/integration_index_search.rs",
+          "file_full": "tests/integration_index_search.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "create_watcher",
+          "kind": "function",
+          "score": 10.06,
+          "file": "pipeline/watch.rs",
+          "file_full": "src/indexer/pipeline/watch.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "index_files",
+          "kind": "function",
+          "score": 9.88,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    }
+  ]
+}

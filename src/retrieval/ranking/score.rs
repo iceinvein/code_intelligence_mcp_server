@@ -1027,14 +1027,25 @@ pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: 
             }
         }
         Intent::Error => {
-            // Boost error handling code
+            // Boost error handling code, suppress unrelated results.
+            // text.rs SYNONYMS dictionary contains "error"/"fail" string literals
+            // that cause BM25 meta-matching. Suppressing non-error results pushes
+            // actual error types (PathError, tool_internal_error) above the noise.
             let path = file_path.to_lowercase();
+            let name_lower = name.to_lowercase();
             if path.contains("error") || path.contains("exception") {
                 3.0
-            } else if matches!(kind, "class" | "enum" | "type_alias") {
-                1.3
-            } else {
+            } else if name_lower.contains("error")
+                || name_lower.contains("fail")
+                || name_lower.contains("exception")
+                || name_lower.contains("panic")
+                || name_lower.contains("fallback")
+            {
+                2.5
+            } else if matches!(kind, "enum" | "class" | "type_alias") {
                 1.0
+            } else {
+                0.2
             }
         }
         Intent::Api => {

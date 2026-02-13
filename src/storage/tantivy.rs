@@ -15,7 +15,7 @@ use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
-const TANTIVY_SCHEMA_VERSION: &str = "14";
+const TANTIVY_SCHEMA_VERSION: &str = "15";
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -566,18 +566,42 @@ fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import
     }
 
     // Append file path segments so queries like "handler" match src/handlers/mod.rs
+    // Also generate morphological variants for path segment words to bridge
+    // vocabulary gaps like "score" → "scoring" (Q1: score.rs → "scoring system" query).
+    // Path segments are few (2-4 per file) and highly discriminating, so the IDF
+    // dilution risk is minimal (unlike R41's body-token variants which regressed Q4/Q6/Q14).
     let path_segments: Vec<&str> = file_path
         .split('/')
         .filter(|s| !s.is_empty() && *s != "." && *s != "..")
         .collect();
+    let mut path_variant_budget = 8; // cap total variants from all path segments
     for seg in &path_segments {
         // Strip extension for the filename segment
         let base = seg.rsplit_once('.').map(|(b, _)| b).unwrap_or(seg);
-        if !base.is_empty() && base != "mod" && base != "index" && base != "lib" {
+        if !base.is_empty() && base != "mod" && base != "index" && base != "lib" && base != "src" {
             let split_seg = text::split_identifier_like(base);
             if !split_seg.is_empty() && !result.contains(&split_seg) {
                 result.push(' ');
                 result.push_str(&split_seg);
+            }
+            // Generate morphological variants for each path segment word
+            if path_variant_budget > 0 {
+                let result_lower = result.to_lowercase();
+                for word in split_seg.split_whitespace() {
+                    let w = word.to_lowercase();
+                    if w.len() >= 3 && path_variant_budget > 0 {
+                        for variant in text::generate_morphological_variants(&w) {
+                            if !result_lower.contains(&variant) {
+                                result.push(' ');
+                                result.push_str(&variant);
+                                path_variant_budget -= 1;
+                                if path_variant_budget == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

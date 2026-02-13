@@ -120,7 +120,7 @@ fn promote_vector_results(
     results: &mut Vec<RankedHit>,
     vector_ranked: &[RankedHit],
     test_symbols: &HashSet<String>,
-    signals: &mut HashMap<String, HitSignals>,
+    _signals: &mut HashMap<String, HitSignals>,
     limit: usize,
     guaranteed_slots: usize,
 ) {
@@ -169,14 +169,11 @@ fn promote_vector_results(
             exported: vec_hit.exported,
             language: vec_hit.language.clone(),
         };
-        signals.insert(
-            vec_hit.id.clone(),
-            HitSignals {
-                vector_score: target_score, // Marks this as a vector-promoted result
-                intent_mult: 1.0,           // Non-test (filtered above), neutral multiplier
-                ..Default::default()
-            },
-        );
+        // Don't insert signals for promoted vector results. The final intent
+        // enforcement pass will compute intent_adjustment on the fly — correctly
+        // applying test-symbol penalties (e.g., setup_test_db → 0.05x) and
+        // intent multipliers that the hardcoded 1.0 was bypassing.
+
         // Replace the lowest-scored entry (last after sort)
         if results.len() >= limit {
             results.pop();

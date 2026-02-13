@@ -449,8 +449,25 @@ impl Retriever {
         // scores from parent symbols, which can reintroduce test helpers (e.g.,
         // create_test_normalizer as a reference of PathNormalizer) with high scores
         // that bypass earlier intent penalties. This final pass catches them.
+        //
+        // Also checks SQL-based test detection (mod tests containment) which
+        // catches test functions that escape name/file heuristics (e.g.,
+        // framework_tags_make_websocket_handler_searchable in tantivy.rs).
         {
+            let final_hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+            let final_test_symbols = sqlite.batch_check_test_symbols(&final_hit_ids).unwrap_or_default();
+            let is_test_intent = matches!(intent, Some(Intent::Test));
+
             for hit in &mut hits {
+                // SQL-based test detection: symbols inside `mod tests` blocks
+                // that escape name/file heuristics. Apply 0.01x multiplier
+                // (same as is_test_symbol/is_test_file) so they're effectively
+                // invisible in non-test queries.
+                if !is_test_intent && final_test_symbols.contains(&hit.id) {
+                    hit.score *= 0.01;
+                    continue;
+                }
+
                 let intent_mult = if let Some(sig) = hit_signals.get(&hit.id) {
                     sig.intent_mult
                 } else {

@@ -119,24 +119,24 @@ Results in live mode are **fully deterministic** — verified by diffing consecu
 
 ### CI Score by Query (Key Rounds)
 
-| # | Query | R5 | R12 | R25 | R37 | R43 | R47 | R49 | R50 | R55 | R56 | R58 | **R59** |
-|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
-| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 5 | 5 | 5 | 6 | 7 | **7** |
-| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 5 | 5 | **7** |
-| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 5 | 5 | **6** |
-| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | **9** |
-| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
-| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | **9** |
-| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 5 | 5 | 5 | 5 | 5 | 5 | **5** |
-| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 6 | 7 | **7** |
-| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 2 | 1 | 5 | 6 | 6 | **6** |
-| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 4 | 3 | 4 | 4 | 6 | 6 | **6** |
-| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
-| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
-| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 9 | 8 | 8 | 6 | 6 | **6** |
-| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
-| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 7 | 7 | 7 | 7 | 8 | 8 | **7** |
-| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** | **6.9** | **7.0** |
+| # | Query | R5 | R12 | R25 | R37 | R43 | R47 | R49 | R50 | R55 | R56 | R58 | R59 | **R61** |
+|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
+| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 5 | 5 | 5 | 6 | 7 | 7 | **7** |
+| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 5 | 5 | 7 | **7** |
+| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 5 | 5 | 6 | **7** |
+| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | **9** |
+| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
+| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | 9 | **9** |
+| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 5 | 5 | 5 | 5 | 5 | 5 | 5 | **6** |
+| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 6 | 7 | 7 | **7** |
+| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 2 | 1 | 5 | 6 | 6 | 6 | **6** |
+| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 4 | 3 | 4 | 4 | 6 | 6 | 6 | **6** |
+| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
+| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
+| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 9 | 8 | 8 | 6 | 6 | 6 | **7** |
+| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
+| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 7 | 7 | 7 | 7 | 8 | 8 | 7 | **7** |
+| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** | **6.9** | **7.0** | **7.2** |
 
 ### CI Average Trend
 
@@ -160,6 +160,7 @@ R55: 6.7  ████████████████▊  ← Intent::Error
 R56: 6.7  ████████████████▊  ← Jina query embedding fix (Q3: 3→5, Q10: 4→6)
 R58: 6.9  █████████████████▎ ← Edge expansion intent stripping + promote fix
 R59: 7.0  █████████████████▌ ← Import tag scoping + expansion importance filter
+R61: 7.2  ██████████████████  ← SQL-based test enforcement in final pass
 ```
 
 **Key milestones:**
@@ -173,6 +174,7 @@ R59: 7.0  █████████████████▌ ← Import tag 
 - R56 (6.7): Query embedding fix eliminated 3 meta-matches (Q3 +2, Q10 +2).
 - R58 (6.9): Edge expansion intent stripping + vector promote fix.
 - **R59 (7.0): Import tag scoping + expansion importance filter. New all-time high (7.00). Q2 fixed: repo_name eliminated.**
+- **R61 (7.2): SQL-based test enforcement in final pass. New all-time high (7.20). Q3/Q7/Q13 improved, 0 regressions.**
 
 ### Recent Rounds (Detail)
 
@@ -327,22 +329,51 @@ Schema v15→v17 (import tag scoping changes what gets indexed).
 
 **Key finding:** `repo_name` (a 5-line private helper in `pipeline/mod.rs`) persisted at Q2 #1 through TWO mechanisms: (1) BM25 import tag inheritance from file's `use embeddings::Embedder`, and (2) edge expansion from `generate_embeddings_for_parallel_indexed_files` which calls it. Fix required both: import tag scoping removed it from BM25, and the `symbol_importance_adjustment < -1.0` filter in expansion prevents small private helpers from being re-injected.
 
+#### Round 61 — SQL-based test enforcement in final pass
+
+**Changes:** Two fixes to strengthen test symbol detection:
+1. **Final enforcement test check** (`mod.rs`): After expansion+diversity+truncation, queries `batch_check_test_symbols` on the final hit set. Test symbols detected by SQL (inside `mod tests` or has `#[test]` in text) get `0.01x` multiplier — same as name/file-based detection. This catches test functions that escape `is_test_symbol` name heuristics (e.g., `framework_tags_make_websocket_handler_searchable`).
+2. **File-symbol exclusion** (`queries/symbols.rs`): The `#[test]` text criterion now excludes `kind = 'file'` symbols. File symbols span entire files, so any production file with a `mod tests` block would false-positive. R60 caught this: `parser.rs` was incorrectly flagged as a test (score 6.53→0.07).
+
+| # | Query (short) | R59 CI | R61 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 1 | Ranking/scoring | 7 | 7 | 0 | apply_reranker_scores at #3, rrf.rs file at #4 |
+| 2 | Embeddings | 7 | 7 | 0 | Stable |
+| 3 | Tree-sitter | 6 | 7 | **+1** | parser.rs at #1, diverse extractors (c, python, cpp, rust) |
+| 4 | Config env | 9 | 9 | 0 | Test crushed (33.86→0.34) but occupies #5 slot |
+| 5 | Indexing pipeline | 7 | 7 | 0 | Stable |
+| 6 | MCP tool requests | 9 | 9 | 0 | Stable |
+| 7 | WebSocket | 5 | 6 | **+1** | Test crushed #3(13.64)→#5(0.14). Top-3 now test-free |
+| 8 | SQLite schema | 7 | 7 | 0 | Stable |
+| 9 | Error handling | 6 | 6 | 0 | Stable |
+| 10 | JSON serial. | 6 | 6 | 0 | Stable |
+| 11 | Async parallel | 8 | 8 | 0 | Stable |
+| 12 | Caching | 7 | 7 | 0 | Stable |
+| 13 | PathNormalizer | 6 | 7 | **+1** | path/mod.rs file + normalize_for_compare replace GetDefinitionTool noise |
+| 14 | EmbeddingCache | 8 | 8 | 0 | Stable |
+| 15 | File watcher | 7 | 7 | 0 | Stable |
+
+**CI avg: 7.20** (+0.20 vs R59) — new all-time high. 3 improvements, 0 regressions, 12 stable.
+
+**Key finding:** Three test detection mechanisms now cover different cases: (1) `is_test_file` for file paths (`/tests/`, `_test.rs`), (2) `is_test_symbol` for name patterns (`test_*`, `setup_test*`), (3) `batch_check_test_symbols` for SQL byte-range containment (`mod tests` blocks) and `#[test]` attribute detection. The final enforcement pass (after expansion) is the only safe place for mechanism 3, since edge expansion can re-inject symbols that were penalized during scoring.
+
+**Bug caught in R60:** The `#[test]` text criterion (`instr(s.text, '#[test]') > 0`) false-positived on file symbols because their text spans the entire file. Any production file with test functions at the bottom (e.g., `parser.rs`, `c.rs`) was incorrectly flagged. Fix: `s.kind != 'file'` guard.
+
 ## Current Status & Next Steps
 
-**Current: R59** | CI avg: **7.00** | Schema v17 | LLM v2 descriptions active | Jina query embeddings fixed | Edge expansion intent-aware + importance-filtered | Import tags scoped to exported symbols
+**Current: R61** | CI avg: **7.20** | Schema v17 | LLM v2 descriptions active | Jina query embeddings fixed | Edge expansion intent-aware + importance-filtered | Import tags scoped to exported symbols | SQL-based test enforcement
 
 ### Persistent Low Scorers (CI ≤ 5)
 
-| Query | CI | Root Cause | Fix Path |
-|-------|----|-----------|----------|
-| Q7: WebSocket | 5 | Test fn at #3, extract_plugin_name noise at #5 | Better test detection for inline `#[cfg(test)]` functions; single-file diversity |
+None — all queries now score 6+.
 
 ### Priorities
 
-1. **Q7 test detection** — `framework_tags_make_websocket_handler_searchable` at #3 escapes `is_test_symbol` (name doesn't start with "test_"). Need `#[cfg(test)]` awareness or parent-module-based test detection.
-2. **Q13 definition noise** — `is_definition_kind` and `GetDefinitionTool` match "definition" keyword. Intent::Definition should suppress symbols that match query terms only via their name, not their purpose.
-3. **LLM model upgrade** — 1.5B Qwen generates too-generic descriptions. Consider 3B+ model or description post-processing.
-4. **Increase vector weight** — Experiment with HYBRID_ALPHA < 0.7 to give vector more influence in hybrid merge.
+1. **Q7 WebSocket (6)** — `spawn` (web_ui.rs REST server) at #3 matches "socket" from SocketAddr. No easy BM25 fix.
+2. **Q9 Error handling (6)** — PathError-heavy, limited diversity across modules.
+3. **Q13 definition noise (7)** — `is_definition_kind` #3 matches "definition" keyword. Intent::Definition should suppress name-only matches.
+4. **LLM model upgrade** — 1.5B Qwen generates too-generic descriptions. Consider 3B+ model or description post-processing.
+5. **Increase vector weight** — Experiment with HYBRID_ALPHA < 0.7 to give vector more influence in hybrid merge.
 
 ## Reference
 

@@ -506,8 +506,9 @@ WHERE s.id IN ({placeholders})
         AND m.end_byte >= s.end_byte
         AND m.id != s.id
     )
-    -- Criterion 2: has #[test] attribute in source text
-    OR instr(s.text, '#[test]') > 0
+    -- Criterion 2: has #[test] attribute in source text (but not file symbols,
+    -- whose text spans the entire file and would false-positive on any file with tests)
+    OR (s.kind != 'file' AND instr(s.text, '#[test]') > 0)
   )
 "#
     );

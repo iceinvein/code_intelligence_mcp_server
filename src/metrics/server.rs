@@ -24,11 +24,20 @@ pub async fn spawn_metrics_server(
             registry: Arc::clone(&registry),
         });
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to bind metrics server on port {}: {}", port, e))?;
+    // Try configured port first, fall back to OS-assigned port if busy.
+    // This allows multiple server instances to coexist (e.g. multiple Claude Code sessions).
+    let listener = match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("Port {} busy ({}), using OS-assigned port", port, e);
+            tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(|e2| anyhow::anyhow!("Failed to bind metrics server: {}", e2))?
+        }
+    };
 
-    tracing::info!("Metrics server listening on http://127.0.0.1:{}", port);
+    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    tracing::info!("Metrics server listening on http://127.0.0.1:{}", actual_port);
 
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {

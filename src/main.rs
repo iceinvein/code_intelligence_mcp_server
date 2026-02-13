@@ -255,14 +255,15 @@ async fn run_embedded() -> SdkResult<()> {
         description: format!("Failed to create metrics registry: {}", err),
     })?);
 
-    // Spawn metrics server if enabled
+    // Spawn metrics server if enabled (non-fatal — server works without metrics)
     let _metrics_handle = if config.metrics_enabled {
-        let handle = spawn_metrics_server(Arc::clone(&metrics), config.metrics_port)
-            .await
-            .map_err(|err| McpSdkError::Internal {
-                description: format!("Failed to spawn metrics server: {}", err),
-            })?;
-        Some(handle)
+        match spawn_metrics_server(Arc::clone(&metrics), config.metrics_port).await {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::warn!("Metrics server failed to start: {}. Continuing without metrics.", e);
+                None
+            }
+        }
     } else {
         None
     };

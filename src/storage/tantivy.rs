@@ -15,7 +15,7 @@ use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
-const TANTIVY_SCHEMA_VERSION: &str = "15";
+const TANTIVY_SCHEMA_VERSION: &str = "17";
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -301,7 +301,7 @@ impl TantivyIndex {
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
-        let expanded_text = expand_index_text(&symbol.name, &symbol.kind, &symbol.text, &symbol.file_path, import_tags, framework_tags, llm_description);
+        let expanded_text = expand_index_text(&symbol.name, &symbol.kind, &symbol.text, &symbol.file_path, import_tags, framework_tags, llm_description, symbol.exported);
 
         // Enrich the indexed name for symbols whose body text contains WebSocket patterns.
         // This injects "websocket_handler" into the high-boost name field so that NL queries
@@ -546,7 +546,7 @@ fn register_tokenizers(index: &Index) {
         .register("code_ngram", CodeNgramTokenizer);
 }
 
-fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import_tags: &str, framework_tags: &str, llm_description: Option<&str>) -> String {
+fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import_tags: &str, framework_tags: &str, llm_description: Option<&str>, exported: bool) -> String {
     // Strip comment lines from body text before BM25 indexing.
     // Comments describe concepts but don't implement them — e.g.,
     // extract_concept_tags's doc comments mention "error_handling" and
@@ -606,11 +606,11 @@ fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import
         }
     }
 
-    // Append file-level import tags so that symbols inherit their file's
-    // import context. This allows queries like "tree-sitter" to match
-    // functions in files that `use tree_sitter::*`, even if the function
-    // name doesn't contain "tree_sitter".
-    if !import_tags.is_empty() {
+    // Append file-level import tags so that exported symbols and file entries
+    // inherit their file's import context. Private helpers (like `repo_name`)
+    // should NOT inherit import tags — they match conceptual queries (e.g.,
+    // "embeddings") purely because their file imports the module.
+    if !import_tags.is_empty() && (exported || kind == "file") {
         let result_lower = result.to_lowercase();
         let import_lower = import_tags.to_lowercase();
         for tag in import_lower.split_whitespace() {
@@ -626,12 +626,16 @@ fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import
     // "JSON serialization" match handlers using serde_json, and
     // "file watcher" matches spawn_watch_loop.
     let result_lower = result.to_lowercase();
-    // Collect all tokens to expand: from name + from import tags
+    // Collect all tokens to expand: from name + from import tags (exported/file only).
+    // Import tags propagate file-level import context (e.g., "embeddings" from
+    // `use crate::embeddings::Embedder`) to synonym expansion. Restricting to
+    // exported symbols and file entries prevents private helpers like `repo_name`
+    // from matching conceptual queries via unrelated import synonyms.
     let mut tokens_to_expand: Vec<String> = split_name
         .split_whitespace()
         .map(|t| t.to_lowercase())
         .collect();
-    if !import_tags.is_empty() {
+    if !import_tags.is_empty() && (exported || kind == "file") {
         for tag in import_tags.split_whitespace() {
             let tag_lower = tag.to_lowercase();
             if !tokens_to_expand.contains(&tag_lower) {

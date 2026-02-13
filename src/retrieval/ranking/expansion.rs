@@ -1,6 +1,6 @@
 use crate::retrieval::RankedHit;
 use crate::retrieval::query::Intent;
-use crate::retrieval::ranking::score::{intent_adjustment, is_test_file, is_test_symbol};
+use crate::retrieval::ranking::score::{intent_adjustment, is_test_file, is_test_symbol, symbol_importance_adjustment};
 use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
 
@@ -58,6 +58,15 @@ pub fn expand_with_edges(
                         if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
                             continue;
                         }
+                        let line_count = row.end_line.saturating_sub(row.start_line) + 1;
+                        let si = symbol_importance_adjustment(line_count, row.exported);
+                        // Skip small private helpers — they are implementation details
+                        // that shouldn't surface just because their caller matched.
+                        // E.g., repo_name (5-line private fn) called by
+                        // generate_embeddings_for_parallel_indexed_files.
+                        if si < -1.0 {
+                            continue;
+                        }
                         let evidence_boost =
                             (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
                         let resolution_multiplier = match edge.resolution.as_str() {
@@ -99,6 +108,11 @@ pub fn expand_with_edges(
                     if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
                         // Skip test symbols/files — same rationale as above
                         if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
+                            continue;
+                        }
+                        let line_count = row.end_line.saturating_sub(row.start_line) + 1;
+                        let si = symbol_importance_adjustment(line_count, row.exported);
+                        if si < -1.0 {
                             continue;
                         }
                         let evidence_boost =

@@ -863,7 +863,7 @@ pub(crate) fn structural_adjustment(
     }
 
     // Test file penalty: integration/unit test files should rank below production code.
-    // This is separate from the intent_adjustment 0.05x multiplier — that handles
+    // This is separate from the intent_adjustment 0.01x multiplier — that handles
     // the case where intent is non-Test. This penalty applies structurally so that
     // test files don't outrank production files via term_coverage alone.
     if is_test_file(file_path) {
@@ -939,22 +939,23 @@ pub(crate) fn is_test_symbol(name: &str) -> bool {
         || n.starts_with("mock_")
         || n == "setup"
         || n == "teardown"
+        || n == "tests"
         || (n.starts_with("test") && n.len() > 4 && n.as_bytes()[4].is_ascii_uppercase())
 }
 
 pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, _exported: bool, name: &str) -> f32 {
-    // Test Penalty (0.05x multiplier): aggressively suppress test code in non-test queries.
-    // Combined with expand_with_edges test filtering and final intent enforcement,
-    // this prevents test helpers from appearing in production-focused results.
+    // Test Penalty (0.01x multiplier): aggressively suppress test code in non-test queries.
+    // Combined with final intent enforcement (double-applied for <1.0 multipliers),
+    // effective suppression is 0.0001x — tests should never appear in production results.
     if is_test_file(file_path) && !matches!(intent, Some(Intent::Test)) {
-        return 0.05;
+        return 0.01;
     }
 
     // Symbol-level test penalty: penalize test-named symbols even in production files.
     // This prevents test functions (test_*, create_test_*) from flooding results
     // when they live alongside production code in the same file.
     if !matches!(intent, Some(Intent::Test)) && is_test_symbol(name) {
-        return 0.05;
+        return 0.01;
     }
 
     let Some(intent) = intent else {

@@ -304,7 +304,7 @@ impl StandaloneConfig {
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.7,
             rank_keyword_weight: 0.3,
-            rank_exported_boost: 0.1,
+            rank_exported_boost: 1.0,
             rank_index_file_boost: 0.05,
             rank_test_penalty: 0.1,
             rank_popularity_weight: 0.05,
@@ -573,7 +573,7 @@ impl Config {
             .as_deref()
             .map(parse_any_f32)
             .transpose()?
-            .unwrap_or(0.1);
+            .unwrap_or(1.0);
         let rank_index_file_boost = optional_env("RANK_INDEX_FILE_BOOST")
             .as_deref()
             .map(parse_any_f32)

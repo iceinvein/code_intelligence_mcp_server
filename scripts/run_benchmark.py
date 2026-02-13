@@ -235,6 +235,9 @@ def run_query(client, query_text, msg_id, limit=10):
             "score": round(r.get("score", 0), 2),
             "file": fp_short,
             "file_full": fp,
+            "keyword_score": bd.get("keyword_score"),
+            "vector_score": bd.get("vector_score"),
+            "base_score": bd.get("base_score"),
             "intent_mult": bd.get("intent_multiplier"),
             "test_penalty": bd.get("test_symbol_penalty"),
         })
@@ -449,7 +452,9 @@ def main():
             print(f"  -> {len(results)} results in {dt:.1f}s", flush=True)
             if results:
                 for j, r in enumerate(results[:3]):
-                    print(f"     #{j+1} {r['name']} ({r['kind']}) [{r['score']}] {r['file']}", flush=True)
+                    kw = r.get('keyword_score') or 0
+                    vec = r.get('vector_score') or 0
+                    print(f"     #{j+1} {r['name']} ({r['kind']}) [{r['score']}] kw={kw:.1f} vec={vec:.2f} {r['file']}", flush=True)
             all_results.append({"query": q, "results": results})
 
         elapsed_total = time.time() - start_time

@@ -119,24 +119,24 @@ Results in live mode are **fully deterministic** — verified by diffing consecu
 
 ### CI Score by Query (Key Rounds)
 
-| # | Query | R5 | R12 | R25 | R37 | R43 | R47 | R49 | R50 | R55 | R56 | **R58** |
-|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
-| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 5 | 5 | 5 | 6 | **7** |
-| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 5 | **5** |
-| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 5 | **5** |
-| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | **9** |
-| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
-| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | **9** |
-| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 5 | 5 | 5 | 5 | 5 | **5** |
-| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 6 | **7** |
-| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 2 | 1 | 5 | 6 | **6** |
-| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 4 | 3 | 4 | 4 | 6 | **6** |
-| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | **8** |
-| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | **7** |
-| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 9 | 8 | 8 | 6 | **6** |
-| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | **8** |
-| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 7 | 7 | 7 | 7 | 8 | **8** |
-| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** | **6.9** |
+| # | Query | R5 | R12 | R25 | R37 | R43 | R47 | R49 | R50 | R55 | R56 | R58 | **R59** |
+|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
+| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 5 | 5 | 5 | 6 | 7 | **7** |
+| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 5 | 5 | **7** |
+| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 5 | 5 | **6** |
+| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | **9** |
+| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
+| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | **9** |
+| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 5 | 5 | 5 | 5 | 5 | 5 | **5** |
+| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 6 | 7 | **7** |
+| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 2 | 1 | 5 | 6 | 6 | **6** |
+| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 4 | 3 | 4 | 4 | 6 | 6 | **6** |
+| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
+| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
+| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 9 | 8 | 8 | 6 | 6 | **6** |
+| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
+| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 7 | 7 | 7 | 7 | 8 | 8 | **7** |
+| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** | **6.9** | **7.0** |
 
 ### CI Average Trend
 
@@ -159,6 +159,7 @@ R50: 6.4  ████████████████   ← LLM v2 descript
 R55: 6.7  ████████████████▊  ← Intent::Error fix (Q9: 1→5)
 R56: 6.7  ████████████████▊  ← Jina query embedding fix (Q3: 3→5, Q10: 4→6)
 R58: 6.9  █████████████████▎ ← Edge expansion intent stripping + promote fix
+R59: 7.0  █████████████████▌ ← Import tag scoping + expansion importance filter
 ```
 
 **Key milestones:**
@@ -170,7 +171,8 @@ R58: 6.9  █████████████████▎ ← Edge expans
 - R47 (6.4): LLM descriptions active — largest single-round improvement (+0.80)
 - R55 (6.7): Intent::Error suppression + pool expansion fixed Q9 (1→5). Ties R25 all-time high.
 - R56 (6.7): Query embedding fix eliminated 3 meta-matches (Q3 +2, Q10 +2).
-- **R58 (6.9): Edge expansion intent stripping + vector promote fix. New all-time high (6.87).**
+- R58 (6.9): Edge expansion intent stripping + vector promote fix.
+- **R59 (7.0): Import tag scoping + expansion importance filter. New all-time high (7.00). Q2 fixed: repo_name eliminated.**
 
 ### Recent Rounds (Detail)
 
@@ -293,24 +295,54 @@ R58: 6.9  █████████████████▎ ← Edge expans
 
 **Key finding:** Edge-expanded results were inheriting parent intent multipliers, causing ~120x score inflation for children of Schema-boosted parents. Stripping the parent's intent before derivation ensures children score based on the parent's base relevance, not its intent-inflated score. The final enforcement then correctly applies the child's own intent multiplier.
 
+#### Round 59 — Import tag scoping + expansion importance filter
+
+**Changes:** Four fixes targeting Q2 (repo_name noise) and edge expansion quality:
+1. **Import tag scoping** (`tantivy.rs`): Both raw import tag appending (line 613) and synonym expansion (line 638) now gated on `(exported || kind == "file")`. Private helpers like `repo_name` no longer inherit file-level import tags (e.g., "embeddings" from `use crate::embeddings::Embedder`).
+2. **Expansion importance filter** (`expansion.rs`): `expand_with_edges` now skips symbols with `symbol_importance_adjustment < -1.0`. This filters small private helpers (e.g., `repo_name`: 5 lines, not exported → si = -1.77) that get inflated scores from their caller.
+3. **Exported boost** (`config.rs`): `rank_exported_boost` increased from 0.1 to 1.0. Gives exported symbols (the API surface) a meaningful structural advantage over internal helpers.
+4. **Test detection** (`score.rs`): `is_test_symbol` now catches `tests` module name. Test penalty strengthened 0.05x → 0.01x.
+
+Schema v15→v17 (import tag scoping changes what gets indexed).
+
+| # | Query (short) | R58 CI | R59 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 1 | Ranking/scoring | 7 | 7 | 0 | 4/5 from ranking/*, test at #5 |
+| 2 | Embeddings | 5 | 7 | **+2** | **repo_name eliminated.** generate_embeddings #1, 4/5 embeddings |
+| 3 | Tree-sitter | 5 | 6 | **+1** | All 5 tree-sitter relevant, 4 files, no meta-matches |
+| 4 | Config env | 9 | 9 | 0 | 5/5 config.rs |
+| 5 | Indexing pipeline | 7 | 7 | 0 | All pipeline/* |
+| 6 | MCP tool requests | 9 | 9 | 0 | 5/5 dispatch/handler |
+| 7 | WebSocket | 5 | 5 | 0 | Test fn at #3, extract_plugin_name noise at #5 |
+| 8 | SQLite schema | 7 | 7 | 0 | schema.rs dominant, test at #5 |
+| 9 | Error handling | 6 | 6 | 0 | PathError + tool_internal_error + retry |
+| 10 | JSON serial. | 6 | 6 | 0 | All response/formatting related |
+| 11 | Async parallel | 8 | 8 | 0 | 5/5 parallel/async functions |
+| 12 | Caching | 7 | 7 | 0 | 3 cache modules |
+| 13 | PathNormalizer | 6 | 6 | 0 | Struct+impl+method, definition noise at #3/#5 |
+| 14 | EmbeddingCache | 8 | 8 | 0 | 5/5 cache operations |
+| 15 | File watcher | 8 | 7 | -1 | spawn (web_ui.rs) noise at #5 |
+
+**CI avg: 7.00** (+0.13 vs R58) — new all-time high. 2 improvements, 1 regression, 12 stable.
+
+**Key finding:** `repo_name` (a 5-line private helper in `pipeline/mod.rs`) persisted at Q2 #1 through TWO mechanisms: (1) BM25 import tag inheritance from file's `use embeddings::Embedder`, and (2) edge expansion from `generate_embeddings_for_parallel_indexed_files` which calls it. Fix required both: import tag scoping removed it from BM25, and the `symbol_importance_adjustment < -1.0` filter in expansion prevents small private helpers from being re-injected.
+
 ## Current Status & Next Steps
 
-**Current: R58** | CI avg: **6.87** | Schema v15 | LLM v2 descriptions active (1682 symbols) | Jina query embeddings fixed | Edge expansion intent-aware
+**Current: R59** | CI avg: **7.00** | Schema v17 | LLM v2 descriptions active | Jina query embeddings fixed | Edge expansion intent-aware + importance-filtered | Import tags scoped to exported symbols
 
 ### Persistent Low Scorers (CI ≤ 5)
 
 | Query | CI | Root Cause | Fix Path |
 |-------|----|-----------|----------|
-| Q2: Embeddings | 5 | repo_name #1 noise, missing vector.rs | Investigate why vector.rs doesn't rank; may need description enrichment |
-| Q3: Tree-sitter | 5 | All 5 genuine extractors but missing parser.rs overview | parser.rs description enrichment or higher vector weight |
-| Q7: WebSocket | 5 | Only #1 directly WebSocket; elysia neighbors flood #2-3 | Single-file diversity cap or WebSocket intent detection |
+| Q7: WebSocket | 5 | Test fn at #3, extract_plugin_name noise at #5 | Better test detection for inline `#[cfg(test)]` functions; single-file diversity |
 
 ### Priorities
 
-1. **Investigate Q2 regression** — repo_name at #1 is noise; vector.rs missing. May need RRF weight tuning or vector.rs description enrichment.
-2. **Investigate Q13 noise** — tests(llm) #3 and is_definition_kind #4 are unrelated. Need better intent filtering for Definition queries.
+1. **Q7 test detection** — `framework_tags_make_websocket_handler_searchable` at #3 escapes `is_test_symbol` (name doesn't start with "test_"). Need `#[cfg(test)]` awareness or parent-module-based test detection.
+2. **Q13 definition noise** — `is_definition_kind` and `GetDefinitionTool` match "definition" keyword. Intent::Definition should suppress symbols that match query terms only via their name, not their purpose.
 3. **LLM model upgrade** — 1.5B Qwen generates too-generic descriptions. Consider 3B+ model or description post-processing.
-4. **Increase vector weight** — Now that Jina embeddings work correctly, experiment with HYBRID_ALPHA < 0.7 to give vector more influence.
+4. **Increase vector weight** — Experiment with HYBRID_ALPHA < 0.7 to give vector more influence in hybrid merge.
 
 ## Reference
 

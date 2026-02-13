@@ -1090,7 +1090,7 @@ impl Retriever {
         hits = diversify_by_cluster(&sqlite, hits, limit * 3);
         hits.truncate(limit * 3);
 
-        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, limit)?;
+        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, limit, &intent)?;
 
         // Apply file/kind diversity on the expanded pool (limit*3 candidates),
         // then truncate to final limit. This gives diversity enough headroom

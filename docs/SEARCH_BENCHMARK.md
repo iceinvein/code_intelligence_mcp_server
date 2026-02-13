@@ -119,24 +119,24 @@ Results in live mode are **fully deterministic** — verified by diffing consecu
 
 ### CI Score by Query (Key Rounds)
 
-| # | Query | R5 | R12 | R25 | R37 | R43 | R45 | R47 | R49 | R50 | R55 | **R56** |
+| # | Query | R5 | R12 | R25 | R37 | R43 | R47 | R49 | R50 | R55 | R56 | **R58** |
 |---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
-| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 4 | 5 | 5 | 5 | **6** |
-| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 7 | **5** |
-| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 3 | **5** |
-| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 5 | 9 | 9 | 9 | 9 | **9** |
-| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 6 | 7 | 7 | 7 | 7 | **7** |
-| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 9 | 8 | 8 | 8 | 8 | **9** |
-| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 3 | 5 | 5 | 5 | 5 | **5** |
-| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 9 | **6** |
-| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 3 | 2 | 1 | 5 | **6** |
-| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 3 | 4 | 3 | 4 | 4 | **6** |
-| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 6 | 8 | 8 | 8 | 8 | **8** |
+| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 5 | 5 | 5 | 6 | **7** |
+| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 5 | **5** |
+| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 5 | **5** |
+| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | **9** |
+| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
+| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | **9** |
+| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 5 | 5 | 5 | 5 | 5 | **5** |
+| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 6 | **7** |
+| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 2 | 1 | 5 | 6 | **6** |
+| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 4 | 3 | 4 | 4 | 6 | **6** |
+| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | **8** |
 | 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | **7** |
-| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 7 | 9 | 8 | 8 | **6** |
-| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 7 | 8 | 8 | 8 | 8 | **8** |
-| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 5 | 7 | 7 | 7 | 7 | **8** |
-| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **5.6** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** |
+| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 9 | 8 | 8 | 6 | **6** |
+| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | **8** |
+| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 7 | 7 | 7 | 7 | 8 | **8** |
+| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** | **6.9** |
 
 ### CI Average Trend
 
@@ -158,6 +158,7 @@ R49: 6.5  ████████████████▎  ← path variants
 R50: 6.4  ████████████████   ← LLM v2 descriptions (no measurable impact)
 R55: 6.7  ████████████████▊  ← Intent::Error fix (Q9: 1→5)
 R56: 6.7  ████████████████▊  ← Jina query embedding fix (Q3: 3→5, Q10: 4→6)
+R58: 6.9  █████████████████▎ ← Edge expansion intent stripping + promote fix
 ```
 
 **Key milestones:**
@@ -168,7 +169,8 @@ R56: 6.7  ████████████████▊  ← Jina query em
 - R43 (5.7): Intent enforcement pipeline fix + vector promotion bug fix
 - R47 (6.4): LLM descriptions active — largest single-round improvement (+0.80)
 - R55 (6.7): Intent::Error suppression + pool expansion fixed Q9 (1→5). Ties R25 all-time high.
-- **R56 (6.7): Query embedding fix eliminated 3 meta-matches (Q3 +2, Q10 +2). New all-time high (6.73 vs 6.67).**
+- R56 (6.7): Query embedding fix eliminated 3 meta-matches (Q3 +2, Q10 +2).
+- **R58 (6.9): Edge expansion intent stripping + vector promote fix. New all-time high (6.87).**
 
 ### Recent Rounds (Detail)
 
@@ -261,24 +263,52 @@ R56: 6.7  ████████████████▊  ← Jina query em
 
 **Key finding:** Correct Jina embeddings eliminated 3 persistent BM25 meta-matches (`expand_stems` from Q3/Q9, `extract_concept_tags` from Q10). These pattern-detection functions ranked high on BM25 because their code literally contains search terms in string literals. With vector search now properly working, semantic dissimilarity downranks them in hybrid merge.
 
-**Regressions analysis:** Q2 (-2), Q8 (-3), Q13 (-2) likely caused by changed vector contributions to hybrid merge — previously noise-like vector results that coincidentally reinforced good BM25 results are now replaced by semantically-directed vector results that may favor different symbols. Q8's Schema intent still fires (score 690) but lower-ranked results shifted from schema structs to todos queries.
+**Regressions analysis:** Q2 (-2), Q8 (-3), Q13 (-2) caused by changed vector contributions to hybrid merge. Q8 root cause: `expand_with_edges` inherited 75x-inflated parent scores from TodoRow (Schema intent), causing todos.rs functions to dominate #3-5. Fixed in R58.
+
+#### Round 58 — Edge expansion intent stripping + vector promote fix
+
+**Changes:** Two fixes addressing R56 regressions:
+1. **Edge expansion intent stripping** (`expansion.rs`): `expand_with_edges` now strips the parent's intent multiplier before deriving child scores. Previously, TodoRow (75x Schema boost, score 291) produced children at `291 * 0.8 ≈ 233`. Now it produces `(291/75) * 0.8 ≈ 3.1`. Final enforcement then applies the child's own 0.5x, yielding ~1.55 instead of ~108.
+2. **Vector promote bypass fix** (`mod.rs`, committed in R57): `promote_vector_results` no longer inserts hardcoded `intent_mult: 1.0` into signals map. Promoted results now go through on-the-fly intent computation in final enforcement, correctly applying test penalties (e.g., `setup_test_db` dropped from 216→0.27).
+
+| # | Query (short) | R56 CI | R58 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 1 | Ranking/scoring | 6 | 7 | **+1** | Test moved #3→#5; top-3 all clean ranking functions |
+| 2 | Embeddings | 5 | 5 | 0 | repo_name #1 noise, missing vector.rs |
+| 3 | Tree-sitter | 5 | 5 | 0 | Same 5 genuine extractors + parser.rs |
+| 4 | Config env | 9 | 9 | 0 | 5/5 config.rs |
+| 5 | Indexing pipeline | 7 | 7 | 0 | Same good mix |
+| 6 | MCP tool requests | 9 | 9 | 0 | 5/5 dispatch/handler |
+| 7 | WebSocket | 5 | 5 | 0 | Same websocket results |
+| 8 | SQLite schema | 6 | 7 | **+1** | todos.rs functions **eliminated** from #3-5. Now: open_or_create_table #3, impl SqliteStore #4 |
+| 9 | Error handling | 6 | 6 | 0 | Same error types + retry |
+| 10 | JSON serial. | 6 | 6 | 0 | Same response/formatting |
+| 11 | Async parallel | 8 | 8 | 0 | 5/5 parallel functions |
+| 12 | Caching | 7 | 7 | 0 | Same cache modules |
+| 13 | PathNormalizer | 6 | 6 | 0 | Struct+impl+method, noise at #3-4 |
+| 14 | EmbeddingCache | 8 | 8 | 0 | 5/5 cache operations |
+| 15 | File watcher | 8 | 8 | 0 | spawn_watch_loop #1, watch.rs #3 |
+
+**CI avg: 6.87** (+0.13 vs R56) — new all-time high. 2 improvements, 0 regressions, 13 stable.
+
+**Key finding:** Edge-expanded results were inheriting parent intent multipliers, causing ~120x score inflation for children of Schema-boosted parents. Stripping the parent's intent before derivation ensures children score based on the parent's base relevance, not its intent-inflated score. The final enforcement then correctly applies the child's own intent multiplier.
 
 ## Current Status & Next Steps
 
-**Current: R56** | CI avg: **6.73** | Schema v15 | LLM v2 descriptions active (1682 symbols) | Jina query embeddings fixed
+**Current: R58** | CI avg: **6.87** | Schema v15 | LLM v2 descriptions active (1682 symbols) | Jina query embeddings fixed | Edge expansion intent-aware
 
 ### Persistent Low Scorers (CI ≤ 5)
 
 | Query | CI | Root Cause | Fix Path |
 |-------|----|-----------|----------|
 | Q2: Embeddings | 5 | repo_name #1 noise, missing vector.rs | Investigate why vector.rs doesn't rank; may need description enrichment |
-| Q3: Tree-sitter | 5 | All 5 genuine extractors but missing parser.rs (core init) | parser.rs description enrichment or higher vector weight |
+| Q3: Tree-sitter | 5 | All 5 genuine extractors but missing parser.rs overview | parser.rs description enrichment or higher vector weight |
 | Q7: WebSocket | 5 | Only #1 directly WebSocket; elysia neighbors flood #2-3 | Single-file diversity cap or WebSocket intent detection |
 
 ### Priorities
 
-1. **Investigate Q8 regression** — Dropped 9→6. Schema intent fires but lower slots filled with todos queries. May need schema-specific structural boost.
-2. **Investigate Q2/Q13 regressions** — Vector merge now contributing different candidates. May need RRF weight tuning.
+1. **Investigate Q2 regression** — repo_name at #1 is noise; vector.rs missing. May need RRF weight tuning or vector.rs description enrichment.
+2. **Investigate Q13 noise** — tests(llm) #3 and is_definition_kind #4 are unrelated. Need better intent filtering for Definition queries.
 3. **LLM model upgrade** — 1.5B Qwen generates too-generic descriptions. Consider 3B+ model or description post-processing.
 4. **Increase vector weight** — Now that Jina embeddings work correctly, experiment with HYBRID_ALPHA < 0.7 to give vector more influence.
 

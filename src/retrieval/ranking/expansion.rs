@@ -1,13 +1,20 @@
 use crate::retrieval::RankedHit;
-use crate::retrieval::ranking::score::{is_test_file, is_test_symbol};
+use crate::retrieval::query::Intent;
+use crate::retrieval::ranking::score::{intent_adjustment, is_test_file, is_test_symbol};
 use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
 
-/// Expand results with related symbols via edges
+/// Expand results with related symbols via edges.
+///
+/// Parent scores already have intent multipliers baked in from the scoring loop.
+/// To prevent edge-expanded children from inheriting inflated scores (e.g., a
+/// 75x Schema-boosted TodoRow producing 108-score children in todos.rs), we
+/// strip the parent's intent multiplier before deriving child scores.
 pub fn expand_with_edges(
     sqlite: &SqliteStore,
     hits: Vec<RankedHit>,
     limit: usize,
+    intent: &Option<Intent>,
 ) -> Result<(Vec<RankedHit>, std::collections::HashSet<String>)> {
     if hits.is_empty() {
         return Ok((hits, std::collections::HashSet::new()));
@@ -23,6 +30,17 @@ pub fn expand_with_edges(
             "function" | "method" => (true, false),
             "struct" | "enum" | "class" | "interface" | "trait" => (false, true),
             _ => (false, false),
+        };
+
+        // Strip the parent's intent multiplier so children aren't inflated.
+        // E.g., TodoRow in schema.rs gets 75x Schema boost → score 291.
+        // Without stripping, children inherit 291 * 0.8 ≈ 233.
+        // With stripping, children inherit (291/75) * 0.8 ≈ 3.1 (the base relevance).
+        let parent_intent = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
+        let base_score = if parent_intent > 0.0 && parent_intent != 1.0 {
+            h.score / parent_intent
+        } else {
+            h.score
         };
 
         if is_func {
@@ -50,7 +68,7 @@ pub fn expand_with_edges(
                         };
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score
+                            score: base_score
                                 * 0.8
                                 * edge.confidence
                                 * evidence_boost
@@ -93,7 +111,7 @@ pub fn expand_with_edges(
                         };
                         out.push(RankedHit {
                             id: row.id.clone(),
-                            score: h.score
+                            score: base_score
                                 * 0.8
                                 * edge.confidence
                                 * evidence_boost

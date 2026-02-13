@@ -29,7 +29,7 @@ impl FastEmbedder {
             "BAAI/bge-small-en-v1.5" => EmbeddingModel::BGESmallENV15,
             "sentence-transformers/all-MiniLM-L6-v2" => EmbeddingModel::AllMiniLML6V2,
             "jinaai/jina-embeddings-v2-base-code" => EmbeddingModel::JinaEmbeddingsV2BaseCode,
-            "jinaai/jina-embeddings-v2-base-en" => EmbeddingModel::JinaEmbeddingsV2BaseCode,
+            "jinaai/jina-embeddings-v2-base-en" => EmbeddingModel::JinaEmbeddingsV2BaseEN,
             // Fallback or error? Let's error to be safe, or default to BGE-Base
             _ => return Err(anyhow!("Unsupported model for FastEmbed: {}. Supported: BAAI/bge-base-en-v1.5, BAAI/bge-small-en-v1.5, sentence-transformers/all-MiniLM-L6-v2, jinaai/jina-embeddings-v2-base-code", model_name)),
         };
@@ -84,11 +84,11 @@ impl FastEmbedder {
 impl Embedder for FastEmbedder {
     fn dim(&self) -> usize {
         // Return known dimensions for supported models
-        // Jina Code v2 Base has 768 dimensions
-        // BGE models have 384 dimensions
+        // BGE-base and Jina models: 768, BGE-small and MiniLM: 384
         match self.model_name.as_str() {
             "jinaai/jina-embeddings-v2-base-code" | "jinaai/jina-embeddings-v2-base-en" => 768,
-            "BAAI/bge-base-en-v1.5" | "BAAI/bge-small-en-v1.5" => 384,
+            "BAAI/bge-base-en-v1.5" => 768,
+            "BAAI/bge-small-en-v1.5" => 384,
             "sentence-transformers/all-MiniLM-L6-v2" => 384,
             _ => 384, // Default to 384 for unknown models
         }
@@ -101,18 +101,24 @@ impl Embedder for FastEmbedder {
     }
 
     fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        // BGE-base-en-v1.5 was trained with this prefix for retrieval queries.
-        // Documents are embedded without prefix (via `embed()`), but queries
-        // should be prefixed to land in the correct embedding subspace.
-        let prefixed: Vec<String> = texts
-            .iter()
-            .map(|t| {
-                format!(
-                    "Represent this sentence for searching relevant code passages: {}",
-                    t
-                )
-            })
-            .collect();
-        self.embed(&prefixed)
+        if self.model_name.starts_with("BAAI/bge-") {
+            // BGE models use asymmetric embeddings: queries need an instruction
+            // prefix to land in the retrieval subspace. Documents are embedded
+            // without prefix (via `embed()`).
+            let prefixed: Vec<String> = texts
+                .iter()
+                .map(|t| {
+                    format!(
+                        "Represent this sentence for searching relevant code passages: {}",
+                        t
+                    )
+                })
+                .collect();
+            self.embed(&prefixed)
+        } else {
+            // Jina, MiniLM, and other models use symmetric embeddings —
+            // queries and documents share the same embedding space.
+            self.embed(texts)
+        }
     }
 }

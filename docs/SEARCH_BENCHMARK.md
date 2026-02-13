@@ -119,24 +119,24 @@ Results in live mode are **fully deterministic** — verified by diffing consecu
 
 ### CI Score by Query (Key Rounds)
 
-| # | Query | R5 | R12 | R25 | R37 | R43 | R45 | R47 | R49 | R50 | **R55** |
-|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
-| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 4 | 5 | 5 | **5** |
-| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | **7** |
-| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | **3** |
-| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 5 | 9 | 9 | 9 | **9** |
-| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 6 | 7 | 7 | 7 | **7** |
-| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 9 | 8 | 8 | 8 | **8** |
-| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 3 | 5 | 5 | 5 | **5** |
-| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | **9** |
-| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 3 | 2 | 1 | **5** |
-| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 3 | 4 | 3 | 4 | **4** |
-| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 6 | 8 | 8 | 8 | **8** |
-| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | **7** |
-| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 7 | 9 | 8 | **8** |
-| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 7 | 8 | 8 | 8 | **8** |
-| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 5 | 7 | 7 | 7 | **7** |
-| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **5.6** | **6.4** | **6.5** | **6.4** | **6.7** |
+| # | Query | R5 | R12 | R25 | R37 | R43 | R45 | R47 | R49 | R50 | R55 | **R56** |
+|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
+| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 4 | 5 | 5 | 5 | **6** |
+| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 7 | **5** |
+| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 3 | **5** |
+| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 5 | 9 | 9 | 9 | 9 | **9** |
+| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 6 | 7 | 7 | 7 | 7 | **7** |
+| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 9 | 8 | 8 | 8 | 8 | **9** |
+| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 3 | 5 | 5 | 5 | 5 | **5** |
+| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 9 | **6** |
+| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 3 | 2 | 1 | 5 | **6** |
+| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 3 | 4 | 3 | 4 | 4 | **6** |
+| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 6 | 8 | 8 | 8 | 8 | **8** |
+| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | **7** |
+| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 7 | 9 | 8 | 8 | **6** |
+| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 7 | 8 | 8 | 8 | 8 | **8** |
+| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 5 | 7 | 7 | 7 | 7 | **8** |
+| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **5.6** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** |
 
 ### CI Average Trend
 
@@ -157,6 +157,7 @@ R47: 6.4  ████████████████   ← LLM description
 R49: 6.5  ████████████████▎  ← path variants + inline comment strip
 R50: 6.4  ████████████████   ← LLM v2 descriptions (no measurable impact)
 R55: 6.7  ████████████████▊  ← Intent::Error fix (Q9: 1→5)
+R56: 6.7  ████████████████▊  ← Jina query embedding fix (Q3: 3→5, Q10: 4→6)
 ```
 
 **Key milestones:**
@@ -166,7 +167,8 @@ R55: 6.7  ████████████████▊  ← Intent::Error
 - R37 (5.5): Post-cleanup baseline (comment stripping, concept tags settled)
 - R43 (5.7): Intent enforcement pipeline fix + vector promotion bug fix
 - R47 (6.4): LLM descriptions active — largest single-round improvement (+0.80)
-- **R55 (6.7): Intent::Error suppression + pool expansion fixed Q9 (1→5). Ties R25 all-time high.**
+- R55 (6.7): Intent::Error suppression + pool expansion fixed Q9 (1→5). Ties R25 all-time high.
+- **R56 (6.7): Query embedding fix eliminated 3 meta-matches (Q3 +2, Q10 +2). New all-time high (6.73 vs 6.67).**
 
 ### Recent Rounds (Detail)
 
@@ -228,24 +230,57 @@ R55: 6.7  ████████████████▊  ← Intent::Error
 
 **Note:** R55 Q9 score based on live-mode Q9-only benchmark (tool_internal_error #1, expand_stems #2, PathError Display #3, PathError #4, fmt #5). Fresh mode shows PathError #1 (16.04), tool_internal_error #2 (12.99). Non-Q9 queries unchanged (Intent::Error changes only affect Q9).
 
+#### Round 56 — Fix Jina Code v2 query embedding mismatch
+
+**Changes:** Fixed 3 bugs in `src/embeddings/fastembed.rs`:
+1. `query_embed()` unconditionally applied BGE's instruction prefix to ALL models, including Jina Code v2. Now only applies prefix for `BAAI/bge-*` models; Jina/MiniLM use symmetric `embed()`.
+2. `jinaai/jina-embeddings-v2-base-en` mapped to wrong enum variant (`JinaEmbeddingsV2BaseCode` → `JinaEmbeddingsV2BaseEN`).
+3. `dim()` returned 384 for BGE-base-en-v1.5 (should be 768; BGE-small is 384).
+
+**Impact:** With correct query embeddings, vector search now properly contributes to hybrid RRF merge. Previously, mismatched query/document embedding spaces meant vector results were essentially noise.
+
+| # | Query (short) | R55 CI | R56 CI | Delta | Notes |
+|---|------------|--------|--------|-------|-------|
+| 1 | Ranking/scoring | 5 | 6 | +1 | 4/5 from ranking/* (rrf.rs, mod.rs, score.rs, reranker.rs). Test at #3 |
+| 2 | Embeddings | 7 | 5 | -2 | repo_name #1 noise, Config #5 noise. Missing vector.rs |
+| 3 | Tree-sitter | 3 | 5 | **+2** | All 5 genuine tree-sitter extractors. `expand_stems` meta-match **eliminated** |
+| 4 | Config env | 9 | 9 | 0 | 5/5 config.rs |
+| 5 | Indexing pipeline | 7 | 7 | 0 | Good mix: pipeline, scan, parallel, extract |
+| 6 | MCP tool requests | 8 | 9 | +1 | 5/5 tool dispatch. Python script noise **eliminated** |
+| 7 | WebSocket | 5 | 5 | 0 | websocket_handler #1, elysia neighbors #2-3 |
+| 8 | SQLite schema | 9 | 6 | -3 | schema.rs #1 (690). But #3 test helper, #4-5 todos queries |
+| 9 | Error handling | 5 | 6 | +1 | tool_internal_error, PathError, retry. `expand_stems` meta-match **eliminated** |
+| 10 | JSON serial. | 4 | 6 | **+2** | All 5 response/serialization. `extract_concept_tags` meta-match **eliminated** |
+| 11 | Async parallel | 8 | 8 | 0 | 5/5 parallel/async functions |
+| 12 | Caching | 7 | 7 | 0 | Spread across 3 cache modules |
+| 13 | PathNormalizer | 8 | 6 | -2 | Struct+impl+method present, but tests(llm) #2 and is_definition_kind #4 noise |
+| 14 | EmbeddingCache | 8 | 8 | 0 | put/get/cache_key/content_hash all present |
+| 15 | File watcher | 7 | 8 | +1 | spawn_watch_loop #1, create_watcher #4, watch.rs #3 |
+
+**CI avg: 6.73** (+0.07 vs R55) — new all-time high. 6 improvements, 3 regressions, 6 stable.
+
+**Key finding:** Correct Jina embeddings eliminated 3 persistent BM25 meta-matches (`expand_stems` from Q3/Q9, `extract_concept_tags` from Q10). These pattern-detection functions ranked high on BM25 because their code literally contains search terms in string literals. With vector search now properly working, semantic dissimilarity downranks them in hybrid merge.
+
+**Regressions analysis:** Q2 (-2), Q8 (-3), Q13 (-2) likely caused by changed vector contributions to hybrid merge — previously noise-like vector results that coincidentally reinforced good BM25 results are now replaced by semantically-directed vector results that may favor different symbols. Q8's Schema intent still fires (score 690) but lower-ranked results shifted from schema structs to todos queries.
+
 ## Current Status & Next Steps
 
-**Current: R55** | CI avg: **6.67** | Schema v15 | LLM v2 descriptions active (1682 symbols)
+**Current: R56** | CI avg: **6.73** | Schema v15 | LLM v2 descriptions active (1682 symbols) | Jina query embeddings fixed
 
-### Persistent Low Scorers (CI ≤ 4)
+### Persistent Low Scorers (CI ≤ 5)
 
 | Query | CI | Root Cause | Fix Path |
 |-------|----|-----------|----------|
-| Q1: Ranking/scoring | 5 | Path variants helped (score.rs 4/5). Missing `compute_combined_score` / ranking pipeline | Larger LLM or manual description enrichment |
-| Q3: Tree-sitter | 3 | 8 descriptions mention tree-sitter but scores too low vs noise. `expand_stems` at #1 | Better embedding model (Jina Code v2) to bridge vocabulary gap |
-| Q10: JSON serial. | 4 | `extract_concept_tags` meta-match at #1. expand_stems dropped (improvement). handle_explain_search at #5 | Vector search to outrank meta-matches |
+| Q2: Embeddings | 5 | repo_name #1 noise, missing vector.rs | Investigate why vector.rs doesn't rank; may need description enrichment |
+| Q3: Tree-sitter | 5 | All 5 genuine extractors but missing parser.rs (core init) | parser.rs description enrichment or higher vector weight |
+| Q7: WebSocket | 5 | Only #1 directly WebSocket; elysia neighbors flood #2-3 | Single-file diversity cap or WebSocket intent detection |
 
 ### Priorities
 
-1. **Phase 3: Jina Code v2** — Better embedding model. Primary target: Q3 (tree-sitter vocab gap), Q10 (meta-matching unfixable by BM25)
-2. **Q6 noise** — Python script `call_tool` at #3; add script-file penalty in scoring
-3. **LLM model upgrade** — 1.5B Qwen generates too-generic descriptions. Consider 3B+ model or description post-processing
-4. **Q9 remaining noise** — expand_stems meta-match at #2. Needs either string-literal stripping or vector search improvement
+1. **Investigate Q8 regression** — Dropped 9→6. Schema intent fires but lower slots filled with todos queries. May need schema-specific structural boost.
+2. **Investigate Q2/Q13 regressions** — Vector merge now contributing different candidates. May need RRF weight tuning.
+3. **LLM model upgrade** — 1.5B Qwen generates too-generic descriptions. Consider 3B+ model or description post-processing.
+4. **Increase vector weight** — Now that Jina embeddings work correctly, experiment with HYBRID_ALPHA < 0.7 to give vector more influence.
 
 ## Reference
 

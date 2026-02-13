@@ -322,7 +322,8 @@ export function alpha() { return 1 }
         metrics,
     );
 
-    let handle = indexer.spawn_watch_loop();
+    let watch_cancel = tokio_util::sync::CancellationToken::new();
+    let handle = indexer.spawn_watch_loop(watch_cancel);
 
     sleep(Duration::from_millis(150)).await;
 

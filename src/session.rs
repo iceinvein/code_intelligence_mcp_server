@@ -157,7 +157,8 @@ impl SessionManager {
 
         // Start file watcher for auto-reindexing
         if state.config.watch_mode {
-            state.indexer.spawn_watch_loop();
+            let watch_cancel = tokio_util::sync::CancellationToken::new();
+            state.indexer.spawn_watch_loop(watch_cancel);
         }
 
         Ok(state)

@@ -6,6 +6,7 @@ pub mod scan;
 pub mod stats;
 pub mod usage;
 pub mod utils;
+pub mod watch;
 
 use crate::indexer::package;
 
@@ -297,6 +298,7 @@ impl IndexPipeline {
     ///
     /// Returns Ok(true) if changes are detected, Ok(false) if no changes,
     /// or Err() if checking fails.
+    #[allow(dead_code)]
     fn check_for_changes(&self) -> Result<bool> {
         let sqlite = SqliteStore::open(&self.db_path)?;
         sqlite.init()?;
@@ -343,29 +345,63 @@ impl IndexPipeline {
         Ok(false)
     }
 
-    pub fn spawn_watch_loop(&self) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_watch_loop(
+        &self,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let pipeline = self.clone();
         tokio::spawn(async move {
-            let interval_ms = pipeline.config.watch_debounce_ms.max(50);
+            let debounce_ms = pipeline.config.watch_debounce_ms.max(50);
             let min_index_interval = pipeline.config.watch_min_index_interval_ms;
-            let mut consecutive_failures = 0;
-            let max_backoff_ms = 5000; // Max 5 seconds backoff
+            let mut consecutive_failures: u32 = 0;
+            let max_backoff_ms: u64 = 5000;
             let mut last_index_time: Option<Instant> = None;
 
-            // Get repository name for logging
             let repo_name = pipeline
                 .config
                 .base_dir
                 .file_name()
-                .unwrap_or("unknown");
+                .unwrap_or("unknown")
+                .to_string();
+
+            // Create tokio channel for the notify → async bridge
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+            // Create the OS-native file watcher.  Must stay alive for the
+            // duration of this task — dropping it stops OS event delivery.
+            let _watcher = match watch::create_watcher(&pipeline.config, tx) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::error!(
+                        repo = %repo_name,
+                        error = %e,
+                        "Failed to create file watcher, falling back to no watch"
+                    );
+                    return;
+                }
+            };
+
+            tracing::info!(
+                repo = %repo_name,
+                debounce_ms = debounce_ms,
+                "File watcher active (OS-native)"
+            );
 
             loop {
-                sleep(Duration::from_millis(interval_ms)).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        tracing::info!(repo = %repo_name, "File watcher cancelled");
+                        break;
+                    }
+                    Some(_) = rx.recv() => {
+                        // Drain any queued signals
+                        while rx.try_recv().is_ok() {}
 
-                // Only re-index if files have actually changed
-                match pipeline.check_for_changes() {
-                    Ok(true) => {
-                        // Check rate limiting: ensure minimum time between index runs
+                        // Debounce: wait, then drain again to coalesce bursts
+                        sleep(Duration::from_millis(debounce_ms)).await;
+                        while rx.try_recv().is_ok() {}
+
+                        // Rate limiting
                         if let Some(last_time) = last_index_time {
                             let elapsed = last_time.elapsed().as_millis() as u64;
                             if elapsed < min_index_interval {
@@ -379,21 +415,27 @@ impl IndexPipeline {
                             }
                         }
 
-                        // Changes detected - proceed with indexing
                         tracing::info!(
                             repo = %repo_name,
-                            "Changes detected, starting index run"
+                            "File change detected, starting index run"
                         );
 
                         match pipeline.index_all().await {
-                            Ok(_) => {
+                            Ok(stats) => {
                                 last_index_time = Some(Instant::now());
-                                consecutive_failures = 0; // Reset on success
+                                consecutive_failures = 0;
+                                tracing::info!(
+                                    repo = %repo_name,
+                                    files_indexed = stats.files_indexed,
+                                    symbols_indexed = stats.symbols_indexed,
+                                    "Watch index run completed"
+                                );
                             }
                             Err(err) => {
                                 consecutive_failures += 1;
-                                let backoff_ms =
-                                    (interval_ms * (1 << consecutive_failures.min(8))).min(max_backoff_ms);
+                                let backoff_ms = (debounce_ms
+                                    * (1u64 << consecutive_failures.min(8)))
+                                .min(max_backoff_ms);
                                 tracing::warn!(
                                     repo = %repo_name,
                                     error = %err,
@@ -404,20 +446,6 @@ impl IndexPipeline {
                                 sleep(Duration::from_millis(backoff_ms)).await;
                             }
                         }
-                    }
-                    Ok(false) => {
-                        // No changes - skip indexing this cycle
-                        tracing::trace!(
-                            repo = %repo_name,
-                            "No changes detected, skipping index cycle"
-                        );
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            repo = %repo_name,
-                            error = %err,
-                            "Failed to check for changes, skipping this cycle"
-                        );
                     }
                 }
             }

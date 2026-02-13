@@ -344,7 +344,8 @@ async fn run_embedded() -> SdkResult<()> {
     }
 
     if state.config.watch_mode {
-        state.indexer.spawn_watch_loop();
+        let watch_cancel = tokio_util::sync::CancellationToken::new();
+        state.indexer.spawn_watch_loop(watch_cancel);
     }
 
     // Spawn LLM description worker in background — model download (potentially

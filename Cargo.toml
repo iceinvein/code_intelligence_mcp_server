@@ -68,6 +68,9 @@ dunce = "1.0"
 # Background worker utilities
 tokio-util = { version = "0.7", features = ["rt"] }
 
+# OS-native file watching (FSEvents on macOS, inotify on Linux)
+notify = "8"
+
 # LLM model auto-download from HuggingFace
 hf-hub = "0.3"
 

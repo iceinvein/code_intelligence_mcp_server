@@ -312,7 +312,7 @@ impl StandaloneConfig {
             index_patterns: self.default_index_patterns.clone(),
             exclude_patterns: self.default_exclude_patterns.clone(),
             watch_mode: self.default_watch_mode,
-            watch_debounce_ms: 250,
+            watch_debounce_ms: 2000,
             watch_min_index_interval_ms: 5000,
             max_context_bytes: 200_000,
             index_node_modules: false,
@@ -621,7 +621,7 @@ impl Config {
             .as_deref()
             .map(parse_u64)
             .transpose()?
-            .unwrap_or(250);
+            .unwrap_or(2000);
 
         let watch_min_index_interval_ms = optional_env("WATCH_MIN_INDEX_INTERVAL_MS")
             .as_deref()

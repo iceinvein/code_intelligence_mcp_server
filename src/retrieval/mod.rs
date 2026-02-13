@@ -2,7 +2,11 @@
 
 pub mod assembler;
 mod cache;
+mod fast_paths;
+mod framework_patterns;
+mod hybrid;
 pub mod hyde;
+mod postprocess;
 mod query;
 mod ranking;
 
@@ -24,14 +28,11 @@ use anyhow::{anyhow, Result};
 use cache::RetrieverCaches;
 use query::{
     contains_code_snippet, decompose_query, detect_intent, normalize_and_expand_query,
-    parse_query_controls, trim_query, Intent, QueryControls,
+    parse_query_controls, trim_query, Intent,
 };
 use ranking::{
-    apply_docstring_boost_with_signals, apply_file_affinity_boost_with_signals,
-    apply_package_boost_with_signals, apply_popularity_boost_with_signals, apply_reranker_scores,
-    apply_selection_boost_with_signals, diversify_by_cluster, diversify_by_file, diversify_by_kind,
-    expand_with_edges, get_graph_ranked_hits, prepare_rerank_docs, rank_hits_with_signals,
-    reciprocal_rank_fusion, should_rerank,
+    apply_reranker_scores, diversify_by_cluster, diversify_by_file, diversify_by_kind,
+    expand_with_edges, prepare_rerank_docs, should_rerank,
 };
 use serde::Serialize;
 use std::{
@@ -93,16 +94,16 @@ pub struct HitSignals {
 
 #[derive(Clone)]
 pub struct Retriever {
-    config: Arc<Config>,
-    db_path: Utf8PathBuf,
-    tantivy: Arc<TantivyIndex>,
-    vectors: Arc<LanceVectorTable>,
-    embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
-    reranker: Option<Arc<dyn Reranker>>,
-    hyde_generator: Option<HypotheticalCodeGenerator>,
-    cache: Arc<Mutex<RetrieverCaches>>,
-    cache_config_key: String,
-    metrics: Arc<MetricsRegistry>,
+    pub(super) config: Arc<Config>,
+    pub(super) db_path: Utf8PathBuf,
+    pub(super) tantivy: Arc<TantivyIndex>,
+    pub(super) vectors: Arc<LanceVectorTable>,
+    pub(super) embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
+    pub(super) reranker: Option<Arc<dyn Reranker>>,
+    pub(super) hyde_generator: Option<HypotheticalCodeGenerator>,
+    pub(super) cache: Arc<Mutex<RetrieverCaches>>,
+    pub(super) cache_config_key: String,
+    pub(super) metrics: Arc<MetricsRegistry>,
 }
 
 /// Promote top vector search results into the final ranking for NL queries.
@@ -275,72 +276,26 @@ impl Retriever {
 
         let (query_without_controls, controls) = parse_query_controls(query);
 
-        if let Some(id) = &controls.id {
-            if let Some(row) = sqlite.get_symbol_by_id(id)? {
-                if exported_only && !row.exported {
-                    return Ok(SearchResponseWithSignals {
-                        response: SearchResponse {
-                            query: query.to_string(),
-                            limit,
-                            hits: vec![],
-                            context: String::new(),
-                        },
-                        hit_signals: HashMap::new(),
-                    });
-                }
-
-                let hits = vec![RankedHit {
-                    id: row.id.clone(),
-                    score: 1.0,
-                    name: row.name.clone(),
-                    kind: row.kind.clone(),
-                    file_path: row.file_path.clone(),
-                    exported: row.exported,
-                    language: row.language.clone(),
-                }];
-
-                let (context, _context_items) = self.assemble_context_cached(
-                    &sqlite,
-                    std::slice::from_ref(&row),
-                    &[],
-                    Some(query_without_controls.as_str()),
-                )?;
-
-                let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                let run = crate::storage::sqlite::SearchRunRow {
-                    started_at_unix_s,
-                    duration_ms,
-                    keyword_ms: 0,
-                    vector_ms: 0,
-                    merge_ms: 0,
-                    query: trim_query(query, 200),
-                    query_limit: limit as u64,
-                    exported_only,
-                    result_count: hits.len() as u64,
-                };
-                let _ = sqlite.insert_search_run(&run);
-
-                let resp = SearchResponse {
-                    query: query.to_string(),
-                    limit,
-                    hits,
-                    context,
-                };
-                self.cache_insert_response(cache_key, resp.clone(), &[]);
-                return Ok(SearchResponseWithSignals {
-                    response: resp,
-                    hit_signals: HashMap::new(),
-                });
-            }
+        // Fast path: direct ID lookup
+        if let Some(resp) = fast_paths::handle_id_lookup(
+            self,
+            &sqlite,
+            &controls,
+            &query_without_controls,
+            query,
+            cache_key.clone(),
+            limit,
+            exported_only,
+            started_at_unix_s,
+            started,
+        )? {
+            return Ok(resp);
         }
 
         // Intent Detection
         let intent = detect_intent(&query_without_controls);
 
         // Detect NL queries for dynamic RRF weight adjustment.
-        // NL queries (3+ words, not code) benefit from higher vector weight
-        // because BM25 often matches irrelevant identifiers while vector search
-        // captures semantic intent (e.g., "WebSocket handler" → elysia.rs WS code).
         let is_nl_query = !contains_code_snippet(&query_without_controls)
             && query_without_controls.split_whitespace().count() >= 3;
 
@@ -352,583 +307,50 @@ impl Retriever {
         );
 
         // Decompose compound queries (e.g., "auth and database") into sub-queries
-        let sub_queries = decompose_query(&expanded_query, 3); // max_depth=3
+        let sub_queries = decompose_query(&expanded_query, 3);
 
         // Determine query for smart truncation
-        // Use first sub-query for relevance scoring (primary user intent)
         let smart_truncation_query = if sub_queries.len() == 1 {
             Some(query_without_controls.as_str())
         } else {
             Some(sub_queries[0].as_str())
         };
 
+        // Fast path: Callers intent (graph traversal, no search)
         if let Some(Intent::Callers(name)) = &intent {
-            let targets = sqlite.search_symbols_by_exact_name(name, None, 5)?;
-            if let Some(target) = targets.first() {
-                let edges = sqlite.list_edges_to(&target.id, limit * 2)?;
-                let mut hits = Vec::new();
-                let mut seen_hits = HashSet::new();
-
-                for e in edges {
-                    if e.edge_type == "call" || e.edge_type == "reference" {
-                        if seen_hits.contains(&e.from_symbol_id) {
-                            continue;
-                        }
-                        if let Some(row) = sqlite.get_symbol_by_id(&e.from_symbol_id)? {
-                            if exported_only && !row.exported {
-                                continue;
-                            }
-                            seen_hits.insert(row.id.clone());
-                            hits.push(RankedHit {
-                                id: row.id,
-                                score: 1.0,
-                                name: row.name,
-                                kind: row.kind,
-                                file_path: row.file_path,
-                                exported: row.exported,
-                                language: row.language,
-                            });
-                        }
-                    }
-                }
-
-                if !hits.is_empty() {
-                    hits.truncate(limit);
-                    let rows = hits
-                        .iter()
-                        .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
-                        .collect::<Vec<_>>();
-
-                    let (context, _context_items) = self.assemble_context_cached(
-                        &sqlite,
-                        &rows,
-                        &[],
-                        Some(query_without_controls.as_str()),
-                    )?;
-
-                    let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                    let run = crate::storage::sqlite::SearchRunRow {
-                        started_at_unix_s,
-                        duration_ms,
-                        keyword_ms: 0,
-                        vector_ms: 0,
-                        merge_ms: 0,
-                        query: trim_query(query, 200),
-                        query_limit: limit as u64,
-                        exported_only,
-                        result_count: hits.len() as u64,
-                    };
-                    let _ = sqlite.insert_search_run(&run);
-
-                    let resp = SearchResponse {
-                        query: query.to_string(),
-                        limit,
-                        hits,
-                        context,
-                    };
-                    self.cache_insert_response(cache_key, resp.clone(), &[]);
-                    return Ok(SearchResponseWithSignals {
-                        response: resp,
-                        hit_signals: HashMap::new(),
-                    });
-                }
+            if let Some(resp) = fast_paths::handle_callers_intent(
+                self,
+                &sqlite,
+                name,
+                &query_without_controls,
+                query,
+                cache_key.clone(),
+                limit,
+                exported_only,
+                started_at_unix_s,
+                started,
+            )? {
+                return Ok(resp);
             }
         }
 
-        // Conditional: single-query path vs multi-query path based on decomposition
-        // Single query preserves existing behavior; multi-query uses unified RRF
-        // Return vector_ranked alongside ranked hits for post-diversity vector promotion
-        let (ranked, mut hit_signals, vector_ranked_for_promotion): (
-            Vec<RankedHit>,
-            HashMap<String, HitSignals>,
-            Vec<RankedHit>,
-        ) = if sub_queries.len() == 1 {
-                // SINGLE-QUERY PATH: Use existing logic unchanged
-                let search_query = &sub_queries[0];
+        // Execute hybrid search (BM25 + vector + RRF fusion + structural scoring)
+        let hybrid_result = hybrid::execute_hybrid_search(
+            self,
+            &sqlite,
+            &query_without_controls,
+            &sub_queries,
+            &intent,
+            is_nl_query,
+            limit,
+        )
+        .await?;
 
-                let k = if contains_code_snippet(search_query) {
-                    self.config.vector_search_limit.max(limit).max(5)
-                } else {
-                    self.config.vector_search_limit.max(limit * 3).max(40)
-                };
-                let keyword_t = Instant::now();
-                let keyword_hits = self.tantivy.search(search_query, k)?;
-                let _keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
-
-                let vector_t = Instant::now();
-
-                // Vector search with graceful degradation
-                // Use raw query (pre-expansion) for vector search — synonym expansion
-                // helps BM25 (more tokens) but hurts embeddings (noisy average of concepts).
-                // The embedding model already captures synonyms through its training.
-                let vector_query = &query_without_controls;
-                let (vector_hits, _vector_degraded) = match self.get_query_vector_cached(vector_query).await {
-                    Ok(query_vector) => {
-                        match self.vectors.search(&query_vector, k).await {
-                            Ok(mut hits) => {
-                                // HyDE: Add hypothetical document retrieval (best-effort)
-                                if self.config.hyde_enabled {
-                                    if let Some(generator) = &self.hyde_generator {
-                                        let language = detect_language_from_query(search_query);
-                                        if let Ok(hyde_result) = generator.generate(search_query, language).await {
-                                            let mut embedder = self.embedder.lock().await;
-                                            if let Ok(hyde_embeddings) =
-                                                embedder.embed(&[hyde_result.hypothetical_code])
-                                            {
-                                                if let Some(hyde_vector) = hyde_embeddings.first() {
-                                                    if let Ok(mut hyde_hits) =
-                                                        self.vectors.search(hyde_vector, k / 2).await
-                                                    {
-                                                        hits.append(&mut hyde_hits);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        // HyDE failures are silently ignored - it's a best-effort enhancement
-                                    }
-                                }
-                                (hits, false)
-                            }
-                            Err(e) => {
-                                // Vector search failed - degrade gracefully
-                                tracing::warn!(
-                                    query = %search_query,
-                                    error = %e,
-                                    "LanceDB vector search failed, degrading to keyword-only search"
-                                );
-                                self.metrics.search_errors_total.inc();
-                                (Vec::new(), true)
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // Embedding generation failed - degrade gracefully
-                        tracing::warn!(
-                            query = %search_query,
-                            error = %e,
-                            "Query embedding generation failed, degrading to keyword-only search"
-                        );
-                        self.metrics.search_errors_total.inc();
-                        (Vec::new(), true)
-                    }
-                };
-
-                let _vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
-
-                // Use RRF if enabled, otherwise use existing score fusion
-                if self.config.rrf_enabled {
-                    // Convert keyword_hits to RankedHit for RRF
-                    let keyword_ranked: Vec<RankedHit> = keyword_hits
-                        .iter()
-                        .map(|h| RankedHit {
-                            id: h.id.clone(),
-                            score: h.score,
-                            name: h.name.clone(),
-                            kind: h.kind.clone(),
-                            file_path: h.file_path.clone(),
-                            exported: h.exported,
-                            language: String::new(), // Will be filled from DB if needed
-                        })
-                        .collect();
-
-                    // Convert vector_hits to RankedHit for RRF
-                    let vector_ranked: Vec<RankedHit> = vector_hits
-                        .iter()
-                        .map(|h| RankedHit {
-                            id: h.id.clone(),
-                            score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)), // Convert distance to score
-                            name: h.name.clone(),
-                            kind: h.kind.clone(),
-                            file_path: h.file_path.clone(),
-                            exported: h.exported,
-                            language: h.language.clone(),
-                        })
-                        .collect();
-
-                    // Get graph-ranked hits
-                    let graph_hits =
-                        if let Ok(graph) = get_graph_ranked_hits(&keyword_ranked, &sqlite) {
-                            graph
-                        } else {
-                            keyword_ranked.clone()
-                        };
-
-                    // Apply RRF with dynamic weights based on query type.
-                    // NL queries get higher vector weight because BM25 often
-                    // matches irrelevant identifiers for conceptual queries.
-                    // R27 tested equal weights but it regressed Q4 by -4 points
-                    // (vector was correctly finding config.rs, equal weights let
-                    // BM25 noise drown it out). Reverted to original 0.5x/1.5x.
-                    let weights = if is_nl_query {
-                        (
-                            self.config.rrf_keyword_weight * 0.5,
-                            self.config.rrf_vector_weight * 1.5,
-                            self.config.rrf_graph_weight,
-                        )
-                    } else {
-                        (
-                            self.config.rrf_keyword_weight,
-                            self.config.rrf_vector_weight,
-                            self.config.rrf_graph_weight,
-                        )
-                    };
-
-                    let mut rrf_results = reciprocal_rank_fusion(
-                        &keyword_ranked,
-                        &vector_ranked,
-                        &graph_hits,
-                        weights,
-                    );
-
-                    // Normalize RRF scores to 0-10 range so search signal is competitive
-                    // with post-RRF additive adjustments (structural, term_coverage, etc.)
-                    // Without this, RRF outputs ~0.02 while adjustments sum to 0-4.6,
-                    // making search signal contribute <1% of final score.
-                    let rrf_max = rrf_results.iter().map(|h| h.score).fold(f32::NEG_INFINITY, f32::max);
-                    let rrf_min = rrf_results.iter().map(|h| h.score).fold(f32::INFINITY, f32::min);
-                    let rrf_range = rrf_max - rrf_min;
-                    if rrf_range > 0.0 {
-                        let target_range = 10.0;
-                        for hit in &mut rrf_results {
-                            hit.score = ((hit.score - rrf_min) / rrf_range) * target_range;
-                        }
-                    } else if rrf_max > 0.0 {
-                        // All same score — normalize to midpoint
-                        for hit in &mut rrf_results {
-                            hit.score = 5.0;
-                        }
-                    }
-
-                    // Build lookup maps for original keyword/vector scores (for diagnostics)
-                    let kw_score_map: HashMap<&str, f32> = keyword_ranked
-                        .iter()
-                        .map(|h| (h.id.as_str(), h.score))
-                        .collect();
-                    let vec_score_map: HashMap<&str, f32> = vector_ranked
-                        .iter()
-                        .map(|h| (h.id.as_str(), h.score))
-                        .collect();
-
-                    // Apply structural and intent adjustments post-RRF.
-                    // RRF only considers rank position, not content signals like
-                    // test penalties, intent multipliers, or directory semantics.
-                    let line_count_ids: Vec<String> = rrf_results.iter().map(|h| h.id.clone()).collect();
-                    let line_counts = sqlite.batch_get_symbol_line_counts(&line_count_ids).unwrap_or_default();
-                    let test_symbols = sqlite.batch_check_test_symbols(&line_count_ids).unwrap_or_default();
-                    let symbol_texts = sqlite.batch_get_symbol_texts(&line_count_ids).unwrap_or_default();
-
-                    let mut signals = HashMap::new();
-                    for hit in rrf_results.iter_mut() {
-                        let structural = ranking::structural_adjustment(
-                            &self.config,
-                            hit.exported,
-                            &hit.file_path,
-                            &hit.kind,
-                            &intent,
-                            &query_without_controls,
-                        );
-                        let intent_mult = ranking::intent_adjustment(
-                            &intent,
-                            &hit.kind,
-                            &hit.file_path,
-                            hit.exported,
-                            &hit.name,
-                        );
-
-                        let base_score = hit.score;
-                        let def_bias = ranking::definition_bias(
-                            &query_without_controls,
-                            &hit.name,
-                            &hit.kind,
-                            &intent,
-                        );
-                        let body = symbol_texts.get(&hit.id).map(|s| s.as_str());
-                        let tc = ranking::term_coverage_adjustment(
-                            &query_without_controls,
-                            &hit.name,
-                            &hit.file_path,
-                            body,
-                        );
-                        let lc = line_counts.get(&hit.id).copied().unwrap_or(0);
-                        let si = ranking::symbol_importance_adjustment(lc, hit.exported);
-                        let is_test = test_symbols.contains(&hit.id);
-                        let tp = ranking::test_symbol_penalty(is_test);
-                        hit.score = (hit.score + structural + def_bias + tc + si + tp) * intent_mult;
-
-                        signals.insert(
-                            hit.id.clone(),
-                            HitSignals {
-                                keyword_score: kw_score_map.get(hit.id.as_str()).copied().unwrap_or(0.0),
-                                vector_score: vec_score_map.get(hit.id.as_str()).copied().unwrap_or(0.0),
-                                base_score,
-                                structural_adjust: structural,
-                                intent_mult,
-                                definition_bias: def_bias,
-                                term_coverage: tc,
-                                symbol_importance: si,
-                                test_symbol_penalty: tp,
-                                popularity_boost: 0.0,
-                                learning_boost: 0.0,
-                                affinity_boost: 0.0,
-                                docstring_boost: 0.0,
-                                package_boost: 0.0,
-                            },
-                        );
-                    }
-
-                    // Re-sort after structural/intent adjustments
-                    rrf_results.sort_by(|a, b| {
-                        b.score
-                            .total_cmp(&a.score)
-                            .then_with(|| b.exported.cmp(&a.exported))
-                            .then_with(|| a.name.cmp(&b.name))
-                    });
-
-                    (rrf_results, signals, vector_ranked)
-                } else {
-                    // Use existing score fusion (no vector promotion in non-RRF path)
-                    let (ranked, signals) = rank_hits_with_signals(
-                        &keyword_hits,
-                        &vector_hits,
-                        &self.config,
-                        &intent,
-                        search_query,
-                    );
-                    (ranked, signals, Vec::new())
-                }
-            } else {
-                // MULTI-QUERY PATH: Loop over sub-queries and collect combined hits
-                // Always use larger pool for multi-query (compound NL queries)
-                let base_k = self.config.vector_search_limit.max(limit * 3).max(40);
-                // Cross-cutting intent queries (Error) need larger pools because
-                // LLM descriptions dilute IDF for common terms like "error",
-                // pushing specialized symbols (PathError) below normal k threshold.
-                let k = if matches!(&intent, Some(Intent::Error)) {
-                    base_k.max(500)
-                } else {
-                    base_k
-                };
-
-                // Combined accumulators for ALL sub-queries
-                let mut combined_keyword_hits: Vec<crate::storage::tantivy::SearchHit> = Vec::new();
-                let mut combined_vector_hits: Vec<crate::storage::vector::VectorHit> = Vec::new();
-
-                // Vector search uses raw query (pre-expansion) — one embedding for
-                // full user intent. BM25 still loops over expanded sub-queries.
-                let vector_query = &query_without_controls;
-                let multi_vector_hits = match self.get_query_vector_cached(vector_query).await {
-                    Ok(query_vector) => {
-                        match self.vectors.search(&query_vector, k).await {
-                            Ok(hits) => hits,
-                            Err(e) => {
-                                tracing::warn!(
-                                    query = %vector_query,
-                                    error = %e,
-                                    "LanceDB vector search failed for multi-query, degrading to keyword-only"
-                                );
-                                self.metrics.search_errors_total.inc();
-                                Vec::new()
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            query = %vector_query,
-                            error = %e,
-                            "Query embedding failed for multi-query, degrading to keyword-only"
-                        );
-                        self.metrics.search_errors_total.inc();
-                        Vec::new()
-                    }
-                };
-                combined_vector_hits.extend(multi_vector_hits);
-
-                for sub_query in &sub_queries {
-                    // Keyword search for this sub-query (uses expanded text for BM25)
-                    let sub_keyword_hits = self.tantivy.search(sub_query, k)?;
-                    combined_keyword_hits.extend(sub_keyword_hits);
-
-                    // HyDE per sub-query (best-effort) — generates hypothetical code
-                    // and uses its embedding for supplemental vector search
-                    if self.config.hyde_enabled {
-                        if let Some(generator) = &self.hyde_generator {
-                            let language = detect_language_from_query(sub_query);
-                            if let Ok(hyde_result) = generator.generate(sub_query, language).await {
-                                let mut embedder = self.embedder.lock().await;
-                                if let Ok(hyde_embeddings) =
-                                    embedder.embed(&[hyde_result.hypothetical_code])
-                                {
-                                    if let Some(hyde_vector) = hyde_embeddings.first() {
-                                        if let Ok(hyde_hits) =
-                                            self.vectors.search(hyde_vector, k / 2).await
-                                        {
-                                            combined_vector_hits.extend(hyde_hits);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // UNIFIED RRF: Single RRF pass over combined hits from all sub-queries
-                // This avoids nested RRF layers
-
-                let keyword_ranked: Vec<RankedHit> = combined_keyword_hits
-                    .iter()
-                    .map(|h| RankedHit {
-                        id: h.id.clone(),
-                        score: h.score,
-                        name: h.name.clone(),
-                        kind: h.kind.clone(),
-                        file_path: h.file_path.clone(),
-                        exported: h.exported,
-                        language: String::new(),
-                    })
-                    .collect();
-
-                let vector_ranked: Vec<RankedHit> = combined_vector_hits
-                    .iter()
-                    .map(|h| RankedHit {
-                        id: h.id.clone(),
-                        score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)),
-                        name: h.name.clone(),
-                        kind: h.kind.clone(),
-                        file_path: h.file_path.clone(),
-                        exported: h.exported,
-                        language: h.language.clone(),
-                    })
-                    .collect();
-
-                let graph_hits = if let Ok(graph) = get_graph_ranked_hits(&keyword_ranked, &sqlite)
-                {
-                    graph
-                } else {
-                    keyword_ranked.clone()
-                };
-
-                // Single RRF pass over combined results (dynamic weights for NL queries)
-                let weights = if is_nl_query {
-                    (
-                        self.config.rrf_keyword_weight * 0.5,
-                        self.config.rrf_vector_weight * 1.5,
-                        self.config.rrf_graph_weight,
-                    )
-                } else {
-                    (
-                        self.config.rrf_keyword_weight,
-                        self.config.rrf_vector_weight,
-                        self.config.rrf_graph_weight,
-                    )
-                };
-
-                let mut ranked =
-                    reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
-
-                // Normalize RRF scores to 0-10 range (same as single-query path)
-                let rrf_max = ranked.iter().map(|h| h.score).fold(f32::NEG_INFINITY, f32::max);
-                let rrf_min = ranked.iter().map(|h| h.score).fold(f32::INFINITY, f32::min);
-                let rrf_range = rrf_max - rrf_min;
-                if rrf_range > 0.0 {
-                    let target_range = 10.0;
-                    for hit in &mut ranked {
-                        hit.score = ((hit.score - rrf_min) / rrf_range) * target_range;
-                    }
-                } else if rrf_max > 0.0 {
-                    for hit in &mut ranked {
-                        hit.score = 5.0;
-                    }
-                }
-
-                // Apply structural and intent adjustments post-RRF (same as single-query path)
-                let line_count_ids: Vec<String> = ranked.iter().map(|h| h.id.clone()).collect();
-                let line_counts = sqlite.batch_get_symbol_line_counts(&line_count_ids).unwrap_or_default();
-                let test_symbols = sqlite.batch_check_test_symbols(&line_count_ids).unwrap_or_default();
-                let symbol_texts = sqlite.batch_get_symbol_texts(&line_count_ids).unwrap_or_default();
-
-                let mut hit_signals = HashMap::new();
-                for hit in ranked.iter_mut() {
-                    let structural = ranking::structural_adjustment(
-                        &self.config,
-                        hit.exported,
-                        &hit.file_path,
-                        &hit.kind,
-                        &intent,
-                        &query_without_controls,
-                    );
-                    let intent_mult = ranking::intent_adjustment(
-                        &intent,
-                        &hit.kind,
-                        &hit.file_path,
-                        hit.exported,
-                        &hit.name,
-                    );
-
-                    let base_score = hit.score;
-                    hit.score = (hit.score + structural) * intent_mult;
-
-                    let def_bias = ranking::definition_bias(
-                        &query_without_controls,
-                        &hit.name,
-                        &hit.kind,
-                        &intent,
-                    );
-                    let body = symbol_texts.get(&hit.id).map(|s| s.as_str());
-                    let tc = ranking::term_coverage_adjustment(
-                        &query_without_controls,
-                        &hit.name,
-                        &hit.file_path,
-                        body,
-                    );
-                    let lc = line_counts.get(&hit.id).copied().unwrap_or(0);
-                    let si = ranking::symbol_importance_adjustment(lc, hit.exported);
-                    let is_test = test_symbols.contains(&hit.id);
-                    let tp = ranking::test_symbol_penalty(is_test);
-                    hit.score += def_bias + tc + si + tp;
-
-                    hit_signals.insert(
-                        hit.id.clone(),
-                        HitSignals {
-                            keyword_score: 0.0,
-                            vector_score: 0.0,
-                            base_score,
-                            structural_adjust: structural,
-                            intent_mult,
-                            definition_bias: def_bias,
-                            term_coverage: tc,
-                            symbol_importance: si,
-                            test_symbol_penalty: tp,
-                            popularity_boost: 0.0,
-                            learning_boost: 0.0,
-                            affinity_boost: 0.0,
-                            docstring_boost: 0.0,
-                            package_boost: 0.0,
-                        },
-                    );
-                }
-
-                // Re-sort after structural/intent adjustments
-                ranked.sort_by(|a, b| {
-                    b.score
-                        .total_cmp(&a.score)
-                        .then_with(|| b.exported.cmp(&a.exported))
-                        .then_with(|| a.name.cmp(&b.name))
-                });
-
-                (ranked, hit_signals, vector_ranked)
-            };
-
-        // Start merge timing after search completes
-        // Note: keyword_ms and vector_ms timing are lost in multi-query path
-        // because we aggregate across multiple sub-queries. Set to 0 for telemetry.
-        let (keyword_ms, vector_ms) = if sub_queries.len() == 1 {
-            // In single-query path, these were captured but as _keyword_ms, _vector_ms
-            // We need to track them properly for telemetry
-            (0, 0) // Timing captured internally, not exposed
-        } else {
-            // Multi-query: aggregate timing not meaningful per sub-query
-            (0, 0)
-        };
+        let ranked = hybrid_result.ranked;
+        let mut hit_signals = hybrid_result.hit_signals;
+        let vector_ranked_for_promotion = hybrid_result.vector_ranked_for_promotion;
+        let keyword_ms = hybrid_result.keyword_ms;
+        let vector_ms = hybrid_result.vector_ms;
 
         let merge_t = Instant::now();
 
@@ -940,121 +362,26 @@ impl Retriever {
             }
         }
 
-        // Inject framework pattern matches for NL queries.
-        // Framework patterns (WebSocket handlers, routes, middleware) live in a
-        // separate table and aren't directly searchable via BM25/vector. This
-        // post-merge step queries them and boosts/injects matching parent symbols.
+        // Inject framework pattern matches for NL queries
         if is_nl_query {
-            if let Ok(patterns) = sqlite.search_framework_patterns(
-                None, None, None, None, None, None, 200,
-            ) {
-                let query_lower = query_without_controls.to_lowercase();
-                let mut fw_file_lines: Vec<(String, u32)> = Vec::new();
-
-                for pattern in &patterns {
-                    let kind_lower = pattern.kind.to_lowercase();
-                    let matches = query_lower.contains(&kind_lower)
-                        || (kind_lower == "websocket"
-                            && (query_lower.contains("websocket")
-                                || query_lower.contains("ws")
-                                || query_lower.contains("socket")))
-                        || (kind_lower == "route"
-                            && (query_lower.contains("route")
-                                || query_lower.contains("endpoint")
-                                || query_lower.contains("api")))
-                        || (kind_lower == "middleware"
-                            && query_lower.contains("middleware"))
-                        || (kind_lower == "plugin"
-                            && query_lower.contains("plugin"));
-
-                    if matches {
-                        fw_file_lines.push((pattern.file_path.clone(), pattern.line));
-                    }
-                }
-
-                // Find parent symbols for matched framework patterns
-                let mut fw_files: HashSet<String> = HashSet::new();
-                for (fp, _) in &fw_file_lines {
-                    fw_files.insert(fp.clone());
-                }
-
-                for fw_file in &fw_files {
-                    if let Ok(file_symbols) = sqlite.list_symbols_by_file(fw_file) {
-                        // For each framework pattern in this file, find the
-                        // smallest enclosing symbol (closest start_line <= pattern line)
-                        for &(ref fp, line) in &fw_file_lines {
-                            if fp != fw_file {
-                                continue;
-                            }
-                            // Find best enclosing symbol: start_line <= line <= end_line,
-                            // preferring the smallest span (most specific)
-                            let enclosing = file_symbols
-                                .iter()
-                                .filter(|s| {
-                                    s.start_line <= line && s.end_line >= line
-                                })
-                                .min_by_key(|s| s.end_line - s.start_line);
-
-                            if let Some(sym) = enclosing {
-                                if seen.contains(&sym.id) {
-                                    // Already in results — boost its score
-                                    if let Some(hit) = uniq.iter_mut().find(|h| h.id == sym.id) {
-                                        hit.score += 0.15;
-                                    }
-                                } else {
-                                    // Inject as new result with moderate score
-                                    let top_score = uniq.first().map(|h| h.score).unwrap_or(1.0);
-                                    seen.insert(sym.id.clone());
-                                    uniq.push(RankedHit {
-                                        id: sym.id.clone(),
-                                        score: top_score * 0.7,
-                                        name: sym.name.clone(),
-                                        kind: sym.kind.clone(),
-                                        file_path: sym.file_path.clone(),
-                                        exported: sym.exported,
-                                        language: sym.language.clone(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let _ = framework_patterns::inject_framework_patterns(
+                &sqlite,
+                &query_without_controls,
+                &mut uniq,
+                &mut seen,
+            );
         }
 
-        let hits = Self::filter_hits_by_controls(uniq, &controls);
-        let hits = if exported_only {
-            hits.into_iter().filter(|h| h.exported).collect::<Vec<_>>()
-        } else {
-            hits
-        };
-
-        let hits =
-            apply_popularity_boost_with_signals(&sqlite, hits, &mut hit_signals, &self.config)?;
-
-        // Apply JSDoc documentation boost (1.5x for well-documented symbols)
-        let hits = apply_docstring_boost_with_signals(&sqlite, hits, &mut hit_signals)?;
-
-        let hits = apply_selection_boost_with_signals(
+        // Apply query control filters and boost signals
+        let hits = postprocess::filter_and_boost(
             &sqlite,
-            hits,
+            uniq,
             &mut hit_signals,
+            &controls,
+            exported_only,
             &expanded_query,
+            &intent,
             &self.config,
-        )?;
-
-        let hits =
-            apply_file_affinity_boost_with_signals(&sqlite, hits, &mut hit_signals, &self.config)?;
-
-        // Apply package boost for same-package prioritization
-        let query_package_id = controls.package.as_deref();
-        let hits = apply_package_boost_with_signals(
-            &sqlite,
-            hits,
-            &mut hit_signals,
-            query_package_id,
-            &self.config,
-            intent.clone().unwrap_or(Intent::Definition),
         )?;
 
         // Apply cross-encoder reranking if available
@@ -1201,7 +528,7 @@ impl Retriever {
         })
     }
 
-    fn cache_insert_response(
+    pub(super) fn cache_insert_response(
         &self,
         key: String,
         resp: SearchResponse,
@@ -1213,7 +540,7 @@ impl Retriever {
         cache.responses.insert(key, resp, size);
     }
 
-    async fn get_query_vector_cached(&self, query: &str) -> Result<Vec<f32>> {
+    pub(super) async fn get_query_vector_cached(&self, query: &str) -> Result<Vec<f32>> {
         let key = format!("q={}", trim_query(query, 500));
         {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -1235,7 +562,7 @@ impl Retriever {
         Ok(v)
     }
 
-    fn assemble_context_cached(
+    pub(super) fn assemble_context_cached(
         &self,
         store: &SqliteStore,
         roots: &[SymbolRow],
@@ -1280,58 +607,6 @@ impl Retriever {
         Ok(v)
     }
 
-    fn filter_hits_by_controls(hits: Vec<RankedHit>, controls: &QueryControls) -> Vec<RankedHit> {
-        hits.into_iter()
-            .filter(|h| {
-                controls
-                    .lang
-                    .as_ref()
-                    .is_none_or(|l| h.language == l.as_str())
-            })
-            .filter(|h| {
-                controls
-                    .kind
-                    .as_ref()
-                    .is_none_or(|k| Self::kind_matches(&h.kind, k))
-            })
-            .filter(|h| {
-                controls
-                    .path
-                    .as_ref()
-                    .is_none_or(|p| Self::path_matches(&h.file_path, p))
-            })
-            .filter(|h| {
-                controls
-                    .file
-                    .as_ref()
-                    .is_none_or(|f| Self::file_matches(&h.file_path, f))
-            })
-            .collect()
-    }
-
-    fn kind_matches(kind: &str, control: &str) -> bool {
-        control
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .any(|k| kind.eq_ignore_ascii_case(k))
-    }
-
-    fn path_matches(file_path: &str, control: &str) -> bool {
-        file_path.to_lowercase().contains(&control.to_lowercase())
-    }
-
-    fn file_matches(file_path: &str, control: &str) -> bool {
-        let file_path = file_path.to_lowercase();
-        let control = control.to_lowercase();
-        match (control.starts_with('*'), control.ends_with('*')) {
-            (true, true) => file_path.contains(control.trim_matches('*')),
-            (true, false) => file_path.ends_with(control.trim_start_matches('*')),
-            (false, true) => file_path.starts_with(control.trim_end_matches('*')),
-            (false, false) => file_path.contains(&control),
-        }
-    }
-
     /// Get reference to vector store for vector queries
     pub fn get_vector_store(&self) -> &LanceVectorTable {
         &self.vectors
@@ -1369,7 +644,7 @@ impl Retriever {
 }
 
 /// Detect programming language from query text for HyDE
-fn detect_language_from_query(query: &str) -> &'static str {
+pub(super) fn detect_language_from_query(query: &str) -> &'static str {
     let q = query.to_lowercase();
     if q.contains("rust") || q.contains("fn ") || q.contains("impl") {
         "rust"

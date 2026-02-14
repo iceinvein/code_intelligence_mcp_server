@@ -60,7 +60,7 @@ pub fn cleanup_old_logs(dir: &Utf8Path, max_age_days: u64) {
 /// log files under `<repo_data_dir>/logs/`. Uses `tracing_appender`
 /// for daily rotation and non-blocking I/O.
 pub struct RepoLogger {
-    // Guard must be dropped before writer to ensure flush completes
+    // Guard must stay alive as long as writer is in use (flushes on drop)
     _guard: tracing_appender::non_blocking::WorkerGuard,
     writer: tracing_appender::non_blocking::NonBlocking,
     repo_name: String,

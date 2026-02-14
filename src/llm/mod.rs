@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use crate::path::Utf8Path;
 
-pub mod ort;
+pub mod llamacpp;
 
 /// Generate text descriptions for code symbols using an LLM.
 pub trait LlmGenerator: Send + Sync {
@@ -110,6 +110,7 @@ pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &
 pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
     // Bump when prompt format changes to invalidate cached descriptions.
     // v2: Enhanced system prompt + full module path (was filename-only).
+    // v3: Switched to 3B model (was 1.5B) for more discriminating descriptions.
     const PROMPT_VERSION: &str = "v2";
 
     let truncated_body: String = body
@@ -126,13 +127,11 @@ pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
     hex::encode(result)
 }
 
-/// HuggingFace repository for the ONNX-exported Qwen2.5-Coder model.
-const HF_REPO: &str = "onnx-community/Qwen2.5-Coder-1.5B-Instruct";
-/// Quantized model file (pure int4, f32 KV cache, ~1.8 GB).
-/// We use model_q4 over model_q4f16 because the mixed-precision q4f16 model
-/// triggers ORT buffer reuse bugs with its InsertedPrecisionFreeCast nodes.
-const HF_MODEL_FILE: &str = "onnx/model_q4.onnx";
-const HF_TOKENIZER_FILE: &str = "tokenizer.json";
+/// HuggingFace repository for the GGUF-format Qwen2.5-Coder model.
+const HF_REPO: &str = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF";
+/// Q4_K_M quantized GGUF model (~2.1 GB). GGUF embeds the tokenizer,
+/// so no separate tokenizer.json download is needed.
+const HF_MODEL_FILE: &str = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
 
 /// Create an LLM generator based on config.
 ///
@@ -154,9 +153,12 @@ pub fn create_llm_generator(
         }
     };
 
+    // GGUF model file path
+    let model_file = model_dir.join(HF_MODEL_FILE);
+
     // Auto-download if model not found
-    if !model_dir.exists() || !model_dir.join("tokenizer.json").exists() {
-        tracing::info!("LLM model not found at {}, attempting auto-download...", model_dir);
+    if !model_file.exists() {
+        tracing::info!("LLM model not found at {}, attempting auto-download...", model_file);
         match download_model(&model_dir) {
             Ok(()) => {
                 tracing::info!("LLM model downloaded successfully");
@@ -171,15 +173,16 @@ pub fn create_llm_generator(
         }
     }
 
-    let generator = ort::OrtLlmGenerator::new(&model_dir, config.llm_device)?;
+    // LLM_DEVICE is ignored — llama.cpp auto-detects Metal on macOS.
+    let generator = llamacpp::LlamaCppGenerator::new(&model_file)?;
     Ok(Some(Arc::new(generator)))
 }
 
-/// Download the Qwen2.5-Coder-1.5B-Instruct ONNX model from HuggingFace.
+/// Download the Qwen2.5-Coder-1.5B-Instruct GGUF model from HuggingFace.
 ///
-/// Downloads `tokenizer.json` (~11 MB) and `onnx/model_q4.onnx` (~1.8 GB)
-/// into the HuggingFace cache (`~/.cache/huggingface/hub/`), then creates
-/// symlinks in `target_dir` to avoid duplicating disk space.
+/// Downloads a single GGUF file (~1.1 GB) into the HuggingFace cache
+/// (`~/.cache/huggingface/hub/`), then creates a symlink in `target_dir`.
+/// GGUF embeds the tokenizer, so only one file is needed.
 pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
     use anyhow::Context;
 
@@ -189,28 +192,19 @@ pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
         .context("Failed to initialize HuggingFace Hub API")?;
     let repo = api.model(HF_REPO.to_string());
 
-    // Download tokenizer (~11 MB)
-    tracing::info!("Downloading {}...", HF_TOKENIZER_FILE);
-    let tokenizer_cached = repo.get(HF_TOKENIZER_FILE)
-        .context("Failed to download tokenizer.json")?;
-
-    // Download quantized model (~1.8 GB)
-    tracing::info!("Downloading {} (~1.8 GB, this may take a few minutes)...", HF_MODEL_FILE);
+    // Download GGUF model (~1.1 GB) — includes weights + tokenizer
+    tracing::info!("Downloading {} (~1.1 GB, this may take a few minutes)...", HF_MODEL_FILE);
     let model_cached = repo.get(HF_MODEL_FILE)
-        .context("Failed to download ONNX model file")?;
+        .context("Failed to download GGUF model file")?;
 
     // Create target directory
     std::fs::create_dir_all(target_dir.as_std_path())
         .context("Failed to create model directory")?;
 
-    // Symlink files from HF cache into our model directory
-    let target_tokenizer = target_dir.join("tokenizer.json");
-    let target_model = target_dir.join("model_q4.onnx");
-
-    symlink_or_copy(&tokenizer_cached, target_tokenizer.as_std_path())
-        .context("Failed to link tokenizer.json")?;
+    // Symlink from HF cache into our model directory
+    let target_model = target_dir.join(HF_MODEL_FILE);
     symlink_or_copy(&model_cached, target_model.as_std_path())
-        .context("Failed to link model file")?;
+        .context("Failed to link GGUF model file")?;
 
     tracing::info!("LLM model ready at {}", target_dir);
     Ok(())

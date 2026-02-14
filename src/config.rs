@@ -346,7 +346,7 @@ impl StandaloneConfig {
             package_detection_enabled: true,
             llm_enabled: true,
             llm_device: EmbeddingsDevice::Cpu,
-            llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-onnx")),
+            llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
             llm_max_tokens: 30,
             llm_batch_commit: 10,
         }
@@ -811,7 +811,7 @@ impl Config {
         let llm_model_dir = optional_env("LLM_MODEL_DIR")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?
-            .or_else(|| Some(global_dir.join("models/qwen2.5-coder-1.5b-onnx")));
+            .or_else(|| Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")));
         let llm_max_tokens: u32 = optional_env("LLM_MAX_TOKENS")
             .as_deref()
             .and_then(|v| v.parse().ok())

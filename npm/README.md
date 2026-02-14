@@ -22,8 +22,8 @@ Unlike basic text search, this server builds a local knowledge graph to understa
 * **Learns from Feedback**: Optional learning system that adapts to user selections over time.
 * **Production First**: Multi-layer test detection (file paths, symbol names, and AST-level `#[test]`/`mod tests` analysis) ensures implementation code ranks above test helpers.
 * **Multi-Repo Support**: Index and search across multiple repositories/monorepos simultaneously.
-* **OS-Native File Watching**: Uses the `notify` crate for instant re-indexing on file changes (fsevents on macOS, inotify on Linux).
-* **Fast & Local**: Written in **Rust**. Uses Metal GPU acceleration on macOS. Parallel indexing with persistent caching.
+* **OS-Native File Watching**: Uses the `notify` crate with macOS FSEvents for instant re-indexing on file changes.
+* **Fast & Local**: Written in **Rust** with Metal GPU acceleration on Apple Silicon. Parallel indexing with persistent caching.
 
 ---
 

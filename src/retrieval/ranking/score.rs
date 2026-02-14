@@ -540,8 +540,16 @@ pub(crate) fn definition_bias(
             }
             let token_lower = token.to_lowercase();
 
-            // Exact match with a query token
-            if name_lower == token_lower {
+            // Exact match with a query token — but only give the strong 5.0
+            // boost when the token looks like a symbol name (has interior
+            // uppercase like CamelCase or contains underscore like snake_case).
+            // This prevents common English words in NL queries (e.g. "error"
+            // in "Error handling") from inflating a function literally named
+            // "error" above more relevant results. (R65)
+            if name_lower == token_lower
+                && (token.chars().skip(1).any(|c| c.is_uppercase())
+                    || token.contains('_'))
+            {
                 best = best.max(5.0);
             }
             // Symbol name contains the token (e.g. "EmbeddingCache" contains "cache")

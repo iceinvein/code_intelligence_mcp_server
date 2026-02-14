@@ -21,3 +21,6 @@ npm/bin/code-intelligence-mcp-server
 npm/bin/code-intelligence-mcp-server.exe
 
 .mcp.json
+
+# Git worktrees
+.worktrees/

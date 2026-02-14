@@ -163,6 +163,18 @@ impl IndexPipeline {
         // Update resource gauges
         self.update_resource_gauges()?;
 
+        // Compact LanceDB fragments and prune old versions after index runs
+        // that modified data. This prevents unbounded growth of the vectors directory.
+        if stats.files_indexed > 0 || stats.files_deleted > 0 {
+            if let Err(e) = self.vectors.optimize().await {
+                tracing::warn!(
+                    repo = %self.repo_name(),
+                    error = %e,
+                    "LanceDB optimization failed (non-fatal)"
+                );
+            }
+        }
+
         // Note: timer observes duration when dropped
         Ok(stats)
     }
@@ -1061,80 +1073,99 @@ impl IndexPipeline {
         Ok(stats)
     }
 
-    /// Generate embeddings and similarity clusters for symbols that don't have them yet
+    /// Generate embeddings and similarity clusters for symbols that don't have them yet.
     ///
     /// This is called after parallel indexing to populate:
     /// - LanceDB vectors
     /// - similarity_clusters table
+    ///
+    /// Processes symbols in batches of 200 to bound peak memory usage.
+    /// Each batch is fully written to LanceDB before the next is fetched,
+    /// so intermediate allocations (embedding texts, vectors, Arrow batches)
+    /// are freed between iterations.
     async fn generate_embeddings_for_parallel_indexed_files(&self) -> Result<()> {
         use crate::storage::sqlite::schema::SymbolRow;
 
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
+        const BATCH_SIZE: usize = 200;
+        let mut total_embedded: usize = 0;
 
-        // Get symbols that don't have similarity clusters (i.e., no embeddings generated yet)
-        let symbols_need_embeddings = sqlite.list_symbols_without_similarity_clusters(1000)?;
+        loop {
+            let sqlite = SqliteStore::open(&self.db_path)?;
+            sqlite.init()?;
 
-        if symbols_need_embeddings.is_empty() {
-            tracing::debug!(
+            let symbols_need_embeddings =
+                sqlite.list_symbols_without_similarity_clusters(BATCH_SIZE)?;
+
+            if symbols_need_embeddings.is_empty() {
+                break;
+            }
+
+            let batch_len = symbols_need_embeddings.len();
+
+            if total_embedded == 0 {
+                tracing::info!(
+                    repo = %self.repo_name(),
+                    first_batch = batch_len,
+                    "Generating embeddings for symbols after parallel indexing"
+                );
+            }
+
+            let symbol_rows: Vec<SymbolRow> = symbols_need_embeddings
+                .into_iter()
+                .map(|sym| SymbolRow {
+                    id: sym.id,
+                    file_path: sym.file_path,
+                    language: sym.language,
+                    kind: sym.kind,
+                    name: sym.name,
+                    exported: sym.exported,
+                    start_byte: sym.start_byte,
+                    end_byte: sym.end_byte,
+                    start_line: sym.start_line,
+                    end_line: sym.end_line,
+                    text: sym.text,
+                })
+                .collect();
+
+            // Generate embeddings for this batch
+            let vectors = self
+                .embed_and_build_vector_records(&symbol_rows)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to embed symbols batch: batch_size={}, total_so_far={}",
+                        batch_len, total_embedded
+                    )
+                })?;
+
+            // Write batch to LanceDB
+            self.vectors.add_records(&vectors).await.context(
+                "Failed to add vector records for parallel indexing",
+            )?;
+
+            // Create similarity clusters for this batch
+            for rec in &vectors {
+                let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
+                    symbol_id: rec.id.clone(),
+                    cluster_key: cluster_key_from_vector(&rec.vector),
+                });
+            }
+
+            total_embedded += vectors.len();
+
+            // If we got fewer than BATCH_SIZE, there are no more symbols left
+            if batch_len < BATCH_SIZE {
+                break;
+            }
+        }
+
+        if total_embedded > 0 {
+            tracing::info!(
                 repo = %self.repo_name(),
-                "No symbols need embeddings after parallel indexing"
+                count = total_embedded,
+                "Generated embeddings and similarity clusters after parallel indexing"
             );
-            return Ok(());
         }
-
-        tracing::info!(
-            repo = %self.repo_name(),
-            count = symbols_need_embeddings.len(),
-            "Generating embeddings for symbols after parallel indexing"
-        );
-
-        let mut symbol_rows: Vec<SymbolRow> = Vec::new();
-        for sym in symbols_need_embeddings {
-            symbol_rows.push(SymbolRow {
-                id: sym.id,
-                file_path: sym.file_path,
-                language: sym.language,
-                kind: sym.kind,
-                name: sym.name,
-                exported: sym.exported,
-                start_byte: sym.start_byte,
-                end_byte: sym.end_byte,
-                start_line: sym.start_line,
-                end_line: sym.end_line,
-                text: sym.text,
-            });
-        }
-
-        // Generate embeddings
-        let vectors = self
-            .embed_and_build_vector_records(&symbol_rows)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to embed symbols for parallel indexing: symbol_count={}",
-                    symbol_rows.len()
-                )
-            })?;
-
-        // Add vectors to LanceDB
-        self.vectors.add_records(&vectors).await.context(
-            "Failed to add vector records for parallel indexing",
-        )?;
-
-        // Create similarity clusters
-        for rec in &vectors {
-            let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
-                symbol_id: rec.id.clone(),
-                cluster_key: cluster_key_from_vector(&rec.vector),
-            });
-        }
-
-        tracing::info!(
-            repo = %self.repo_name(),
-            count = vectors.len(),
-            "Generated embeddings and similarity clusters after parallel indexing"
-        );
 
         Ok(())
     }
@@ -1215,7 +1246,6 @@ impl IndexPipeline {
                 file_path: row.file_path.clone(),
                 exported: row.exported,
                 language: row.language.clone(),
-                text: row.text.clone(),
             });
         }
 

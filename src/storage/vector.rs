@@ -7,6 +7,7 @@ use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::{
     query::{ExecutableQuery, QueryBase},
+    table::OptimizeAction,
     Connection,
 };
 use std::sync::Arc;
@@ -21,7 +22,6 @@ pub struct VectorRecord {
     pub file_path: String,
     pub exported: bool,
     pub language: String,
-    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +85,26 @@ impl LanceDbStore {
             .execute()
             .await
             .with_context(|| format!("Failed to open lancedb table: table_name={}", table_name))?;
+
+        // Migrate: drop the "text" column if it exists from older schema versions.
+        // The text field duplicated full source code already stored in SQLite,
+        // wasting disk and memory in every LanceDB fragment.
+        let schema = table.schema().await.ok();
+        if let Some(ref s) = schema {
+            if s.column_with_name("text").is_some() {
+                match table.drop_columns(&["text"]).await {
+                    Ok(_) => tracing::info!(
+                        table = table_name,
+                        "Migrated LanceDB table: dropped unused 'text' column"
+                    ),
+                    Err(e) => tracing::warn!(
+                        table = table_name,
+                        error = %e,
+                        "Failed to drop 'text' column from LanceDB table (non-fatal)"
+                    ),
+                }
+            }
+        }
 
         Ok(LanceVectorTable { table, vector_dim })
     }
@@ -429,6 +449,57 @@ impl LanceVectorTable {
         Ok(primitive_array.values().to_vec())
     }
 
+    /// Compact fragments and prune old versions to reclaim disk space.
+    ///
+    /// LanceDB is append-only: every add() and delete() creates new fragments
+    /// and versions. Without periodic optimization, the vectors directory grows
+    /// unboundedly (e.g., 91K versions and 10GB for 13K symbols).
+    ///
+    /// This runs compaction (merge small files) + pruning (remove old versions).
+    pub async fn optimize(&self) -> Result<()> {
+        // Compact: merge small fragment files into larger ones
+        let compact_stats = self
+            .table
+            .optimize(OptimizeAction::Compact {
+                options: Default::default(),
+                remap_options: None,
+            })
+            .await
+            .context("LanceDB compaction failed")?;
+
+        if let Some(ref metrics) = compact_stats.compaction {
+            tracing::info!(
+                fragments_removed = metrics.fragments_removed,
+                fragments_added = metrics.fragments_added,
+                files_removed = metrics.files_removed,
+                files_added = metrics.files_added,
+                "LanceDB compaction completed"
+            );
+        }
+
+        // Prune: remove versions older than 1 minute.
+        // Safe because we don't use time-travel and there are no concurrent writers.
+        let prune_stats = self
+            .table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(chrono::Duration::try_minutes(1).expect("valid delta")),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: Some(false),
+            })
+            .await
+            .context("LanceDB version pruning failed")?;
+
+        if let Some(ref removal) = prune_stats.prune {
+            tracing::info!(
+                bytes_removed = removal.bytes_removed,
+                old_versions_removed = removal.old_versions,
+                "LanceDB version pruning completed"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Search with a filter predicate to exclude certain results.
     ///
     /// This is used by find_similar_code to exclude the source symbol from results
@@ -586,7 +657,6 @@ fn build_schema(vector_dim: usize) -> Schema {
         Field::new("file_path", DataType::Utf8, true),
         Field::new("exported", DataType::Boolean, true),
         Field::new("language", DataType::Utf8, true),
-        Field::new("text", DataType::Utf8, true),
     ])
 }
 
@@ -610,7 +680,6 @@ fn build_record_batch(
             .map(|r| r.language.as_str())
             .collect::<Vec<_>>(),
     );
-    let texts = StringArray::from(records.iter().map(|r| r.text.as_str()).collect::<Vec<_>>());
     let exported = BooleanArray::from(records.iter().map(|r| r.exported).collect::<Vec<_>>());
 
     let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
@@ -630,7 +699,6 @@ fn build_record_batch(
             Arc::new(file_paths),
             Arc::new(exported),
             Arc::new(languages),
-            Arc::new(texts),
         ],
     )
     .with_context(|| {
@@ -674,7 +742,6 @@ mod tests {
                     file_path: "src/a.ts".to_string(),
                     exported: true,
                     language: "typescript".to_string(),
-                    text: "export function alpha() {}".to_string(),
                 },
                 VectorRecord {
                     id: "id2".to_string(),
@@ -684,7 +751,6 @@ mod tests {
                     file_path: "src/b.ts".to_string(),
                     exported: false,
                     language: "typescript".to_string(),
-                    text: "function beta() {}".to_string(),
                 },
             ])
             .await

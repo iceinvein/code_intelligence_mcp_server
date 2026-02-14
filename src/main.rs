@@ -55,8 +55,8 @@ async fn main() -> SdkResult<()> {
         return Ok(());
     }
 
-    // Set up file logging to global ~/.cimcp/logs directory
-    let global_dir = code_intelligence_mcp_server::config::get_global_cimcp_dir();
+    // Set up file logging to global ~/.code-intelligence/logs directory
+    let global_dir = code_intelligence_mcp_server::config::get_data_dir();
     let logs_dir = global_dir.join("logs");
 
     // Create logs directory if it doesn't exist
@@ -194,6 +194,35 @@ async fn run_embedded() -> SdkResult<()> {
     let config = Config::from_env().map_err(|err| McpSdkError::Internal {
         description: err.to_string(),
     })?;
+
+    // Ensure per-repo data directory exists
+    std::fs::create_dir_all(config.db_path.parent().unwrap_or(&config.db_path))
+        .map_err(|err| McpSdkError::Internal {
+            description: format!("Failed to create repo data directory: {}", err),
+        })?;
+
+    // Register this repo in the shared registry (non-fatal on error)
+    {
+        let data_dir = code_intelligence_mcp_server::config::get_data_dir();
+        let registry = code_intelligence_mcp_server::registry::RepoRegistry::new(
+            data_dir.join("repos/registry.json"),
+            data_dir.join("repos"),
+        );
+        if let Err(e) = registry.register(config.base_dir.as_str()) {
+            tracing::warn!("Failed to register repo in registry: {}", e);
+        }
+    }
+
+    // Hint about legacy data directories
+    let legacy_cimcp = std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
+        .join(".cimcp");
+    if legacy_cimcp.exists() {
+        info!(
+            path = %legacy_cimcp.display(),
+            "Legacy ~/.cimcp directory detected. Data now stored under ~/.code-intelligence/. \
+             You can safely delete ~/.cimcp/ after verifying the new location works."
+        );
+    }
 
     let sqlite = SqliteStore::open(&config.db_path).map_err(|err| McpSdkError::Internal {
         description: err.to_string(),

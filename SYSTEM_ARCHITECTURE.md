@@ -424,6 +424,38 @@ See README.md for complete tool list. Key categories:
 - **LanceDB**: ~100-500 MB per 10k symbols (768-dim vectors)
 - **Cache**: ~200 MB per 10k symbols (embeddings)
 
+## Data Storage Layout
+
+Both embedded (stdio) and standalone (HTTP) modes use the same centralized storage under `~/.code-intelligence/`. Each repo gets an isolated data directory derived from a deterministic 16-character SHA256 hash of its absolute path:
+
+```text
+~/.code-intelligence/
+├── models/                  # Shared across all repos
+│   ├── jina-code-onnx/      # Embedding model (~500MB)
+│   └── qwen2.5-coder-1.5b-gguf/  # LLM model (~1.1GB)
+├── logs/
+│   └── server.log
+├── server.toml              # Standalone config (optional)
+└── repos/
+    ├── registry.json        # Maps repo paths → hash dirs
+    └── <sha256[:16]>/       # Per-repo data
+        ├── code-intelligence.db  # SQLite (symbols, edges, metadata)
+        ├── tantivy-index/        # BM25 full-text index
+        └── vectors/              # LanceDB vector embeddings
+```
+
+The same repo always maps to the same hash, so embedded and standalone modes share index data. The `repos/registry.json` file tracks registered repos for discovery by the standalone mode's session manager.
+
+## Deployment Modes
+
+### Embedded Mode (stdio)
+
+The default mode: each MCP client spawns its own server process over stdio transport. The server reads `BASE_DIR`, auto-derives the per-repo data directory, and registers the repo in the shared registry. Suitable for single-client setups.
+
+### Standalone Mode (HTTP)
+
+A long-lived HTTP server that multiple MCP clients connect to via Streamable HTTP transport. The embedding model is loaded once and shared across all sessions. Each client session is bound to its workspace root via the MCP `roots` capability. Configured via `~/.code-intelligence/server.toml`.
+
 ## Configuration
 
 See README.md for complete environment variable reference. Key settings:
@@ -442,6 +474,7 @@ See README.md for complete environment variable reference. Key settings:
 - **Parsing**: Tree-Sitter (9 languages)
 - **Storage**: SQLite, Tantivy, LanceDB
 - **Embeddings**: Jina Code (ONNX), optional FastEmbed
+- **LLM**: Qwen2.5-Coder-1.5B (llama.cpp with Metal GPU)
 - **Reranking**: ONNX Runtime (cross-encoder)
 - **Tokenization**: tiktoken (o200k_base)
 - **Protocol**: Model Context Protocol (MCP)

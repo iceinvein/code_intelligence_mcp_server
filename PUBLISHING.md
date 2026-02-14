@@ -66,6 +66,6 @@ Once published, users can use your MCP server without installing anything manual
 The wrapper script automatically:
 
 * Sets `BASE_DIR` to the current project root.
-* Enables the `candle` local AI backend.
+* Enables the JinaCode embedding backend.
 * Enables Metal acceleration on macOS.
-* Stores indexes in `.cimcp/` inside the project.
+* Stores per-repo indexes under `~/.code-intelligence/repos/<hash>/`.

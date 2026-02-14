@@ -23,10 +23,7 @@ export EMBEDDINGS_AUTO_DOWNLOAD="true"
 # Metal GPU acceleration (macOS)
 export EMBEDDINGS_DEVICE="metal"
 
-# Optional: Set persistent storage paths to a hidden dir in the repo
-export DB_PATH="$REPO_ROOT/.cimcp/code-intelligence.db"
-export VECTOR_DB_PATH="$REPO_ROOT/.cimcp/vectors"
-export TANTIVY_INDEX_PATH="$REPO_ROOT/.cimcp/tantivy-index"
+# Per-repo data auto-derived from BASE_DIR under ~/.code-intelligence/repos/<hash>/
 
 # Run the server
 exec "$BINARY"

@@ -22,7 +22,7 @@ python3 scripts/run_benchmark.py
 cargo build --release    # Script runs ./target/release/code-intelligence-mcp-server
 ```
 
-For live mode, `.cimcp/` must exist with a populated index (run the MCP server at least once first).
+For live mode, the index must exist under `~/.code-intelligence/repos/<hash>/` (run the MCP server at least once first).
 
 ### Options
 

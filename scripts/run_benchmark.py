@@ -13,7 +13,7 @@ Usage:
 
 Modes:
     Fresh (default): Temp data dirs, hash embeddings, full re-index. Fast (~60s) but BM25-only.
-    Live (--live):   Uses existing .cimcp/ data with real embeddings + LLM descriptions.
+    Live (--live):   Uses existing ~/.code-intelligence/repos/<hash>/ data with real embeddings + LLM descriptions.
                      Comparable to agent-based benchmark rounds. Requires no running MCP server.
 
 Output: docs/benchmark_rounds/round_N_results.md
@@ -29,6 +29,7 @@ import queue
 import tempfile
 import shutil
 import argparse
+import hashlib
 from datetime import datetime
 
 # Force unbuffered output
@@ -326,7 +327,7 @@ def main():
     parser.add_argument("--output", type=str, default="", help="Output file path")
     parser.add_argument("--limit", type=int, default=5, help="Results per query (default=5)")
     parser.add_argument("--live", action="store_true",
-                        help="Use existing .cimcp/ data (real embeddings + LLM descriptions)")
+                        help="Use existing data (real embeddings + LLM descriptions)")
     args = parser.parse_args()
 
     if not os.path.exists(BINARY):
@@ -362,16 +363,29 @@ def main():
     data_dir = None  # Only set for fresh mode (temp dir to clean up)
 
     if args.live:
-        # Live mode: use existing .cimcp/ data with real embeddings
-        cimcp_dir = os.path.join(BASE_DIR, ".cimcp")
-        if not os.path.isdir(cimcp_dir):
-            print(f"ERROR: No .cimcp/ directory found at {cimcp_dir}", flush=True)
-            print(f"  Run the MCP server once first to build the index.", flush=True)
-            return 1
+        # Live mode: use existing data with real embeddings
+        # Compute repo data dir the same way the Rust binary does:
+        # ~/.code-intelligence/repos/<sha256(BASE_DIR)[:16]>/
+        base_dir_canonical = os.path.realpath(BASE_DIR)
+        repo_hash = hashlib.sha256(base_dir_canonical.encode()).hexdigest()[:16]
+        code_intel_dir = os.path.join(os.path.expanduser("~"), ".code-intelligence")
+        repo_data_dir = os.path.join(code_intel_dir, "repos", repo_hash)
 
-        db_path = os.path.join(cimcp_dir, "code-intelligence.db")
-        tantivy_dir = os.path.join(cimcp_dir, "tantivy-index")
-        vector_dir = os.path.join(cimcp_dir, "vectors")
+        # Fallback: also check legacy .cimcp/ location
+        if not os.path.isdir(repo_data_dir):
+            legacy_dir = os.path.join(BASE_DIR, ".cimcp")
+            if os.path.isdir(legacy_dir):
+                print(f"WARNING: New data dir not found at {repo_data_dir}", flush=True)
+                print(f"  Using legacy .cimcp/ directory at {legacy_dir}", flush=True)
+                repo_data_dir = legacy_dir
+            else:
+                print(f"ERROR: No data directory found at {repo_data_dir}", flush=True)
+                print(f"  Run the MCP server once first to build the index.", flush=True)
+                return 1
+
+        db_path = os.path.join(repo_data_dir, "code-intelligence.db")
+        tantivy_dir = os.path.join(repo_data_dir, "tantivy-index")
+        vector_dir = os.path.join(repo_data_dir, "vectors")
 
         if not os.path.exists(db_path):
             print(f"ERROR: No database at {db_path}", flush=True)
@@ -384,7 +398,7 @@ def main():
         env["VECTOR_DB_PATH"] = vector_dir
         # Don't override EMBEDDINGS_BACKEND — use real fastembed
         # Don't set LLM_ENABLED=false — descriptions already in DB/index
-        print(f"Data dir: {cimcp_dir} (live)", flush=True)
+        print(f"Data dir: {repo_data_dir} (live)", flush=True)
     else:
         # Fresh mode: temp dirs, hash embeddings, full re-index
         data_dir = tempfile.mkdtemp(prefix="cimcp_bench_")

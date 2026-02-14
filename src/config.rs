@@ -7,35 +7,48 @@ use std::{
 };
 
 use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
+use crate::registry::RepoRegistry;
 
-/// Returns the global cimcp directory (~/.cimcp)
+/// Returns the global data directory (~/.code-intelligence)
 ///
 /// This function uses a layered fallback strategy to avoid panicking:
-/// 1. Try $HOME/.cimcp
-/// 2. Try $XDG_DATA_HOME/cimcp
-/// 3. Fall back to /tmp/.cimcp (logs a warning since this is non-standard)
+/// 1. Try $HOME/.code-intelligence
+/// 2. Try $XDG_DATA_HOME/code-intelligence
+/// 3. Fall back to /tmp/.code-intelligence (logs a warning since this is non-standard)
 ///
 /// The /tmp fallback ensures the application can always start, even in
 /// degraded environments (e.g., chroot, missing HOME).
-pub fn get_global_cimcp_dir() -> Utf8PathBuf {
+pub fn get_data_dir() -> Utf8PathBuf {
     env::var("HOME")
         .ok()
-        .and_then(|home| Utf8PathBuf::from_path_buf(PathBuf::from(home).join(".cimcp")).ok())
+        .and_then(|home| {
+            Utf8PathBuf::from_path_buf(PathBuf::from(home).join(".code-intelligence")).ok()
+        })
         .or_else(|| {
-            // Fallback to XDG_DATA_HOME or use /tmp/.cimcp as ultimate fallback
             env::var("XDG_DATA_HOME")
                 .ok()
-                .and_then(|p| Utf8PathBuf::from_path_buf(PathBuf::from(p).join("cimcp")).ok())
+                .and_then(|p| {
+                    Utf8PathBuf::from_path_buf(PathBuf::from(p).join("code-intelligence")).ok()
+                })
         })
         .unwrap_or_else(|| {
-            // Use /tmp/.cimcp as last resort instead of panicking
-            let fallback = Utf8PathBuf::from("/tmp/.cimcp");
+            let fallback = Utf8PathBuf::from("/tmp/.code-intelligence");
             tracing::warn!(
                 path = %fallback,
                 "HOME and XDG_DATA_HOME not set, using temporary fallback (non-standard location)"
             );
             fallback
         })
+}
+
+/// Returns the per-repo data directory (~/.code-intelligence/repos/<hash>/)
+///
+/// Computes a deterministic 16-character SHA256 hash of the base_dir path
+/// to isolate each repo's indexes (SQLite, Tantivy, LanceDB).
+pub fn get_repo_data_dir(base_dir: &str) -> Utf8PathBuf {
+    let data_dir = get_data_dir();
+    let hash = RepoRegistry::path_hash(base_dir);
+    data_dir.join("repos").join(hash)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,23 +64,6 @@ pub enum EmbeddingsBackend {
     FastEmbed,
     Hash,
     JinaCode,
-}
-
-/// Returns the standalone data directory (~/.code-intelligence)
-pub fn get_standalone_data_dir() -> Utf8PathBuf {
-    env::var("HOME")
-        .ok()
-        .and_then(|home| {
-            Utf8PathBuf::from_path_buf(PathBuf::from(home).join(".code-intelligence")).ok()
-        })
-        .unwrap_or_else(|| {
-            let fallback = Utf8PathBuf::from("/tmp/.code-intelligence");
-            tracing::warn!(
-                path = %fallback,
-                "HOME not set, using temp fallback for standalone data"
-            );
-            fallback
-        })
 }
 
 // TOML parsing structs (private, for deserialization)
@@ -131,7 +127,7 @@ pub struct StandaloneConfig {
 
 impl Default for StandaloneConfig {
     fn default() -> Self {
-        let data_dir = get_standalone_data_dir();
+        let data_dir = get_data_dir();
         Self {
             host: "127.0.0.1".to_string(),
             port: 3333,
@@ -280,8 +276,8 @@ impl StandaloneConfig {
         let vector_db_path = repo_data_dir.join("vectors");
         let tantivy_index_path = repo_data_dir.join("tantivy-index");
 
-        // Get global cimcp for shared resources
-        let global_dir = get_global_cimcp_dir();
+        // Get global data dir for shared resources (models, caches)
+        let global_dir = get_data_dir();
 
         Config {
             base_dir: repo_path.clone(),
@@ -469,9 +465,8 @@ impl Config {
                 let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
                     Some(raw) => Some(to_utf8_pathbuf(Path::new(raw))?),
                     None => {
-                        // Default to ~/.cimcp/embeddings-cache
-                        let global_dir = get_global_cimcp_dir();
-                        Some(global_dir.join("embeddings-cache"))
+                        let data_dir = get_data_dir();
+                        Some(data_dir.join("models/embeddings-cache"))
                     }
                 };
                 (EmbeddingsBackend::FastEmbed, embeddings_model_dir)
@@ -481,19 +476,18 @@ impl Config {
                 let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
                     Some(raw) => Some(to_utf8_pathbuf(Path::new(raw))?),
                     None => {
-                        // Default to ~/.cimcp/models/jina-code-onnx
-                        let global_dir = get_global_cimcp_dir();
-                        Some(global_dir.join("models/jina-code-onnx"))
+                        let data_dir = get_data_dir();
+                        Some(data_dir.join("models/jina-code-onnx"))
                     }
                 };
                 (EmbeddingsBackend::JinaCode, embeddings_model_dir)
             }
             None => {
                 // Default to JinaCode for better code understanding
-                let global_dir = get_global_cimcp_dir();
+                let data_dir = get_data_dir();
                 (
                     EmbeddingsBackend::JinaCode,
-                    Some(global_dir.join("models/jina-code-onnx")),
+                    Some(data_dir.join("models/jina-code-onnx")),
                 )
             }
         };
@@ -506,22 +500,23 @@ impl Config {
                 _ => "BAAI/bge-base-en-v1.5".to_string(),
             });
 
-        // Default to global ~/.cimcp directory
-        let global_dir = get_global_cimcp_dir();
+        // Per-repo data directory under ~/.code-intelligence/repos/<hash>/
+        let repo_data_dir = get_repo_data_dir(base_dir.as_str());
+        let data_dir = get_data_dir();
         let db_path = optional_env("DB_PATH")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?
-            .unwrap_or_else(|| global_dir.join("code-intelligence.db"));
+            .unwrap_or_else(|| repo_data_dir.join("code-intelligence.db"));
 
         let vector_db_path = optional_env("VECTOR_DB_PATH")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?
-            .unwrap_or_else(|| global_dir.join("vectors"));
+            .unwrap_or_else(|| repo_data_dir.join("vectors"));
 
         let tantivy_index_path = optional_env("TANTIVY_INDEX_PATH")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?
-            .unwrap_or_else(|| global_dir.join("tantivy-index"));
+            .unwrap_or_else(|| repo_data_dir.join("tantivy-index"));
 
         let embeddings_device = optional_env("EMBEDDINGS_DEVICE")
             .as_deref()
@@ -664,7 +659,7 @@ impl Config {
         let reranker_cache_dir = optional_env("RERANKER_CACHE_DIR")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?
-            .or_else(|| Some(global_dir.join("reranker-cache")));
+            .or_else(|| Some(data_dir.join("reranker-cache")));
 
         // Learning config (FNDN-04)
         let learning_enabled = optional_env("LEARNING_ENABLED")
@@ -811,7 +806,7 @@ impl Config {
         let llm_model_dir = optional_env("LLM_MODEL_DIR")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?
-            .or_else(|| Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")));
+            .or_else(|| Some(data_dir.join("models/qwen2.5-coder-1.5b-gguf")));
         let llm_max_tokens: u32 = optional_env("LLM_MAX_TOKENS")
             .as_deref()
             .and_then(|v| v.parse().ok())
@@ -1196,11 +1191,12 @@ mod tests {
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
         assert!(cfg.embeddings_model_dir.is_some());
 
-        // Paths should now use global ~/.cimcp directory
-        let expected_global = home.join(".cimcp");
-        assert_eq!(cfg.db_path, expected_global.join("code-intelligence.db"));
-        assert_eq!(cfg.vector_db_path, expected_global.join("vectors"));
-        assert_eq!(cfg.tantivy_index_path, expected_global.join("tantivy-index"));
+        // Paths should now use per-repo directory under ~/.code-intelligence/repos/<hash>/
+        let repo_hash = crate::registry::RepoRegistry::path_hash(cfg.base_dir.as_str());
+        let expected_repo_dir = home.join(".code-intelligence").join("repos").join(&repo_hash);
+        assert_eq!(cfg.db_path, expected_repo_dir.join("code-intelligence.db"));
+        assert_eq!(cfg.vector_db_path, expected_repo_dir.join("vectors"));
+        assert_eq!(cfg.tantivy_index_path, expected_repo_dir.join("tantivy-index"));
         assert_eq!(cfg.repo_roots, vec![cfg.base_dir.clone()]);
     }
 
@@ -1218,7 +1214,7 @@ mod tests {
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
         assert_eq!(
             cfg.embeddings_model_dir,
-            Some(home.join(".cimcp/models/jina-code-onnx"))
+            Some(home.join(".code-intelligence/models/jina-code-onnx"))
         );
         assert_eq!(
             cfg.embeddings_model_repo.as_deref(),

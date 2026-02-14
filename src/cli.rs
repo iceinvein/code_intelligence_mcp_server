@@ -85,14 +85,14 @@ pub fn print_help() {
     println!("    BASE_DIR=/absolute/path/to/repo");
     println!();
     println!("  Common env (defaults shown):");
-    println!("    EMBEDDINGS_MODEL_DIR=/path/to/cache   (default: ~/.cimcp/embeddings-cache)");
+    println!("    EMBEDDINGS_MODEL_DIR=/path/to/cache   (default: ~/.code-intelligence/models/jina-code-onnx)");
     println!("    EMBEDDINGS_BACKEND=fastembed|hash|jinacode (default: jinacode)");
     println!("    EMBEDDINGS_MODEL_REPO=org/repo       (default: jinaai/jina-embeddings-v2-base-code)");
     println!("    EMBEDDINGS_DEVICE=cpu|metal          (default: cpu)");
     println!("    EMBEDDING_BATCH_SIZE=32");
-    println!("    DB_PATH=~/.cimcp/code-intelligence.db");
-    println!("    VECTOR_DB_PATH=~/.cimcp/vectors");
-    println!("    TANTIVY_INDEX_PATH=~/.cimcp/tantivy-index");
+    println!("    DB_PATH=<auto>                       (per-repo: ~/.code-intelligence/repos/<hash>/code-intelligence.db)");
+    println!("    VECTOR_DB_PATH=<auto>                (per-repo: ~/.code-intelligence/repos/<hash>/vectors)");
+    println!("    TANTIVY_INDEX_PATH=<auto>            (per-repo: ~/.code-intelligence/repos/<hash>/tantivy-index)");
     println!("    MAX_CONTEXT_BYTES=200000");
     println!("    WATCH_MODE=true|false                (default: true)");
     println!("    REPO_ROOTS=/path/a,/path/b           (default: BASE_DIR only)");
@@ -100,7 +100,7 @@ pub fn print_help() {
     println!("  LLM description generation:");
     println!("    LLM_ENABLED=true|false               (default: true)");
     println!("    LLM_DEVICE=cpu|metal                  (default: cpu)");
-    println!("    LLM_MODEL_DIR=/path/to/model          (default: ~/.cimcp/models/qwen2.5-coder-1.5b-gguf)");
+    println!("    LLM_MODEL_DIR=/path/to/model          (default: ~/.code-intelligence/models/qwen2.5-coder-1.5b-gguf)");
     println!("    LLM_MAX_TOKENS=30                     (default: 30)");
     println!("    LLM_BATCH_COMMIT=10                   (default: 10)");
     println!();

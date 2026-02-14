@@ -60,41 +60,10 @@ if (!env.METRICS_ENABLED) {
     env.METRICS_ENABLED = 'false';
 }
 
-// 5. Set persistence paths to be inside the project (BASE_DIR/.cimcp) 
-// if not explicitly overridden. This keeps indexes local to the project.
-const cimcpDir = path.join(env.BASE_DIR, '.cimcp');
-
-// Ensure .cimcp directory exists
-if (!fs.existsSync(cimcpDir)) {
-    try {
-        fs.mkdirSync(cimcpDir, { recursive: true });
-    } catch (e) {
-        console.error(`Failed to create .cimcp directory at ${cimcpDir}:`, e.message);
-        // Continue, the server might handle it or fail later
-    }
-}
-
-if (!env.DB_PATH) env.DB_PATH = path.join(cimcpDir, 'code-intelligence.db');
-if (!env.VECTOR_DB_PATH) env.VECTOR_DB_PATH = path.join(cimcpDir, 'vectors');
-if (!env.TANTIVY_INDEX_PATH) env.TANTIVY_INDEX_PATH = path.join(cimcpDir, 'tantivy-index');
-
-// Also set model dir - use GLOBAL cache to avoid downloading models for every project
-// Models are shared across projects, but indexes remain local
-if (!env.EMBEDDINGS_MODEL_DIR) {
-    // macOS: ~/Library/Application Support/cimcp/embeddings-cache
-    env.EMBEDDINGS_MODEL_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'cimcp', 'embeddings-cache');
-
-    // Ensure global model cache directory exists
-    if (!fs.existsSync(env.EMBEDDINGS_MODEL_DIR)) {
-        try {
-            fs.mkdirSync(env.EMBEDDINGS_MODEL_DIR, { recursive: true });
-        } catch (e) {
-            console.error(`Failed to create global embeddings cache at ${env.EMBEDDINGS_MODEL_DIR}:`, e.message);
-            console.warn('Falling back to local project cache for this session');
-            env.EMBEDDINGS_MODEL_DIR = path.join(cimcpDir, 'embeddings-model');
-        }
-    }
-}
+// Per-repo data paths are auto-derived by the Rust binary from BASE_DIR.
+// Indexes are stored under ~/.code-intelligence/repos/<hash>/.
+// Models are shared across projects under ~/.code-intelligence/models/.
+// No need to set DB_PATH, VECTOR_DB_PATH, or TANTIVY_INDEX_PATH here.
 
 // Spawn the process
 const child = spawn(BINARY_PATH, process.argv.slice(2), {

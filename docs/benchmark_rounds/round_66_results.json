@@ -1,0 +1,1044 @@
+{
+  "round": 66,
+  "mode": "live",
+  "timestamp": "2026-02-14T22:57:29.872719",
+  "symbol_count": 1729,
+  "elapsed_seconds": 6.088167905807495,
+  "results": [
+    {
+      "query": {
+        "id": 1,
+        "query": "How does the ranking and scoring system work?",
+        "expected": "retrieval/ranking/score.rs, retrieval/ranking/mod.rs, retrieval/ranking/diversify.rs, retrieval/ranking/rrf.rs"
+      },
+      "results": [
+        {
+          "name": "apply_reranker_scores",
+          "kind": "function",
+          "score": 14.71,
+          "file": "ranking/reranker.rs",
+          "file_full": "src/retrieval/ranking/reranker.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 6.029362678527832,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "should_rerank",
+          "kind": "function",
+          "score": 14.0,
+          "file": "ranking/reranker.rs",
+          "file_full": "src/retrieval/ranking/reranker.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 7.810670852661133,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "reciprocal_rank_fusion",
+          "kind": "function",
+          "score": 13.93,
+          "file": "ranking/rrf.rs",
+          "file_full": "src/retrieval/ranking/rrf.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 6.171175003051758,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/retrieval/ranking/rrf.rs",
+          "kind": "file",
+          "score": 12.39,
+          "file": "ranking/rrf.rs",
+          "file_full": "src/retrieval/ranking/rrf.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.439176559448242,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "test_rrf_respects_weights",
+          "kind": "function",
+          "score": 0.14,
+          "file": "ranking/rrf.rs",
+          "file_full": "src/retrieval/ranking/rrf.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 5.505087852478027,
+          "intent_mult": 0.009999999776482582,
+          "test_penalty": -10.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 2,
+        "query": "How are embeddings generated and stored?",
+        "expected": "storage/vector.rs, embedding backend files, storage/ layer"
+      },
+      "results": [
+        {
+          "name": "generate_embeddings_for_parallel_indexed_files",
+          "kind": "function",
+          "score": 13.75,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.858760833740234,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "embed_and_build_vector_records",
+          "kind": "function",
+          "score": 12.9,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 4.382752895355225,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "impl Embedder for FastEmbedder",
+          "kind": "impl",
+          "score": 12.26,
+          "file": "embeddings/fastembed.rs",
+          "file_full": "src/embeddings/fastembed.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 5.7253618240356445,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/embeddings/mod.rs",
+          "kind": "file",
+          "score": 12.26,
+          "file": "embeddings/mod.rs",
+          "file_full": "src/embeddings/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 10.0,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/embeddings/fastembed.rs",
+          "kind": "file",
+          "score": 11.74,
+          "file": "embeddings/fastembed.rs",
+          "file_full": "src/embeddings/fastembed.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.209802627563477,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 3,
+        "query": "How does tree-sitter parsing work in this codebase?",
+        "expected": "indexer/parser.rs, indexer/extract/ language extractors"
+      },
+      "results": [
+        {
+          "name": "parse_type_relations",
+          "kind": "function",
+          "score": 13.05,
+          "file": "pipeline/parsing.rs",
+          "file_full": "src/indexer/pipeline/parsing.rs",
+          "keyword_score": 39.16724395751953,
+          "vector_score": 0.49591580033302307,
+          "base_score": 6.6577606201171875,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/parser.rs",
+          "kind": "file",
+          "score": 12.52,
+          "file": "indexer/parser.rs",
+          "file_full": "src/indexer/parser.rs",
+          "keyword_score": 106.2615737915039,
+          "vector_score": 0.5258410573005676,
+          "base_score": 10.0,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "walk",
+          "kind": "function",
+          "score": 12.52,
+          "file": "extract/python.rs",
+          "file_full": "src/indexer/extract/python.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.5238761305809021,
+          "base_score": 4.704355239868164,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/extract/c.rs",
+          "kind": "file",
+          "score": 10.44,
+          "file": "extract/c.rs",
+          "file_full": "src/indexer/extract/c.rs",
+          "keyword_score": 58.286556243896484,
+          "vector_score": 0.4997735917568207,
+          "base_score": 7.810747146606445,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "parse_next_identifier",
+          "kind": "function",
+          "score": 9.37,
+          "file": "pipeline/parsing.rs",
+          "file_full": "src/indexer/pipeline/parsing.rs",
+          "keyword_score": 38.992671966552734,
+          "vector_score": 0.0,
+          "base_score": 0.8537085056304932,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 4,
+        "query": "Configuration from environment variables",
+        "expected": "Config/settings module, main entry point with env var reads"
+      },
+      "results": [
+        {
+          "name": "required_env",
+          "kind": "function",
+          "score": 30.59,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "keyword_score": 22.694421768188477,
+          "vector_score": 0.5571424961090088,
+          "base_score": 9.17664909362793,
+          "intent_mult": 3.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "optional_env",
+          "kind": "function",
+          "score": 30.16,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "keyword_score": 18.21921730041504,
+          "vector_score": 0.519062876701355,
+          "base_score": 8.404916763305664,
+          "intent_mult": 3.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "from_env",
+          "kind": "function",
+          "score": 28.32,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.5079648494720459,
+          "base_score": 3.8832154273986816,
+          "intent_mult": 3.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "load",
+          "kind": "function",
+          "score": 23.49,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.49656233191490173,
+          "base_score": 3.680647850036621,
+          "intent_mult": 3.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "from_env_requires_base_dir",
+          "kind": "function",
+          "score": 0.3,
+          "file": "src/config.rs",
+          "file_full": "src/config.rs",
+          "keyword_score": 34.321380615234375,
+          "vector_score": 0.5415858626365662,
+          "base_score": 8.906347274780273,
+          "intent_mult": 3.0,
+          "test_penalty": -10.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 5,
+        "query": "Indexing pipeline file scanning and symbol extraction",
+        "expected": "indexer/mod.rs, indexer/extract/mod.rs, file scanner, symbol types"
+      },
+      "results": [
+        {
+          "name": "src/indexer/pipeline/mod.rs",
+          "kind": "file",
+          "score": 15.72,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.724617004394531,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/extract/cpp.rs",
+          "kind": "file",
+          "score": 15.59,
+          "file": "extract/cpp.rs",
+          "file_full": "src/indexer/extract/cpp.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 5.967743873596191,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/pipeline/scan.rs",
+          "kind": "file",
+          "score": 15.59,
+          "file": "pipeline/scan.rs",
+          "file_full": "src/indexer/pipeline/scan.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 10.0,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/pipeline/parallel.rs",
+          "kind": "file",
+          "score": 14.98,
+          "file": "pipeline/parallel.rs",
+          "file_full": "src/indexer/pipeline/parallel.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 8.976661682128906,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/extract/c.rs",
+          "kind": "file",
+          "score": 11.69,
+          "file": "extract/c.rs",
+          "file_full": "src/indexer/extract/c.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 5.835694313049316,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 6,
+        "query": "How does the MCP server handle incoming tool requests?",
+        "expected": "server/mod.rs, handlers/mod.rs, tool dispatch/routing logic"
+      },
+      "results": [
+        {
+          "name": "dispatch_tool_call",
+          "kind": "function",
+          "score": 22.21,
+          "file": "server/mod.rs",
+          "file_full": "src/server/mod.rs",
+          "keyword_score": 36.6591796875,
+          "vector_score": 0.5582265853881836,
+          "base_score": 8.729135513305664,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_call_tool_request",
+          "kind": "function",
+          "score": 19.43,
+          "file": "server/mod.rs",
+          "file_full": "src/server/mod.rs",
+          "keyword_score": 58.3482666015625,
+          "vector_score": 0.618598222732544,
+          "base_score": 10.0,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_call_tool_request",
+          "kind": "function",
+          "score": 19.22,
+          "file": "server/standalone.rs",
+          "file_full": "src/server/standalone.rs",
+          "keyword_score": 57.65532302856445,
+          "vector_score": 0.6163387298583984,
+          "base_score": 9.786153793334961,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/server/mod.rs",
+          "kind": "file",
+          "score": 19.22,
+          "file": "server/mod.rs",
+          "file_full": "src/server/mod.rs",
+          "keyword_score": 51.683021545410156,
+          "vector_score": 0.5795896053314209,
+          "base_score": 8.711169242858887,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_list_tools_request",
+          "kind": "function",
+          "score": 19.21,
+          "file": "server/standalone.rs",
+          "file_full": "src/server/standalone.rs",
+          "keyword_score": 51.35759735107422,
+          "vector_score": 0.5575541853904724,
+          "base_score": 9.091413497924805,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 7,
+        "query": "How does the WebSocket handler work?",
+        "expected": "WebSocket-related handler code, connection management"
+      },
+      "results": [
+        {
+          "name": "extract_pattern_details websocket_handler",
+          "kind": "function",
+          "score": 16.33,
+          "file": "extract/elysia.rs",
+          "file_full": "src/indexer/extract/elysia.rs",
+          "keyword_score": 54.74595642089844,
+          "vector_score": 0.42592543363571167,
+          "base_score": 7.161803722381592,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "fmt websocket_handler",
+          "kind": "function",
+          "score": 15.1,
+          "file": "extract/symbol.rs",
+          "file_full": "src/indexer/extract/symbol.rs",
+          "keyword_score": 70.57075500488281,
+          "vector_score": 0.4307462275028229,
+          "base_score": 7.198910236358643,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "spawn",
+          "kind": "function",
+          "score": 11.69,
+          "file": "src/web_ui.rs",
+          "file_full": "src/web_ui.rs",
+          "keyword_score": 40.9268798828125,
+          "vector_score": 0.4663194715976715,
+          "base_score": 8.271537780761719,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "extract_plugin_name",
+          "kind": "function",
+          "score": 10.22,
+          "file": "extract/elysia.rs",
+          "file_full": "src/indexer/extract/elysia.rs",
+          "keyword_score": null,
+          "vector_score": null,
+          "base_score": null,
+          "intent_mult": null,
+          "test_penalty": null
+        },
+        {
+          "name": "framework_tags_make_websocket_handler_searchable",
+          "kind": "function",
+          "score": 0.15,
+          "file": "storage/tantivy.rs",
+          "file_full": "src/storage/tantivy.rs",
+          "keyword_score": 93.62178802490234,
+          "vector_score": 0.5047540664672852,
+          "base_score": 9.736727714538574,
+          "intent_mult": 1.5,
+          "test_penalty": -10.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 8,
+        "query": "SQLite database schema tables initialization",
+        "expected": "storage/sqlite/ schema definitions, migration/init code"
+      },
+      "results": [
+        {
+          "name": "src/storage/sqlite/schema.rs",
+          "kind": "file",
+          "score": 1000.39,
+          "file": "sqlite/schema.rs",
+          "file_full": "src/storage/sqlite/schema.rs",
+          "keyword_score": 58.173561096191406,
+          "vector_score": 0.5106592178344727,
+          "base_score": 7.518506050109863,
+          "intent_mult": 75.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "TodoRow",
+          "kind": "struct",
+          "score": 424.9,
+          "file": "sqlite/schema.rs",
+          "file_full": "src/storage/sqlite/schema.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.4670078456401825,
+          "base_score": 1.6722321510314941,
+          "intent_mult": 75.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "impl SqliteStore",
+          "kind": "impl",
+          "score": 7.06,
+          "file": "sqlite/operations.rs",
+          "file_full": "src/storage/sqlite/operations.rs",
+          "keyword_score": 68.5751724243164,
+          "vector_score": 0.5550988912582397,
+          "base_score": 8.59731388092041,
+          "intent_mult": 0.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "migrate_add_edges_resolution_columns",
+          "kind": "function",
+          "score": 7.06,
+          "file": "sqlite/operations.rs",
+          "file_full": "src/storage/sqlite/operations.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.4889903664588928,
+          "base_score": 3.0879178047180176,
+          "intent_mult": 0.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "init",
+          "kind": "function",
+          "score": 3.46,
+          "file": "sqlite/operations.rs",
+          "file_full": "src/storage/sqlite/operations.rs",
+          "keyword_score": 63.37337875366211,
+          "vector_score": 0.6103416681289673,
+          "base_score": 9.298537254333496,
+          "intent_mult": 0.5,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 9,
+        "query": "Error handling and graceful degradation",
+        "expected": "Error types, fallback logic across multiple modules"
+      },
+      "results": [
+        {
+          "name": "tool_internal_error",
+          "kind": "function",
+          "score": 33.85,
+          "file": "handlers/mod.rs",
+          "file_full": "src/handlers/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 10.0,
+          "intent_mult": 2.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "error",
+          "kind": "function",
+          "score": 27.36,
+          "file": "src/logging.rs",
+          "file_full": "src/logging.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.630702018737793,
+          "intent_mult": 2.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "PathError",
+          "kind": "enum",
+          "score": 23.4,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 7.544119834899902,
+          "intent_mult": 2.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "impl std::error::Error for PathError",
+          "kind": "impl",
+          "score": 21.13,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 8.539351463317871,
+          "intent_mult": 2.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "impl Drop for LeaderElection",
+          "kind": "impl",
+          "score": 5.47,
+          "file": "src/leader.rs",
+          "file_full": "src/leader.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 5.937238693237305,
+          "intent_mult": 0.20000000298023224,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 10,
+        "query": "JSON serialization and response formatting",
+        "expected": "Serde derive usage, response builders, MCP protocol formatting"
+      },
+      "results": [
+        {
+          "name": "SearchResponse",
+          "kind": "struct",
+          "score": 11.56,
+          "file": "retrieval/mod.rs",
+          "file_full": "src/retrieval/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 10.0,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "SearchResponseWithSignals",
+          "kind": "struct",
+          "score": 9.77,
+          "file": "retrieval/mod.rs",
+          "file_full": "src/retrieval/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.385650634765625,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "RankedHit",
+          "kind": "struct",
+          "score": 9.03,
+          "file": "retrieval/mod.rs",
+          "file_full": "src/retrieval/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 7.417212009429932,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_search_framework_patterns",
+          "kind": "function",
+          "score": 9.03,
+          "file": "handlers/mod.rs",
+          "file_full": "src/handlers/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 8.136007308959961,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "cache_insert_response",
+          "kind": "function",
+          "score": 8.68,
+          "file": "retrieval/mod.rs",
+          "file_full": "src/retrieval/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 0.5426119565963745,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 11,
+        "query": "Async concurrency and parallel processing",
+        "expected": "Async mutex usage, parallel indexing, concurrent operations"
+      },
+      "results": [
+        {
+          "name": "index_files_parallel_async",
+          "kind": "function",
+          "score": 12.92,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.704839706420898,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "index_all",
+          "kind": "function",
+          "score": 9.82,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 3.451592445373535,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "index_files_parallel",
+          "kind": "function",
+          "score": 9.82,
+          "file": "pipeline/parallel.rs",
+          "file_full": "src/indexer/pipeline/parallel.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 5.618501663208008,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/pipeline/parallel.rs",
+          "kind": "file",
+          "score": 8.6,
+          "file": "pipeline/parallel.rs",
+          "file_full": "src/indexer/pipeline/parallel.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 4.831511497497559,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "generate_embeddings_for_parallel_indexed_files",
+          "kind": "function",
+          "score": 8.31,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 6.391966342926025,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 12,
+        "query": "Caching and cache invalidation",
+        "expected": "retrieval/cache.rs, embedding cache, TTL/invalidation logic"
+      },
+      "results": [
+        {
+          "name": "stats",
+          "kind": "function",
+          "score": 14.06,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.624290466308594,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "CacheStats",
+          "kind": "struct",
+          "score": 13.73,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.45800495147705,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "EmbeddingCache",
+          "kind": "struct",
+          "score": 13.35,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 8.838220596313477,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "CacheStats",
+          "kind": "struct",
+          "score": 12.42,
+          "file": "queries/cache.rs",
+          "file_full": "src/storage/sqlite/queries/cache.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 8.17197036743164,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "cache_key_differs_by_query",
+          "kind": "function",
+          "score": 0.12,
+          "file": "reranker/cache.rs",
+          "file_full": "src/reranker/cache.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 9.472496032714844,
+          "intent_mult": 1.0,
+          "test_penalty": -10.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 13,
+        "query": "PathNormalizer struct definition and methods",
+        "expected": "path/mod.rs -- the struct and its impl block"
+      },
+      "results": [
+        {
+          "name": "PathNormalizer",
+          "kind": "struct",
+          "score": 23.47,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 10.0,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "impl PathNormalizer",
+          "kind": "impl",
+          "score": 15.35,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 7.6018266677856445,
+          "intent_mult": 1.5,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "is_definition_kind",
+          "kind": "function",
+          "score": 11.04,
+          "file": "ranking/diversify.rs",
+          "file_full": "src/retrieval/ranking/diversify.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 8.361976623535156,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/path/mod.rs",
+          "kind": "file",
+          "score": 10.68,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 7.662421226501465,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "normalize_for_compare",
+          "kind": "function",
+          "score": 10.3,
+          "file": "path/mod.rs",
+          "file_full": "src/path/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.0,
+          "base_score": 7.592825889587402,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 14,
+        "query": "EmbeddingCache get put cached embedding",
+        "expected": "The cache struct and its get/put methods"
+      },
+      "results": [
+        {
+          "name": "EmbeddingCache",
+          "kind": "struct",
+          "score": 16.32,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "keyword_score": 45.223655700683594,
+          "vector_score": 0.5608037710189819,
+          "base_score": 8.306594848632812,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "EmbeddingCacheEntry",
+          "kind": "struct",
+          "score": 13.81,
+          "file": "queries/cache.rs",
+          "file_full": "src/storage/sqlite/queries/cache.rs",
+          "keyword_score": 47.982322692871094,
+          "vector_score": 0.6347948908805847,
+          "base_score": 8.578069686889648,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "put_cached_embedding",
+          "kind": "function",
+          "score": 13.81,
+          "file": "sqlite/mod.rs",
+          "file_full": "src/storage/sqlite/mod.rs",
+          "keyword_score": 98.09862518310547,
+          "vector_score": 0.6961376667022705,
+          "base_score": 9.829065322875977,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "put",
+          "kind": "function",
+          "score": 13.73,
+          "file": "storage/cache.rs",
+          "file_full": "src/storage/cache.rs",
+          "keyword_score": 80.74349212646484,
+          "vector_score": 0.6950544714927673,
+          "base_score": 10.0,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "put_cached_embedding",
+          "kind": "function",
+          "score": 12.97,
+          "file": "queries/cache.rs",
+          "file_full": "src/storage/sqlite/queries/cache.rs",
+          "keyword_score": 89.16862487792969,
+          "vector_score": 0.613437831401825,
+          "base_score": 8.934661865234375,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    },
+    {
+      "query": {
+        "id": 15,
+        "query": "File watcher debounce reindex on change",
+        "expected": "Watcher module, debounce logic"
+      },
+      "results": [
+        {
+          "name": "spawn_watch_loop",
+          "kind": "function",
+          "score": 13.44,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 54.11248016357422,
+          "vector_score": 0.5496638417243958,
+          "base_score": 10.0,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "create_watcher",
+          "kind": "function",
+          "score": 13.27,
+          "file": "pipeline/watch.rs",
+          "file_full": "src/indexer/pipeline/watch.rs",
+          "keyword_score": 100.7821273803711,
+          "vector_score": 0.528603196144104,
+          "base_score": 9.50687026977539,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "index_files",
+          "kind": "function",
+          "score": 13.27,
+          "file": "pipeline/mod.rs",
+          "file_full": "src/indexer/pipeline/mod.rs",
+          "keyword_score": 0.0,
+          "vector_score": 0.5293809771537781,
+          "base_score": 4.69528865814209,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "src/indexer/pipeline/watch.rs",
+          "kind": "file",
+          "score": 12.93,
+          "file": "pipeline/watch.rs",
+          "file_full": "src/indexer/pipeline/watch.rs",
+          "keyword_score": 72.74920654296875,
+          "vector_score": 0.5574246048927307,
+          "base_score": 9.733200073242188,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        },
+        {
+          "name": "handle_refresh_index",
+          "kind": "function",
+          "score": 9.63,
+          "file": "handlers/mod.rs",
+          "file_full": "src/handlers/mod.rs",
+          "keyword_score": 39.764564514160156,
+          "vector_score": 0.5446080565452576,
+          "base_score": 9.429473876953125,
+          "intent_mult": 1.0,
+          "test_penalty": 0.0
+        }
+      ]
+    }
+  ]
+}

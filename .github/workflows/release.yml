@@ -24,7 +24,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "workflow-cache-aarch64-apple-darwin"
+          shared-key: "workflow-cache-macos"
 
       - name: Install Protoc
         uses: arduino/setup-protoc@v3

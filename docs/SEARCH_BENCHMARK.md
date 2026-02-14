@@ -119,24 +119,24 @@ Results in live mode are **fully deterministic** — verified by diffing consecu
 
 ### CI Score by Query (Key Rounds)
 
-| # | Query | R5 | R12 | R25 | R37 | R43 | R47 | R49 | R50 | R55 | R56 | R58 | R59 | **R61** |
-|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
-| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 5 | 5 | 5 | 6 | 7 | 7 | **7** |
-| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 5 | 5 | 7 | **7** |
-| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 5 | 5 | 6 | **7** |
-| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | **9** |
-| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
-| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | 9 | **9** |
-| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 5 | 5 | 5 | 5 | 5 | 5 | 5 | **6** |
-| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 6 | 7 | 7 | **7** |
-| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 2 | 1 | 5 | 6 | 6 | 6 | **6** |
-| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 4 | 3 | 4 | 4 | 6 | 6 | 6 | **6** |
-| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
-| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **7** |
-| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 9 | 8 | 8 | 6 | 6 | 6 | **7** |
-| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | **8** |
-| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 7 | 7 | 7 | 7 | 8 | 8 | 7 | **7** |
-| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** | **6.9** | **7.0** | **7.2** |
+| # | Query | R5 | R12 | R25 | R37 | R43 | R47 | R49 | R50 | R55 | R56 | R58 | R59 | R61 | R63 | **R66** |
+|---|-------|----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|---------|
+| 1 | Ranking/scoring | 3 | 7 | 8 | 6 | 4 | 4 | 5 | 5 | 5 | 6 | 7 | 7 | 7 | 7 | **7** |
+| 2 | Embeddings | 3 | 7 | 5 | 4 | 8 | 7 | 7 | 7 | 7 | 5 | 5 | 7 | 7 | 8 | **9** |
+| 3 | Tree-sitter | 5 | 2 | 7 | 6 | 3 | 3 | 3 | 3 | 3 | 5 | 5 | 6 | 7 | 7 | **8** |
+| 4 | Config env | 4 | 8 | 8 | 7 | 8 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 9 | 10 | **10** |
+| 5 | Indexing pipeline | 6 | 8 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **9** |
+| 6 | MCP tool handling | 3 | 9 | 9 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | 9 | 9 | 9 | 9 | **9** |
+| 7 | WebSocket | 2 | 3 | 2 | 3 | 3 | 5 | 5 | 5 | 5 | 5 | 5 | 5 | 6 | 6 | **6** |
+| 8 | SQLite schema | 5 | 5 | 7 | 5 | 7 | 9 | 9 | 9 | 9 | 6 | 7 | 7 | 7 | 9 | **9** |
+| 9 | Error handling | 3 | 3 | 4 | 3 | 3 | 3 | 2 | 1 | 5 | 6 | 6 | 6 | 6 | 6 | **6** |
+| 10 | JSON serial. | 3 | 3 | 4 | 4 | 3 | 4 | 3 | 4 | 4 | 6 | 6 | 6 | 6 | 7 | **9** |
+| 11 | Async concurrency | 4 | 8 | 8 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | **10** |
+| 12 | Caching | 6 | 8 | 9 | 7 | 8 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | 7 | **8** |
+| 13 | PathNormalizer | 5 | 6 | 7 | 6 | 6 | 7 | 9 | 8 | 8 | 6 | 6 | 6 | 7 | 8 | **7** |
+| 14 | EmbeddingCache | 2 | 8 | 9 | 7 | 7 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 8 | 9 | **9** |
+| 15 | File watcher | 5 | 2 | 6 | 3 | 7 | 7 | 7 | 7 | 7 | 8 | 8 | 7 | 7 | 8 | **10** |
+| **CI Avg** | | **3.9** | **5.8** | **6.7** | **5.5** | **5.7** | **6.4** | **6.5** | **6.4** | **6.7** | **6.7** | **6.9** | **7.0** | **7.2** | **7.8** | **8.4** |
 
 ### CI Average Trend
 
@@ -161,7 +161,11 @@ R56: 6.7  ████████████████▊  ← Jina query em
 R58: 6.9  █████████████████▎ ← Edge expansion intent stripping + promote fix
 R59: 7.0  █████████████████▌ ← Import tag scoping + expansion importance filter
 R61: 7.2  ██████████████████  ← SQL-based test enforcement in final pass
+R63: 7.8  ███████████████████▌ ← Name match weight increase in term_coverage
+R66: 8.4  █████████████████████ ← definition_bias symbol-name heuristic
 ```
+
+**Note:** R63-R66 CI averages include significant evaluator noise (~±0.5). R63's name match weight (Change A) is the main code change; R66's def_bias heuristic is principled but had minimal measurable impact on result ordering.
 
 **Key milestones:**
 - R5 (3.9): First full 15-query baseline
@@ -175,6 +179,8 @@ R61: 7.2  ██████████████████  ← SQL-based 
 - R58 (6.9): Edge expansion intent stripping + vector promote fix.
 - **R59 (7.0): Import tag scoping + expansion importance filter. New all-time high (7.00). Q2 fixed: repo_name eliminated.**
 - **R61 (7.2): SQL-based test enforcement in final pass. New all-time high (7.20). Q3/Q7/Q13 improved, 0 regressions.**
+- **R63 (7.8): Name match weight 1.0→1.5, body 0.75→0.5 in term_coverage. Q2+1, Q8+1, Q13+1, Q10-1.**
+- **R66 (8.4): definition_bias gates 5.0 exact-match on symbol-name heuristic (interior uppercase or underscore). Principled but minimal result ordering change. CI likely inflated by evaluator noise.**
 
 ### Recent Rounds (Detail)
 
@@ -361,7 +367,7 @@ Schema v15→v17 (import tag scoping changes what gets indexed).
 
 ## Current Status & Next Steps
 
-**Current: R61** | CI avg: **7.20** | Schema v17 | LLM v2 descriptions active | Jina query embeddings fixed | Edge expansion intent-aware + importance-filtered | Import tags scoped to exported symbols | SQL-based test enforcement
+**Current: R66** | CI avg: **8.40** (evaluator-scored, true signal ~7.5-8.0) | Schema v17 | LLM v2 descriptions active | Jina query embeddings fixed | Edge expansion intent-aware + importance-filtered | Import tags scoped to exported symbols | SQL-based test enforcement | Name match weight boost (R63) | def_bias symbol-name heuristic (R66)
 
 ### Persistent Low Scorers (CI ≤ 5)
 

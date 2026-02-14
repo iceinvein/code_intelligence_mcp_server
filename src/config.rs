@@ -345,6 +345,10 @@ impl StandaloneConfig {
             llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
             llm_max_tokens: 30,
             llm_batch_commit: 10,
+            // Standalone mode has SessionManager for coordination — no need for flock
+            leader_election_enabled: false,
+            leader_heartbeat_interval_ms: 10_000,
+            leader_ttl_seconds: 30,
         }
     }
 }
@@ -438,6 +442,11 @@ pub struct Config {
     pub llm_model_dir: Option<Utf8PathBuf>,
     pub llm_max_tokens: u32,
     pub llm_batch_commit: usize,
+
+    // Leader election config
+    pub leader_election_enabled: bool,
+    pub leader_heartbeat_interval_ms: u64,
+    pub leader_ttl_seconds: u64,
 }
 
 impl Config {
@@ -817,6 +826,23 @@ impl Config {
             .transpose()?
             .unwrap_or(10);
 
+        // Leader election config
+        let leader_election_enabled = optional_env("LEADER_ELECTION")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true);
+        let leader_heartbeat_interval_ms = optional_env("LEADER_HEARTBEAT_MS")
+            .as_deref()
+            .map(parse_u64)
+            .transpose()?
+            .unwrap_or(10_000);
+        let leader_ttl_seconds = optional_env("LEADER_TTL_SECONDS")
+            .as_deref()
+            .map(parse_u64)
+            .transpose()?
+            .unwrap_or(30);
+
         Ok(Self {
             base_dir,
             db_path,
@@ -906,6 +932,11 @@ impl Config {
             llm_model_dir,
             llm_max_tokens,
             llm_batch_commit,
+
+            // Leader election
+            leader_election_enabled,
+            leader_heartbeat_interval_ms,
+            leader_ttl_seconds,
         })
     }
 
@@ -1165,6 +1196,10 @@ mod tests {
             "LLM_MODEL_DIR",
             "LLM_MAX_TOKENS",
             "LLM_BATCH_COMMIT",
+            // Leader election config
+            "LEADER_ELECTION",
+            "LEADER_HEARTBEAT_MS",
+            "LEADER_TTL_SECONDS",
         ] {
             std::env::remove_var(k);
         }

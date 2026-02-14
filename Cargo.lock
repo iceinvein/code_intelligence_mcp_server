@@ -1448,6 +1448,7 @@ dependencies = [
  "dunce",
  "fastembed",
  "filetime",
+ "fs2",
  "futures",
  "git2",
  "half",
@@ -3050,6 +3051,16 @@ checksum = "baf68cef89750956493a66a10f512b9e58d9db21f2a573c079c0bdf1207a54a7"
 dependencies = [
  "autocfg",
  "tokio",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

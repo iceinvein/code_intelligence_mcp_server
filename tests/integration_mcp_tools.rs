@@ -143,6 +143,8 @@ async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp
         indexer,
         retriever,
         sqlite,
+        is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
     }
 }
 
@@ -411,6 +413,8 @@ mod get_module_summary_tests {
             indexer,
             retriever,
             sqlite,
+            is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
         };
 
         (app_state, base_dir)
@@ -861,6 +865,9 @@ fn test_config(base_dir: &Path) -> Config {
         llm_model_dir: None,
         llm_max_tokens: 30,
         llm_batch_commit: 10,
+        leader_election_enabled: false,
+        leader_heartbeat_interval_ms: 10_000,
+        leader_ttl_seconds: 30,
     }
 }
 
@@ -1031,6 +1038,8 @@ async fn test_find_similar_code_by_symbol_name() {
         indexer,
         retriever,
         sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
+        is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
     };
 
     // The handler might fail if embedding isn't found, so check both success and error cases
@@ -1109,6 +1118,8 @@ async fn test_find_similar_code_by_code_snippet() {
         indexer,
         retriever,
         sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
+        is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();
@@ -1167,6 +1178,8 @@ async fn test_find_similar_code_not_found() {
         indexer,
         retriever,
         sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
+        is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();

@@ -339,14 +339,27 @@ pub fn contains_code_snippet(query: &str) -> bool {
         return false;
     }
 
-    // Strong code indicators - any one of these means it's code
-    let strong_indicators = [
-        "()",      // Function call
-        "{}",      // Block
-        "[]",      // Array access
-        "=>",      // Arrow function
-        "->",      // Rust/C++ return type or pointer
-        "::",      // Rust/C++ path separator
+    // Syntactic indicators — these are always code, never NL
+    let syntax_indicators = [
+        "()", // Function call
+        "{}", // Block
+        "[]", // Array access
+        "=>", // Arrow function
+        "->", // Rust/C++ return type or pointer
+        "::", // Rust/C++ path separator
+    ];
+
+    for indicator in &syntax_indicators {
+        if q.contains(indicator) {
+            return true;
+        }
+    }
+
+    // Language keyword indicators — only count as code in short queries (≤4
+    // words). In longer queries these keywords appear descriptively:
+    // "struct Foo" (2 words) = code, but
+    // "PathNormalizer struct definition and methods" (5 words) = NL.
+    let keyword_indicators = [
         "fn ",     // Rust function
         "let ",    // Variable declaration
         "const ",  // Constant
@@ -362,9 +375,12 @@ pub fn contains_code_snippet(query: &str) -> bool {
         "func ",   // Go function
     ];
 
-    for indicator in &strong_indicators {
-        if q.contains(indicator) {
-            return true;
+    let word_count = q.split_whitespace().count();
+    if word_count <= 4 {
+        for indicator in &keyword_indicators {
+            if q.contains(indicator) {
+                return true;
+            }
         }
     }
 
@@ -531,6 +547,24 @@ mod tests {
         assert!(!contains_code_snippet("how do I authenticate users"));
         assert!(!contains_code_snippet("find the login function"));
         assert!(!contains_code_snippet("search for database"));
+    }
+
+    #[test]
+    fn test_contains_code_snippet_keywords_in_long_nl_queries() {
+        // Language keywords used descriptively in 5+ word queries → NL, not code
+        assert!(!contains_code_snippet(
+            "PathNormalizer struct definition and methods"
+        ));
+        assert!(!contains_code_snippet(
+            "how does the async pipeline work"
+        ));
+        assert!(!contains_code_snippet(
+            "class hierarchy for the error types"
+        ));
+        // But short queries with the same keywords → code
+        assert!(contains_code_snippet("struct Foo"));
+        assert!(contains_code_snippet("impl Trait for Type"));
+        assert!(contains_code_snippet("class MyClass"));
     }
 
     #[test]

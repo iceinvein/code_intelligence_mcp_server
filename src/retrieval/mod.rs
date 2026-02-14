@@ -495,6 +495,12 @@ impl Retriever {
             hits.truncate(limit);
         }
 
+        // Drop results with negligible scores. These are test symbols or
+        // heavily suppressed results that survived pool expansion but add
+        // no value to the user. Threshold 0.5 is well below any
+        // meaningful result (lowest legitimate scores are ~3.0).
+        hits.retain(|h| h.score >= 0.5);
+
         let mut roots = Vec::new();
         let mut extra = Vec::new();
 

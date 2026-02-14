@@ -48,7 +48,10 @@ pub async fn dispatch_tool_call(
     state: &AppState,
     params: CallToolRequestParams,
 ) -> std::result::Result<CallToolResult, CallToolError> {
-    match params.name.as_str() {
+    let tool_name = params.name.clone();
+    let start = std::time::Instant::now();
+
+    let result = match params.name.as_str() {
         "refresh_index" => {
             let tool: RefreshIndexTool = parse_tool_args(&params)?;
             let result = handle_refresh_index(state, tool)
@@ -286,7 +289,18 @@ pub async fn dispatch_tool_call(
             ]))
         }
         _ => Err(CallToolError::unknown_tool(params.name)),
-    }
+    };
+
+    let duration_ms = start.elapsed().as_millis();
+    let status = if result.is_ok() { "ok" } else { "error" };
+    tracing::info!(
+        target: "mcp_access",
+        tool = %tool_name,
+        duration_ms = duration_ms as u64,
+        status = %status,
+    );
+
+    result
 }
 
 #[derive(Clone)]

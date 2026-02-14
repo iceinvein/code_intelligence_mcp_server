@@ -134,25 +134,27 @@ Each client session is bound to its workspace root. The server maintains separat
 
 ### Data Storage
 
-All standalone data lives in `~/.code-intelligence/`:
+Both embedded (stdio) and standalone (HTTP) modes store all data in `~/.code-intelligence/`:
 
 ```text
 ~/.code-intelligence/
-├── server.toml              # Optional config file
-├── models/                  # Shared models (loaded once)
+├── server.toml              # Optional config file (standalone only)
+├── models/                  # Shared models (loaded once, shared across repos)
 │   ├── jina-code-onnx/      # Embedding model (~500MB)
 │   └── qwen2.5-coder-1.5b-gguf/  # LLM model (~1.1GB)
 ├── logs/
 │   └── server.log
 └── repos/
     ├── registry.json        # Tracks all known repos
-    ├── a1b2c3d4e5f6a7b8/   # Per-repo data (SHA256 hash of path)
+    ├── a1b2c3d4e5f6a7b8/   # Per-repo data (SHA256 hash of repo path)
     │   ├── code-intelligence.db
     │   ├── tantivy-index/
     │   └── vectors/
     └── f8e7d6c5b4a3f2e1/
         └── ...
 ```
+
+The same repo always maps to the same hash regardless of mode, so embedded and standalone can share the same index data.
 
 ### Configuration
 

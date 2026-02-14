@@ -216,24 +216,15 @@ pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Create a symlink from `source` to `target`. Falls back to copy on non-Unix.
+/// Create a symlink from `source` to `target`.
 fn symlink_or_copy(source: &std::path::Path, target: &std::path::Path) -> anyhow::Result<()> {
     // Remove existing target (stale symlink or old file)
     if target.exists() || target.symlink_metadata().is_ok() {
         std::fs::remove_file(target).ok();
     }
 
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(source, target)?;
-        return Ok(());
-    }
-
-    #[cfg(not(unix))]
-    {
-        std::fs::copy(source, target)?;
-        Ok(())
-    }
+    std::os::unix::fs::symlink(source, target)?;
+    Ok(())
 }
 
 #[cfg(test)]

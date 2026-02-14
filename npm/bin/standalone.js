@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 
-const BINARY_NAME = `code-intelligence-mcp-server${os.platform() === 'win32' ? '.exe' : ''}`;
+const BINARY_NAME = 'code-intelligence-mcp-server';
 const BINARY_PATH = path.join(__dirname, BINARY_NAME);
 
 if (!fs.existsSync(BINARY_PATH)) {

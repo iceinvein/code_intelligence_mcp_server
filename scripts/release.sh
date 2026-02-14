@@ -18,12 +18,7 @@ echo "Releasing version $VERSION..."
 
 # 1. Update Cargo.toml (Rust)
 # We use a slight trick to only match the first occurrence of version = "..." which is the package version
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  # macOS sed requires empty string for -i extension
-  sed -i '' "3s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-else
-  sed -i "3s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-fi
+sed -i '' "3s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
 echo "Updated Cargo.toml"
 
 # Update Cargo.lock to reflect the new version

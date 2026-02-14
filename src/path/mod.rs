@@ -1,8 +1,7 @@
 //! Centralized path normalization module.
 //!
-//! This module provides cross-platform path handling with:
+//! This module provides path handling with:
 //! - UTF-8 typed paths via camino (Utf8Path, Utf8PathBuf)
-//! - Windows UNC path normalization via dunce
 //! - Security-aware path validation for symlink escaping
 //! - Helpful error messages with context
 
@@ -361,21 +360,7 @@ mod tests {
         assert!(err_msg.contains("outside repository"), "Error message should mention being outside repo");
     }
 
-    // Windows-specific UNC path tests
-    #[cfg(windows)]
-    #[test_case("\\\\?\\C:\\Users\\test", "\\\\?\\C:\\Users\\test"; "verbatim UNC path")]
-    #[test_case("\\\\?\\UNC\\server\\share\\file", "\\\\?\\UNC\\server\\share\\file"; "UNC share path")]
-    #[test_case("\\\\server\\share\\file", "//server/share/file"; "network path UNC")]
-    #[test_case("C:\\\\Users\\\\test", "C://Users/test"; "multiple consecutive backslashes")]
-    fn test_normalize_windows_unc_path(input: &str, expected: &str) {
-        let normalizer = create_test_normalizer();
-        let input_path = Utf8Path::new(input);
-        let result = normalizer.normalize_for_compare(input_path).unwrap();
-        // UNC paths should be normalized by dunce
-        assert!(result.as_str().contains('/'), "UNC path should use forward slashes");
-    }
-
-    // Cross-platform backslash normalization
+    // Backslash normalization (defensive: handles paths from external tools)
     #[test_case("src\\lib.rs", "src/lib.rs"; "single backslash")]
     #[test_case("src\\\\lib.rs", "src//lib.rs"; "double backslash")]
     #[test_case("a\\b\\c\\d.rs", "a/b/c/d.rs"; "multiple backslashes")]
@@ -491,20 +476,9 @@ mod tests {
         let n1 = normalizer.normalize_for_compare(p1).unwrap();
         let n2 = normalizer.normalize_for_compare(p2).unwrap();
 
-        // After normalization, string comparison is case-sensitive
+        // After normalization, string comparison is case-sensitive (macOS)
         let strings_equal = n1.as_str() == n2.as_str();
-
-        #[cfg(unix)]
-        assert!(!strings_equal, "Unix paths are case-sensitive: {} != {}", path1, path2);
-
-        #[cfg(windows)]
-        {
-            // On Windows, the file system may be case-insensitive
-            // but our string comparison is still case-sensitive
-            // This documents that behavior
-            assert_eq!(strings_equal, path1.to_lowercase() == path2.to_lowercase(),
-                      "Windows case behavior documented");
-        }
+        assert!(!strings_equal, "Paths are case-sensitive: {} != {}", path1, path2);
     }
 
     // Empty and edge case path tests

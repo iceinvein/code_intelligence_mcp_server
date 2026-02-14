@@ -20,12 +20,9 @@
     "tar": "^7.5.3"
   },
   "os": [
-    "darwin",
-    "linux",
-    "win32"
+    "darwin"
   ],
   "cpu": [
-    "x64",
     "arm64"
   ]
 }

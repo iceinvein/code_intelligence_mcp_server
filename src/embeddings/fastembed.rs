@@ -3,9 +3,6 @@ use crate::embeddings::Embedder;
 use crate::path::Utf8Path;
 use anyhow::{anyhow, Result};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-
-// Execution provider imports for Metal acceleration
-#[cfg(target_os = "macos")]
 use ort::execution_providers::CoreMLExecutionProvider;
 
 pub struct FastEmbedder {
@@ -50,21 +47,11 @@ impl FastEmbedder {
         }
 
         // Configure execution provider based on device setting
-        // On macOS, Metal (CoreML) acceleration can significantly improve performance
         match device {
             EmbeddingsDevice::Metal => {
-                #[cfg(target_os = "macos")]
-                {
-                    tracing::info!("Initializing FastEmbed with Metal (CoreML) acceleration");
-                    let coreml = CoreMLExecutionProvider::default();
-                    options = options.with_execution_providers(vec!(
-                        coreml.into()
-                    ));
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    tracing::warn!("Metal device requested but not on macOS - falling back to CPU");
-                }
+                tracing::info!("Initializing FastEmbed with Metal (CoreML) acceleration");
+                let coreml = CoreMLExecutionProvider::default();
+                options = options.with_execution_providers(vec![coreml.into()]);
             }
             EmbeddingsDevice::Cpu => {
                 tracing::debug!("Initializing FastEmbed with CPU execution provider");

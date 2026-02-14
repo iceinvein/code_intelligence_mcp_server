@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Code Intelligence MCP Server is a Rust-based local code indexing and semantic search engine that provides structure-aware code navigation for LLM agents. It implements the Model Context Protocol (MCP) and integrates with tools like OpenCode, Trae, and Cursor.
 
-**Core technologies:** Rust 2021, Tree-Sitter (parsing), SQLite (metadata), Tantivy (full-text search), LanceDB (vector embeddings), FastEmbed (BGE-base-en-v1.5 model).
+**Platform:** macOS only (Apple Silicon with Metal GPU acceleration).
+
+**Core technologies:** Rust 2021, Tree-Sitter (parsing), SQLite (metadata), Tantivy (full-text search), LanceDB (vector embeddings), FastEmbed (BGE-base-en-v1.5 model), ONNX Runtime with CoreML.
 
 ## Build & Run Commands
 
@@ -99,7 +101,7 @@ The server reads configuration from environment variables. Key ones:
 |----------|---------|-------------|
 | `BASE_DIR` | **required** | Repository root to index |
 | `EMBEDDINGS_BACKEND` | `fastembed` | `fastembed` (real) or `hash` (fast testing) |
-| `EMBEDDINGS_DEVICE` | `cpu` | `cpu` or `metal` (macOS GPU) |
+| `EMBEDDINGS_DEVICE` | `metal` | `metal` (Metal GPU) or `cpu` |
 | `WATCH_MODE` | `true` | Auto-reindex on file changes |
 | `INDEX_PATTERNS` | `**/*.ts,**/*.tsx,**/*.rs` | Glob patterns to index |
 | `HYBRID_ALPHA` | `0.7` | Vector vs keyword weight (0-1) |
@@ -166,20 +168,11 @@ match normalizer.relative_to_base(path) {
 }
 ```
 
-### Platform-Specific Behavior
+### Platform
 
-- **Windows:** Backslashes converted to forward slashes, UNC paths normalized via `dunce`
-- **Unix/Linux:** Paths used as-is, case-sensitive comparison
-- **macOS:** Paths case-sensitive in code (HFS+/APFS may be case-insensitive on disk)
+macOS-only (Apple Silicon). Paths are case-sensitive in code (APFS may be case-insensitive on disk).
 
-### Cross-Platform Testing
-
-The `src/path/mod.rs` module includes comprehensive parameterized tests (58+ test cases) using the `test-case` crate. Tests cover:
-- Windows backslash normalization
-- UNC path handling (Windows-only)
-- Security validation for path escape attempts
-- Case sensitivity per-platform
-- Helpful error message formatting
+The `src/path/mod.rs` module includes comprehensive parameterized tests using the `test-case` crate covering security validation, case sensitivity, and error message formatting.
 
 ## Adding a New Language
 

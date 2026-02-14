@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 
-const BINARY_NAME = `code-intelligence-mcp-server${os.platform() === 'win32' ? '.exe' : ''}`;
+const BINARY_NAME = 'code-intelligence-mcp-server';
 const BINARY_PATH = path.join(__dirname, BINARY_NAME);
 
 if (!fs.existsSync(BINARY_PATH)) {
@@ -37,11 +37,9 @@ if (!env.EMBEDDINGS_MODEL_REPO) {
     env.EMBEDDINGS_MODEL_REPO = 'jinaai/jina-embeddings-v2-base-code';
 }
 
-// 5. Metal Acceleration for macOS
-if (os.platform() === 'darwin' && !env.EMBEDDINGS_DEVICE) {
+// 5. Metal GPU Acceleration
+if (!env.EMBEDDINGS_DEVICE) {
     env.EMBEDDINGS_DEVICE = 'metal';
-} else if (!env.EMBEDDINGS_DEVICE) {
-    env.EMBEDDINGS_DEVICE = 'cpu';
 }
 
 // 6. Limit CPU threads for embedding model (helps reduce CPU usage)
@@ -83,21 +81,8 @@ if (!env.TANTIVY_INDEX_PATH) env.TANTIVY_INDEX_PATH = path.join(cimcpDir, 'tanti
 // Also set model dir - use GLOBAL cache to avoid downloading models for every project
 // Models are shared across projects, but indexes remain local
 if (!env.EMBEDDINGS_MODEL_DIR) {
-    // Use platform-appropriate global cache location
-    if (os.platform() === 'darwin') {
-        // macOS: ~/Library/Application Support/cimcp/embeddings-cache
-        env.EMBEDDINGS_MODEL_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'cimcp', 'embeddings-cache');
-    } else if (os.platform() === 'linux') {
-        // Linux: ~/.local/share/cimcp/embeddings-cache
-        const xdgDataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-        env.EMBEDDINGS_MODEL_DIR = path.join(xdgDataHome, 'cimcp', 'embeddings-cache');
-    } else if (os.platform() === 'win32') {
-        // Windows: %APPDATA%/cimcp/embeddings-cache
-        env.EMBEDDINGS_MODEL_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'cimcp', 'embeddings-cache');
-    } else {
-        // Fallback to ~/.cimcp/embeddings-cache
-        env.EMBEDDINGS_MODEL_DIR = path.join(os.homedir(), '.cimcp', 'embeddings-cache');
-    }
+    // macOS: ~/Library/Application Support/cimcp/embeddings-cache
+    env.EMBEDDINGS_MODEL_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'cimcp', 'embeddings-cache');
 
     // Ensure global model cache directory exists
     if (!fs.existsSync(env.EMBEDDINGS_MODEL_DIR)) {

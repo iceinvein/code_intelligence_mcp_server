@@ -2,7 +2,6 @@
 set -euo pipefail
 
 VERSION="${PROTOC_VERSION:-29.3}"
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
 case "$ARCH" in
@@ -14,14 +13,7 @@ case "$ARCH" in
     ;;
 esac
 
-case "$OS" in
-  darwin) PLATFORM="osx" ;;
-  linux) PLATFORM="linux" ;;
-  *)
-    echo "unsupported OS: $OS" 1>&2
-    exit 1
-    ;;
-esac
+PLATFORM="osx"
 
 CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}"
 CACHE_DIR="${CACHE_BASE}/code-intel-protoc/${VERSION}/${PLATFORM}-${ARCH}"

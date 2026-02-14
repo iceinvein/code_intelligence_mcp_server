@@ -20,12 +20,8 @@ export BASE_DIR="$REPO_ROOT"
 # Override with EMBEDDINGS_BACKEND=fastembed for BGE (384-dim) if needed
 export EMBEDDINGS_AUTO_DOWNLOAD="true"
 
-# Detect OS for Metal support (macOS)
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    export EMBEDDINGS_DEVICE="metal"
-else
-    export EMBEDDINGS_DEVICE="cpu"
-fi
+# Metal GPU acceleration (macOS)
+export EMBEDDINGS_DEVICE="metal"
 
 # Optional: Set persistent storage paths to a hidden dir in the repo
 export DB_PATH="$REPO_ROOT/.cimcp/code-intelligence.db"

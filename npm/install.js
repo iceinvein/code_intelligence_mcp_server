@@ -12,9 +12,6 @@ const VERSION = 'v' + require('./package.json').version;
 const MAPPING = {
     'darwin': {
         'arm64': 'aarch64-apple-darwin'
-    },
-    'linux': {
-        'x64': 'x86_64-unknown-linux-gnu'
     }
 };
 
@@ -23,17 +20,20 @@ async function install() {
     const arch = os.arch();
 
     if (!MAPPING[platform] || !MAPPING[platform][arch]) {
-        console.error(`Unsupported platform: ${platform} ${arch}`);
+        console.error(`\n  Code Intelligence MCP Server currently only supports macOS (Apple Silicon).\n`);
+        console.error(`  Detected: ${platform} ${arch}`);
+        console.error(`  Supported: darwin arm64 (macOS with Apple Silicon)\n`);
+        console.error(`  For updates on additional platform support, see:`);
+        console.error(`  https://github.com/iceinvein/code_intelligence_mcp_server\n`);
         process.exit(1);
     }
 
     const target = MAPPING[platform][arch];
-    const extension = platform === 'win32' ? '.exe' : '';
     const tarFilename = `${BINARY_NAME}-${target}.tar.gz`;
     const url = `https://github.com/${REPO}/releases/download/${VERSION}/${tarFilename}`;
     
     const binDir = path.join(__dirname, 'bin');
-    const destBinary = path.join(binDir, BINARY_NAME + extension);
+    const destBinary = path.join(binDir, BINARY_NAME);
 
     // Ensure bin dir exists
     if (!fs.existsSync(binDir)) {
@@ -67,10 +67,7 @@ async function install() {
 
         // Verify the binary exists
         if (fs.existsSync(destBinary)) {
-            // Make executable on unix
-            if (platform !== 'win32') {
-                fs.chmodSync(destBinary, 0o755);
-            }
+            fs.chmodSync(destBinary, 0o755);
             console.log(`Successfully installed to ${destBinary}`);
         } else {
             console.error('Extraction failed: Binary not found after unpacking.');

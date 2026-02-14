@@ -3,7 +3,7 @@
 //! Implements autoregressive text generation with KV cache for efficient inference.
 //! Uses the model_q4.onnx variant (pure int4 quantization with f32 KV cache) to
 //! avoid ORT buffer reuse bugs that occur with mixed-precision models (q4f16).
-//! Supports CPU and Metal (CoreML) execution providers.
+//! Uses Metal (CoreML) execution provider on macOS for GPU acceleration.
 
 use anyhow::{anyhow, Context, Result};
 use ort::session::Session;
@@ -64,25 +64,12 @@ impl OrtLlmGenerator {
 
         let session = match device {
             EmbeddingsDevice::Metal => {
-                #[cfg(target_os = "macos")]
-                {
-                    tracing::info!("Using CoreML (Metal) execution provider for LLM");
-                    let coreml = ort::execution_providers::CoreMLExecutionProvider::default();
-                    builder
-                        .with_execution_providers([coreml.into()])?
-                        .commit_from_file(model_path.as_std_path())
-                        .context("Failed to load LLM ONNX model with CoreML")?
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    tracing::warn!("Metal requested but not on macOS, falling back to CPU");
-                    builder
-                        .with_execution_providers([
-                            ort::execution_providers::CPUExecutionProvider::default().build()
-                        ])?
-                        .commit_from_file(model_path.as_std_path())
-                        .context("Failed to load LLM ONNX model with CPU")?
-                }
+                tracing::info!("Using CoreML (Metal) execution provider for LLM");
+                let coreml = ort::execution_providers::CoreMLExecutionProvider::default();
+                builder
+                    .with_execution_providers([coreml.into()])?
+                    .commit_from_file(model_path.as_std_path())
+                    .context("Failed to load LLM ONNX model with CoreML")?
             }
             EmbeddingsDevice::Cpu => {
                 builder

@@ -215,6 +215,14 @@ async fn run_embedded() -> SdkResult<()> {
             description: format!("Failed to create repo data directory: {}", err),
         })?;
 
+    // Clean up per-repo log files older than 7 days
+    {
+        let repo_logs_dir = config.db_path.parent()
+            .unwrap_or(&config.db_path)
+            .join("logs");
+        code_intelligence_mcp_server::logging::cleanup_old_logs(&repo_logs_dir, 7);
+    }
+
     // Register this repo in the shared registry (non-fatal on error)
     {
         let data_dir = code_intelligence_mcp_server::config::get_data_dir();

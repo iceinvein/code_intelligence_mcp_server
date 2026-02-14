@@ -33,7 +33,7 @@ use code_intelligence_mcp_server::{
 };
 use rstest::*;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex as AsyncMutex;
@@ -147,6 +147,9 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         llm_model_dir: None,
         llm_max_tokens: 30,
         llm_batch_commit: 10,
+        leader_election_enabled: false,
+        leader_heartbeat_interval_ms: 10_000,
+        leader_ttl_seconds: 30,
     }
 }
 
@@ -275,6 +278,8 @@ pub fn app_state(
         indexer,
         retriever,
         sqlite,
+        is_leader: Arc::new(AtomicBool::new(true)),
+        role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
     }
 }
 

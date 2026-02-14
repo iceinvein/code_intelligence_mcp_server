@@ -43,7 +43,7 @@ pub struct TantivyIndex {
     index: Index,
     fields: Fields,
     reader: IndexReader,
-    writer: Mutex<IndexWriter>,
+    writer: Option<Mutex<IndexWriter>>,
     /// True if the index was wiped and recreated due to a schema version mismatch.
     /// The indexing pipeline should force a full re-index when this is set.
     was_recreated: bool,
@@ -260,7 +260,7 @@ impl TantivyIndex {
             index,
             fields,
             reader,
-            writer: Mutex::new(writer),
+            writer: Some(Mutex::new(writer)),
             was_recreated,
         })
     }
@@ -270,6 +270,66 @@ impl TantivyIndex {
     /// fingerprints in SQLite to force a full re-index of all files.
     pub fn was_recreated(&self) -> bool {
         self.was_recreated
+    }
+
+    /// Open an existing Tantivy index in read-only mode (no writer).
+    ///
+    /// Used by follower instances that only need search access.
+    /// Does NOT clean up stale lock files (the leader may be using them).
+    /// Does NOT check/write schema version (follower shouldn't wipe the index).
+    pub fn open_readonly(index_dir: &Utf8Path) -> Result<Self> {
+        let index = Index::open_in_dir(index_dir).with_context(|| {
+            format!("Failed to open tantivy index for reading: {}", index_dir)
+        })?;
+
+        register_tokenizers(&index);
+
+        let schema = index.schema();
+        let fields = Fields {
+            id: schema.get_field("id").context("Missing tantivy field: id")?,
+            name: schema.get_field("name").context("Missing tantivy field: name")?,
+            name_ngram: schema.get_field("name_ngram").context("Missing tantivy field: name_ngram")?,
+            file_path: schema.get_field("file_path").context("Missing tantivy field: file_path")?,
+            kind: schema.get_field("kind").context("Missing tantivy field: kind")?,
+            exported: schema.get_field("exported").context("Missing tantivy field: exported")?,
+            text: schema.get_field("text").context("Missing tantivy field: text")?,
+            text_ngram: schema.get_field("text_ngram").context("Missing tantivy field: text_ngram")?,
+        };
+
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .with_context(|| {
+                format!("Failed to create tantivy reader: index_dir={}", index_dir)
+            })?;
+
+        Ok(Self {
+            index,
+            fields,
+            reader,
+            writer: None,
+            was_recreated: false,
+        })
+    }
+
+    /// Get a lock on the writer, or error if this is a read-only (follower) instance.
+    fn writer_lock(&self) -> Result<std::sync::MutexGuard<'_, IndexWriter>> {
+        self.writer
+            .as_ref()
+            .ok_or_else(|| anyhow!("Tantivy index is read-only (follower instance)"))?
+            .lock()
+            .map_err(|_| anyhow!("Tantivy writer mutex poisoned"))
+    }
+
+    /// Reload the reader to pick up commits from the leader.
+    pub fn reload_reader(&self) -> Result<()> {
+        self.reader.reload().context("Failed to reload tantivy reader")
+    }
+
+    /// Returns true if this index has a writer (leader instance).
+    pub fn has_writer(&self) -> bool {
+        self.writer.is_some()
     }
 
     pub fn recreate(index_dir: &Path) -> Result<Self> {
@@ -288,16 +348,7 @@ impl TantivyIndex {
     }
 
     pub fn upsert_symbol(&self, symbol: &SymbolRow, import_tags: &str, framework_tags: &str, llm_description: Option<&str>) -> Result<()> {
-        let writer = self
-            .writer
-            .lock()
-            .map_err(|_| {
-                anyhow!(
-                    "Tantivy writer mutex poisoned: symbol_id={}, symbol_name={}",
-                    symbol.id,
-                    symbol.name
-                )
-            })?;
+        let writer = self.writer_lock()?;
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
@@ -344,20 +395,14 @@ impl TantivyIndex {
     }
 
     pub fn delete_symbols_by_file(&self, file_path: &str) -> Result<()> {
-        let writer = self
-            .writer
-            .lock()
-            .map_err(|_| anyhow!("Tantivy writer mutex poisoned: file_path={}", file_path))?;
+        let writer = self.writer_lock()?;
 
         writer.delete_term(Term::from_field_text(self.fields.file_path, file_path));
         Ok(())
     }
 
     pub fn commit(&self) -> Result<()> {
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| anyhow!("Tantivy writer mutex poisoned: commit operation"))?;
+        let mut writer = self.writer_lock()?;
         writer
             .commit()
             .context("Failed to commit tantivy writer: writer.commit()")?;
@@ -943,5 +988,67 @@ mod tests {
                 assert!(ws_pos < ctrl_pos, "ws symbol should rank above control");
             }
         }
+    }
+
+    #[test]
+    fn readonly_tantivy_rejects_writes() {
+        let dir = tmp_index_dir();
+
+        // Create the index with a writer first
+        let index = TantivyIndex::open_or_create(&dir).unwrap();
+        index
+            .upsert_symbol(&sample_symbol("id1", "alpha", "fn alpha() {}"), "", "", None)
+            .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        // Open as read-only
+        let readonly = TantivyIndex::open_readonly(&dir).unwrap();
+        assert!(!readonly.has_writer());
+
+        // Writes should fail
+        let result = readonly.upsert_symbol(
+            &sample_symbol("id2", "beta", "fn beta() {}"), "", "", None,
+        );
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("read-only"),
+            "Error should mention read-only"
+        );
+
+        // But search should work
+        let hits = readonly.search("alpha", 10).unwrap();
+        assert!(hits.iter().any(|h| h.id == "id1"));
+    }
+
+    #[test]
+    fn readonly_reload_reader_picks_up_new_data() {
+        let dir = tmp_index_dir();
+
+        // Create the index and write initial data
+        let writer_index = TantivyIndex::open_or_create(&dir).unwrap();
+        writer_index
+            .upsert_symbol(&sample_symbol("id1", "alpha", "fn alpha() {}"), "", "", None)
+            .unwrap();
+        writer_index.commit().unwrap();
+
+        // Open as read-only
+        let readonly = TantivyIndex::open_readonly(&dir).unwrap();
+        let hits = readonly.search("alpha", 10).unwrap();
+        assert!(hits.iter().any(|h| h.id == "id1"));
+
+        // Writer adds more data
+        writer_index
+            .upsert_symbol(&sample_symbol("id2", "beta", "fn beta() {}"), "", "", None)
+            .unwrap();
+        writer_index.commit().unwrap();
+
+        // Reader won't see it until reload
+        readonly.reload_reader().unwrap();
+        let hits2 = readonly.search("beta", 10).unwrap();
+        assert!(
+            hits2.iter().any(|h| h.id == "id2"),
+            "Reader should see new data after reload"
+        );
     }
 }

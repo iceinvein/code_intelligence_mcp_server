@@ -77,6 +77,9 @@ hf-hub = "0.3"
 # LLM inference via llama.cpp with Metal GPU acceleration
 llama-cpp-2 = { version = "0.1", features = ["metal"] }
 
+# Cross-platform flock() for leader election
+fs2 = "0.4"
+
 [dev-dependencies]
 bytes = "1"
 http-body-util = "0.1"

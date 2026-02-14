@@ -4,6 +4,7 @@ pub mod embeddings;
 pub mod graph;
 pub mod handlers;
 pub mod indexer;
+pub mod leader;
 pub mod llm;
 pub mod logging;
 pub mod metrics;

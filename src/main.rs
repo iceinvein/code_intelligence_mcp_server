@@ -11,6 +11,7 @@ use rust_mcp_sdk::{
     },
     McpServer, StdioTransport, TransportOptions,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
@@ -21,7 +22,9 @@ use code_intelligence_mcp_server::config::Config;
 use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
+use code_intelligence_mcp_server::leader::{LeaderElection, Role};
 use code_intelligence_mcp_server::metrics::{spawn_metrics_server, MetricsRegistry};
+use code_intelligence_mcp_server::path::Utf8Path;
 use code_intelligence_mcp_server::reranker::create_reranker;
 use code_intelligence_mcp_server::retrieval::hyde::HypotheticalCodeGenerator;
 use code_intelligence_mcp_server::retrieval::Retriever;
@@ -267,10 +270,50 @@ async fn run_embedded() -> SdkResult<()> {
 
     info!("Created embedder with dimension: {}", embedder.dim());
 
-    let tantivy = TantivyIndex::open_or_create(&config.tantivy_index_path).map_err(|err| {
-        McpSdkError::Internal {
-            description: err.to_string(),
+    // --- Leader election ---
+    let (is_leader_flag, role_rx, mut _leader_guard) = if config.leader_election_enabled {
+        let repo_data_dir = config.db_path.parent().unwrap_or(&config.db_path);
+        let mut election = LeaderElection::new(
+            Utf8Path::new(repo_data_dir.as_str()),
+            config.leader_heartbeat_interval_ms,
+            config.leader_ttl_seconds,
+        );
+        let role = election.try_acquire().map_err(|err| McpSdkError::Internal {
+            description: format!("Leader election failed: {}", err),
+        })?;
+        info!(role = %role, "Leader election result");
+        let flag = election.is_leader_flag();
+        let rx = election.role_receiver();
+        (flag, rx, Some(election))
+    } else {
+        let flag = Arc::new(AtomicBool::new(true));
+        let (_, rx) = tokio::sync::watch::channel(Role::Leader);
+        (flag, rx, None)
+    };
+    let is_leader = is_leader_flag.load(Ordering::SeqCst);
+
+    // --- Tantivy initialization (leader vs follower) ---
+    let tantivy = if is_leader {
+        TantivyIndex::open_or_create(&config.tantivy_index_path)
+    } else {
+        // Follower: retry open_readonly up to 10s in case leader hasn't created the index yet
+        let mut last_err = None;
+        let mut opened = None;
+        for attempt in 0..5 {
+            match TantivyIndex::open_readonly(&config.tantivy_index_path) {
+                Ok(t) => { opened = Some(t); break; }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 4 {
+                        info!(attempt = attempt + 1, "Tantivy index not ready, retrying in 2s...");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    }
+                }
+            }
         }
+        opened.ok_or_else(|| last_err.unwrap_or_else(|| anyhow::anyhow!("Failed to open Tantivy index")))
+    }.map_err(|err| McpSdkError::Internal {
+        description: err.to_string(),
     })?;
 
     let vector_dim = embedder.dim();
@@ -362,6 +405,8 @@ async fn run_embedded() -> SdkResult<()> {
         indexer,
         retriever,
         sqlite: Arc::new(sqlite),
+        is_leader: is_leader_flag.clone(),
+        role_rx,
     });
 
     // Trigger automatic re-index if vector dimension migration occurred
@@ -394,37 +439,88 @@ async fn run_embedded() -> SdkResult<()> {
         }
     }
 
-    if state.config.watch_mode {
-        let watch_cancel = tokio_util::sync::CancellationToken::new();
-        state.indexer.spawn_watch_loop(watch_cancel);
-    }
+    // --- Background tasks gated on leader/follower role ---
+    let cancel_token = tokio_util::sync::CancellationToken::new();
 
-    // Spawn LLM description worker in background — model download (potentially
-    // 1+ GB) must not block MCP server startup on stdio transport.
-    if config.llm_enabled {
-        let llm_config = config.clone();
-        let llm_indexer = state.indexer.clone();
+    if is_leader {
+        // Leader: spawn watch loop and LLM description worker
+        if state.config.watch_mode {
+            state.indexer.spawn_watch_loop(cancel_token.clone());
+        }
+
+        if config.llm_enabled {
+            let llm_config = config.clone();
+            let llm_indexer = state.indexer.clone();
+            tokio::spawn(async move {
+                let generator = match tokio::task::spawn_blocking(move || {
+                    code_intelligence_mcp_server::llm::create_llm_generator(&llm_config)
+                }).await {
+                    Ok(Ok(Some(llm))) => llm,
+                    Ok(Ok(None)) => {
+                        tracing::debug!("LLM descriptions not available, skipping description worker");
+                        return;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("Failed to create LLM generator: {}", e);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("LLM generator task panicked: {}", e);
+                        return;
+                    }
+                };
+                let desc_cancel = tokio_util::sync::CancellationToken::new();
+                let _desc_handle = llm_indexer.spawn_description_worker(generator, desc_cancel);
+                tracing::info!("LLM description worker spawned");
+            });
+        }
+
+        // Leader: spawn heartbeat writer
+        if let Some(ref guard) = _leader_guard {
+            guard.spawn_heartbeat_writer(cancel_token.clone());
+        }
+    } else {
+        // Follower: spawn periodic Tantivy reader reload (every 5s)
+        let follower_tantivy = tantivy.clone();
+        let follower_cancel = cancel_token.clone();
         tokio::spawn(async move {
-            let generator = match tokio::task::spawn_blocking(move || {
-                code_intelligence_mcp_server::llm::create_llm_generator(&llm_config)
-            }).await {
-                Ok(Ok(Some(llm))) => llm,
-                Ok(Ok(None)) => {
-                    tracing::debug!("LLM descriptions not available, skipping description worker");
-                    return;
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = follower_cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        if let Err(e) = follower_tantivy.reload_reader() {
+                            tracing::warn!("Follower Tantivy reader reload failed: {}", e);
+                        }
+                    }
                 }
-                Ok(Err(e)) => {
-                    tracing::warn!("Failed to create LLM generator: {}", e);
-                    return;
+            }
+        });
+
+        // Follower: spawn monitor for stale leader heartbeat
+        if let Some(ref mut guard) = _leader_guard {
+            guard.spawn_follower_monitor(cancel_token.clone());
+        }
+
+        // Follower: spawn promotion reactor
+        let mut promotion_rx = state.role_rx.clone();
+        let promotion_state = state.clone();
+        tokio::spawn(async move {
+            while promotion_rx.changed().await.is_ok() {
+                if *promotion_rx.borrow() == Role::Leader {
+                    tracing::warn!(
+                        "Promoted to leader! Hot Tantivy writer upgrade not supported in v1. \
+                         Recommend restarting this instance for full leader capabilities."
+                    );
+                    // Start watch loop on promotion if enabled
+                    if promotion_state.config.watch_mode {
+                        let watch_cancel = tokio_util::sync::CancellationToken::new();
+                        promotion_state.indexer.spawn_watch_loop(watch_cancel);
+                        tracing::info!("Watch loop started after leader promotion");
+                    }
+                    break;
                 }
-                Err(e) => {
-                    tracing::warn!("LLM generator task panicked: {}", e);
-                    return;
-                }
-            };
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let _desc_handle = llm_indexer.spawn_description_worker(generator, cancel);
-            tracing::info!("LLM description worker spawned");
+            }
         });
     }
 

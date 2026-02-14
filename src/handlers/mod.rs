@@ -71,6 +71,15 @@ pub async fn handle_refresh_index(
     state: &AppState,
     tool: RefreshIndexTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
+    // Followers cannot perform indexing — leader handles all writes
+    if !state.is_leader.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(json!({
+            "ok": false,
+            "error": "FOLLOWER_INSTANCE",
+            "message": "This instance is a follower. Indexing is handled by the leader."
+        }));
+    }
+
     let normalizer = PathNormalizer::new(state.config.base_dir.clone());
 
     let stats = if let Some(files) = tool.files {
@@ -228,6 +237,7 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
         "last_updated_unix_s": last_updated,
         "latest_index_run": latest_index_run,
         "latest_search_run": latest_search_run,
+        "instance_role": if state.is_leader.load(std::sync::atomic::Ordering::SeqCst) { "leader" } else { "follower" },
     }))
 }
 

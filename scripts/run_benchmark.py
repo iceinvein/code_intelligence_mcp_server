@@ -352,7 +352,8 @@ def main():
     mode = "live" if args.live else "fresh"
 
     print(f"=== Benchmark Round {round_num} ({mode} mode) ===", flush=True)
-    print(f"Queries: {len(queries)} ({', '.join(f'Q{q['id']}' for q in queries)})", flush=True)
+    query_labels = ', '.join(f"Q{q['id']}" for q in queries)
+    print(f"Queries: {len(queries)} ({query_labels})", flush=True)
     print(f"Output: {output_file}", flush=True)
 
     # Set up environment and data directories based on mode

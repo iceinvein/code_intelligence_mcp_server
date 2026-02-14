@@ -672,11 +672,11 @@ pub(crate) fn term_coverage_adjustment(
         };
 
         if in_name || in_path {
-            matched += 1.0;
+            matched += 1.5; // name/path match weighted heavily (R63: up from 1.0)
         } else if in_body {
-            matched += 0.75; // body match counts 3/4 vs name/path (R27: up from 0.5)
+            matched += 0.5; // body match reduced to widen name vs body gap (R63: down from 0.75)
         } else if via_synonym {
-            matched += 0.35; // synonym match counts less than direct body match
+            matched += 0.25; // synonym reduced proportionally (R63: down from 0.35)
         }
     }
 

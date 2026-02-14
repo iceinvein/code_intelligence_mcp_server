@@ -17,7 +17,7 @@ Unlike basic text search, this server builds a local knowledge graph to understa
 * **Advanced Hybrid Search**: Combines **Tantivy** (keyword BM25) + **LanceDB** (semantic vector) + **Jina Code embeddings** (768-dim code-specific model) with Reciprocal Rank Fusion (RRF).
 * **Cross-Encoder Reranking**: Always-on ORT-based reranker for precision result ranking.
 * **Smart Context Assembly**: Token-aware budgeting with query-aware truncation that keeps relevant lines within context limits.
-* **On-Device LLM Descriptions**: Automatically generates natural-language descriptions for every symbol using a local **Qwen2.5-Coder-1.5B** model (ONNX Runtime), enriching search with human-readable summaries.
+* **On-Device LLM Descriptions**: Automatically generates natural-language descriptions for every symbol using a local **Qwen2.5-Coder-1.5B** model (llama.cpp with Metal GPU), enriching search with human-readable summaries.
 * **PageRank Scoring**: Graph-based symbol importance scoring that identifies central, heavily-used components.
 * **Learns from Feedback**: Optional learning system that adapts to user selections over time.
 * **Production First**: Multi-layer test detection (file paths, symbol names, and AST-level `#[test]`/`mod tests` analysis) ensures implementation code ranks above test helpers.
@@ -139,8 +139,9 @@ All standalone data lives in `~/.code-intelligence/`:
 ```text
 ~/.code-intelligence/
 ├── server.toml              # Optional config file
-├── models/                  # Shared embedding model (~500MB, loaded once)
-│   └── jina-code-onnx/
+├── models/                  # Shared models (loaded once)
+│   ├── jina-code-onnx/      # Embedding model (~500MB)
+│   └── qwen2.5-coder-1.5b-gguf/  # LLM model (~1.1GB)
 ├── logs/
 │   └── server.log
 └── repos/
@@ -473,7 +474,7 @@ src/
 │   └── standalone.rs  # Standalone HTTP handler with session routing
 ├── tools/             # Tool definitions (23 MCP tools)
 ├── embeddings/        # Jina Code embedding model wrapper
-├── llm/               # On-device LLM (Qwen2.5-Coder-1.5B via ONNX Runtime)
+├── llm/               # On-device LLM (Qwen2.5-Coder-1.5B via llama.cpp)
 ├── reranker/          # Cross-encoder ORT implementation
 ├── path/              # Cross-platform path normalization (camino)
 ├── text.rs            # Text processing (synonym expansion, morphological variants)

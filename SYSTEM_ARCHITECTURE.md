@@ -191,7 +191,7 @@ The heart of the system with advanced search and ranking capabilities.
 
 #### Cross-Encoder Reranking (`src/reranker/`)
 
-- ONNX Runtime-based deep learning reranker
+- ORT-based deep learning reranker
 - Always-on for precision result ranking
 - Top-K reranking (default: 20) to balance quality and latency
 - Query-document relevance scoring

@@ -8,7 +8,7 @@ Code Intelligence MCP Server is a Rust-based local code indexing and semantic se
 
 **Platform:** macOS only (Apple Silicon with Metal GPU acceleration).
 
-**Core technologies:** Rust 2021, Tree-Sitter (parsing), SQLite (metadata), Tantivy (full-text search), LanceDB (vector embeddings), FastEmbed (BGE-base-en-v1.5 model), ONNX Runtime with CoreML.
+**Core technologies:** Rust 2021, Tree-Sitter (parsing), SQLite (metadata), Tantivy (full-text search), LanceDB (vector embeddings), FastEmbed (BGE-base-en-v1.5 model), llama.cpp (Metal GPU LLM inference).
 
 ## Build & Run Commands
 

@@ -25,6 +25,7 @@ use crate::{
         extract::typescript::extract_typescript_symbols_with_path,
         parser::{language_id_for_path, LanguageId},
     },
+    logging::RepoLogger,
     metrics::MetricsRegistry,
     path::Utf8PathBuf,
     storage::{
@@ -65,6 +66,7 @@ pub struct IndexPipeline {
     embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
     cache: Arc<EmbeddingCache>,
     metrics: Arc<MetricsRegistry>,
+    repo_logger: Option<Arc<RepoLogger>>,
 }
 
 impl IndexPipeline {
@@ -101,6 +103,11 @@ impl IndexPipeline {
             1024 * 1024 * 1024, // 1GB max
         ));
 
+        // Create per-repo logger
+        let repo_data_dir = config.db_path.parent()
+            .unwrap_or(&config.db_path);
+        let repo_logger = RepoLogger::new(repo_data_dir).map(Arc::new);
+
         Self {
             config,
             db_path,
@@ -109,6 +116,7 @@ impl IndexPipeline {
             embedder,
             cache,
             metrics,
+            repo_logger,
         }
     }
 
@@ -117,6 +125,10 @@ impl IndexPipeline {
 
         let started_at = Instant::now();
         let started_at_unix_s = unix_now_s();
+
+        if let Some(ref logger) = self.repo_logger {
+            logger.info(&format!("Index run started for {}", self.repo_name()));
+        }
 
         // Discover and store packages if enabled
         if self.config.package_detection_enabled {
@@ -646,6 +658,15 @@ impl IndexPipeline {
             ?stats,
             "Index run completed"
         );
+
+        if let Some(ref logger) = self.repo_logger {
+            logger.info(&format!(
+                "Index run completed: {} files scanned, {} indexed, {} unchanged, {} skipped, {} deleted, {} symbols",
+                stats.files_scanned, stats.files_indexed, stats.files_unchanged,
+                stats.files_skipped, stats.files_deleted, stats.symbols_indexed
+            ));
+        }
+
         Ok(stats)
     }
 
@@ -676,6 +697,9 @@ impl IndexPipeline {
                         error = %err,
                         "Failed to fingerprint file"
                     );
+                    if let Some(ref logger) = self.repo_logger {
+                        logger.warn(&format!("Failed to fingerprint: {}", file.display()));
+                    }
                     stats.files_skipped += 1;
                     continue;
                 }
@@ -727,6 +751,9 @@ impl IndexPipeline {
                 Ok(s) => s,
                 Err(err) => {
                     tracing::warn!(file = %file.display(), error = %err, "Failed to read file");
+                    if let Some(ref logger) = self.repo_logger {
+                        logger.warn(&format!("Failed to read: {}", file.display()));
+                    }
                     stats.files_skipped += 1;
                     continue;
                 }
@@ -753,6 +780,9 @@ impl IndexPipeline {
                         error = %err,
                         "Failed to extract symbols"
                     );
+                    if let Some(ref logger) = self.repo_logger {
+                        logger.warn(&format!("Failed to extract symbols: {}", file.display()));
+                    }
                     stats.files_skipped += 1;
                     continue;
                 }

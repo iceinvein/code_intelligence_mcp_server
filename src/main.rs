@@ -14,7 +14,7 @@ use rust_mcp_sdk::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::config::Config;
@@ -64,11 +64,18 @@ async fn main() -> SdkResult<()> {
         description: format!("Failed to create logs directory: {}", err),
     })?;
 
-    // Create a daily rotating file appender
+    // Clean up log files older than 7 days
+    code_intelligence_mcp_server::logging::cleanup_old_logs(&logs_dir, 7);
+
+    // Create a daily rotating file appender for global server log
     let file_appender = tracing_appender::rolling::daily(&logs_dir, "server.log");
     let (non_blocking_file, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Set up layered subscriber with both stderr and file output
+    // Create a daily rotating file appender for MCP access log
+    let access_appender = tracing_appender::rolling::daily(&logs_dir, "access.log");
+    let (non_blocking_access, _access_guard) = tracing_appender::non_blocking(access_appender);
+
+    // Set up layered subscriber with stderr, file, and access log output
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
@@ -83,11 +90,18 @@ async fn main() -> SdkResult<()> {
                 .with_writer(non_blocking_file)
                 .with_ansi(false)
         )
+        .with(
+            fmt::layer()
+                .with_writer(non_blocking_access)
+                .with_ansi(false)
+                .with_filter(tracing_subscriber::filter::Targets::new()
+                    .with_target("mcp_access", tracing::Level::INFO))
+        )
         .init();
 
-    // Keep the guard alive for the duration of the program
-    // This ensures logs are flushed when the program exits
+    // Keep guards alive for the duration of the program
     std::mem::forget(_guard);
+    std::mem::forget(_access_guard);
 
     info!(
         version = env!("CARGO_PKG_VERSION"),

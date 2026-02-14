@@ -25,6 +25,7 @@ impl CrossEncoderReranker {
         );
 
         let session = Session::builder()?
+            .with_intra_threads(1)?
             .with_execution_providers([
                 ort::execution_providers::CPUExecutionProvider::default().build()
             ])?

@@ -59,8 +59,14 @@ impl OrtLlmGenerator {
         tracing::info!("Using model file: {}", model_path);
 
         // Disable memory pattern optimization since input sequence lengths vary between calls.
+        // Use 8 intra-op threads for int4 MatMul parallelism (model_q4.onnx runs entirely
+        // on CPU because CoreML doesn't support MatMulNBits/GroupQueryAttention ops).
+        // Apple Silicon's unified memory scales well here — the 1.5B model's int4 weights
+        // (~750MB) fit in the SLC, and 8 threads saturate the P-cores while leaving
+        // E-cores free for indexing, search, and the file watcher.
         let builder = Session::builder()?
-            .with_memory_pattern(false)?;
+            .with_memory_pattern(false)?
+            .with_intra_threads(8)?;
 
         let session = match device {
             EmbeddingsDevice::Metal => {

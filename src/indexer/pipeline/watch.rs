@@ -61,6 +61,7 @@ fn is_excluded_path(path: &str, index_node_modules: bool) -> bool {
         || path.contains("/target/")
         || path.contains("/dist/")
         || path.contains("/build/")
+        || path.contains("/.cimcp/")
     {
         return true;
     }

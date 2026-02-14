@@ -37,14 +37,12 @@ impl FastEmbedder {
             options = options.with_cache_dir(path.as_std_path().to_path_buf());
         }
 
-        // Configure thread limit for CPU inference
-        // This helps control CPU usage when running on CPU vs Metal
-        if max_threads > 0 {
-            tracing::info!("Limiting embedding model to {} CPU threads", max_threads);
-            // Note: FastEmbed's InitOptions doesn't directly expose thread limiting
-            // We'll log the intention, but actual thread limiting depends on ONNX Runtime internals
-            // For now, we rely on the user setting RAYON_NUM_THREADS or similar env vars
-        }
+        // Limit ORT intra-op CPU threads to prevent idle spin-waiting.
+        // FastEmbed doesn't expose thread config, so we set the env var
+        // before session creation. This doesn't affect Metal/CoreML GPU dispatch.
+        let thread_count = if max_threads > 0 { max_threads } else { 1 };
+        std::env::set_var("ORT_INTRA_OP_NUM_THREADS", thread_count.to_string());
+        tracing::info!("Set ORT_INTRA_OP_NUM_THREADS={} for embedding model", thread_count);
 
         // Configure execution provider based on device setting
         match device {

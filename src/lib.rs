@@ -5,6 +5,7 @@ pub mod graph;
 pub mod handlers;
 pub mod indexer;
 pub mod llm;
+pub mod logging;
 pub mod metrics;
 pub mod path;
 pub mod registry;

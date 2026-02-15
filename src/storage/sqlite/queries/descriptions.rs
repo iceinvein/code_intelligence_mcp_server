@@ -87,6 +87,46 @@ pub fn get_undescribed_symbols(conn: &Connection) -> Result<Vec<SymbolForDescrip
         .context("Failed to collect undescribed symbols")
 }
 
+/// Get a batch of symbols that don't have descriptions yet.
+///
+/// Uses LIMIT without OFFSET — described symbols drop out of the LEFT JOIN
+/// result set automatically, so each call returns the next batch.
+pub fn get_undescribed_symbols_batch(conn: &Connection, limit: usize) -> Result<Vec<SymbolForDescription>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.name, s.kind, s.file_path, s.text
+         FROM symbols s
+         LEFT JOIN descriptions d ON s.id = d.symbol_id
+         WHERE d.symbol_id IS NULL
+         ORDER BY s.file_path, s.name
+         LIMIT ?1"
+    )?;
+    let rows = stmt
+        .query_map(params![limit], |row| {
+            Ok(SymbolForDescription {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                file_path: row.get(3)?,
+                text: row.get(4)?,
+            })
+        })
+        .context("Failed to query undescribed symbols batch")?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .context("Failed to collect undescribed symbols batch")
+}
+
+/// Count symbols that don't have descriptions yet.
+pub fn count_undescribed_symbols(conn: &Connection) -> Result<usize> {
+    let count: usize = conn.query_row(
+        "SELECT COUNT(*) FROM symbols s
+         LEFT JOIN descriptions d ON s.id = d.symbol_id
+         WHERE d.symbol_id IS NULL",
+        [],
+        |row| row.get(0),
+    ).context("Failed to count undescribed symbols")?;
+    Ok(count)
+}
+
 /// Delete descriptions for symbols that no longer exist.
 pub fn cleanup_orphaned_descriptions(conn: &Connection) -> Result<usize> {
     let count = conn.execute(
@@ -199,5 +239,37 @@ mod tests {
         assert_eq!(count_descriptions(&conn).unwrap(), 0);
         upsert_description(&conn, "sym1", "h", "d").unwrap();
         assert_eq!(count_descriptions(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn get_undescribed_batch_respects_limit() {
+        let conn = setup_test_db();
+        // setup_test_db inserts sym1; add two more
+        conn.execute(
+            "INSERT INTO symbols (id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text)
+             VALUES ('sym2', 'src/bar.rs', 'rust', 'function', 'bar', 1, 0, 50, 1, 5, 'fn bar() {}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO symbols (id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text)
+             VALUES ('sym3', 'src/baz.rs', 'rust', 'function', 'baz', 1, 0, 50, 1, 5, 'fn baz() {}')",
+            [],
+        ).unwrap();
+
+        let batch = get_undescribed_symbols_batch(&conn, 2).unwrap();
+        assert_eq!(batch.len(), 2);
+
+        // Describe one, next batch should return remaining
+        upsert_description(&conn, &batch[0].id, "h", "d").unwrap();
+        let batch2 = get_undescribed_symbols_batch(&conn, 2).unwrap();
+        assert_eq!(batch2.len(), 2); // sym that was described drops out, 2 remain
+    }
+
+    #[test]
+    fn count_undescribed_symbols_works() {
+        let conn = setup_test_db();
+        assert_eq!(count_undescribed_symbols(&conn).unwrap(), 1);
+        upsert_description(&conn, "sym1", "h", "d").unwrap();
+        assert_eq!(count_undescribed_symbols(&conn).unwrap(), 0);
     }
 }

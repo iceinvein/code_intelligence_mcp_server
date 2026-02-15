@@ -137,3 +137,9 @@ impl LlmGenerator for LlamaCppGenerator {
         Ok(output.trim().to_string())
     }
 }
+
+impl Drop for LlamaCppGenerator {
+    fn drop(&mut self) {
+        tracing::info!("Unloading LLM model from GPU memory (~1.1 GB freed)");
+    }
+}

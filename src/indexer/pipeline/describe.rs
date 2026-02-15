@@ -18,6 +18,10 @@ use crate::storage::tantivy::TantivyIndex;
 ///
 /// Processes all symbols that don't have descriptions yet,
 /// committing to Tantivy in batches for progressive search improvement.
+/// Fetches symbols in pages of 500 to limit peak memory — each page's
+/// symbol text strings are freed before the next page is fetched.
+/// The LLM model (~1.1 GB GPU) is explicitly dropped after all
+/// descriptions are generated.
 pub async fn run_description_worker(
     db: Arc<SqliteStore>,
     tantivy: Arc<TantivyIndex>,
@@ -35,12 +39,11 @@ pub async fn run_description_worker(
         }
     }
 
-    let undescribed = {
-        let conn = db.read().context("read conn for undescribed query")?;
-        desc_queries::get_undescribed_symbols(&conn)
-            .context("Failed to query undescribed symbols")?
+    let total = {
+        let conn = db.read().context("read conn for undescribed count")?;
+        desc_queries::count_undescribed_symbols(&conn)
+            .context("Failed to count undescribed symbols")?
     };
-    let total = undescribed.len();
 
     if total == 0 {
         tracing::info!("Description worker: all symbols already described");
@@ -49,64 +52,91 @@ pub async fn run_description_worker(
 
     tracing::info!("Description worker: {} symbols to describe", total);
 
+    const PAGE_SIZE: usize = 500;
     let mut generated_count = 0;
-    for (i, sym) in undescribed.iter().enumerate() {
+    let mut processed_count = 0;
+
+    loop {
         if cancel.is_cancelled() {
-            tracing::info!("Description worker cancelled at {}/{}", i, total);
+            tracing::info!("Description worker cancelled at {}/{}", processed_count, total);
             break;
         }
 
-        let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
-
-        // Check if already described with matching content (race condition guard)
-        {
-            let conn = db.read().context("read conn for description check")?;
-            if desc_queries::get_description(&conn, &sym.id, &content_hash)?.is_some() {
-                continue;
-            }
-        }
-
-        // Generate description
-        let prompt = llm::build_description_prompt(&sym.name, &sym.kind, &sym.file_path, &sym.text);
-        let description = match llm.generate(&prompt, max_tokens) {
-            Ok(desc) => desc,
-            Err(e) => {
-                tracing::warn!("Failed to generate description for {}: {:#}", sym.name, e);
-                continue;
-            }
+        // Fetch next page. Described symbols drop out of the LEFT JOIN
+        // result set, so LIMIT without OFFSET always returns the next batch.
+        let page = {
+            let conn = db.read().context("read conn for undescribed batch")?;
+            desc_queries::get_undescribed_symbols_batch(&conn, PAGE_SIZE)?
         };
 
-        // Cache in SQLite
-        {
-            let conn = db.read().context("read conn for description upsert")?;
-            desc_queries::upsert_description(&conn, &sym.id, &content_hash, &description)?;
+        if page.is_empty() {
+            break;
         }
 
-        // Re-upsert to Tantivy with description
-        {
-            let conn = db.read().context("read conn for symbol lookup")?;
-            if let Some(symbol_row) = get_symbol_row(&conn, &sym.id)? {
-                if let Err(e) = tantivy.upsert_symbol(&symbol_row, "", "", Some(&description)) {
-                    tracing::warn!("Failed to re-upsert {} to Tantivy: {}", sym.name, e);
+        for sym in &page {
+            if cancel.is_cancelled() {
+                break;
+            }
+
+            processed_count += 1;
+
+            let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
+
+            // Check if already described with matching content (race condition guard)
+            {
+                let conn = db.read().context("read conn for description check")?;
+                if desc_queries::get_description(&conn, &sym.id, &content_hash)?.is_some() {
+                    continue;
                 }
             }
-        }
 
-        generated_count += 1;
+            // Generate description
+            let prompt = llm::build_description_prompt(&sym.name, &sym.kind, &sym.file_path, &sym.text);
+            let description = match llm.generate(&prompt, max_tokens) {
+                Ok(desc) => desc,
+                Err(e) => {
+                    tracing::warn!("Failed to generate description for {}: {:#}", sym.name, e);
+                    continue;
+                }
+            };
 
-        // Batch commit for progressive search improvement
-        if generated_count % batch_commit_size == 0 {
-            if let Err(e) = tantivy.commit() {
-                tracing::warn!("Failed to commit Tantivy batch: {}", e);
+            // Cache in SQLite
+            {
+                let conn = db.read().context("read conn for description upsert")?;
+                desc_queries::upsert_description(&conn, &sym.id, &content_hash, &description)?;
             }
-            tracing::info!(
-                "Descriptions: {}/{} complete ({} generated)",
-                i + 1,
-                total,
-                generated_count
-            );
+
+            // Re-upsert to Tantivy with description
+            {
+                let conn = db.read().context("read conn for symbol lookup")?;
+                if let Some(symbol_row) = get_symbol_row(&conn, &sym.id)? {
+                    if let Err(e) = tantivy.upsert_symbol(&symbol_row, "", "", Some(&description)) {
+                        tracing::warn!("Failed to re-upsert {} to Tantivy: {}", sym.name, e);
+                    }
+                }
+            }
+
+            generated_count += 1;
+
+            // Batch commit for progressive search improvement
+            if generated_count % batch_commit_size == 0 {
+                if let Err(e) = tantivy.commit() {
+                    tracing::warn!("Failed to commit Tantivy batch: {}", e);
+                }
+                tracing::info!(
+                    "Descriptions: {}/{} processed ({} generated)",
+                    processed_count,
+                    total,
+                    generated_count
+                );
+            }
         }
+        // page Vec dropped here — symbol text strings freed before next fetch
     }
+
+    // Explicitly drop the LLM to free ~1.1 GB of GPU memory.
+    // The model is only needed for description generation, not search queries.
+    drop(llm);
 
     // Final commit
     if generated_count > 0 {

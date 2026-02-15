@@ -430,22 +430,6 @@ impl Retriever {
         hits = diversify_by_kind(hits, limit);
         hits.truncate(limit);
 
-        // Post-diversity gap-fill: if file-symbol dedup in diversify_by_file
-        // left fewer than `limit` results, backfill from pre-expansion pool.
-        // This runs AFTER diversity so it can't influence diversity's choices.
-        if hits.len() < limit {
-            let hit_ids: std::collections::HashSet<String> =
-                hits.iter().map(|h| h.id.clone()).collect();
-            for h in &pre_expansion_candidates {
-                if hits.len() >= limit {
-                    break;
-                }
-                if h.kind != "file" && !hit_ids.contains(&h.id) {
-                    hits.push(h.clone());
-                }
-            }
-        }
-
         // Promote top vector results AFTER diversity + truncation.
         // This is the correct placement: post-RRF adjustments, edge expansion,
         // and diversity filtering have all run. Vector results that were buried
@@ -520,6 +504,106 @@ impl Retriever {
         // no value to the user. Threshold 0.5 is well below any
         // meaningful result (lowest legitimate scores are ~3.0).
         hits.retain(|h| h.score >= 0.5);
+
+        // Post-pipeline gap fill: if fewer than `limit` results survived
+        // enforcement + min-score filtering, backfill from the pre-expansion pool.
+        if hits.len() < limit {
+            let is_test_intent = matches!(intent, Some(Intent::Test));
+            let mut hit_ids: std::collections::HashSet<String> =
+                hits.iter().map(|h| h.id.clone()).collect();
+
+            // Source 1: non-file symbols from pre-expansion pool
+            for h in &pre_expansion_candidates {
+                if hits.len() >= limit {
+                    break;
+                }
+                if h.kind != "file" && !hit_ids.contains(&h.id) {
+                    // Apply intent enforcement to gap-filled result
+                    let intent_mult = ranking::intent_adjustment(
+                        &intent, &h.kind, &h.file_path, h.exported, &h.name,
+                    );
+                    let adj_score = if intent_mult < 1.0 {
+                        h.score * intent_mult
+                    } else {
+                        h.score
+                    };
+                    if adj_score >= 0.5 {
+                        hit_ids.insert(h.id.clone());
+                        let mut gap_hit = h.clone();
+                        gap_hit.score = adj_score;
+                        hits.push(gap_hit);
+                    }
+                }
+            }
+
+            // Source 2: file-expansion — for files in pre-expansion that are only
+            // represented by a file symbol (no function from same file in hits),
+            // surface their top exported function.
+            if hits.len() < limit {
+                let files_with_fn: std::collections::HashSet<String> = hits
+                    .iter()
+                    .filter(|h| h.kind != "file")
+                    .map(|h| h.file_path.clone())
+                    .collect();
+                for h in &pre_expansion_candidates {
+                    if hits.len() >= limit {
+                        break;
+                    }
+                    if h.kind != "file" {
+                        continue;
+                    }
+                    if files_with_fn.contains(&h.file_path) {
+                        continue;
+                    }
+                    if let Ok(symbols) = sqlite.list_symbols_by_file(&h.file_path) {
+                        for row in symbols {
+                            if row.kind == "file" || !row.exported {
+                                continue;
+                            }
+                            if !hit_ids.contains(&row.id) {
+                                // Check test status
+                                let test_ids = sqlite
+                                    .batch_check_test_symbols(&[row.id.clone()])
+                                    .unwrap_or_default();
+                                if !is_test_intent && test_ids.contains(&row.id) {
+                                    continue;
+                                }
+                                let intent_mult = ranking::intent_adjustment(
+                                    &intent, &row.kind, &row.file_path, row.exported, &row.name,
+                                );
+                                let adj_score = h.score * 0.7 * if intent_mult < 1.0 {
+                                    intent_mult
+                                } else {
+                                    1.0
+                                };
+                                if adj_score >= 0.5 {
+                                    hit_ids.insert(row.id.clone());
+                                    hits.push(RankedHit {
+                                        id: row.id.clone(),
+                                        score: adj_score,
+                                        name: row.name,
+                                        kind: row.kind,
+                                        file_path: row.file_path,
+                                        exported: row.exported,
+                                        language: row.language,
+                                    });
+                                    break; // one function per file
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Re-sort after gap fill to maintain proper score ordering
+            hits.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| b.exported.cmp(&a.exported))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            hits.truncate(limit);
+        }
 
         let mut roots = Vec::new();
         let mut extra = Vec::new();

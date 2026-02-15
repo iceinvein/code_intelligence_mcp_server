@@ -439,6 +439,33 @@ async fn run_embedded() -> SdkResult<()> {
         }
     }
 
+    // Recovery: regenerate vectors for orphaned symbols (e.g. after LanceDB data loss).
+    // Runs in background so it doesn't block MCP server startup.
+    if !needs_reindex {
+        let orphan_check_state = state.clone();
+        tokio::spawn(async move {
+            let orphan_count = orphan_check_state
+                .sqlite
+                .list_symbols_without_similarity_clusters(1)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if orphan_count > 0 {
+                tracing::warn!(
+                    "Found symbols without embeddings. Regenerating vectors in background..."
+                );
+                if let Err(e) = orphan_check_state
+                    .indexer
+                    .generate_embeddings_for_orphaned_symbols()
+                    .await
+                {
+                    tracing::error!("Background vector regeneration failed: {}", e);
+                } else {
+                    tracing::info!("Background vector regeneration completed");
+                }
+            }
+        });
+    }
+
     // --- Background tasks gated on leader/follower role ---
     let cancel_token = tokio_util::sync::CancellationToken::new();
 

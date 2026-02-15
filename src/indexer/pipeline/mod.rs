@@ -1094,11 +1094,11 @@ impl IndexPipeline {
             )
         })??;
 
-        // Post-processing: Generate embeddings and create similarity clusters
-        // This is required because parallel indexing skips embedding generation
-        if stats.files_indexed > 0 {
-            self.generate_embeddings_for_parallel_indexed_files().await?;
-        }
+        // Post-processing: Generate embeddings and create similarity clusters.
+        // Always called (not gated on files_indexed > 0) so that orphaned symbols
+        // — e.g. after LanceDB data loss — get their vectors regenerated.
+        // The function is a no-op when all symbols already have similarity clusters.
+        self.generate_embeddings_for_orphaned_symbols().await?;
 
         Ok(stats)
     }
@@ -1109,11 +1109,14 @@ impl IndexPipeline {
     /// - LanceDB vectors
     /// - similarity_clusters table
     ///
+    /// Also used at startup for recovery when LanceDB data is missing
+    /// but symbols exist in SQLite.
+    ///
     /// Processes symbols in batches of 200 to bound peak memory usage.
     /// Each batch is fully written to LanceDB before the next is fetched,
     /// so intermediate allocations (embedding texts, vectors, Arrow batches)
     /// are freed between iterations.
-    async fn generate_embeddings_for_parallel_indexed_files(&self) -> Result<()> {
+    pub async fn generate_embeddings_for_orphaned_symbols(&self) -> Result<()> {
         use crate::storage::sqlite::schema::SymbolRow;
 
         const BATCH_SIZE: usize = 200;

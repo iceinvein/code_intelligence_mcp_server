@@ -129,11 +129,13 @@ fn promote_vector_results(
         return;
     }
 
-    // Top vector results (by vector rank order), excluding tests and modules
+    // Top vector results (by vector rank order), excluding tests, modules, and files.
+    // File-level symbols are redundant when specific functions from the same file
+    // already exist in BM25 results — promoting them would waste a result slot.
     let top_vector: Vec<&RankedHit> = vector_ranked
         .iter()
         .filter(|h| !test_symbols.contains(&h.id))
-        .filter(|h| h.kind != "module")
+        .filter(|h| h.kind != "module" && h.kind != "file")
         .take(guaranteed_slots * 2)
         .collect();
 

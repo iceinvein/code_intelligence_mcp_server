@@ -1,6 +1,6 @@
 use crate::retrieval::RankedHit;
 use crate::storage::sqlite::SqliteStore;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Diversify results by file path to prevent any single file from dominating results.
 ///
@@ -22,12 +22,18 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     let mut deferred = Vec::new();
     let mut backfill = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
+    // Track files that already have a non-file (function/struct/impl) symbol selected.
+    // File-level symbols from these files are redundant and should be deferred to backfill.
+    let mut files_with_non_file: HashSet<String> = HashSet::new();
 
     // Pass 1: diverse selection (up to max_per_file per file)
     for h in &hits {
         let n = counts.get(&h.file_path).copied().unwrap_or(0);
         if n < max_per_file {
             *counts.entry(h.file_path.clone()).or_insert(0) += 1;
+            if h.kind != "file" {
+                files_with_non_file.insert(h.file_path.clone());
+            }
             out.push(h.clone());
         } else {
             deferred.push(h.clone());
@@ -35,13 +41,22 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     }
 
     // Pass 2: controlled overflow (up to total_cap per file)
+    // Skip file-level symbols when a non-file symbol from the same file is already
+    // selected — the file symbol is redundant and wastes a result slot.
     for h in deferred {
         if out.len() >= limit {
             break;
         }
         let n = counts.get(&h.file_path).copied().unwrap_or(0);
         if n < total_cap_per_file {
+            if h.kind == "file" && files_with_non_file.contains(&h.file_path) {
+                backfill.push(h);
+                continue;
+            }
             *counts.entry(h.file_path.clone()).or_insert(0) += 1;
+            if h.kind != "file" {
+                files_with_non_file.insert(h.file_path.clone());
+            }
             out.push(h);
         } else {
             backfill.push(h);
@@ -49,9 +64,14 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     }
 
     // Pass 3: backfill remaining slots (never waste a slot)
+    // Continue to skip redundant file-level symbols — returning fewer but
+    // higher-quality results is better than padding with redundant entries.
     for h in backfill {
         if out.len() >= limit {
             break;
+        }
+        if h.kind == "file" && files_with_non_file.contains(&h.file_path) {
+            continue;
         }
         out.push(h);
     }
@@ -113,6 +133,18 @@ mod tests {
             score,
             name: id.to_string(),
             kind: "function".to_string(),
+            file_path: file.to_string(),
+            exported: true,
+            language: "rust".to_string(),
+        }
+    }
+
+    fn file_hit(id: &str, score: f32, file: &str) -> RankedHit {
+        RankedHit {
+            id: id.to_string(),
+            score,
+            name: id.to_string(),
+            kind: "file".to_string(),
             file_path: file.to_string(),
             exported: true,
             language: "rust".to_string(),
@@ -207,6 +239,101 @@ mod tests {
         ];
         let result = diversify_by_file(hits, 5);
         assert_eq!(result.len(), 5);
+    }
+
+    #[test]
+    fn file_symbol_suppressed_when_function_from_same_file_exists() {
+        // Q1-like scenario: fn from reranker.rs at #1, file symbol deferred.
+        // With a 6th candidate from mod.rs available, the file symbol should be
+        // skipped in pass 2 and the freed slot goes to mod.rs instead.
+        let hits = vec![
+            hit("apply_reranker_scores", 14.83, "reranker.rs"),
+            hit("reciprocal_rank_fusion", 14.11, "rrf.rs"),
+            file_hit("reranker.rs", 12.61, "reranker.rs"),
+            hit("apply_popularity_boost", 12.32, "score.rs"),
+            hit("structural_adjustment", 11.50, "score.rs"),
+            hit("rank_hits_with_signals", 10.00, "mod.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 5);
+        // The file-level "reranker.rs" should NOT be in top 5
+        // since we already have apply_reranker_scores from that file
+        assert!(
+            !result.iter().any(|h| h.kind == "file" && h.file_path == "reranker.rs"),
+            "File symbol should be suppressed when function from same file exists"
+        );
+        // mod.rs function should fill the freed slot
+        assert!(
+            result.iter().any(|h| h.name == "rank_hits_with_signals"),
+            "mod.rs function should fill the freed slot"
+        );
+    }
+
+    #[test]
+    fn file_symbol_kept_when_highest_scorer_from_file() {
+        // Q8-like scenario: file symbol is the top result (score 1010)
+        // It should be selected in pass 1, structs fill pass 2+
+        let hits = vec![
+            file_hit("schema.rs", 1010.0, "schema.rs"),
+            hit("TodoRow", 419.0, "schema.rs"),
+            hit("RepositoryRow", 367.0, "schema.rs"),
+            hit("PackageRow", 361.0, "schema.rs"),
+            hit("setup_test_db", 4.19, "descriptions.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 5);
+        // File symbol should be #1 (it's the highest scorer)
+        assert_eq!(result[0].kind, "file", "File symbol should be #1 when highest scorer");
+        assert_eq!(result[0].file_path, "schema.rs");
+    }
+
+    #[test]
+    fn all_file_symbols_preserved_when_no_functions() {
+        // Q5-like scenario: all results are file-level symbols
+        // No suppression should happen since no functions exist to prefer
+        let hits = vec![
+            file_hit("pipeline/mod.rs", 15.76, "pipeline/mod.rs"),
+            file_hit("extract/cpp.rs", 15.59, "extract/cpp.rs"),
+            file_hit("pipeline/scan.rs", 15.59, "pipeline/scan.rs"),
+            file_hit("pipeline/parallel.rs", 15.01, "pipeline/parallel.rs"),
+            file_hit("extract/c.rs", 11.71, "extract/c.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 5, "All file symbols should be preserved");
+        assert!(result.iter().all(|h| h.kind == "file"));
+    }
+
+    #[test]
+    fn file_symbol_not_backfilled_when_function_exists() {
+        // File symbol is suppressed in both pass 2 AND backfill when a
+        // function from the same file exists — fewer but higher-quality results.
+        let hits = vec![
+            hit("fn_a", 10.0, "a.rs"),
+            file_hit("a.rs", 9.0, "a.rs"),
+            hit("fn_b", 8.0, "b.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 2, "File symbol should NOT be backfilled");
+        assert!(
+            !result.iter().any(|h| h.kind == "file"),
+            "File symbol should be suppressed"
+        );
+    }
+
+    #[test]
+    fn file_symbol_backfilled_when_no_function_from_same_file() {
+        // File symbol from a.rs has no competing function — it should be kept.
+        let hits = vec![
+            hit("fn_b", 10.0, "b.rs"),
+            file_hit("a.rs", 9.0, "a.rs"),
+            hit("fn_c", 8.0, "c.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 3);
+        assert!(
+            result.iter().any(|h| h.kind == "file" && h.file_path == "a.rs"),
+            "File symbol should be kept when no function from same file"
+        );
     }
 }
 

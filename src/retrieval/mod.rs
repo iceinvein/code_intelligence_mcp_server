@@ -419,6 +419,8 @@ impl Retriever {
         hits = diversify_by_cluster(&sqlite, hits, limit * 3);
         hits.truncate(limit * 3);
 
+        // Save pre-expansion candidates for gap-fill after file-symbol dedup.
+        let pre_expansion_candidates = hits.clone();
         let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, limit, &intent)?;
 
         // Apply file/kind diversity on the expanded pool (limit*3 candidates),
@@ -427,6 +429,22 @@ impl Retriever {
         let mut hits = diversify_by_file(hits, limit);
         hits = diversify_by_kind(hits, limit);
         hits.truncate(limit);
+
+        // Post-diversity gap-fill: if file-symbol dedup in diversify_by_file
+        // left fewer than `limit` results, backfill from pre-expansion pool.
+        // This runs AFTER diversity so it can't influence diversity's choices.
+        if hits.len() < limit {
+            let hit_ids: std::collections::HashSet<String> =
+                hits.iter().map(|h| h.id.clone()).collect();
+            for h in &pre_expansion_candidates {
+                if hits.len() >= limit {
+                    break;
+                }
+                if h.kind != "file" && !hit_ids.contains(&h.id) {
+                    hits.push(h.clone());
+                }
+            }
+        }
 
         // Promote top vector results AFTER diversity + truncation.
         // This is the correct placement: post-RRF adjustments, edge expansion,

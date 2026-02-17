@@ -634,6 +634,79 @@ impl Retriever {
             hits.truncate(limit);
         }
 
+        // Sub-query coverage enforcement: for compound queries split on "and",
+        // ensure each sub-query branch has at least one representative. Without
+        // this, one dominant branch can crowd out the other entirely (e.g.,
+        // "onboarding" crowds out "invitation" in "Invitation system and user onboarding").
+        if sub_queries.len() > 1 && hits.len() >= 2 {
+            let hit_ids_set: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
+            for sq in &sub_queries {
+                // Extract significant terms from this sub-query (>3 chars, skip stopwords)
+                let terms: Vec<String> = sq
+                    .split_whitespace()
+                    .filter(|w| w.len() > 3)
+                    .filter(|w| {
+                        !matches!(
+                            w.to_lowercase().as_str(),
+                            "does" | "have" | "with" | "from" | "that" | "this" | "what" | "how"
+                        )
+                    })
+                    .map(|w| w.to_lowercase())
+                    .collect();
+                if terms.is_empty() {
+                    continue;
+                }
+
+                // Check if any current result matches this sub-query
+                let has_match = hits.iter().any(|h| {
+                    let name_lower = h.name.to_lowercase();
+                    let path_lower = h.file_path.to_lowercase();
+                    terms.iter().any(|t| name_lower.contains(t) || path_lower.contains(t))
+                });
+
+                if !has_match {
+                    // Find the best candidate from pre-expansion pool.
+                    // Prefer name matches over path-only matches, and
+                    // prefer functions/structs over consts/variables.
+                    let mut best_candidate: Option<&RankedHit> = None;
+                    let mut best_priority = 0u8; // higher = better match quality
+                    for c in &pre_expansion_candidates {
+                        if hit_ids_set.contains(&c.id) || c.kind == "file" || c.score < 0.5 {
+                            continue;
+                        }
+                        let name_lower = c.name.to_lowercase();
+                        let path_lower = c.file_path.to_lowercase();
+                        let name_match = terms.iter().any(|t| name_lower.contains(t));
+                        let path_match = terms.iter().any(|t| path_lower.contains(t));
+                        if !name_match && !path_match {
+                            continue;
+                        }
+                        // Priority: name+meaningful kind > name+any kind > path-only+meaningful > path-only
+                        let is_meaningful = !matches!(c.kind.as_str(), "const" | "variable" | "property");
+                        let priority = match (name_match, is_meaningful) {
+                            (true, true) => 4,
+                            (true, false) => 3,
+                            (false, true) => 2,
+                            (false, false) => 1,
+                        };
+                        if priority > best_priority {
+                            best_priority = priority;
+                            best_candidate = Some(c);
+                            if priority == 4 { break; } // best possible, stop searching
+                        }
+                    }
+                    if let Some(c) = best_candidate {
+                        // Replace the lowest-scoring result
+                        if let Some(last) = hits.last_mut() {
+                            *last = c.clone();
+                        }
+                    }
+                }
+            }
+            // Re-sort after potential injection
+            hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+        }
+
         // Name deduplication (final step): collapse symbols with identical names
         // from different files (e.g., has_accessibility_permission in platform/windows/
         // and platform/linux/). Keeps the highest-scoring instance. Placed AFTER gap

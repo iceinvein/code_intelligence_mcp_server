@@ -81,7 +81,7 @@ impl Embedder for FastEmbedder {
 
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.model
-            .embed(texts.to_vec(), None) // batch_size default is usually 256
+            .embed(texts.to_vec(), Some(32)) // Small inference batches to control ORT arena growth
             .map_err(|e| anyhow!("Embedding failed: {}", e))
     }
 

@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
-"""Run the full 15-query search quality benchmark against the MCP server.
+"""Run the full search quality benchmark against the MCP server.
 
 Spawns a fresh server instance, indexes the codebase, runs all queries,
 and writes structured results for agent evaluation.
 
 Usage:
     python3 scripts/run_benchmark.py                    # Fresh mode (hash embeddings, temp dirs)
+    python3 scripts/run_benchmark.py --real-embeddings  # Fresh mode with real embeddings (full pipeline)
     python3 scripts/run_benchmark.py --live             # Live mode (real embeddings + LLM descriptions)
     python3 scripts/run_benchmark.py --round 46         # Set round number
     python3 scripts/run_benchmark.py --queries 1,3,9    # Run specific queries only
     python3 scripts/run_benchmark.py --output results.md # Custom output file
 
+    # External repo benchmarking:
+    python3 scripts/run_benchmark.py --base-dir /path/to/repo --query-file queries.json
+    python3 scripts/run_benchmark.py --base-dir /path/to/repo --query-file queries.json --live
+
 Modes:
-    Fresh (default): Temp data dirs, hash embeddings, full re-index. Fast (~60s) but BM25-only.
-    Live (--live):   Uses existing ~/.code-intelligence/repos/<hash>/ data with real embeddings + LLM descriptions.
-                     Comparable to agent-based benchmark rounds. Requires no running MCP server.
+    Fresh (default):        Temp data dirs, hash embeddings, full re-index. Fast (~60s) but BM25-only.
+    Fresh --real-embeddings: Temp data dirs, real embeddings, full re-index. Slower but tests full pipeline.
+    Live (--live):          Uses existing ~/.code-intelligence/repos/<hash>/ data with real embeddings + LLM descriptions.
+                            Comparable to agent-based benchmark rounds. Requires no running MCP server.
+
+Query file format (JSON):
+    [
+      {"id": 1, "query": "How does auth work?", "expected": "auth/ files, login handlers"},
+      {"id": 2, "query": "Database schema", "expected": "schema definitions, migrations"}
+    ]
 
 Output: docs/benchmark_rounds/round_N_results.md
 """
@@ -36,10 +48,9 @@ from datetime import datetime
 sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 
 BINARY = "./target/release/code-intelligence-mcp-server"
-BASE_DIR = os.getcwd()
 
 # The 15 standard benchmark queries (from docs/SEARCH_BENCHMARK.md)
-QUERIES = [
+DEFAULT_QUERIES = [
     {"id": 1,  "query": "How does the ranking and scoring system work?",
      "expected": "retrieval/ranking/score.rs, retrieval/ranking/mod.rs, retrieval/ranking/diversify.rs, retrieval/ranking/rrf.rs"},
     {"id": 2,  "query": "How are embeddings generated and stored?",
@@ -246,12 +257,17 @@ def run_query(client, query_text, msg_id, limit=10):
     return parsed
 
 
-def format_results_markdown(round_num, all_results, elapsed_total, symbol_count):
+def format_results_markdown(round_num, all_results, elapsed_total, symbol_count, repo_name=None):
     """Format results as markdown for agent evaluation."""
     lines = []
-    lines.append(f"# Round {round_num} - Raw Results")
+    title = f"# Round {round_num} - Raw Results"
+    if repo_name:
+        title += f" ({repo_name})"
+    lines.append(title)
     lines.append(f"")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    if repo_name:
+        lines.append(f"Repository: {repo_name}")
     lines.append(f"Symbols indexed: {symbol_count}")
     lines.append(f"Total time: {elapsed_total:.0f}s")
     lines.append(f"")
@@ -328,11 +344,35 @@ def main():
     parser.add_argument("--limit", type=int, default=5, help="Results per query (default=5)")
     parser.add_argument("--live", action="store_true",
                         help="Use existing data (real embeddings + LLM descriptions)")
+    parser.add_argument("--real-embeddings", action="store_true",
+                        help="Fresh mode with real embeddings (slow but full pipeline test)")
+    parser.add_argument("--base-dir", type=str, default="",
+                        help="Repository to index (default=current directory)")
+    parser.add_argument("--query-file", type=str, default="",
+                        help="JSON file with custom queries (overrides built-in queries)")
     args = parser.parse_args()
 
     if not os.path.exists(BINARY):
         print("ERROR: Binary not found. Run: cargo build --release", flush=True)
         sys.exit(1)
+
+    # Resolve base directory
+    BASE_DIR = os.path.realpath(args.base_dir) if args.base_dir else os.getcwd()
+    if not os.path.isdir(BASE_DIR):
+        print(f"ERROR: Not a directory: {BASE_DIR}", flush=True)
+        sys.exit(1)
+    repo_name = os.path.basename(BASE_DIR)
+
+    # Load queries: from file, or built-in defaults
+    if args.query_file:
+        if not os.path.exists(args.query_file):
+            print(f"ERROR: Query file not found: {args.query_file}", flush=True)
+            sys.exit(1)
+        with open(args.query_file) as f:
+            all_queries = json.load(f)
+        print(f"Loaded {len(all_queries)} queries from {args.query_file}", flush=True)
+    else:
+        all_queries = DEFAULT_QUERIES
 
     # Determine round number
     round_num = args.round
@@ -344,14 +384,16 @@ def main():
     # Filter queries
     if args.queries:
         query_ids = set(int(q) for q in args.queries.split(","))
-        queries = [q for q in QUERIES if q["id"] in query_ids]
+        queries = [q for q in all_queries if q["id"] in query_ids]
     else:
-        queries = QUERIES
+        queries = all_queries
 
     output_file = args.output or f"docs/benchmark_rounds/round_{round_num}_results.md"
     mode = "live" if args.live else "fresh"
 
     print(f"=== Benchmark Round {round_num} ({mode} mode) ===", flush=True)
+    if args.base_dir:
+        print(f"Repo: {BASE_DIR} ({repo_name})", flush=True)
     query_labels = ', '.join(f"Q{q['id']}" for q in queries)
     print(f"Queries: {len(queries)} ({query_labels})", flush=True)
     print(f"Output: {output_file}", flush=True)
@@ -401,10 +443,15 @@ def main():
         # Don't set LLM_ENABLED=false — descriptions already in DB/index
         print(f"Data dir: {repo_data_dir} (live)", flush=True)
     else:
-        # Fresh mode: temp dirs, hash embeddings, full re-index
+        # Fresh mode: temp dirs, full re-index
         data_dir = tempfile.mkdtemp(prefix="cimcp_bench_")
-        env["EMBEDDINGS_BACKEND"] = "hash"
-        env["LLM_ENABLED"] = "false"
+        if args.real_embeddings:
+            # Real embeddings: full pipeline including vector generation
+            env["LLM_ENABLED"] = "false"
+        else:
+            # Hash embeddings: fast BM25-only testing
+            env["EMBEDDINGS_BACKEND"] = "hash"
+            env["LLM_ENABLED"] = "false"
         env["DB_PATH"] = os.path.join(data_dir, "code-intelligence.db")
         env["VECTOR_DB_PATH"] = os.path.join(data_dir, "vectors")
         env["TANTIVY_INDEX_PATH"] = os.path.join(data_dir, "tantivy-index")
@@ -445,9 +492,32 @@ def main():
         else:
             # Fresh mode: trigger full indexing
             print("Triggering refresh_index...", flush=True)
-            call_tool(client, "refresh_index", {}, 50, timeout=30)
-            print("Waiting for indexing...", flush=True)
-            symbol_count = wait_for_indexing(client, start_msg_id=100, stable_seconds=15)
+            if args.real_embeddings:
+                # With real embeddings, refresh_index includes embedding generation
+                # which can take 5-10 min. Wait for the full response instead of
+                # polling symbol count (which only tracks SQLite writes, not embeddings).
+                result = call_tool(client, "refresh_index", {}, 50, timeout=14400)
+                if result and result.get("ok"):
+                    s = result.get("stats", {})
+                    symbol_count = s.get("symbols_indexed", 0)
+                    print(f"refresh_index completed: {symbol_count} symbols indexed", flush=True)
+                    # Get actual total symbol count
+                    symbol_count = get_symbol_count(client, 100)
+                else:
+                    print(f"ERROR: refresh_index failed: {result}", flush=True)
+                    # Print server stderr for diagnostics
+                    if client._stderr_lines:
+                        print("Server stderr (last 50 lines):", flush=True)
+                        for line in client._stderr_lines[-50:]:
+                            print(f"  {line}", flush=True)
+                    # Check if process is still alive
+                    if client.proc.poll() is not None:
+                        print(f"Server process exited with code: {client.proc.returncode}", flush=True)
+                    return 1
+            else:
+                call_tool(client, "refresh_index", {}, 50, timeout=30)
+                print("Waiting for indexing...", flush=True)
+                symbol_count = wait_for_indexing(client, start_msg_id=100)
             if symbol_count < 100:
                 print(f"ERROR: Only {symbol_count} symbols indexed", flush=True)
                 return 1
@@ -478,7 +548,8 @@ def main():
 
         # Write results
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        md = format_results_markdown(round_num, all_results, elapsed_total, symbol_count)
+        md = format_results_markdown(round_num, all_results, elapsed_total, symbol_count,
+                                     repo_name=repo_name if args.base_dir else None)
         with open(output_file, "w") as f:
             f.write(md)
         print(f"Results written to: {output_file}", flush=True)

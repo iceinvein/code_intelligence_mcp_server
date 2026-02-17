@@ -743,7 +743,18 @@ pub fn generate_nl_description(name: &str, kind: &str, _body_text: &str) -> Stri
 pub fn prepare_embedding_text(name: &str, kind: &str, file_path: &str, text: &str) -> String {
     let stripped = strip_code_comments(text);
     let filename = file_path.rsplit('/').next().unwrap_or(file_path);
-    format!("{} {} in {}\n{}", kind, name, filename, stripped)
+    let header = format!("{} {} in {}\n", kind, name, filename);
+
+    // Truncate body to prevent ONNX Runtime memory explosion.
+    // The Jina model supports 8192 tokens (~4 chars/token), but attention is O(n²).
+    // At 8K chars (~2K tokens), semantic content is captured without blowing ORT's
+    // BFCArena past available memory on large repos (7500+ symbols).
+    const MAX_BODY_CHARS: usize = 8000;
+    if stripped.len() > MAX_BODY_CHARS {
+        format!("{}{}", header, &stripped[..MAX_BODY_CHARS])
+    } else {
+        format!("{}{}", header, stripped)
+    }
 }
 
 /// Strip comments from source code before BM25 indexing.

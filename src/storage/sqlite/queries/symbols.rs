@@ -47,6 +47,47 @@ ON CONFLICT(id) DO UPDATE SET
     Ok(())
 }
 
+pub fn batch_upsert_symbols(conn: &Connection, symbols: &[SymbolRow]) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        r#"
+INSERT INTO symbols (
+  id, file_path, language, kind, name, exported,
+  start_byte, end_byte, start_line, end_line, text, updated_at
+)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())
+ON CONFLICT(id) DO UPDATE SET
+  file_path=excluded.file_path,
+  language=excluded.language,
+  kind=excluded.kind,
+  name=excluded.name,
+  exported=excluded.exported,
+  start_byte=excluded.start_byte,
+  end_byte=excluded.end_byte,
+  start_line=excluded.start_line,
+  end_line=excluded.end_line,
+  text=excluded.text,
+  updated_at=unixepoch()
+"#,
+    )?;
+    for s in symbols {
+        stmt.execute(params![
+            s.id,
+            s.file_path,
+            s.language,
+            s.kind,
+            s.name,
+            if s.exported { 1 } else { 0 },
+            s.start_byte,
+            s.end_byte,
+            s.start_line,
+            s.end_line,
+            s.text
+        ])
+        .with_context(|| format!("Failed to batch upsert symbol: id={}", s.id))?;
+    }
+    Ok(())
+}
+
 pub fn delete_symbols_by_file(conn: &Connection, file_path: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM symbols WHERE file_path = ?1",
@@ -568,4 +609,53 @@ LIMIT ?2
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::sqlite::SqliteStore;
+
+    #[test]
+    fn batch_upsert_symbols_inserts_multiple() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+        let conn = store.read().unwrap();
+
+        let symbols = vec![
+            SymbolRow {
+                id: "s1".into(),
+                file_path: "a.rs".into(),
+                language: "rust".into(),
+                kind: "function".into(),
+                name: "foo".into(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 10,
+                start_line: 1,
+                end_line: 3,
+                text: "fn foo() {}".into(),
+            },
+            SymbolRow {
+                id: "s2".into(),
+                file_path: "a.rs".into(),
+                language: "rust".into(),
+                kind: "function".into(),
+                name: "bar".into(),
+                exported: false,
+                start_byte: 11,
+                end_byte: 20,
+                start_line: 4,
+                end_line: 6,
+                text: "fn bar() {}".into(),
+            },
+        ];
+
+        batch_upsert_symbols(&conn, &symbols).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
 }

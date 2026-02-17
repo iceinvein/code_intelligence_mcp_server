@@ -90,6 +90,30 @@ ON CONFLICT(to_symbol_id, example_type, file_path, line, snippet) DO NOTHING
     Ok(())
 }
 
+pub fn batch_upsert_usage_examples(conn: &Connection, examples: &[UsageExampleRow]) -> Result<()> {
+    let mut stmt = conn.prepare_cached(
+        r#"
+INSERT INTO usage_examples(
+  to_symbol_id, from_symbol_id, example_type, file_path, line, snippet
+)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(to_symbol_id, example_type, file_path, line, snippet) DO NOTHING
+"#,
+    )?;
+    for ex in examples {
+        stmt.execute(params![
+            ex.to_symbol_id,
+            ex.from_symbol_id,
+            ex.example_type,
+            ex.file_path,
+            ex.line.map(|v| v as i64),
+            ex.snippet
+        ])
+        .context("Failed to batch upsert usage example")?;
+    }
+    Ok(())
+}
+
 pub fn list_usage_examples_for_symbol(
     conn: &Connection,
     to_symbol_id: &str,

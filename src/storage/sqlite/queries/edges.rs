@@ -70,6 +70,75 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type, at_file, at_line) DO UPDATE
     Ok(())
 }
 
+pub fn batch_upsert_edges(
+    conn: &Connection,
+    edges: &[(EdgeRow, Vec<EdgeEvidenceRow>)],
+) -> Result<()> {
+    let mut edge_stmt = conn.prepare_cached(
+        r#"
+INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count, resolution, resolution_rank)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+ON CONFLICT(from_symbol_id, to_symbol_id, edge_type) DO UPDATE SET
+  at_file=COALESCE(edges.at_file, excluded.at_file),
+  at_line=COALESCE(edges.at_line, excluded.at_line),
+  confidence=MAX(edges.confidence, excluded.confidence),
+  evidence_count=MAX(edges.evidence_count, excluded.evidence_count),
+  resolution_rank=MAX(edges.resolution_rank, excluded.resolution_rank),
+  resolution=CASE
+    WHEN excluded.resolution_rank > edges.resolution_rank THEN excluded.resolution
+    ELSE edges.resolution
+  END
+"#,
+    )?;
+    let mut ev_stmt = conn.prepare_cached(
+        r#"
+INSERT INTO edge_evidence(from_symbol_id, to_symbol_id, edge_type, at_file, at_line, count)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT(from_symbol_id, to_symbol_id, edge_type, at_file, at_line) DO UPDATE SET
+  count=MAX(edge_evidence.count, excluded.count)
+"#,
+    )?;
+    for (edge, evidence) in edges {
+        let resolution_rank = edge_resolution_rank(edge.resolution.as_str());
+        edge_stmt
+            .execute(params![
+                edge.from_symbol_id,
+                edge.to_symbol_id,
+                edge.edge_type,
+                edge.at_file,
+                edge.at_line.map(|v| v as i64),
+                edge.confidence,
+                edge.evidence_count as i64,
+                edge.resolution,
+                resolution_rank
+            ])
+            .with_context(|| {
+                format!(
+                    "Failed to batch upsert edge: from={}, to={}, type={}",
+                    edge.from_symbol_id, edge.to_symbol_id, edge.edge_type
+                )
+            })?;
+        for ev in evidence {
+            ev_stmt
+                .execute(params![
+                    ev.from_symbol_id,
+                    ev.to_symbol_id,
+                    ev.edge_type,
+                    ev.at_file,
+                    ev.at_line as i64,
+                    ev.count as i64
+                ])
+                .with_context(|| {
+                    format!(
+                        "Failed to batch upsert edge evidence: from={}, to={}, type={}, file={}",
+                        ev.from_symbol_id, ev.to_symbol_id, ev.edge_type, ev.at_file
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
 pub fn list_edge_evidence(
     conn: &Connection,
     from_symbol_id: &str,

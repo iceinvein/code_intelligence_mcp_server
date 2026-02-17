@@ -360,6 +360,19 @@ async fn execute_multi_query_search(
 
     normalize_rrf_scores(&mut ranked);
 
+    // Build lookup maps for original keyword/vector scores (for diagnostics)
+    // Multi-query combines hits from sub-queries; use max score per symbol.
+    let mut kw_score_map: HashMap<&str, f32> = HashMap::new();
+    for h in &keyword_ranked {
+        let e = kw_score_map.entry(h.id.as_str()).or_insert(0.0);
+        *e = e.max(h.score);
+    }
+    let mut vec_score_map: HashMap<&str, f32> = HashMap::new();
+    for h in &vector_ranked {
+        let e = vec_score_map.entry(h.id.as_str()).or_insert(0.0);
+        *e = e.max(h.score);
+    }
+
     let signals = apply_structural_scoring(
         &retriever.config,
         sqlite,
@@ -367,7 +380,7 @@ async fn execute_multi_query_search(
         intent,
         query_without_controls,
         true,
-        None,
+        Some((&kw_score_map, &vec_score_map)),
     );
 
     ranked.sort_by(|a, b| {

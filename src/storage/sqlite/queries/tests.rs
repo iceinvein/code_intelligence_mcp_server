@@ -16,6 +16,11 @@ pub fn is_test_file(path: &str) -> bool {
         || lower.contains("/tests/")
         || lower.contains("/__tests__/")
         || lower.contains("/spec/")
+        // Mock/fixture/helper files
+        || lower.contains("mock")
+        || lower.contains("__fixtures__")
+        || lower.contains("/fixtures/")
+        || lower.contains("test-helper")
 }
 
 /// Infer source file path from test file path

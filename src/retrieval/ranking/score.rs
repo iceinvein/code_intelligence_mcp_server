@@ -921,6 +921,7 @@ pub(crate) fn structural_adjustment(
 }
 
 pub(crate) fn is_test_file(file_path: &str) -> bool {
+    let path_lower = file_path.to_lowercase();
     file_path.contains(".test.")
         || file_path.contains(".spec.")
         || file_path.contains("/__tests__/")
@@ -935,6 +936,12 @@ pub(crate) fn is_test_file(file_path: &str) -> bool {
         || file_path.ends_with("_test.jsx")
         || file_path.contains("/test_")
         || file_path.contains("/conftest")
+        // Mock/fixture/helper files (e.g., test.mocks.ts, __mocks__/, fixtures/)
+        || path_lower.contains("mock")
+        || path_lower.contains("__fixtures__")
+        || path_lower.contains("/fixtures/")
+        // Test helper patterns (e.g., test-helpers.ts, admin-test-helpers.ts)
+        || path_lower.contains("test-helper")
 }
 
 /// Check if a symbol name looks like a test function/helper
@@ -949,6 +956,12 @@ pub(crate) fn is_test_symbol(name: &str) -> bool {
         || n == "teardown"
         || n == "tests"
         || (n.starts_with("test") && n.len() > 4 && n.as_bytes()[4].is_ascii_uppercase())
+        // Mock patterns: MockTransaction, createMockDb, txMock, fakeFoo, stubBar
+        || name.starts_with("Mock")
+        || name.ends_with("Mock")
+        || name.contains("Mock")
+        || n.starts_with("fake")
+        || n.starts_with("stub")
 }
 
 pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, _exported: bool, name: &str) -> f32 {
@@ -986,7 +999,17 @@ pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: 
         }
         Intent::Schema => {
             let path = file_path.to_lowercase();
-            if path.contains("schema") {
+            // Don't boost test/mock utility files even in schema-adjacent paths.
+            // Files with "helper", "mock", "stub", "fake", "fixture" in the path
+            // are almost always test infrastructure, not production schema code.
+            let is_test_adjacent = path.contains("helper")
+                || path.contains("mock")
+                || path.contains("stub")
+                || path.contains("fake")
+                || path.contains("fixture");
+            if is_test_adjacent {
+                0.5
+            } else if path.contains("schema") {
                 75.0
             } else if path.contains("model") || path.contains("entity") || path.contains("entities")
             {

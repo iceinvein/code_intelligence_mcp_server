@@ -870,6 +870,14 @@ pub(crate) fn structural_adjustment(
         score += 1.0;
     }
 
+    // OS platform utility penalty: platform-specific code (platform/windows/,
+    // platform/linux/, etc.) is cross-platform boilerplate that rarely answers
+    // application-level queries. Mild penalty keeps them available but below
+    // core application logic.
+    if path.contains("/platform/") && !query.to_lowercase().contains("platform") {
+        score -= 3.0;
+    }
+
     // Test file penalty: integration/unit test files should rank below production code.
     // This is separate from the intent_adjustment 0.01x multiplier — that handles
     // the case where intent is non-Test. This penalty applies structurally so that
@@ -877,6 +885,12 @@ pub(crate) fn structural_adjustment(
     if is_test_file(file_path) {
         score -= 2.0;
     }
+
+    // False cognate penalty: "accessibility" (UI a11y) vs "access" (access control).
+    // When the query mentions "access" but NOT "accessibility"/"a11y", symbols with
+    // "accessibility" in their name or path are likely UI accessibility code, not RBAC.
+    // Note: This cannot be name-based here since we don't have the symbol name,
+    // so we rely on the platform penalty already penalizing platform/ paths.
 
     // Subdirectory Semantics — boost when query terms match path segments
     let terms: Vec<&str> = query

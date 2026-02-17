@@ -24,13 +24,15 @@ static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
     );
     m.insert(
         "authorization",
-        &["authz", "permissions", "access", "acl"][..],
+        &["authz", "permissions", "access", "acl", "rbac", "role"][..],
     );
+    m.insert("role", &["rbac", "permission", "admin", "authz", "authorization"][..]);
+    m.insert("access", &["auth", "permission", "role", "authorize", "rbac"][..]);
     m.insert(
         "configuration",
         &["config", "settings", "options", "preferences"][..],
     );
-    m.insert("component", &["widget", "element", "view", "control"][..]);
+    m.insert("component", &["widget", "element", "view"][..]);
     m.insert("request", &["req", "http", "call"][..]);
     m.insert("response", &["res", "reply", "result"][..]);
     m.insert("create", &["new", "add", "insert", "make"][..]);

@@ -294,6 +294,15 @@ async fn execute_multi_query_search(
     };
     combined_vector_hits.extend(multi_vector_hits);
 
+    // Also search with the full original query for broader recall.
+    // Sub-queries require matching 2+ terms from a SPLIT query, which can miss
+    // symbols that partially match across split boundaries. The full query with
+    // OR semantics gives partial matches a chance to survive.
+    if sub_queries.len() > 1 {
+        let full_keyword_hits = retriever.tantivy.search(query_without_controls, k)?;
+        combined_keyword_hits.extend(full_keyword_hits);
+    }
+
     for sub_query in sub_queries {
         let sub_keyword_hits = retriever.tantivy.search(sub_query, k)?;
         combined_keyword_hits.extend(sub_keyword_hits);
@@ -509,6 +518,19 @@ fn apply_structural_scoring(
         } else {
             // Single-query: intent_mult on entire sum
             hit.score = (hit.score + structural + def_bias + tc + si + tp) * intent_mult;
+        }
+
+        // False cognate penalty: "accessibility" (UI a11y) vs "access" (access control).
+        // When query mentions "access" but NOT "accessibility"/"a11y", symbols named
+        // with "accessibility" are likely UI a11y code, not RBAC/access-control.
+        {
+            let q_lower = query_without_controls.to_lowercase();
+            let name_lower = hit.name.to_lowercase();
+            if q_lower.contains("access") && !q_lower.contains("accessibility") && !q_lower.contains("a11y") {
+                if name_lower.contains("accessibility") {
+                    hit.score -= 5.0;
+                }
+            }
         }
 
         let (kw_score, vec_score) = if let Some((kw_map, vec_map)) = kw_vec_scores {

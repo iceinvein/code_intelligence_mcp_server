@@ -141,10 +141,24 @@ fn promote_vector_results(
 
     // Which of these are already in the final results?
     let final_ids: HashSet<&str> = results.iter().map(|h| h.id.as_str()).collect();
+    // Respect file diversity: don't inject from files already well-represented.
+    // Count how many non-file results each file has.
+    let mut file_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for h in results.iter() {
+        if h.kind != "file" {
+            *file_counts.entry(h.file_path.as_str()).or_insert(0) += 1;
+        }
+    }
+    let max_per_file_for_promotion = (limit / 5).max(1); // same as diversify_by_file
 
     let missing: Vec<&RankedHit> = top_vector
         .into_iter()
         .filter(|h| !final_ids.contains(h.id.as_str()))
+        .filter(|h| {
+            // Skip if this file already has enough entries (respect diversity)
+            let count = file_counts.get(h.file_path.as_str()).copied().unwrap_or(0);
+            count < max_per_file_for_promotion + 1
+        })
         .take(guaranteed_slots)
         .collect();
 
@@ -412,18 +426,19 @@ impl Retriever {
             hits
         };
 
-        // R30v2: Gentle diversity — truncate to a larger pool (limit*3) so that
+        // R30v2: Gentle diversity — truncate to a larger pool so that
         // diversify_by_file has room to promote diverse results, but doesn't
         // aggressively displace relevant same-file results the way pre-truncation
         // diversity did (which regressed Q14 -3, Q15 -4 by promoting noise).
-        hits = diversify_by_cluster(&sqlite, hits, limit * 3);
-        hits.truncate(limit * 3);
+        let pool_size = limit * 4;
+        hits = diversify_by_cluster(&sqlite, hits, pool_size);
+        hits.truncate(pool_size);
 
         // Save pre-expansion candidates for gap-fill after file-symbol dedup.
         let pre_expansion_candidates = hits.clone();
-        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, limit, &intent)?;
+        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, pool_size, &intent)?;
 
-        // Apply file/kind diversity on the expanded pool (limit*3 candidates),
+        // Apply file/kind diversity on the expanded pool,
         // then truncate to final limit. This gives diversity enough headroom
         // to promote cross-file results without destroying same-file clusters.
         let mut hits = diversify_by_file(hits, limit);
@@ -507,10 +522,18 @@ impl Retriever {
 
         // Post-pipeline gap fill: if fewer than `limit` results survived
         // enforcement + min-score filtering, backfill from the pre-expansion pool.
+        // Respects file diversity: limits per-file count during backfill.
         if hits.len() < limit {
             let is_test_intent = matches!(intent, Some(Intent::Test));
             let mut hit_ids: std::collections::HashSet<String> =
                 hits.iter().map(|h| h.id.clone()).collect();
+            let gap_max_per_file = (limit / 5).max(1) + 1; // same cap as diversify_by_file
+            let mut gap_file_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for h in &hits {
+                if h.kind != "file" {
+                    *gap_file_counts.entry(h.file_path.clone()).or_insert(0) += 1;
+                }
+            }
 
             // Source 1: non-file symbols from pre-expansion pool
             for h in &pre_expansion_candidates {
@@ -518,6 +541,11 @@ impl Retriever {
                     break;
                 }
                 if h.kind != "file" && !hit_ids.contains(&h.id) {
+                    // Respect file diversity in gap fill
+                    let fc = gap_file_counts.get(&h.file_path).copied().unwrap_or(0);
+                    if fc >= gap_max_per_file {
+                        continue;
+                    }
                     // Apply intent enforcement to gap-filled result
                     let intent_mult = ranking::intent_adjustment(
                         &intent, &h.kind, &h.file_path, h.exported, &h.name,
@@ -529,6 +557,7 @@ impl Retriever {
                     };
                     if adj_score >= 0.5 {
                         hit_ids.insert(h.id.clone());
+                        *gap_file_counts.entry(h.file_path.clone()).or_insert(0) += 1;
                         let mut gap_hit = h.clone();
                         gap_hit.score = adj_score;
                         hits.push(gap_hit);
@@ -603,6 +632,21 @@ impl Retriever {
                     .then_with(|| a.name.cmp(&b.name))
             });
             hits.truncate(limit);
+        }
+
+        // Name deduplication (final step): collapse symbols with identical names
+        // from different files (e.g., has_accessibility_permission in platform/windows/
+        // and platform/linux/). Keeps the highest-scoring instance. Placed AFTER gap
+        // fill to prevent re-introduction of removed duplicates.
+        {
+            let mut seen_names: HashSet<String> = HashSet::new();
+            hits.retain(|h| {
+                // file-level symbols use unique paths as names, skip dedup
+                if h.kind == "file" {
+                    return true;
+                }
+                seen_names.insert(h.name.clone())
+            });
         }
 
         let mut roots = Vec::new();

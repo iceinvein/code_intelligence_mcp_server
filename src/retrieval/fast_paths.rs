@@ -11,6 +11,7 @@ use std::time::Instant;
 ///
 /// Returns `Some(response)` if the query has an `id:` control and the symbol exists.
 /// Returns `None` to fall through to the normal search path.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_id_lookup(
     retriever: &Retriever,
     sqlite: &SqliteStore,
@@ -93,6 +94,7 @@ pub(super) fn handle_id_lookup(
 ///
 /// Returns `Some(response)` if the intent is Callers and matching edges exist.
 /// Returns `None` to fall through to the normal search path.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_callers_intent(
     retriever: &Retriever,
     sqlite: &SqliteStore,

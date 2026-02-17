@@ -563,7 +563,7 @@ impl Retriever {
                             if !hit_ids.contains(&row.id) {
                                 // Check test status
                                 let test_ids = sqlite
-                                    .batch_check_test_symbols(&[row.id.clone()])
+                                    .batch_check_test_symbols(std::slice::from_ref(&row.id))
                                     .unwrap_or_default();
                                 if !is_test_intent && test_ids.contains(&row.id) {
                                     continue;

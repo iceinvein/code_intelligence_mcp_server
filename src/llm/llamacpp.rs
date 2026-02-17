@@ -76,7 +76,7 @@ impl LlmGenerator for LlamaCppGenerator {
             LlamaContextParams::default().with_n_ctx(NonZeroU32::new(512));
         let mut ctx = self
             .model
-            .new_context(&self.backend, ctx_params)
+            .new_context(self.backend, ctx_params)
             .map_err(|e| anyhow!("Failed to create llama context: {:?}", e))?;
 
         // Fill batch with prompt tokens

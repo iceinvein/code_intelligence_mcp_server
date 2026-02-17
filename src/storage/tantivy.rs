@@ -591,6 +591,7 @@ fn register_tokenizers(index: &Index) {
         .register("code_ngram", CodeNgramTokenizer);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import_tags: &str, framework_tags: &str, llm_description: Option<&str>, exported: bool) -> String {
     // Strip comment lines from body text before BM25 indexing.
     // Comments describe concepts but don't implement them — e.g.,

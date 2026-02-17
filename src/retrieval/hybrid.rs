@@ -436,6 +436,7 @@ fn normalize_rrf_scores(results: &mut [RankedHit]) {
 ///
 /// When `kw_vec_scores` is provided (single-query path), records original keyword/vector
 /// scores in signals. When `None` (multi-query path), records 0.0 for both.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn apply_structural_scoring(
     config: &crate::config::Config,
     sqlite: &SqliteStore,

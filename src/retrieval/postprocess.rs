@@ -16,6 +16,7 @@ use std::collections::HashMap;
 ///
 /// Pipeline: control filters → exported_only → popularity → docstring →
 /// selection → file affinity → package boost.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn filter_and_boost(
     sqlite: &SqliteStore,
     hits: Vec<RankedHit>,

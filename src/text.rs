@@ -271,32 +271,12 @@ pub fn expand_stems(query: &str) -> String {
         // Try suffix stripping in priority order (longest match first)
         let stem = if w.ends_with("ation") && w.len() > 7 {
             Some(w[..w.len() - 5].to_string()) // "serialization" → "serializ"
-        } else if w.ends_with("tion") && w.len() > 6 {
-            Some(w[..w.len() - 4].to_string()) // "generation" → "genera"
-        } else if w.ends_with("ment") && w.len() > 6 {
-            Some(w[..w.len() - 4].to_string()) // "management" → "manage"
-        } else if w.ends_with("ness") && w.len() > 6 {
-            Some(w[..w.len() - 4].to_string()) // "readiness" → "readi"
-        } else if w.ends_with("ling") && w.len() > 6 {
-            Some(w[..w.len() - 4].to_string()) // "handling" → "hand"
-        } else if w.ends_with("ting") && w.len() > 6 {
-            Some(w[..w.len() - 4].to_string()) // "formatting" → "format"
-        } else if w.ends_with("ning") && w.len() > 6 {
-            Some(w[..w.len() - 4].to_string()) // "scanning" → "scan"
-        } else if w.ends_with("ding") && w.len() > 6 {
-            Some(w[..w.len() - 4].to_string()) // "loading" → "loa" — hmm, too short
-        } else if w.ends_with("ing") && w.len() > 5 {
-            Some(w[..w.len() - 3].to_string()) // "caching" → "cach"
-        } else if w.ends_with("ers") && w.len() > 5 {
-            Some(w[..w.len() - 3].to_string()) // "handlers" → "handl"
-        } else if w.ends_with("er") && w.len() > 4 {
-            Some(w[..w.len() - 2].to_string()) // "watcher" → "watch", "handler" → "handl"
-        } else if w.ends_with("ed") && w.len() > 4 {
-            Some(w[..w.len() - 2].to_string()) // "cached" → "cach"
-        } else if w.ends_with("es") && w.len() > 4 {
-            Some(w[..w.len() - 2].to_string()) // "caches" → "cach"
-        } else if w.ends_with("ly") && w.len() > 4 {
-            Some(w[..w.len() - 2].to_string()) // "gracefully" → "graceful"
+        } else if w.len() > 6 && (w.ends_with("tion") || w.ends_with("ment") || w.ends_with("ness") || w.ends_with("ling") || w.ends_with("ting") || w.ends_with("ning") || w.ends_with("ding")) {
+            Some(w[..w.len() - 4].to_string()) // strip 4: "generation" → "genera", "handling" → "hand", etc.
+        } else if w.len() > 5 && (w.ends_with("ing") || w.ends_with("ers")) {
+            Some(w[..w.len() - 3].to_string()) // strip 3: "caching" → "cach", "handlers" → "handl"
+        } else if w.len() > 4 && (w.ends_with("er") || w.ends_with("ed") || w.ends_with("es") || w.ends_with("ly")) {
+            Some(w[..w.len() - 2].to_string()) // strip 2: "watcher" → "watch", "cached" → "cach", etc.
         } else if w.ends_with("s") && w.len() > 4 && !w.ends_with("ss") {
             Some(w[..w.len() - 1].to_string()) // "requests" → "request"
         } else {
@@ -337,7 +317,7 @@ pub fn get_related_terms(word: &str) -> Vec<&'static str> {
 
     // Reverse: word is a value → return the key + sibling values
     for (key, values) in SYNONYMS.iter() {
-        if values.iter().any(|v| *v == word) {
+        if values.contains(&word) {
             if *key != word && !related.contains(key) {
                 related.push(key);
             }
@@ -437,7 +417,7 @@ pub fn extract_rust_import_tags(source: &str) -> String {
             let first_segment = rest.split("::").next().unwrap_or("").trim();
             // Also handle `use {serde, anyhow}` grouped imports
             let first_segment = first_segment.trim_start_matches('{');
-            let first_segment = first_segment.trim_end_matches(|c: char| c == ';' || c == ',');
+            let first_segment = first_segment.trim_end_matches([';', ',']);
             let first_segment = first_segment.trim();
             // Skip internal references and std (too generic)
             match first_segment {
@@ -576,7 +556,7 @@ static LANG_KEYWORDS: &[&str] = &[
 fn should_double_final_consonant(word: &str) -> bool {
     let chars: Vec<char> = word.chars().collect();
     let len = chars.len();
-    if len < 3 || len > 6 {
+    if !(3..=6).contains(&len) {
         return false;
     }
 
@@ -602,7 +582,7 @@ pub(crate) fn generate_morphological_variants(word: &str) -> Vec<String> {
     let mut variants = Vec::new();
     let len = word.len();
 
-    if len < 3 || len > 15 {
+    if !(3..=15).contains(&len) {
         return variants;
     }
 
@@ -644,7 +624,7 @@ pub(crate) fn generate_morphological_variants(word: &str) -> Vec<String> {
         || word.ends_with("ive")
         || word.ends_with("able");
 
-    if !has_derived_suffix && len >= 3 && len <= 10 {
+    if !has_derived_suffix && (3..=10).contains(&len) {
         if word.ends_with('e') && !word.ends_with("ee") {
             // "parse" → "parser", "parsing"
             variants.push(format!("{}r", word));

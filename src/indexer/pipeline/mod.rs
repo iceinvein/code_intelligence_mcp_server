@@ -607,7 +607,7 @@ impl IndexPipeline {
                 parse::ParseResult::Parsed(pf) => {
                     stats.symbols_indexed += pf.symbol_rows.len();
                     stats.files_indexed += 1;
-                    parsed_files.push(pf);
+                    parsed_files.push(*pf);
                 }
                 parse::ParseResult::Unchanged => {
                     stats.files_unchanged += 1;

@@ -58,7 +58,7 @@ pub enum ParseResult {
     /// File unchanged (fingerprint matched), skip
     Unchanged,
     /// Fully parsed file with all extracted data
-    Parsed(ParsedFile),
+    Parsed(Box<ParsedFile>),
     /// File skipped (unsupported language, read error, etc.)
     Skipped { reason: String },
 }
@@ -324,7 +324,7 @@ pub fn parse_single_file(
         .collect();
 
     // 15. Return Parsed(ParsedFile { ... })
-    ParseResult::Parsed(ParsedFile {
+    ParseResult::Parsed(Box::new(ParsedFile {
         rel_path: rel,
         fingerprint: fp,
         language: language_string(language_id).to_string(),
@@ -338,7 +338,7 @@ pub fn parse_single_file(
         decorators,
         framework_patterns,
         is_test_file,
-    })
+    }))
 }
 
 /// Parse multiple files in parallel using Rayon.

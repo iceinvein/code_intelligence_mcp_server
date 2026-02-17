@@ -858,6 +858,13 @@ pub(crate) fn structural_adjustment(
         score -= 5.0;
     }
 
+    // Module aggregator file penalty: mod.rs, mod.ts files are typically
+    // re-export hubs (`pub mod foo; pub mod bar;`) with no implementation.
+    // They surface as file symbols and crowd out actual implementations.
+    if kind == "file" && (file_path.ends_with("mod.rs") || file_path.ends_with("mod.ts")) {
+        score -= 4.0;
+    }
+
     let path = file_path.to_lowercase();
     if path.contains("/node_modules/")
         || path.contains("/target/")

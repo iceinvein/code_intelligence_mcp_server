@@ -61,8 +61,16 @@ fn is_excluded_path(path: &str, index_node_modules: bool) -> bool {
         || path.contains("/target/")
         || path.contains("/dist/")
         || path.contains("/build/")
+        || path.contains("/.output/")
+        || path.contains("/.next/")
+        || path.contains("/.nuxt/")
+        || path.contains("/.svelte-kit/")
         || path.contains("/.cimcp/")
         || path.contains("/.code-intelligence/")
+        || path.contains("/coverage/")
+        || path.contains("/.claude/")
+        || path.contains("/.planning/")
+        || path.contains("/__pycache__/")
     {
         return true;
     }

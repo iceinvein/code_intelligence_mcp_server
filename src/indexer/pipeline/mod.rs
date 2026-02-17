@@ -8,6 +8,7 @@ pub mod stats;
 pub mod usage;
 pub mod utils;
 pub mod watch;
+pub mod write;
 
 use crate::indexer::package;
 

@@ -1,0 +1,17 @@
+[
+  {"id": 1, "query": "How does authentication and login work?"},
+  {"id": 2, "query": "Database schema definitions and tables"},
+  {"id": 3, "query": "API route handlers and middleware"},
+  {"id": 4, "query": "Email sending and notification system"},
+  {"id": 5, "query": "Rate limiting and request throttling"},
+  {"id": 6, "query": "Error handling and error types"},
+  {"id": 7, "query": "Admin dashboard pages and management"},
+  {"id": 8, "query": "Invitation system and user onboarding"},
+  {"id": 9, "query": "Analytics events and tracking"},
+  {"id": 10, "query": "Database transactions and helpers"},
+  {"id": 11, "query": "Desktop app Tauri integration"},
+  {"id": 12, "query": "Access control and role-based permissions"},
+  {"id": 13, "query": "Frontend routing and page layout"},
+  {"id": 14, "query": "User feedback collection and display"},
+  {"id": 15, "query": "Circuit breaker and health check patterns"}
+]

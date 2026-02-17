@@ -41,7 +41,7 @@ To manually test with specific queries or your own codebase:
 2.  **Run with environment variables:**
     ```bash
     export BASE_DIR=/absolute/path/to/your/repo
-    export EMBEDDINGS_BACKEND=hash  # Use 'fastembed' for real embeddings (requires download)
+    export EMBEDDINGS_BACKEND=hash  # Use 'llamacpp' for real embeddings (requires model download)
     
     ./target/release/code-intelligence-mcp-server
     ```

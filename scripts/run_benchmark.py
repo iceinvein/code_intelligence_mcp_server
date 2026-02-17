@@ -278,7 +278,8 @@ def format_results_markdown(round_num, all_results, elapsed_total, symbol_count,
         q = qr["query"]
         results = qr["results"]
         lines.append(f"### Q{q['id']}: \"{q['query']}\"")
-        lines.append(f"**Expected:** {q['expected']}")
+        if 'expected' in q:
+            lines.append(f"**Expected:** {q['expected']}")
         lines.append(f"")
 
         if not results:

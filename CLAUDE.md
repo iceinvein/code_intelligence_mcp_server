@@ -8,7 +8,7 @@ Code Intelligence MCP Server is a Rust-based local code indexing and semantic se
 
 **Platform:** macOS only (Apple Silicon with Metal GPU acceleration).
 
-**Core technologies:** Rust 2021, Tree-Sitter (parsing), SQLite (metadata), Tantivy (full-text search), LanceDB (vector embeddings), FastEmbed (BGE-base-en-v1.5 model), llama.cpp (Metal GPU LLM inference).
+**Core technologies:** Rust 2021, Tree-Sitter (parsing), SQLite (metadata), Tantivy (full-text search), LanceDB (vector embeddings), llama.cpp (Metal GPU inference for both embeddings and LLM descriptions).
 
 ## Build & Run Commands
 
@@ -92,8 +92,8 @@ All data stored under `~/.code-intelligence/`:
 - `repos/<hash>/vectors/` (LanceDB, per-repo)
 - `repos/<hash>/tantivy-index/` (per-repo)
 - `repos/registry.json` (shared repo registry)
-- `models/jina-code-onnx/` (shared embedding model)
-- `models/qwen2.5-coder-1.5b-gguf/` (shared LLM model)
+- `models/jina-code-embeddings-0.5b-gguf/` (shared embedding model, GGUF via llama.cpp)
+- `models/qwen2.5-coder-1.5b-gguf/` (shared LLM model, GGUF via llama.cpp)
 - `logs/` (shared log files)
 
 The `<hash>` is the first 16 characters of `SHA256(BASE_DIR)`.
@@ -105,7 +105,7 @@ The server reads configuration from environment variables. Key ones:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BASE_DIR` | **required** | Repository root to index |
-| `EMBEDDINGS_BACKEND` | `jinacode` | `jinacode` (default), `fastembed`, or `hash` (fast testing) |
+| `EMBEDDINGS_BACKEND` | `llamacpp` | `llamacpp` (default) or `hash` (fast testing) |
 | `EMBEDDINGS_DEVICE` | `metal` | `metal` (Metal GPU) or `cpu` |
 | `WATCH_MODE` | `true` | Auto-reindex on file changes |
 | `INDEX_PATTERNS` | `**/*.ts,**/*.tsx,**/*.rs` | Glob patterns to index |

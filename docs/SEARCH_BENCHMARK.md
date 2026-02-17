@@ -65,7 +65,7 @@ Results in live mode are **fully deterministic** — verified by diffing consecu
 | # | Query | Expected Results |
 |---|-------|-----------------|
 | 1 | "How does the ranking and scoring system work?" | `ranking/score.rs`, `ranking/mod.rs`, `ranking/diversify.rs`, `ranking/rrf.rs` |
-| 2 | "How are embeddings generated and stored?" | `storage/vector.rs`, `embeddings/fastembed.rs`, `embeddings/mod.rs` |
+| 2 | "How are embeddings generated and stored?" | `storage/vector.rs`, `embeddings/llamacpp.rs`, `embeddings/mod.rs` |
 | 3 | "How does tree-sitter parsing work in this codebase?" | `indexer/parser.rs`, `indexer/extract/` language extractors |
 | 4 | "Configuration from environment variables" | `config.rs`, main entry point |
 | 5 | "Indexing pipeline file scanning and symbol extraction" | `indexer/mod.rs`, `indexer/extract/mod.rs`, symbol types |

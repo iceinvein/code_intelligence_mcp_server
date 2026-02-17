@@ -14,8 +14,7 @@ This server indexes your codebase locally to provide **fast, semantic, and struc
 
 Unlike basic text search, this server builds a local knowledge graph to understand your code.
 
-* **Advanced Hybrid Search**: Combines **Tantivy** (keyword BM25) + **LanceDB** (semantic vector) + **Jina Code embeddings** (768-dim code-specific model) with Reciprocal Rank Fusion (RRF).
-* **Cross-Encoder Reranking**: Always-on ORT-based reranker for precision result ranking.
+* **Advanced Hybrid Search**: Combines **Tantivy** (keyword BM25) + **LanceDB** (semantic vector) + **jina-code-embeddings-0.5b** (896-dim code-specific model via llama.cpp + Metal GPU) with Reciprocal Rank Fusion (RRF).
 * **Smart Context Assembly**: Token-aware budgeting with query-aware truncation that keeps relevant lines within context limits.
 * **On-Device LLM Descriptions**: Automatically generates natural-language descriptions for every symbol using a local **Qwen2.5-Coder-1.5B** model (llama.cpp with Metal GPU), enriching search with human-readable summaries.
 * **PageRank Scoring**: Graph-based symbol importance scoring that identifies central, heavily-used components.
@@ -47,7 +46,7 @@ Add to your `opencode.json` (or global config):
 }
 ```
 
-*The server will automatically download the embedding model (~300MB) and LLM (~1.8GB) on first launch, then index your project in the background.*
+*The server will automatically download the embedding model (~531MB) and LLM (~1.1GB) on first launch, then index your project in the background.*
 
 ---
 
@@ -140,7 +139,7 @@ Both embedded (stdio) and standalone (HTTP) modes store all data in `~/.code-int
 ~/.code-intelligence/
 ├── server.toml              # Optional config file (standalone only)
 ├── models/                  # Shared models (loaded once, shared across repos)
-│   ├── jina-code-onnx/      # Embedding model (~500MB)
+│   ├── jina-code-embeddings-0.5b-gguf/  # Embedding model (~531MB, GGUF via llama.cpp)
 │   └── qwen2.5-coder-1.5b-gguf/  # LLM model (~1.1GB)
 ├── logs/
 │   └── server.log
@@ -170,10 +169,8 @@ host = "127.0.0.1"
 port = 3333
 
 [embeddings]
-backend = "jinacode"        # jinacode (default), fastembed, hash
+backend = "llamacpp"        # llamacpp (default) or hash (testing)
 device = "metal"            # cpu or metal (macOS GPU)
-auto_download = false
-model_repo = "jinaai/jina-embeddings-v2-base-code"
 
 [repos.defaults]
 index_patterns = "**/*.ts,**/*.tsx,**/*.rs,**/*.py,**/*.go"
@@ -189,11 +186,9 @@ warm_ttl_seconds = 300      # How long idle repos stay in memory
 | Variable | Example | Description |
 | -------- | ------- | ----------- |
 | `CIMCP_MODE` | `standalone` | Alternative to `--standalone` flag |
-| `EMBEDDINGS_BACKEND` | `hash` | Override embedding backend |
+| `EMBEDDINGS_BACKEND` | `hash` | Override embedding backend (`llamacpp` or `hash`) |
 | `EMBEDDINGS_DEVICE` | `metal` | Override device (cpu/metal) |
-| `EMBEDDINGS_MODEL_REPO` | `jinaai/...` | Override model repo |
 | `EMBEDDINGS_MODEL_DIR` | `/path/to/model` | Override model directory |
-| `EMBEDDINGS_MAX_THREADS` | `4` | Limit embedding threads |
 
 ---
 
@@ -266,20 +261,19 @@ The server supports semantic navigation and symbol extraction for the following 
 The ranking engine optimizes results for relevance using sophisticated signals:
 
 1. **PageRank Symbol Importance**: Graph-based scoring that identifies central, heavily-used components (similar to Google's PageRank).
-2. **Cross-Encoder Reranking**: Always-on ORT-based reranker applies deep learning to fine-tune result order.
-3. **Reciprocal Rank Fusion (RRF)**: Combines keyword, vector, and graph search results using statistically optimal rank fusion.
-4. **Query Decomposition**: Complex queries ("X and Y") are automatically split into sub-queries for better coverage.
-5. **Token-Aware Truncation**: Context assembly keeps query-relevant lines within token budgets using BM25-style relevance scoring.
-6. **LLM-Enriched Indexing**: On-device Qwen2.5-Coder generates natural-language descriptions for each symbol, bridging the vocabulary gap between how developers search and how code is named.
-7. **Morphological Variants**: Function names are expanded with stems and derivations (e.g., `watch` → `watcher`, `index` → `reindex`) to improve recall for natural-language queries.
-8. **Multi-Layer Test Detection**: Three mechanisms — file path patterns (`*.test.ts`), symbol name heuristics (`test_*`), and SQL-based AST analysis (`#[test]`, `mod tests`) — with a final enforcement pass that prevents test code from escaping via edge expansion.
-9. **Edge Expansion**: High-ranking symbols pull in structurally related code (callers, type members) with importance filtering to avoid noise from private helpers.
-10. **Directory Semantics**: Implementation directories (`src`, `lib`, `app`) are boosted, while build artifacts (`dist`, `build`) and `node_modules` are penalized.
-11. **Exported Symbol Boost**: Exported/public symbols receive a ranking boost as they represent the primary API surface.
-12. **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
-13. **JSDoc Boost**: Symbols with documentation receive a ranking boost, and examples are included in search results.
-14. **Learning from Feedback** (optional): Tracks user selections to personalize future search results.
-15. **Package-Aware Scoring** (multi-repo): Boosts results from the same package when working in monorepos.
+2. **Reciprocal Rank Fusion (RRF)**: Combines keyword, vector, and graph search results using statistically optimal rank fusion.
+3. **Query Decomposition**: Complex queries ("X and Y") are automatically split into sub-queries for better coverage.
+4. **Token-Aware Truncation**: Context assembly keeps query-relevant lines within token budgets using BM25-style relevance scoring.
+5. **LLM-Enriched Indexing**: On-device Qwen2.5-Coder generates natural-language descriptions for each symbol, bridging the vocabulary gap between how developers search and how code is named.
+6. **Morphological Variants**: Function names are expanded with stems and derivations (e.g., `watch` → `watcher`, `index` → `reindex`) to improve recall for natural-language queries.
+7. **Multi-Layer Test Detection**: Three mechanisms — file path patterns (`*.test.ts`), symbol name heuristics (`test_*`), and SQL-based AST analysis (`#[test]`, `mod tests`) — with a final enforcement pass that prevents test code from escaping via edge expansion.
+8. **Edge Expansion**: High-ranking symbols pull in structurally related code (callers, type members) with importance filtering to avoid noise from private helpers.
+9. **Directory Semantics**: Implementation directories (`src`, `lib`, `app`) are boosted, while build artifacts (`dist`, `build`) and `node_modules` are penalized.
+10. **Exported Symbol Boost**: Exported/public symbols receive a ranking boost as they represent the primary API surface.
+11. **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
+12. **JSDoc Boost**: Symbols with documentation receive a ranking boost, and examples are included in search results.
+13. **Learning from Feedback** (optional): Tracks user selections to personalize future search results.
+14. **Package-Aware Scoring** (multi-repo): Boosts results from the same package when working in monorepos.
 
 ### Intent Detection
 
@@ -317,7 +311,7 @@ Works without configuration by default. You can customize behavior via environme
 
 ```json
 "env": {
-  "EMBEDDINGS_BACKEND": "jinacode",      // jinacode (default), fastembed, hash
+  "EMBEDDINGS_BACKEND": "llamacpp",      // llamacpp (default) or hash (testing)
   "EMBEDDINGS_DEVICE": "cpu",            // cpu or metal (macOS GPU)
   "EMBEDDING_BATCH_SIZE": "32"
 }
@@ -394,7 +388,7 @@ flowchart LR
       Scan --> Parse[Tree-Sitter]
       Parse --> Extract[Symbol Extraction]
       Extract --> PageRank[PageRank Compute]
-      Extract --> Embed[Jina Code Embeddings]
+      Extract --> Embed[jina-code-0.5b Embeddings - llama.cpp]
       Extract --> LLMDesc[LLM Descriptions - Qwen2.5-Coder]
       Extract --> JSDoc[JSDoc/Decorator/TODO Extract]
     end
@@ -411,7 +405,6 @@ flowchart LR
       direction TB
       QueryExpand[Query Expansion]
       Hybrid[Hybrid Search RRF]
-      Rerank[Cross-Encoder Reranker]
       Signals[Ranking Signals]
       Context[Token-Aware Assembly]
     end
@@ -426,8 +419,7 @@ flowchart LR
 
     Tools -- Query --> QueryExpand
     QueryExpand --> Hybrid
-    Hybrid --> Rerank
-    Rerank --> Signals
+    Hybrid --> Signals
     Signals --> Context
     Context --> Tools
   end
@@ -475,9 +467,9 @@ src/
 │   ├── mod.rs         # Shared tool dispatch, embedded handler
 │   └── standalone.rs  # Standalone HTTP handler with session routing
 ├── tools/             # Tool definitions (23 MCP tools)
-├── embeddings/        # Jina Code embedding model wrapper
+├── embeddings/        # jina-code-0.5b embedding model (GGUF via llama.cpp)
 ├── llm/               # On-device LLM (Qwen2.5-Coder-1.5B via llama.cpp)
-├── reranker/          # Cross-encoder ORT implementation
+├── reranker/          # Reranker trait and cache (currently disabled)
 ├── path/              # Cross-platform path normalization (camino)
 ├── text.rs            # Text processing (synonym expansion, morphological variants)
 ├── metrics/           # Prometheus metrics

@@ -4,7 +4,7 @@ This document outlines the architecture of the Code Intelligence MCP Server v1.0
 
 ## High-Level Overview
 
-The system operates as a local indexing and retrieval engine. It scans the user's codebase, extracts semantic symbols (classes, functions, etc.), generates vector embeddings using Jina Code, builds a knowledge graph with PageRank scoring, and provides intelligent search with cross-encoder reranking and query-aware context assembly.
+The system operates as a local indexing and retrieval engine. It scans the user's codebase, extracts semantic symbols (classes, functions, etc.), generates vector embeddings using jina-code-embeddings-0.5b (llama.cpp + Metal GPU), builds a knowledge graph with PageRank scoring, and provides intelligent search with query-aware context assembly.
 
 ## System Architecture Diagram
 
@@ -119,12 +119,11 @@ Language-specific extractors walk the AST to identify:
 
 ### 2. Embedding Engine (`src/embeddings`)
 
-#### Jina Code Model (`src/embeddings/jina_code.rs`)
+#### Embedding Model (`src/embeddings/llamacpp.rs`)
 
-- **Default model**: `jinaai/jina-embeddings-v2-base-code`
-- 768-dimensional embeddings optimized for code
-- ONNX runtime for efficient inference
-- CPU and Metal (macOS GPU) support
+- **Default model**: `jinaai/jina-code-embeddings-0.5b-GGUF` (Q8_0 quantization)
+- 896-dimensional embeddings optimized for code
+- llama.cpp runtime with Metal GPU acceleration
 - Batch processing with configurable batch size
 
 #### Embedding Cache (`src/storage/cache.rs`)
@@ -161,7 +160,7 @@ Relational metadata storage:
 #### LanceDB (`src/storage/vector.rs`)
 
 - Vector database for semantic similarity search
-- Stores 768-dim Jina Code embeddings
+- Stores 896-dim jina-code-0.5b embeddings
 - Cosine distance for similarity scoring
 - Configurable search limit
 
@@ -191,7 +190,7 @@ The heart of the system with advanced search and ranking capabilities.
 
 #### Cross-Encoder Reranking (`src/reranker/`)
 
-- ORT-based deep learning reranker
+- Reranker trait (currently disabled)
 - Always-on for precision result ranking
 - Top-K reranking (default: 20) to balance quality and latency
 - Query-document relevance scoring
@@ -325,7 +324,7 @@ User: "authentication and authorization"
 
 - Combine results from all sources using RRF
 - Merge sub-queries using unified RRF
-- First sub-query used for cross-encoder reranking
+- First sub-query used for primary ranking
 
 ### 5. Cross-Encoder Reranking
 
@@ -421,7 +420,7 @@ See README.md for complete tool list. Key categories:
 
 - **SQLite**: ~1-5 MB per 10k symbols
 - **Tantivy**: ~50-200 MB per 10k symbols
-- **LanceDB**: ~100-500 MB per 10k symbols (768-dim vectors)
+- **LanceDB**: ~100-500 MB per 10k symbols (896-dim vectors)
 - **Cache**: ~200 MB per 10k symbols (embeddings)
 
 ## Data Storage Layout
@@ -431,7 +430,7 @@ Both embedded (stdio) and standalone (HTTP) modes use the same centralized stora
 ```text
 ~/.code-intelligence/
 ├── models/                  # Shared across all repos
-│   ├── jina-code-onnx/      # Embedding model (~500MB)
+│   ├── jina-code-embeddings-0.5b-gguf/      # Embedding model (~531MB, GGUF via llama.cpp)
 │   └── qwen2.5-coder-1.5b-gguf/  # LLM model (~1.1GB)
 ├── logs/
 │   └── server.log
@@ -460,7 +459,7 @@ A long-lived HTTP server that multiple MCP clients connect to via Streamable HTT
 
 See README.md for complete environment variable reference. Key settings:
 
-- `EMBEDDINGS_BACKEND`: `jinacode` (default), `fastembed`, `hash`
+- `llamacpp` (default) or `hash` (testing)
 - `EMBEDDINGS_DEVICE`: `cpu`, `metal`
 - `MAX_CONTEXT_TOKENS`: `8192` (default)
 - `LEARNING_ENABLED`: `false` (default)
@@ -473,9 +472,8 @@ See README.md for complete environment variable reference. Key settings:
 - **Language**: Rust 2021
 - **Parsing**: Tree-Sitter (9 languages)
 - **Storage**: SQLite, Tantivy, LanceDB
-- **Embeddings**: Jina Code (ONNX), optional FastEmbed
-- **LLM**: Qwen2.5-Coder-1.5B (llama.cpp with Metal GPU)
-- **Reranking**: ONNX Runtime (cross-encoder)
+- **Embeddings**: jina-code-0.5b (GGUF via llama.cpp)
+- **Reranking**: Disabled (trait preserved)
 - **Tokenization**: tiktoken (o200k_base)
 - **Protocol**: Model Context Protocol (MCP)
 - **Metrics**: Prometheus

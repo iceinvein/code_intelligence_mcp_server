@@ -12,6 +12,7 @@ mod ranking;
 
 use crate::path::Utf8PathBuf;
 use crate::retrieval::hyde::HypotheticalCodeGenerator;
+use crate::text::get_related_terms;
 use crate::{
     config::Config,
     embeddings::Embedder,
@@ -322,8 +323,12 @@ impl Retriever {
             self.config.acronym_expansion_enabled,
         );
 
-        // Decompose compound queries (e.g., "auth and database") into sub-queries
-        let sub_queries = decompose_query(&expanded_query, 3);
+        // Decompose compound queries from the ORIGINAL (pre-synonym-expansion) query.
+        // Using expanded_query would include synonym terms in sub-queries, causing
+        // false-positive coverage matches (e.g., "admin" synonym makes
+        // adminAppControlRouter "cover" the "role-based permissions" sub-query).
+        let normalized_query = normalize_and_expand_query(&query_without_controls, false, false);
+        let sub_queries = decompose_query(&normalized_query, 3);
 
         // Determine query for smart truncation
         let smart_truncation_query = if sub_queries.len() == 1 {
@@ -651,7 +656,7 @@ impl Retriever {
             let hit_ids_set: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
             for sq in &sub_queries {
                 // Extract significant terms from this sub-query (>3 chars, skip stopwords)
-                let terms: Vec<String> = sq
+                let raw_terms: Vec<String> = sq
                     .split_whitespace()
                     .filter(|w| w.len() > 3)
                     .filter(|w| {
@@ -662,9 +667,26 @@ impl Retriever {
                     })
                     .map(|w| w.to_lowercase())
                     .collect();
-                if terms.is_empty() {
+                if raw_terms.is_empty() {
                     continue;
                 }
+
+                // Expand terms: split hyphens, basic stemming (strip trailing 's')
+                let mut terms: Vec<String> = raw_terms.clone();
+                for t in &raw_terms {
+                    if t.contains('-') {
+                        for part in t.split('-') {
+                            if part.len() > 3 {
+                                terms.push(part.to_string());
+                            }
+                        }
+                    }
+                    if t.ends_with('s') && t.len() > 4 && !t.ends_with("ss") {
+                        terms.push(t[..t.len() - 1].to_string());
+                    }
+                }
+                terms.sort();
+                terms.dedup();
 
                 // Check if any current result matches this sub-query
                 let has_match = hits.iter().any(|h| {
@@ -674,6 +696,18 @@ impl Retriever {
                 });
 
                 if !has_match {
+                    // No direct match — expand with synonyms for candidate search.
+                    // This bridges vocabulary gaps (e.g., "role" → "admin", "auth").
+                    let mut synonym_terms = terms.clone();
+                    for t in &terms {
+                        for related in get_related_terms(t) {
+                            let r = related.to_string();
+                            if !synonym_terms.contains(&r) {
+                                synonym_terms.push(r);
+                            }
+                        }
+                    }
+
                     // Find the best candidate from pre-expansion pool.
                     // Prefer name matches over path-only matches, and
                     // prefer functions/structs over consts/variables.
@@ -685,8 +719,8 @@ impl Retriever {
                         }
                         let name_lower = c.name.to_lowercase();
                         let path_lower = c.file_path.to_lowercase();
-                        let name_match = terms.iter().any(|t| name_lower.contains(t));
-                        let path_match = terms.iter().any(|t| path_lower.contains(t));
+                        let name_match = synonym_terms.iter().any(|t| name_lower.contains(t));
+                        let path_match = synonym_terms.iter().any(|t| path_lower.contains(t));
                         if !name_match && !path_match {
                             continue;
                         }

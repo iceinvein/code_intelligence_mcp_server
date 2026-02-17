@@ -629,24 +629,42 @@ impl IndexPipeline {
             drop(conn);
         }
 
-        // Phase 3: Embed (unchanged from old code)
-        self.generate_embeddings_for_orphaned_symbols().await?;
+        // Phase 3: Embed + PageRank (concurrent)
+        // Embedding reads symbols from SQLite → writes to LanceDB.
+        // PageRank reads edges from SQLite → writes pagerank scores back to SQLite.
+        // No conflicts — run them concurrently.
+        let embed_fut = self.generate_embeddings_for_orphaned_symbols();
 
-        // Compute PageRank scores after all indexing is complete
-        // Only run if the graph structure changed (files indexed or deleted)
-        if stats.files_indexed > 0 || stats.files_deleted > 0 {
-            let sqlite = SqliteStore::open(&self.db_path)?;
-            sqlite.init()?;
-            pagerank::compute_and_store_pagerank(&sqlite, &self.config)
-                .with_context(|| {
-                    format!(
-                        "Failed to compute PageRank scores: files_indexed={}, files_deleted={}",
-                        stats.files_indexed, stats.files_deleted
-                    )
-                })?;
-        } else {
-            tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
-        }
+        let pagerank_fut = {
+            let need_pagerank = stats.files_indexed > 0 || stats.files_deleted > 0;
+            let db_path = self.db_path.clone();
+            let config = self.config.clone();
+            let fi = stats.files_indexed;
+            let fd = stats.files_deleted;
+            async move {
+                if !need_pagerank {
+                    tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
+                    return Ok::<(), anyhow::Error>(());
+                }
+                tokio::task::spawn_blocking(move || {
+                    let sqlite = SqliteStore::open(&db_path)?;
+                    sqlite.init()?;
+                    pagerank::compute_and_store_pagerank(&sqlite, &config)
+                        .with_context(|| {
+                            format!(
+                                "Failed to compute PageRank scores: files_indexed={}, files_deleted={}",
+                                fi, fd
+                            )
+                        })
+                })
+                .await
+                .context("Join error in PageRank computation")?
+            }
+        };
+
+        let (embed_result, pagerank_result) = tokio::join!(embed_fut, pagerank_fut);
+        embed_result?;
+        pagerank_result?;
 
         // Log cache statistics
         let cache_stats = self.cache.stats();

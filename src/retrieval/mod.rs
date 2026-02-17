@@ -707,10 +707,9 @@ impl Retriever {
             hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         }
 
-        // Name deduplication (final step): collapse symbols with identical names
-        // from different files (e.g., has_accessibility_permission in platform/windows/
-        // and platform/linux/). Keeps the highest-scoring instance. Placed AFTER gap
-        // fill to prevent re-introduction of removed duplicates.
+        // Name deduplication: collapse symbols with identical names from different
+        // files (e.g., has_accessibility_permission in platform/windows/ and
+        // platform/linux/). Keeps the highest-scoring instance.
         {
             let mut seen_names: HashSet<String> = HashSet::new();
             hits.retain(|h| {
@@ -720,6 +719,28 @@ impl Retriever {
                 }
                 seen_names.insert(h.name.clone())
             });
+        }
+
+        // Post-dedup gap fill: if name dedup removed results, backfill from
+        // pre_expansion_candidates to maintain `limit` results.
+        if hits.len() < limit {
+            let hit_ids: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
+            let hit_names: HashSet<String> = hits.iter()
+                .filter(|h| h.kind != "file")
+                .map(|h| h.name.clone())
+                .collect();
+            for c in &pre_expansion_candidates {
+                if hits.len() >= limit {
+                    break;
+                }
+                if c.kind != "file"
+                    && !hit_ids.contains(&c.id)
+                    && !hit_names.contains(&c.name)
+                    && c.score >= 0.5
+                {
+                    hits.push(c.clone());
+                }
+            }
         }
 
         let mut roots = Vec::new();

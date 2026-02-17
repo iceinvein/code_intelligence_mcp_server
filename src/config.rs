@@ -321,7 +321,10 @@ impl StandaloneConfig {
             learning_file_affinity_boost: 0.05,
             max_context_tokens: 8192,
             token_encoding: "o200k_base".to_string(),
-            parallel_workers: 1,
+            parallel_workers: std::thread::available_parallelism()
+                .map(|n| n.get().div_ceil(2))
+                .unwrap_or(2)
+                .max(2),
             embedding_cache_enabled: true,
             embedding_max_threads: self.embedding_max_threads,
             pagerank_damping: 0.85,
@@ -612,6 +615,11 @@ impl Config {
                 "**/build/**",
                 "**/.git/**",
                 "**/*.test.*",
+                // Generated files
+                "**/*.gen.*",
+                "**/*.generated.*",
+                // Minified files
+                "**/*.min.*",
             ],
         );
 
@@ -697,14 +705,18 @@ impl Config {
             optional_env("TOKEN_ENCODING").unwrap_or_else(|| "o200k_base".to_string());
 
         // Performance config (FNDN-06)
-        // Default to sequential indexing (1 worker) to avoid SQLite write contention
-        // Parallel indexing can be enabled via PARALLEL_WORKERS env var, but may cause
-        // write lock contention due to SQLite's single-writer limitation
+        // Default to half of available CPUs (minimum 2) to balance speed and contention
+        // Parallel indexing can be enabled/tuned via PARALLEL_WORKERS env var
         let parallel_workers = optional_env("PARALLEL_WORKERS")
             .as_deref()
             .map(parse_usize)
             .transpose()?
-            .unwrap_or(1);
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get().div_ceil(2))
+                    .unwrap_or(2)
+                    .max(2)
+            });
         let embedding_cache_enabled = optional_env("EMBEDDING_CACHE_ENABLED")
             .as_deref()
             .map(parse_bool)
@@ -1373,7 +1385,7 @@ mod tests {
         assert_eq!(cfg.token_encoding, "o200k_base");
 
         // Performance defaults
-        assert!(cfg.parallel_workers >= 1);
+        assert!(cfg.parallel_workers >= 2);
         assert!(cfg.embedding_cache_enabled);
 
         // PageRank defaults

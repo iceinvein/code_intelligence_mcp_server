@@ -24,3 +24,7 @@ npm/bin/code-intelligence-mcp-server.exe
 
 # Git worktrees
 .worktrees/
+
+# Benchmarking
+docs/benchmark_rounds/*round_*.md
+docs/benchmark_rounds/*round_*.json

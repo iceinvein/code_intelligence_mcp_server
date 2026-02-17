@@ -42,16 +42,18 @@ ON CONFLICT(id) DO UPDATE SET
     Ok(())
 }
 
-/// Batch upsert framework patterns in a transaction.
+/// Batch upsert framework patterns.
+///
+/// When called within an existing transaction (e.g. from write_batch),
+/// the caller's transaction provides atomicity. When called standalone,
+/// each upsert is auto-committed individually.
 pub fn batch_upsert_framework_patterns(
     conn: &Connection,
     patterns: &[FrameworkPatternRow],
 ) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
     for pattern in patterns {
-        upsert_framework_pattern(&tx, pattern)?;
+        upsert_framework_pattern(conn, pattern)?;
     }
-    tx.commit()?;
     Ok(())
 }
 

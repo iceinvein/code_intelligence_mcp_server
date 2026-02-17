@@ -29,13 +29,14 @@ ON CONFLICT(symbol_id, name) DO UPDATE SET
     Ok(())
 }
 
-/// Upsert multiple decorator entries in a transaction.
+/// Upsert multiple decorator entries.
+///
+/// When called within an existing transaction (e.g. from write_batch),
+/// the caller's transaction provides atomicity.
 pub fn batch_upsert_decorators(conn: &Connection, decorators: &[DecoratorRow]) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
     for decorator in decorators {
-        upsert_decorator(&tx, decorator)?;
+        upsert_decorator(conn, decorator)?;
     }
-    tx.commit()?;
     Ok(())
 }
 

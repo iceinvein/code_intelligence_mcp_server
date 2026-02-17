@@ -28,9 +28,11 @@ ON CONFLICT(id) DO UPDATE SET
     Ok(())
 }
 
-/// Batch upsert TODO entries from extraction
+/// Batch upsert TODO entries from extraction.
+///
+/// When called within an existing transaction (e.g. from write_batch),
+/// the caller's transaction provides atomicity.
 pub fn batch_upsert_todos(conn: &Connection, todos: &[TodoEntry]) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
     for todo in todos {
         let id = format!("{}:{}", todo.file_path, todo.line);
         let row = TodoRow {
@@ -46,9 +48,8 @@ pub fn batch_upsert_todos(conn: &Connection, todos: &[TodoEntry]) -> Result<()> 
             associated_symbol: todo.associated_symbol.clone(),
             created_at: 0,
         };
-        upsert_todo(&tx, &row)?;
+        upsert_todo(conn, &row)?;
     }
-    tx.commit()?;
     Ok(())
 }
 

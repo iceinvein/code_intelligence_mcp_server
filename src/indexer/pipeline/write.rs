@@ -36,6 +36,11 @@ pub fn write_batch(
         symbols_written: 0,
     };
 
+    // Disable FK enforcement during batch writes. Chunks of files are written
+    // in order, and usage_examples.from_symbol_id may reference symbols from
+    // files in later chunks that haven't been inserted yet.
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+
     for chunk in parsed_files.chunks(CHUNK_SIZE) {
         // --- SQLite: one transaction per chunk ---
         let tx = conn
@@ -174,6 +179,9 @@ pub fn write_batch(
             }
         }
     }
+
+    // Re-enable FK enforcement after batch writes
+    conn.execute_batch("PRAGMA foreign_keys=ON")?;
 
     // Single Tantivy commit after ALL chunks
     tantivy

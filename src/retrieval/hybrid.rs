@@ -482,6 +482,7 @@ fn apply_structural_scoring(
             hit.exported,
             &hit.file_path,
             &hit.kind,
+            &hit.name,
             intent,
             query_without_controls,
         );

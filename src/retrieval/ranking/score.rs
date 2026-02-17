@@ -234,7 +234,7 @@ pub fn rank_hits_with_signals(
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
         let base_score = vector_w * v + keyword_w * kw;
-        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
+        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, &h.name, intent, query);
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
         let def_bias = definition_bias(query, &h.name, &h.kind, intent);
         let tc = term_coverage_adjustment(query, &h.name, &h.file_path, None);
@@ -280,7 +280,7 @@ pub fn rank_hits_with_signals(
         let v = vec_scores.get(&h.id).copied().unwrap_or(0.0);
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let base_score = vector_w * v + keyword_w * kw;
-        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, intent, query);
+        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, &h.name, intent, query);
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
         let def_bias = definition_bias(query, &h.name, &h.kind, intent);
         let tc = term_coverage_adjustment(query, &h.name, &h.file_path, None);
@@ -816,12 +816,35 @@ pub(crate) fn structural_adjustment(
     exported: bool,
     file_path: &str,
     kind: &str,
+    name: &str,
     _intent: &Option<Intent>,
     query: &str,
 ) -> f32 {
     let mut score = 0.0;
     if exported {
         score += config.rank_exported_boost;
+    }
+
+    // Local variable noise penalty: penalize const/variable symbols with short,
+    // generic names that are likely local variables inside functions rather than
+    // meaningful exported APIs. The TS indexer hoisting bug marks function-body
+    // consts as exported=1, so we can't rely on the export flag alone.
+    // Examples: key, result, from, sent, limit, now, data, error, page, url
+    if matches!(kind, "const" | "variable") {
+        // Destructured bindings like "{ code, error, set, request }" are always local
+        if name.starts_with('{') || name.starts_with('[') {
+            score -= 5.0;
+        } else {
+            // Penalize short, all-lowercase const/variable names — these are almost
+            // always local variables inside functions, not meaningful API exports.
+            // The TS indexer hoisting bug marks function-body consts as exported=1,
+            // so we can't rely on the export flag. Compound names (camelCase,
+            // snake_case, PascalCase, SCREAMING_CASE) and longer names are fine.
+            let is_all_lower = name.chars().all(|c| c.is_lowercase() || c.is_ascii_digit());
+            if is_all_lower && name.len() <= 9 {
+                score -= 3.0;
+            }
+        }
     }
 
     // Module re-export penalty: `pub mod foo;` declarations are near-useless

@@ -518,7 +518,12 @@ impl Retriever {
         // heavily suppressed results that survived pool expansion but add
         // no value to the user. Threshold 0.5 is well below any
         // meaningful result (lowest legitimate scores are ~3.0).
-        hits.retain(|h| h.score >= 0.5);
+        // Also remove test file results in non-test queries — they should
+        // never appear regardless of score.
+        let is_test_intent = matches!(intent, Some(Intent::Test));
+        hits.retain(|h| {
+            h.score >= 0.5 && (is_test_intent || !ranking::is_test_file(&h.file_path))
+        });
 
         // Post-pipeline gap fill: if fewer than `limit` results survived
         // enforcement + min-score filtering, backfill from the pre-expansion pool.
@@ -541,6 +546,10 @@ impl Retriever {
                     break;
                 }
                 if h.kind != "file" && !hit_ids.contains(&h.id) {
+                    // Skip test files in non-test queries
+                    if !is_test_intent && ranking::is_test_file(&h.file_path) {
+                        continue;
+                    }
                     // Respect file diversity in gap fill
                     let fc = gap_file_counts.get(&h.file_path).copied().unwrap_or(0);
                     if fc >= gap_max_per_file {
@@ -724,6 +733,7 @@ impl Retriever {
         // Post-dedup gap fill: if name dedup removed results, backfill from
         // pre_expansion_candidates to maintain `limit` results.
         if hits.len() < limit {
+            let is_test_intent = matches!(intent, Some(Intent::Test));
             let hit_ids: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
             let hit_names: HashSet<String> = hits.iter()
                 .filter(|h| h.kind != "file")
@@ -737,6 +747,7 @@ impl Retriever {
                     && !hit_ids.contains(&c.id)
                     && !hit_names.contains(&c.name)
                     && c.score >= 0.5
+                    && (is_test_intent || !ranking::is_test_file(&c.file_path))
                 {
                     hits.push(c.clone());
                 }

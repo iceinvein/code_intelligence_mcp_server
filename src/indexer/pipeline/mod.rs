@@ -1,6 +1,7 @@
 pub mod describe;
 pub mod edges;
 pub mod parallel;
+pub mod parse;
 pub mod parsing;
 pub mod scan;
 pub mod stats;

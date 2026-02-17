@@ -16,17 +16,6 @@ use crate::{
     config::Config,
     embeddings::Embedder,
     graph::pagerank,
-    indexer::{
-        extract::c::extract_c_symbols,
-        extract::cpp::extract_cpp_symbols,
-        extract::go::extract_go_symbols,
-        extract::java::extract_java_symbols,
-        extract::javascript::extract_javascript_symbols,
-        extract::python::extract_python_symbols,
-        extract::rust::extract_rust_symbols,
-        extract::typescript::extract_typescript_symbols_with_path,
-        parser::{language_id_for_path, LanguageId},
-    },
     logging::RepoLogger,
     metrics::MetricsRegistry,
     path::Utf8PathBuf,
@@ -39,8 +28,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use std::{
-    collections::{HashMap, HashSet},
-    fs,
+    collections::HashSet,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -48,16 +36,9 @@ use std::{
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use self::edges::{extract_edges_for_symbol, upsert_name_mapping};
-use self::parallel::index_files_parallel;
-use self::parsing::symbol_kind_to_string;
 use self::scan::{scan_files, should_index_file};
 use self::stats::IndexRunStats;
-use self::usage::extract_usage_examples_for_file;
-use self::utils::{
-    cluster_key_from_vector, file_fingerprint, file_key_path, language_string, stable_symbol_id,
-    unix_now_s,
-};
+use self::utils::{cluster_key_from_vector, file_fingerprint, file_key_path, unix_now_s};
 
 #[derive(Clone)]
 pub struct IndexPipeline {
@@ -603,31 +584,53 @@ impl IndexPipeline {
             }
         }
 
-        // Choose parallel or sequential indexing based on config
-        let indexing_stats = if self.config.parallel_workers > 1 {
-            // Parallel path (no embeddings/vectors in parallel mode)
-            tracing::info!(
-                repo = %self.repo_name(),
-                workers = self.config.parallel_workers,
-                "Using parallel indexing"
-            );
-            self.index_files_parallel_async(uniq.clone()).await?
-        } else {
-            // Sequential path (includes embeddings/vectors)
-            tracing::info!(
-                repo = %self.repo_name(),
-                "Using sequential indexing"
-            );
-            // For now, keep the original logic inline
-            // TODO: Refactor into index_files_sequential helper
-            self.index_files_sequential_internal(&uniq, &mut stats)
-                .await?
+        // Unified pipeline: parse → write → embed
+        use crate::storage::sqlite::pool::SqlitePool;
+
+        let pool = std::sync::Arc::new(
+            SqlitePool::new(&self.db_path, self.config.parallel_workers + 2)?
+        );
+
+        // Phase 1: Parse (Rayon, parallel)
+        let parse_results = {
+            let files_clone = uniq.clone();
+            let config_clone = self.config.clone();
+            let pool_clone = pool.clone();
+            tokio::task::spawn_blocking(move || {
+                parse::parse_files(&files_clone, &config_clone, &pool_clone)
+            })
+            .await
+            .context("Join error in parse phase")??
         };
 
-        stats.files_indexed = indexing_stats.files_indexed;
-        stats.files_skipped = indexing_stats.files_skipped;
-        stats.files_unchanged = indexing_stats.files_unchanged;
-        stats.symbols_indexed = indexing_stats.symbols_indexed;
+        // Tally stats from parse results
+        let mut parsed_files = Vec::new();
+        for result in parse_results {
+            match result {
+                parse::ParseResult::Parsed(pf) => {
+                    stats.symbols_indexed += pf.symbol_rows.len();
+                    stats.files_indexed += 1;
+                    parsed_files.push(pf);
+                }
+                parse::ParseResult::Unchanged => {
+                    stats.files_unchanged += 1;
+                }
+                parse::ParseResult::Skipped { reason } => {
+                    tracing::debug!(reason = %reason, "File skipped during parse");
+                    stats.files_skipped += 1;
+                }
+            }
+        }
+
+        // Phase 2: Write (single thread, batched)
+        if !parsed_files.is_empty() {
+            let conn = pool.get()?;
+            write::write_batch(&parsed_files, &conn, &self.tantivy)?;
+            drop(conn);
+        }
+
+        // Phase 3: Embed (unchanged from old code)
+        self.generate_embeddings_for_orphaned_symbols().await?;
 
         // Compute PageRank scores after all indexing is complete
         // Only run if the graph structure changed (files indexed or deleted)
@@ -668,439 +671,6 @@ impl IndexPipeline {
                 stats.files_skipped, stats.files_deleted, stats.symbols_indexed
             ));
         }
-
-        Ok(stats)
-    }
-
-    /// Internal sequential indexing implementation (original logic)
-    async fn index_files_sequential_internal(
-        &self,
-        uniq: &[PathBuf],
-        stats: &mut IndexRunStats,
-    ) -> Result<IndexRunStats> {
-        let mut name_to_id: HashMap<String, String> = HashMap::new();
-
-        for file in uniq {
-            let rel = file_key_path(&self.config, file);
-
-            let language_id = match language_id_for_path(file) {
-                Some(id) => id,
-                None => {
-                    stats.files_skipped += 1;
-                    continue;
-                }
-            };
-
-            let fp = match file_fingerprint(file) {
-                Ok(fp) => fp,
-                Err(err) => {
-                    tracing::warn!(
-                        file = %file.display(),
-                        error = %err,
-                        "Failed to fingerprint file"
-                    );
-                    if let Some(ref logger) = self.repo_logger {
-                        logger.warn(&format!("Failed to fingerprint: {}", file.display()));
-                    }
-                    stats.files_skipped += 1;
-                    continue;
-                }
-            };
-
-            let is_unchanged = {
-                let sqlite = SqliteStore::open(&self.db_path)?;
-                sqlite.init()?;
-                sqlite.get_file_fingerprint(&rel)?.is_some_and(|existing| {
-                    existing.mtime_ns == fp.mtime_ns && existing.size_bytes == fp.size_bytes
-                })
-            };
-
-            if is_unchanged {
-                stats.files_unchanged += 1;
-                continue;
-            }
-
-            // Log package membership for this file
-            {
-                let sqlite = SqliteStore::open(&self.db_path)?;
-                sqlite.init()?;
-                match sqlite.get_package_for_file(&rel) {
-                    Ok(Some(pkg)) => {
-                        tracing::debug!(
-                            file = %rel,
-                            package_id = %pkg.id,
-                            package_name = %pkg.name,
-                            "Indexing file with package"
-                        );
-                    }
-                    Ok(None) => {
-                        tracing::trace!(
-                            file = %rel,
-                            "No package found for file during indexing"
-                        );
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            file = %rel,
-                            error = %err,
-                            "Failed to look up package for file"
-                        );
-                    }
-                }
-            }
-
-            let source = match fs::read_to_string(file) {
-                Ok(s) => s,
-                Err(err) => {
-                    tracing::warn!(file = %file.display(), error = %err, "Failed to read file");
-                    if let Some(ref logger) = self.repo_logger {
-                        logger.warn(&format!("Failed to read: {}", file.display()));
-                    }
-                    stats.files_skipped += 1;
-                    continue;
-                }
-            };
-
-            let extracted = match language_id {
-                LanguageId::Typescript | LanguageId::Tsx => {
-                    extract_typescript_symbols_with_path(language_id, &source, &rel)
-                }
-                LanguageId::Rust => extract_rust_symbols(&source),
-                LanguageId::Python => extract_python_symbols(&source),
-                LanguageId::Go => extract_go_symbols(&source),
-                LanguageId::C => extract_c_symbols(&source),
-                LanguageId::Cpp => extract_cpp_symbols(&source),
-                LanguageId::Java => extract_java_symbols(&source),
-                LanguageId::Javascript => extract_javascript_symbols(&source),
-            };
-
-            let extracted = match extracted {
-                Ok(syms) => syms,
-                Err(err) => {
-                    tracing::warn!(
-                        file = %file.display(),
-                        error = %err,
-                        "Failed to extract symbols"
-                    );
-                    if let Some(ref logger) = self.repo_logger {
-                        logger.warn(&format!("Failed to extract symbols: {}", file.display()));
-                    }
-                    stats.files_skipped += 1;
-                    continue;
-                }
-            };
-            self.tantivy.delete_symbols_by_file(&rel)?;
-            self.vectors
-                .delete_records_by_file_path(&rel)
-                .await
-                .with_context(|| format!("Failed to delete old vectors for {rel}"))?;
-
-            {
-                let sqlite = SqliteStore::open(&self.db_path)?;
-                sqlite.init()?;
-
-                // Delete symbols first - test_links have ON DELETE CASCADE, so they auto-delete
-                if let Err(err) = sqlite.delete_symbols_by_file(&rel) {
-                    tracing::error!(
-                        file = %rel,
-                        error = %err,
-                        error_chain = %err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join(" -> "),
-                        "Failed to delete old symbols (full error chain)"
-                    );
-                    return Err(err)
-                        .with_context(|| format!("Failed to delete old symbols for {rel}"));
-                }
-                sqlite
-                    .delete_usage_examples_by_file(&rel)
-                    .with_context(|| format!("Failed to delete old usage examples for {rel}"))?;
-                sqlite
-                    .delete_todos_by_file(&rel)
-                    .with_context(|| format!("Failed to delete old todos for {rel}"))?;
-                sqlite
-                    .delete_docstrings_by_file(&rel)
-                    .with_context(|| format!("Failed to delete old docstrings for {rel}"))?;
-                sqlite
-                    .delete_decorators_by_file(&rel)
-                    .with_context(|| format!("Failed to delete old decorators for {rel}"))?;
-                sqlite
-                    .delete_framework_patterns_by_file(&rel)
-                    .with_context(|| format!("Failed to delete old framework patterns for {rel}"))?;
-                // Note: test_links auto-delete via ON DELETE CASCADE when symbols are deleted
-            }
-
-            let mut symbol_rows = Vec::new();
-
-            // Extract file-level import tags for Tantivy enrichment.
-            // This gives every symbol in a file the context of what external
-            // crates/modules the file uses, so queries like "tree-sitter" match
-            // functions in files that import tree_sitter.
-            let import_tags = if language_id == crate::indexer::parser::LanguageId::Rust {
-                crate::text::extract_rust_import_tags(&source)
-            } else {
-                let sources: Vec<String> = extracted
-                    .imports
-                    .iter()
-                    .map(|imp| imp.source.clone())
-                    .collect();
-                crate::text::build_import_tags_from_sources(&sources)
-            };
-
-            // 1. Add File-Level Symbol (Document Indexing)
-            // We index the file itself as a symbol to allow retrieval of the "whole file" concept.
-            let file_symbol_id = stable_symbol_id(&rel, "FILE_ROOT", 0);
-            symbol_rows.push(SymbolRow {
-                id: file_symbol_id,
-                file_path: rel.clone(),
-                language: language_string(language_id).to_string(),
-                kind: "file".to_string(),
-                name: rel.clone(), // Name is the relative path
-                exported: false,
-                start_byte: 0,
-                end_byte: source.len() as u32,
-                start_line: 1,
-                end_line: source.lines().count() as u32,
-                text: source.clone(),
-            });
-
-            for sym in extracted.symbols {
-                let text = source
-                    .get(sym.bytes.start..sym.bytes.end)
-                    .unwrap_or("")
-                    .to_string();
-
-                if text.trim().is_empty() {
-                    continue;
-                }
-
-                let start_byte_for_id = if sym.exported {
-                    0
-                } else {
-                    sym.bytes.start as u32
-                };
-                let id = stable_symbol_id(&rel, &sym.name, start_byte_for_id);
-                symbol_rows.push(SymbolRow {
-                    id,
-                    file_path: rel.clone(),
-                    language: language_string(language_id).to_string(),
-                    kind: symbol_kind_to_string(sym.kind),
-                    name: sym.name,
-                    exported: sym.exported,
-                    start_byte: sym.bytes.start as u32,
-
-                    end_byte: sym.bytes.end as u32,
-                    start_line: sym.lines.start,
-                    end_line: sym.lines.end,
-                    text,
-                });
-            }
-
-            // Build framework vocabulary tags for BM25 enrichment.
-            let framework_tags = crate::text::build_framework_vocab_tags(
-                &extracted
-                    .framework_patterns
-                    .iter()
-                    .map(|p| (p.kind.to_string(), p.http_method.clone()))
-                    .collect::<Vec<_>>(),
-            );
-
-            if !symbol_rows.is_empty() {
-                let vectors = self
-                    .embed_and_build_vector_records(&symbol_rows)
-                    .await
-                    .with_context(|| format!("Failed to embed symbols for {rel}"))?;
-
-                for row in &symbol_rows {
-                    self.tantivy.upsert_symbol(row, &import_tags, &framework_tags, None)?;
-                    upsert_name_mapping(&mut name_to_id, row);
-                }
-
-                // Build id_to_symbol HashMap for edge extraction
-                let id_to_symbol: HashMap<String, &SymbolRow> =
-                    symbol_rows.iter().map(|r| (r.id.clone(), r)).collect();
-
-                // Commit Tantivy changes immediately to ensure they are persisted
-                // even if vector indexing panics (which has been observed with lance).
-                self.tantivy.commit()?;
-
-                {
-                    let sqlite = SqliteStore::open(&self.db_path)?;
-                    sqlite.init()?;
-                    for row in &symbol_rows {
-                        sqlite.upsert_symbol(row)?;
-                    }
-
-                    // Create package lookup function for cross-package edge resolution
-                    let db_path_for_lookup = self.db_path.clone();
-                    let package_lookup_fn: edges::PackageLookupFn =
-                        Box::new(move |file_path: &str| -> Option<String> {
-                            if let Ok(sqlite) = SqliteStore::open(&db_path_for_lookup) {
-                                if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
-                                    return Some(pkg.id);
-                                }
-                            }
-                            None
-                        });
-
-                    // Use a reference to the package lookup function for multiple calls
-                    let package_lookup_ref: Option<&edges::PackageLookupFn> =
-                        Some(&package_lookup_fn);
-
-                    for row in &symbol_rows {
-                        let edges = extract_edges_for_symbol(
-                            row,
-                            &name_to_id,
-                            &id_to_symbol,
-                            &extracted.imports,
-                            &extracted.type_edges,
-                            &extracted.dataflow_edges,
-                            package_lookup_ref,
-                            Some(&sqlite),
-                        );
-                        for (edge, evidence) in edges {
-                            let _ = sqlite.upsert_edge(&edge);
-                            for ev in evidence {
-                                let _ = sqlite.upsert_edge_evidence(&ev);
-                            }
-                        }
-                    }
-
-                    let examples = extract_usage_examples_for_file(
-                        &rel,
-                        &source,
-                        &name_to_id,
-                        &extracted.imports,
-                        &symbol_rows,
-                    );
-
-                    for ex in examples {
-                        let _ = sqlite.upsert_usage_example(&ex);
-                    }
-
-                    for rec in &vectors {
-                        let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
-                            symbol_id: rec.id.clone(),
-                            cluster_key: cluster_key_from_vector(&rec.vector),
-                        });
-                    }
-
-                    // Store TODO entries extracted from this file
-                    if !extracted.todos.is_empty() {
-                        let _ = sqlite.batch_upsert_todos(&extracted.todos);
-                    }
-
-                    // Store JSDoc entries extracted from this file
-                    if !extracted.jsdoc_entries.is_empty() {
-                        let _ = sqlite.batch_upsert_docstrings(&extracted.jsdoc_entries);
-                    }
-
-                    // Store decorator entries extracted from this file
-                    if !extracted.decorators.is_empty() {
-                        use crate::storage::sqlite::schema::DecoratorRow;
-                        let decorator_rows: Vec<DecoratorRow> = extracted
-                            .decorators
-                            .iter()
-                            .map(|d| DecoratorRow {
-                                symbol_id: d.symbol_id.clone(),
-                                name: d.name.clone(),
-                                arguments: d.arguments.clone(),
-                                target_line: d.target_line,
-                                decorator_type: serde_json::to_string(&d.decorator_type)
-                                    .unwrap_or_else(|_| "unknown".to_string()),
-                                updated_at: 0,
-                            })
-                            .collect();
-                        let _ = sqlite.batch_upsert_decorators(&decorator_rows);
-                    }
-
-                    // Store framework pattern entries extracted from this file
-                    if !extracted.framework_patterns.is_empty() {
-                        use crate::storage::sqlite::schema::FrameworkPatternRow;
-                        let pattern_rows: Vec<FrameworkPatternRow> = extracted
-                            .framework_patterns
-                            .iter()
-                            .enumerate()
-                            .map(|(i, p)| {
-                                let id = format!(
-                                    "{}:{}:{}:{}",
-                                    rel,
-                                    p.line,
-                                    p.column,
-                                    i
-                                );
-                                FrameworkPatternRow {
-                                    id,
-                                    file_path: rel.clone(),
-                                    line: p.line,
-                                    framework: p.framework.clone(),
-                                    kind: p.kind.to_string(),
-                                    http_method: p.http_method.clone(),
-                                    path: p.path.clone(),
-                                    name: p.name.clone(),
-                                    handler: p.handler.clone(),
-                                    arguments: p.arguments.clone(),
-                                    parent_chain: p.parent_chain.clone(),
-                                    updated_at: 0,
-                                }
-                            })
-                            .collect();
-                        let _ = sqlite.batch_upsert_framework_patterns(&pattern_rows);
-                    }
-
-                    // Create test links if this is a test file
-                    if sqlite.is_test_file(&rel) {
-                        let _ = sqlite.create_test_links_for_file(&rel);
-                    }
-
-                    sqlite.upsert_file_fingerprint(&rel, fp.mtime_ns, fp.size_bytes)?;
-                }
-
-                // Add vectors last, as this step is prone to panics in some environments.
-                // We wrap it in a result check just in case, though panics escape this.
-                if let Err(e) = self.vectors.add_records(&vectors).await {
-                    tracing::error!("Failed to add vector records for {}: {}", rel, e);
-                }
-            } else {
-                let sqlite = SqliteStore::open(&self.db_path)?;
-                sqlite.init()?;
-                sqlite.upsert_file_fingerprint(&rel, fp.mtime_ns, fp.size_bytes)?;
-            }
-
-            stats.symbols_indexed += symbol_rows.len();
-            stats.files_indexed += 1;
-            self.tantivy.commit()?;
-        }
-
-        Ok(stats.clone())
-    }
-
-    /// Async wrapper for parallel indexing
-    ///
-    /// Calls the synchronous rayon-based parallel indexing in a blocking task
-    /// to avoid blocking the tokio runtime.
-    async fn index_files_parallel_async(&self, files: Vec<PathBuf>) -> Result<IndexRunStats> {
-        let config = self.config.clone();
-        let db_path = self.db_path.clone();
-        let tantivy = self.tantivy.clone();
-        let vectors = self.vectors.clone();
-        let num_files = files.len();
-
-        // Run parallel indexing in blocking task
-        let stats = tokio::task::spawn_blocking(move || {
-            index_files_parallel(config, db_path, tantivy, vectors, files)
-        })
-        .await
-        .with_context(|| {
-            format!(
-                "Join error in parallel indexing: num_files={}",
-                num_files
-            )
-        })??;
-
-        // Post-processing: Generate embeddings and create similarity clusters.
-        // Always called (not gated on files_indexed > 0) so that orphaned symbols
-        // — e.g. after LanceDB data loss — get their vectors regenerated.
-        // The function is a no-op when all symbols already have similarity clusters.
-        self.generate_embeddings_for_orphaned_symbols().await?;
 
         Ok(stats)
     }
@@ -1205,28 +775,13 @@ impl IndexPipeline {
         Ok(())
     }
 
-    /// Index files sequentially (original logic with embeddings)
-    ///
-    /// This is the original indexing logic that includes:
-    /// - File cleanup
-    /// - Symbol extraction with embeddings
-    /// - Vector storage
-    ///
-    /// Note: Currently using index_files_sequential_internal instead
-    #[allow(dead_code)]
-    async fn index_files_sequential(&self, _files: Vec<PathBuf>) -> Result<IndexRunStats> {
-        // Placeholder - logic moved to index_files_sequential_internal
-        let stats = IndexRunStats::default();
-        Ok(stats)
-    }
-
     /// Build enriched text for embedding that includes semantic context.
     async fn embed_and_build_vector_records(
         &self,
         rows: &[SymbolRow],
     ) -> Result<Vec<VectorRecord>> {
         let mut vectors = Vec::with_capacity(rows.len());
-        let mut uncached_texts = Vec::new();
+        let mut uncached_texts: Vec<String> = Vec::new();
         let mut uncached_indices = Vec::new();
 
         // Preprocess text for embedding: semantic header + comment-stripped body.

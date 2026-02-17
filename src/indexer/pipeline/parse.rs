@@ -23,13 +23,15 @@ use crate::{
             utils::{file_fingerprint, file_key_path, language_string, stable_symbol_id},
         },
     },
-    storage::sqlite::SqliteStore,
+    storage::sqlite::{pool::SqlitePool, SqliteStore},
 };
+use anyhow::{Context, Result};
+use rayon::prelude::*;
 use rusqlite::{Connection, OptionalExtension};
 use std::{
     collections::HashMap,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// Full output of parsing one file — everything needed to write.
@@ -337,6 +339,49 @@ pub fn parse_single_file(
         framework_patterns,
         is_test_file,
     })
+}
+
+/// Parse multiple files in parallel using Rayon.
+///
+/// Uses the provided connection pool to check file fingerprints and perform
+/// cross-file lookups during edge extraction. Each worker thread gets its own
+/// connection from the pool.
+///
+/// Returns a Vec of ParseResult (one per file). Caller is responsible for
+/// tallying stats and writing to storage.
+pub fn parse_files(
+    files: &[PathBuf],
+    config: &Config,
+    pool: &SqlitePool,
+) -> Result<Vec<ParseResult>> {
+    // Create Rayon thread pool matching parallel_workers config
+    let rayon_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.parallel_workers)
+        .thread_name(|i| format!("parser-{}", i))
+        .build()
+        .context("Failed to build Rayon thread pool for parsing")?;
+
+    // Parse files in parallel
+    let results: Vec<ParseResult> = rayon_pool.install(|| {
+        files
+            .par_iter()
+            .map(|file| {
+                // Get connection from pool for this parse operation
+                let conn = match pool.get() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return ParseResult::Skipped {
+                            reason: format!("Failed to get DB connection: {}", e),
+                        };
+                    }
+                };
+
+                parse_single_file(file, config, &conn)
+            })
+            .collect()
+    });
+
+    Ok(results)
 }
 
 #[cfg(test)]

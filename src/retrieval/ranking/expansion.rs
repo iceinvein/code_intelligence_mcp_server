@@ -4,6 +4,22 @@ use crate::retrieval::ranking::score::{intent_adjustment, is_test_file, is_test_
 use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
 
+/// Penalty multiplier for const/variable symbols with short, all-lowercase names.
+/// These are almost always local variables that shouldn't surface via edge expansion.
+fn local_variable_discount(kind: &str, name: &str) -> f32 {
+    if !matches!(kind, "const" | "variable") {
+        return 1.0;
+    }
+    if name.starts_with('{') || name.starts_with('[') {
+        return 0.3; // destructured bindings
+    }
+    let is_all_lower = name.chars().all(|c| c.is_lowercase() || c.is_ascii_digit());
+    if is_all_lower && name.len() <= 9 {
+        return 0.5; // short single-word locals
+    }
+    1.0
+}
+
 /// Expand results with related symbols via edges.
 ///
 /// Parent scores already have intent multipliers baked in from the scoring loop.
@@ -75,13 +91,15 @@ pub fn expand_with_edges(
                             "heuristic" => 0.75,
                             _ => 0.8,
                         };
+                        let lv_disc = local_variable_discount(&row.kind, &row.name);
                         out.push(RankedHit {
                             id: row.id.clone(),
                             score: base_score
                                 * 0.8
                                 * edge.confidence
                                 * evidence_boost
-                                * resolution_multiplier,
+                                * resolution_multiplier
+                                * lv_disc,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,
@@ -123,13 +141,15 @@ pub fn expand_with_edges(
                             "heuristic" => 0.75,
                             _ => 0.8,
                         };
+                        let lv_disc = local_variable_discount(&row.kind, &row.name);
                         out.push(RankedHit {
                             id: row.id.clone(),
                             score: base_score
                                 * 0.8
                                 * edge.confidence
                                 * evidence_boost
-                                * resolution_multiplier,
+                                * resolution_multiplier
+                                * lv_disc,
                             name: row.name,
                             kind: row.kind,
                             file_path: row.file_path,

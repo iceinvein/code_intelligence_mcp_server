@@ -61,9 +61,8 @@ pub enum EmbeddingsDevice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingsBackend {
-    FastEmbed,
+    LlamaCpp,
     Hash,
-    JinaCode,
 }
 
 // TOML parsing structs (private, for deserialization)
@@ -85,8 +84,6 @@ struct ServerTomlServer {
 struct ServerTomlEmbeddings {
     backend: Option<EmbeddingsBackend>,
     device: Option<EmbeddingsDevice>,
-    auto_download: Option<bool>,
-    model_repo: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,10 +112,7 @@ pub struct StandaloneConfig {
     pub warm_ttl_seconds: u64,
     pub embeddings_backend: EmbeddingsBackend,
     pub embeddings_device: EmbeddingsDevice,
-    pub embeddings_auto_download: bool,
-    pub embeddings_model_repo: Option<String>,
     pub embeddings_model_dir: Option<Utf8PathBuf>,
-    pub embedding_max_threads: usize,
     pub hash_embedding_dim: usize,
     pub default_index_patterns: Vec<String>,
     pub default_exclude_patterns: Vec<String>,
@@ -133,12 +127,9 @@ impl Default for StandaloneConfig {
             port: 3333,
             data_dir: data_dir.clone(),
             warm_ttl_seconds: 300,
-            embeddings_backend: EmbeddingsBackend::JinaCode,
-            embeddings_device: EmbeddingsDevice::Cpu,
-            embeddings_auto_download: false,
-            embeddings_model_repo: Some("jinaai/jina-embeddings-v2-base-code".to_string()),
-            embeddings_model_dir: Some(data_dir.join("models/jina-code-onnx")),
-            embedding_max_threads: 0,
+            embeddings_backend: EmbeddingsBackend::LlamaCpp,
+            embeddings_device: EmbeddingsDevice::Metal,
+            embeddings_model_dir: Some(data_dir.join("models/jina-code-embeddings-0.5b-gguf")),
             hash_embedding_dim: 64,
             default_index_patterns: vec![
                 "**/*.ts".to_string(),
@@ -181,12 +172,6 @@ impl StandaloneConfig {
             if let Some(device) = embeddings.device {
                 config.embeddings_device = device;
             }
-            if let Some(auto_download) = embeddings.auto_download {
-                config.embeddings_auto_download = auto_download;
-            }
-            if let Some(model_repo) = embeddings.model_repo {
-                config.embeddings_model_repo = Some(model_repo);
-            }
         }
 
         if let Some(repos) = parsed.repos {
@@ -228,11 +213,9 @@ impl StandaloneConfig {
 
         // Apply env var overrides
         if let Ok(backend) = std::env::var("EMBEDDINGS_BACKEND") {
-            match backend.to_lowercase().as_str() {
-                "hash" => config.embeddings_backend = EmbeddingsBackend::Hash,
-                "fastembed" => config.embeddings_backend = EmbeddingsBackend::FastEmbed,
-                "jinacode" => config.embeddings_backend = EmbeddingsBackend::JinaCode,
-                other => tracing::warn!("Unknown EMBEDDINGS_BACKEND: {}", other),
+            match parse_embeddings_backend(&backend) {
+                Ok(b) => config.embeddings_backend = b,
+                Err(_) => tracing::warn!("Unknown EMBEDDINGS_BACKEND: {}", backend),
             }
         }
         if let Ok(device) = std::env::var("EMBEDDINGS_DEVICE") {
@@ -242,16 +225,8 @@ impl StandaloneConfig {
                 other => tracing::warn!("Unknown EMBEDDINGS_DEVICE: {}", other),
             }
         }
-        if let Ok(model_repo) = std::env::var("EMBEDDINGS_MODEL_REPO") {
-            config.embeddings_model_repo = Some(model_repo);
-        }
         if let Ok(model_dir) = std::env::var("EMBEDDINGS_MODEL_DIR") {
             config.embeddings_model_dir = Some(Utf8PathBuf::from(model_dir));
-        }
-        if let Ok(val) = std::env::var("EMBEDDINGS_MAX_THREADS") {
-            if let Ok(threads) = val.parse::<usize>() {
-                config.embedding_max_threads = threads;
-            }
         }
         if let Ok(val) = std::env::var("HASH_EMBEDDING_DIM") {
             if let Ok(dim) = val.parse::<usize>() {
@@ -286,12 +261,6 @@ impl StandaloneConfig {
             tantivy_index_path,
             embeddings_backend: self.embeddings_backend,
             embeddings_model_dir: self.embeddings_model_dir.clone(),
-            embeddings_model_url: None,
-            embeddings_model_sha256: None,
-            embeddings_auto_download: self.embeddings_auto_download,
-            embeddings_model_repo: self.embeddings_model_repo.clone(),
-            embeddings_model_revision: None,
-            embeddings_model_hf_token: None,
             embeddings_device: self.embeddings_device,
             embedding_batch_size: 32,
             hash_embedding_dim: self.hash_embedding_dim,
@@ -326,7 +295,6 @@ impl StandaloneConfig {
                 .unwrap_or(2)
                 .max(2),
             embedding_cache_enabled: true,
-            embedding_max_threads: self.embedding_max_threads,
             pagerank_damping: 0.85,
             pagerank_iterations: 20,
             synonym_expansion_enabled: true,
@@ -364,12 +332,6 @@ pub struct Config {
     pub tantivy_index_path: Utf8PathBuf,
     pub embeddings_backend: EmbeddingsBackend,
     pub embeddings_model_dir: Option<Utf8PathBuf>,
-    pub embeddings_model_url: Option<String>,
-    pub embeddings_model_sha256: Option<String>,
-    pub embeddings_auto_download: bool,
-    pub embeddings_model_repo: Option<String>,
-    pub embeddings_model_revision: Option<String>,
-    pub embeddings_model_hf_token: Option<String>,
     pub embeddings_device: EmbeddingsDevice,
     pub embedding_batch_size: usize,
     pub hash_embedding_dim: usize,
@@ -409,7 +371,6 @@ pub struct Config {
     // Performance config (FNDN-06)
     pub parallel_workers: usize,
     pub embedding_cache_enabled: bool,
-    pub embedding_max_threads: usize, // Max CPU threads for ONNX Runtime (0 = auto)
 
     // PageRank config (FNDN-07)
     pub pagerank_damping: f32,
@@ -458,59 +419,32 @@ impl Config {
         let base_dir = canonicalize_dir(Path::new(&base_dir_raw))
             .with_context(|| format!("Invalid BASE_DIR: {base_dir_raw}"))?;
 
-        let embeddings_model_url = optional_env("EMBEDDINGS_MODEL_URL");
-        let embeddings_model_sha256 = optional_env("EMBEDDINGS_MODEL_SHA256");
-
-        let embeddings_auto_download = optional_env("EMBEDDINGS_AUTO_DOWNLOAD")
-            .as_deref()
-            .map(parse_bool)
-            .transpose()?
-            .unwrap_or(false);
-
         let embeddings_backend_env = optional_env("EMBEDDINGS_BACKEND")
             .as_deref()
             .map(parse_embeddings_backend)
             .transpose()?;
 
         let (embeddings_backend, embeddings_model_dir) = match embeddings_backend_env {
-            Some(EmbeddingsBackend::FastEmbed) => {
+            Some(EmbeddingsBackend::LlamaCpp) => {
                 let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
                     Some(raw) => Some(to_utf8_pathbuf(Path::new(raw))?),
                     None => {
                         let data_dir = get_data_dir();
-                        Some(data_dir.join("models/embeddings-cache"))
+                        Some(data_dir.join("models/jina-code-embeddings-0.5b-gguf"))
                     }
                 };
-                (EmbeddingsBackend::FastEmbed, embeddings_model_dir)
+                (EmbeddingsBackend::LlamaCpp, embeddings_model_dir)
             }
             Some(EmbeddingsBackend::Hash) => (EmbeddingsBackend::Hash, None),
-            Some(EmbeddingsBackend::JinaCode) => {
-                let embeddings_model_dir = match optional_env("EMBEDDINGS_MODEL_DIR").as_deref() {
-                    Some(raw) => Some(to_utf8_pathbuf(Path::new(raw))?),
-                    None => {
-                        let data_dir = get_data_dir();
-                        Some(data_dir.join("models/jina-code-onnx"))
-                    }
-                };
-                (EmbeddingsBackend::JinaCode, embeddings_model_dir)
-            }
             None => {
-                // Default to JinaCode for better code understanding
+                // Default to LlamaCpp with jina-code-0.5b GGUF
                 let data_dir = get_data_dir();
                 (
-                    EmbeddingsBackend::JinaCode,
-                    Some(data_dir.join("models/jina-code-onnx")),
+                    EmbeddingsBackend::LlamaCpp,
+                    Some(data_dir.join("models/jina-code-embeddings-0.5b-gguf")),
                 )
             }
         };
-
-        // We don't strictly need model_url/sha256/revision for FastEmbed as it manages it,
-        // but we DO need the repo name (model name).
-        let embeddings_model_repo =
-            optional_env("EMBEDDINGS_MODEL_REPO").unwrap_or_else(|| match embeddings_backend {
-                EmbeddingsBackend::JinaCode => "jinaai/jina-embeddings-v2-base-code".to_string(),
-                _ => "BAAI/bge-base-en-v1.5".to_string(),
-            });
 
         // Per-repo data directory under ~/.code-intelligence/repos/<hash>/
         let repo_data_dir = get_repo_data_dir(base_dir.as_str());
@@ -534,7 +468,7 @@ impl Config {
             .as_deref()
             .map(parse_embeddings_device)
             .transpose()?
-            .unwrap_or(EmbeddingsDevice::Cpu);
+            .unwrap_or(EmbeddingsDevice::Metal);
 
         let embedding_batch_size = optional_env("EMBEDDING_BATCH_SIZE")
             .as_deref()
@@ -722,12 +656,6 @@ impl Config {
             .map(parse_bool)
             .transpose()?
             .unwrap_or(true);
-        let embedding_max_threads = optional_env("EMBEDDING_MAX_THREADS")
-            .as_deref()
-            .map(parse_usize)
-            .transpose()?
-            .unwrap_or(0); // 0 = auto (use all available CPUs)
-
         // PageRank config (FNDN-07)
         let pagerank_damping = optional_env("PAGERANK_DAMPING")
             .as_deref()
@@ -862,13 +790,6 @@ impl Config {
             tantivy_index_path,
             embeddings_backend,
             embeddings_model_dir,
-            embeddings_model_url,
-            embeddings_model_sha256,
-            embeddings_auto_download,
-            embeddings_model_repo: Some(embeddings_model_repo), // Always present now as a string
-            embeddings_model_revision: None, // FastEmbed manages versions internally mostly, or we assume main
-            embeddings_model_hf_token: None, // Not used by FastEmbed currently
-
             embeddings_device,
             embedding_batch_size,
             hash_embedding_dim,
@@ -908,7 +829,6 @@ impl Config {
             // Performance config (FNDN-06)
             parallel_workers,
             embedding_cache_enabled,
-            embedding_max_threads,
 
             // PageRank config (FNDN-07)
             pagerank_damping,
@@ -1043,9 +963,10 @@ fn parse_embeddings_device(value: &str) -> Result<EmbeddingsDevice> {
 
 fn parse_embeddings_backend(value: &str) -> Result<EmbeddingsBackend> {
     match value.trim().to_lowercase().as_str() {
-        "fastembed" => Ok(EmbeddingsBackend::FastEmbed),
+        "llamacpp" | "llama-cpp" | "llama" => Ok(EmbeddingsBackend::LlamaCpp),
+        // Migration aliases: old names map to new LlamaCpp backend
+        "jinacode" | "jina-code" | "jina" | "fastembed" => Ok(EmbeddingsBackend::LlamaCpp),
         "hash" => Ok(EmbeddingsBackend::Hash),
-        "jinacode" | "jina-code" | "jina" => Ok(EmbeddingsBackend::JinaCode),
         other => Err(anyhow!("Invalid EMBEDDINGS_BACKEND: {other}")),
     }
 }
@@ -1139,15 +1060,8 @@ mod tests {
             "TANTIVY_INDEX_PATH",
             "EMBEDDINGS_BACKEND",
             "EMBEDDINGS_MODEL_DIR",
-            "EMBEDDINGS_MODEL_URL",
-            "EMBEDDINGS_MODEL_SHA256",
-            "EMBEDDINGS_AUTO_DOWNLOAD",
-            "EMBEDDINGS_MODEL_REPO",
-            "EMBEDDINGS_MODEL_REVISION",
-            "EMBEDDINGS_MODEL_HF_TOKEN",
             "EMBEDDINGS_DEVICE",
             "EMBEDDING_BATCH_SIZE",
-            "EMBEDDING_MAX_THREADS",
             "HASH_EMBEDDING_DIM",
             "VECTOR_SEARCH_LIMIT",
             "HYBRID_ALPHA",
@@ -1179,7 +1093,6 @@ mod tests {
             // Performance config (FNDN-06)
             "PARALLEL_WORKERS",
             "EMBEDDING_CACHE_ENABLED",
-            "EMBEDDING_MAX_THREADS",
             // PageRank config (FNDN-07)
             "PAGERANK_DAMPING",
             "PAGERANK_ITERATIONS",
@@ -1226,7 +1139,7 @@ mod tests {
     }
 
     #[test]
-    fn from_env_defaults_to_jinacode_backend_without_model_dir() {
+    fn from_env_defaults_to_llamacpp_backend_without_model_dir() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
@@ -1235,7 +1148,7 @@ mod tests {
         std::env::set_var("HOME", home.to_string());
 
         let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
+        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::LlamaCpp);
         assert!(cfg.embeddings_model_dir.is_some());
 
         // Paths should now use per-repo directory under ~/.code-intelligence/repos/<hash>/
@@ -1248,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn jinacode_backend_configured_by_default() {
+    fn llamacpp_backend_configured_by_default() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
@@ -1256,44 +1169,41 @@ mod tests {
         std::env::set_var("BASE_DIR", base.to_string());
         std::env::set_var("HOME", home.to_string());
 
-        // Default should be JinaCode
+        // Default should be LlamaCpp
         let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
+        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::LlamaCpp);
         assert_eq!(
             cfg.embeddings_model_dir,
-            Some(home.join(".code-intelligence/models/jina-code-onnx"))
-        );
-        assert_eq!(
-            cfg.embeddings_model_repo.as_deref(),
-            Some("jinaai/jina-embeddings-v2-base-code")
+            Some(home.join(".code-intelligence/models/jina-code-embeddings-0.5b-gguf"))
         );
     }
 
     #[test]
-    fn fastembed_backend_allows_custom_model_dir() {
+    fn legacy_backend_names_map_to_llamacpp() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
         let custom = tmp_dir();
         std::env::set_var("BASE_DIR", base.to_string());
+        // Old "fastembed" name should now map to LlamaCpp
         std::env::set_var("EMBEDDINGS_BACKEND", "fastembed");
         std::env::set_var("EMBEDDINGS_MODEL_DIR", custom.to_string());
 
         let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::FastEmbed);
+        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::LlamaCpp);
         assert_eq!(cfg.embeddings_model_dir, Some(custom));
     }
 
     #[test]
-    fn jinacode_backend_defaults_if_backend_not_set() {
+    fn llamacpp_backend_defaults_if_backend_not_set() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
         std::env::set_var("BASE_DIR", base.to_string());
-        // No backend set, should default to JinaCode
+        // No backend set, should default to LlamaCpp
 
         let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::JinaCode);
+        assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::LlamaCpp);
         assert!(cfg.embeddings_model_dir.is_some());
     }
 
@@ -1470,7 +1380,6 @@ warm_ttl_seconds = 600
         assert_eq!(cfg.index_patterns, standalone.default_index_patterns);
         assert_eq!(cfg.exclude_patterns, standalone.default_exclude_patterns);
         assert_eq!(cfg.watch_mode, standalone.default_watch_mode);
-        assert_eq!(cfg.embedding_max_threads, standalone.embedding_max_threads);
         assert_eq!(cfg.hash_embedding_dim, standalone.hash_embedding_dim);
     }
 }

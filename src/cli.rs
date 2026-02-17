@@ -85,10 +85,9 @@ pub fn print_help() {
     println!("    BASE_DIR=/absolute/path/to/repo");
     println!();
     println!("  Common env (defaults shown):");
-    println!("    EMBEDDINGS_MODEL_DIR=/path/to/cache   (default: ~/.code-intelligence/models/jina-code-onnx)");
-    println!("    EMBEDDINGS_BACKEND=fastembed|hash|jinacode (default: jinacode)");
-    println!("    EMBEDDINGS_MODEL_REPO=org/repo       (default: jinaai/jina-embeddings-v2-base-code)");
-    println!("    EMBEDDINGS_DEVICE=cpu|metal          (default: cpu)");
+    println!("    EMBEDDINGS_MODEL_DIR=/path/to/cache   (default: ~/.code-intelligence/models/jina-code-embeddings-0.5b-gguf)");
+    println!("    EMBEDDINGS_BACKEND=llamacpp|hash      (default: llamacpp)");
+    println!("    EMBEDDINGS_DEVICE=cpu|metal           (default: metal)");
     println!("    EMBEDDING_BATCH_SIZE=32");
     println!("    DB_PATH=<auto>                       (per-repo: ~/.code-intelligence/repos/<hash>/code-intelligence.db)");
     println!("    VECTOR_DB_PATH=<auto>                (per-repo: ~/.code-intelligence/repos/<hash>/vectors)");

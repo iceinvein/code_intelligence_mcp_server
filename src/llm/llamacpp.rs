@@ -19,11 +19,12 @@ use super::LlmGenerator;
 
 /// llama.cpp-based LLM generator for Qwen2.5-Coder-1.5B-Instruct.
 ///
-/// Holds the backend and model (both Send + Sync). A fresh `LlamaContext`
-/// is created per `generate()` call since it is `!Send`. Context creation
-/// is cheap (~microseconds) compared to inference (~300ms per symbol).
+/// Borrows the shared `&'static LlamaBackend` singleton and owns the model
+/// weights (loaded into GPU memory). A fresh `LlamaContext` is created per
+/// `generate()` call since it is `!Send`. Context creation is cheap
+/// (~microseconds) compared to inference (~300ms per symbol).
 pub struct LlamaCppGenerator {
-    backend: LlamaBackend,
+    backend: &'static LlamaBackend,
     model: LlamaModel,
 }
 
@@ -35,15 +36,14 @@ impl LlamaCppGenerator {
     pub fn new(model_path: &Utf8Path) -> Result<Self> {
         tracing::info!("Loading LLM from: {}", model_path);
 
-        let backend = LlamaBackend::init()
-            .map_err(|e| anyhow!("Failed to initialize llama.cpp backend: {}", e))?;
+        let backend = super::get_or_init_backend()?;
 
         // Offload all 28 transformer layers to Metal GPU.
         // 99 > actual layer count (28), so llama.cpp caps at the model's max.
         let model_params = LlamaModelParams::default().with_n_gpu_layers(99);
 
         let model =
-            LlamaModel::load_from_file(&backend, model_path.as_std_path(), &model_params)
+            LlamaModel::load_from_file(backend, model_path.as_std_path(), &model_params)
                 .map_err(|e| anyhow!("Failed to load GGUF model: {:?}", e))?;
 
         tracing::info!(
@@ -138,8 +138,3 @@ impl LlmGenerator for LlamaCppGenerator {
     }
 }
 
-impl Drop for LlamaCppGenerator {
-    fn drop(&mut self) {
-        tracing::info!("Unloading LLM model from GPU memory (~1.1 GB freed)");
-    }
-}

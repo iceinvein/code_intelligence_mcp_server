@@ -1,7 +1,6 @@
 //! Cross-encoder reranking for improved search result precision
 
 pub mod cache;
-pub mod onnx;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -27,30 +26,14 @@ pub struct RerankDocument {
     pub name: String,
 }
 
-/// Create a reranker based on config
+/// Create a reranker based on config.
+///
+/// Currently always returns `None` — the reranker is not enabled.
+/// The trait and types are kept since they're referenced by the retrieval module.
 pub fn create_reranker(
-    model_path: Option<&Utf8Path>,
-    cache_dir: Option<&Utf8Path>,
-    top_k: usize,
+    _model_path: Option<&Utf8Path>,
+    _cache_dir: Option<&Utf8Path>,
+    _top_k: usize,
 ) -> Result<Option<Arc<dyn Reranker>>> {
-    let model_path = match model_path {
-        Some(p) if p.exists() => p.to_path_buf(),
-        Some(p) => {
-            tracing::warn!(
-                "Reranker model path not found: {}, reranking disabled",
-                p
-            );
-            return Ok(None);
-        }
-        None => {
-            tracing::info!("No reranker model path specified, reranking disabled");
-            return Ok(None);
-        }
-    };
-
-    Ok(Some(Arc::new(onnx::CrossEncoderReranker::new(
-        &model_path,
-        cache_dir,
-        top_k,
-    )?)))
+    Ok(None)
 }

@@ -204,12 +204,6 @@ mod tests {
             tantivy_index_path: base_utf8.join("tantivy-index"),
             embeddings_backend: EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
-            embeddings_model_url: None,
-            embeddings_model_sha256: None,
-            embeddings_auto_download: false,
-            embeddings_model_repo: None,
-            embeddings_model_revision: None,
-            embeddings_model_hf_token: None,
             embeddings_device: EmbeddingsDevice::Cpu,
             embedding_batch_size: 32,
             hash_embedding_dim: 32,
@@ -245,7 +239,6 @@ mod tests {
             // Performance config (FNDN-06)
             parallel_workers: 4,
             embedding_cache_enabled: true,
-            embedding_max_threads: 0,
             // PageRank config (FNDN-07)
             pagerank_damping: 0.85,
             pagerank_iterations: 20,
@@ -268,6 +261,16 @@ mod tests {
             metrics_port: 9090,
             // Package detection config (09-04)
             package_detection_enabled: true,
+            // LLM config
+            llm_enabled: false,
+            llm_device: EmbeddingsDevice::Cpu,
+            llm_model_dir: None,
+            llm_max_tokens: 30,
+            llm_batch_commit: 10,
+            // Leader election config
+            leader_election_enabled: false,
+            leader_heartbeat_interval_ms: 10_000,
+            leader_ttl_seconds: 30,
         }
     }
 

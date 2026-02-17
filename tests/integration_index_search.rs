@@ -41,12 +41,6 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         base_dir: base_dir_utf8.clone(),
         embeddings_backend: EmbeddingsBackend::Hash,
         embeddings_model_dir: None,
-        embeddings_model_url: None,
-        embeddings_model_sha256: None,
-        embeddings_auto_download: false,
-        embeddings_model_repo: None,
-        embeddings_model_revision: None,
-        embeddings_model_hf_token: None,
         embeddings_device: EmbeddingsDevice::Cpu,
         embedding_batch_size: 32,
         hash_embedding_dim: 32,
@@ -86,7 +80,6 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         // Performance config (FNDN-06)
         parallel_workers: 4,
         embedding_cache_enabled: true,
-        embedding_max_threads: 0,
         // PageRank config (FNDN-07)
         pagerank_damping: 0.85,
         pagerank_iterations: 20,

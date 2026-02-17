@@ -5,11 +5,32 @@
 //! Tantivy text field to improve search relevance for semantic queries.
 
 use anyhow::Result;
+use once_cell::sync::OnceCell;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use crate::path::Utf8Path;
+use llama_cpp_2::llama_backend::LlamaBackend;
 
 pub mod llamacpp;
+
+/// Process-wide singleton for the llama.cpp backend.
+///
+/// `LlamaBackend::init()` has an internal `AtomicBool` guard that panics on
+/// double-init. We `Box::leak` the backend to get a `&'static` reference
+/// that both the LLM generator and embedding model can share. The backend
+/// lives for the entire process — its `Drop` never runs, which is correct
+/// since freeing it would invalidate all loaded models.
+static LLAMA_BACKEND: OnceCell<&'static LlamaBackend> = OnceCell::new();
+
+pub fn get_or_init_backend() -> anyhow::Result<&'static LlamaBackend> {
+    LLAMA_BACKEND
+        .get_or_try_init(|| {
+            let backend = LlamaBackend::init()
+                .map_err(|e| anyhow::anyhow!("Failed to init llama.cpp backend: {:?}", e))?;
+            Ok::<&'static LlamaBackend, anyhow::Error>(Box::leak(Box::new(backend)))
+        })
+        .copied()
+}
 
 /// Generate text descriptions for code symbols using an LLM.
 pub trait LlmGenerator: Send + Sync {

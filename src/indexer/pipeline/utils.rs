@@ -274,12 +274,6 @@ mod tests {
             tantivy_index_path: base_utf8.join("tantivy-index"),
             embeddings_backend: crate::config::EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
-            embeddings_model_url: None,
-            embeddings_model_sha256: None,
-            embeddings_auto_download: false,
-            embeddings_model_repo: None,
-            embeddings_model_revision: None,
-            embeddings_model_hf_token: None,
             embeddings_device: crate::config::EmbeddingsDevice::Cpu,
             embedding_batch_size: 32,
             hash_embedding_dim: 8,
@@ -315,7 +309,6 @@ mod tests {
             // Performance config (FNDN-06)
             parallel_workers: 4,
             embedding_cache_enabled: true,
-            embedding_max_threads: 0,
             // PageRank config (FNDN-07)
             pagerank_damping: 0.85,
             pagerank_iterations: 20,

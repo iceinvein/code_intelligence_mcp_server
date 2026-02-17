@@ -139,9 +139,7 @@ async fn run_standalone(host: Option<&str>, port: Option<u16>) -> SdkResult<()> 
     let embedder = create_embedder(
         standalone_config.embeddings_backend,
         standalone_config.embeddings_model_dir.as_deref(),
-        standalone_config.embeddings_model_repo.as_deref(),
         standalone_config.embeddings_device,
-        standalone_config.embedding_max_threads,
         standalone_config.hash_embedding_dim,
     ).map_err(|e| McpSdkError::Internal { description: format!("Failed to create embedder: {}", e) })?;
 
@@ -259,9 +257,7 @@ async fn run_embedded() -> SdkResult<()> {
     let embedder = create_embedder(
         config.embeddings_backend,
         config.embeddings_model_dir.as_deref(),
-        config.embeddings_model_repo.as_deref(),
         config.embeddings_device,
-        config.embedding_max_threads,
         config.hash_embedding_dim,
     )
     .map_err(|err| McpSdkError::Internal {

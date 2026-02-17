@@ -527,10 +527,10 @@ fn apply_structural_scoring(
         {
             let q_lower = query_without_controls.to_lowercase();
             let name_lower = hit.name.to_lowercase();
-            if q_lower.contains("access") && !q_lower.contains("accessibility") && !q_lower.contains("a11y") {
-                if name_lower.contains("accessibility") {
-                    hit.score -= 5.0;
-                }
+            if q_lower.contains("access") && !q_lower.contains("accessibility") && !q_lower.contains("a11y")
+                && name_lower.contains("accessibility")
+            {
+                hit.score -= 5.0;
             }
         }
 

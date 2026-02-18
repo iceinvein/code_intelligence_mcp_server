@@ -72,13 +72,29 @@ pub fn detect_intent(query: &str) -> Option<Intent> {
     }
 
     // Schema keywords (existing)
+    // Note: "database" alone is too broad — it triggers for "database transactions",
+    // "database connection pool", etc. Only match when combined with schema-specific terms
+    // or when there are no action-oriented terms alongside it.
     if q.contains("schema")
-        || q.contains("model")
         || q.contains("db table")
-        || q.contains("database")
         || q.contains("entity")
-        || q.split_whitespace().any(|w| w == "db")
     {
+        return Some(Intent::Schema);
+    }
+    // "database" or "db" only trigger Schema if NOT accompanied by action terms
+    if (q.contains("database") || q.split_whitespace().any(|w| w == "db"))
+        && !q.contains("transaction")
+        && !q.contains("helper")
+        && !q.contains("connection")
+        && !q.contains("pool")
+        && !q.contains("query")
+        && !q.contains("migration")
+        && !q.contains("migrate")
+    {
+        return Some(Intent::Schema);
+    }
+    // "model" only triggers Schema in specific patterns to avoid false positives
+    if q.contains("data model") || q.contains("model definition") {
         return Some(Intent::Schema);
     }
 

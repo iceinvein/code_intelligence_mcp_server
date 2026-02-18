@@ -852,6 +852,47 @@ pub(crate) fn structural_adjustment(
             } else if is_all_lower && name.len() <= 14 {
                 score -= 3.0;
             }
+
+            // R102: camelCase local variable penalty — short camelCase const names
+            // (funnelId, startTime, userId) that have ZERO overlap with query terms
+            // are very likely hoisted local variables matching from parent scope's
+            // BM25 context rather than being genuinely relevant to the query.
+            // Only fires for ≤12 chars and 2+ query terms to avoid false positives.
+            // R103: Reduced from -3.0 to -1.5 to avoid cascading through diversity
+            // pipeline (Q5 rate-limit regression). Still effective for Handler 3x
+            // and Schema 25x intents where -1.5 becomes -4.5 to -37.5.
+            // R104: Skip for schema files — table definitions like `appControl` in
+            // db/schema/*.ts legitimately don't match "database schema" query terms
+            // but are highly relevant. Schema 75x amplifies the -1.5 penalty to
+            // -112.5, which is devastatingly false-positive. Use file path check
+            // (not intent type) to only guard schema files, not all db/ files.
+            let is_schema_path = file_path.to_lowercase().contains("schema");
+            if !is_all_lower && !is_schema_path {
+                let is_camel = name.chars().next().map_or(false, |c| c.is_lowercase())
+                    && name.chars().any(|c| c.is_uppercase());
+                if is_camel && name.len() <= 12 {
+                    let query_terms: Vec<String> = query
+                        .split_whitespace()
+                        .filter(|t| t.len() >= 3)
+                        .filter(|t| !STOPWORDS.contains(&t.to_lowercase().as_str()))
+                        .map(|t| t.to_lowercase())
+                        .collect();
+                    if query_terms.len() >= 2 {
+                        let name_parts = split_camel_case(name);
+                        let has_overlap = query_terms.iter().any(|qt| {
+                            let qt_stem = simple_stem(qt);
+                            name_parts.iter().any(|np| {
+                                np == qt
+                                    || (qt_stem.len() >= 3
+                                        && stems_match(&simple_stem(np), &qt_stem))
+                            })
+                        });
+                        if !has_overlap {
+                            score -= 1.5;
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -16,7 +16,26 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
         return hits;
     }
 
-    let max_per_file = (limit / 5).max(2);
+    let mut max_per_file = (limit / 5).max(2);
+
+    // Adaptive concentration bump: when the top candidates are heavily
+    // concentrated in one file (e.g., 3+ of top-5 from circuit-breaker.ts),
+    // increase max_per_file by 1 so highly-relevant same-file results
+    // aren't replaced by unrelated filler from other files.
+    {
+        let check_count = limit.min(hits.len());
+        let mut file_counts: HashMap<String, usize> = HashMap::new();
+        for h in hits.iter().take(check_count) {
+            *file_counts.entry(h.file_path.clone()).or_insert(0) += 1;
+        }
+        let max_file_count = file_counts.values().max().copied().unwrap_or(0);
+        // Threshold: majority of the top-N from one file (at least 3)
+        let threshold = ((limit + 1) / 2).max(3);
+        if max_file_count >= threshold {
+            max_per_file += 1;
+        }
+    }
+
     let total_cap_per_file = max_per_file + 1;
     let mut out = Vec::with_capacity(limit.min(hits.len()));
     let mut deferred = Vec::new();
@@ -165,13 +184,13 @@ mod tests {
     }
 
     #[test]
-    fn diversify_prefers_diverse_results_at_limit_5() {
+    fn diversify_with_concentration_bump_at_limit_5() {
         // 4 from score.rs + 1 from rrf.rs, limit=5
-        // max_per_file=2, total_cap=3
-        // Pass 1: a1, a2 (score.rs, count≤2), b1(rrf.rs) → 3 results
-        // Pass 2: a3(score.rs, count=2<3) → 1 overflow
-        // Pass 3: a4 backfill → 1 more
-        // Total: 5 results, rrf.rs promoted into early results
+        // Concentration bump fires: 4/5 from score.rs >= threshold 3
+        // max_per_file bumps 2→3, total_cap 3→4
+        // Pass 1: a1, a2, a3 (score.rs, count≤3), b1(rrf.rs) → 4 results
+        // Pass 2: a4(score.rs, count=3<4) → 1 overflow
+        // Total: 5 results, score.rs keeps top-3 slots
         let hits = vec![
             hit("a1", 10.0, "score.rs"),
             hit("a2", 9.0, "score.rs"),
@@ -181,11 +200,37 @@ mod tests {
         ];
         let result = diversify_by_file(hits, 5);
         assert_eq!(result.len(), 5, "Should return all 5 results");
-        // rrf.rs should be promoted into early results
         assert!(result.iter().any(|h| h.file_path == "rrf.rs"));
-        // First 3 results should include rrf.rs (promoted by diversity)
-        let top3_files: Vec<&str> = result[..3].iter().map(|h| h.file_path.as_str()).collect();
-        assert!(top3_files.contains(&"rrf.rs"), "rrf.rs should be in top 3");
+        // With concentration bump, score.rs keeps 3 in top 3
+        let score_rs_top3 = result[..3]
+            .iter()
+            .filter(|h| h.file_path == "score.rs")
+            .count();
+        assert_eq!(score_rs_top3, 3, "score.rs should have 3 in top 3 due to concentration");
+        // rrf.rs pushed to position 4 (still present)
+        assert_eq!(result[3].file_path, "rrf.rs");
+    }
+
+    #[test]
+    fn diversify_still_promotes_diverse_when_not_concentrated() {
+        // 2 from score.rs + 2 from rrf.rs + 1 from mod.rs, limit=5
+        // No file has >= threshold (3) in the top 5, so no concentration bump.
+        // max_per_file stays at 2.
+        let hits = vec![
+            hit("a1", 10.0, "score.rs"),
+            hit("a2", 9.0, "score.rs"),
+            hit("b1", 8.0, "rrf.rs"),
+            hit("b2", 7.0, "rrf.rs"),
+            hit("c1", 6.0, "mod.rs"),
+        ];
+        let result = diversify_by_file(hits, 5);
+        assert_eq!(result.len(), 5, "Should return all 5 results");
+        // No concentration bump, max_per_file=2
+        // Pass 1: a1, a2 (score.rs, 2/2), b1, b2 (rrf.rs, 2/2), c1 (mod.rs, 1/2) → 5
+        let score_rs_count = result.iter().filter(|h| h.file_path == "score.rs").count();
+        let rrf_count = result.iter().filter(|h| h.file_path == "rrf.rs").count();
+        assert_eq!(score_rs_count, 2);
+        assert_eq!(rrf_count, 2);
     }
 
     #[test]

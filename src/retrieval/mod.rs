@@ -537,7 +537,7 @@ impl Retriever {
             let is_test_intent = matches!(intent, Some(Intent::Test));
             let mut hit_ids: std::collections::HashSet<String> =
                 hits.iter().map(|h| h.id.clone()).collect();
-            let gap_max_per_file = (limit / 5).max(2) + 1; // same cap as diversify_by_file
+            let gap_max_per_file = (limit / 5).max(2) + 2; // slightly above diversity total_cap to allow gap fill after concentration bump
             let mut gap_file_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             for h in &hits {
                 if h.kind != "file" {

@@ -16,7 +16,7 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
         return hits;
     }
 
-    let max_per_file = (limit / 5).max(1);
+    let max_per_file = (limit / 5).max(2);
     let total_cap_per_file = max_per_file + 1;
     let mut out = Vec::with_capacity(limit.min(hits.len()));
     let mut deferred = Vec::new();
@@ -26,10 +26,28 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     // File-level symbols from these files are redundant and should be deferred to backfill.
     let mut files_with_non_file: HashSet<String> = HashSet::new();
 
+    // Precompute which files have non-file candidates in the pool.
+    // When a file symbol arrives before its non-file siblings (due to higher score),
+    // we defer it proactively so the named symbols get the diversity slots instead.
+    let files_with_non_file_candidates: HashSet<String> = hits
+        .iter()
+        .filter(|h| h.kind != "file")
+        .map(|h| h.file_path.clone())
+        .collect();
+
     // Pass 1: diverse selection (up to max_per_file per file)
     for h in &hits {
         let n = counts.get(&h.file_path).copied().unwrap_or(0);
         if n < max_per_file {
+            // Defer file symbols when non-file symbols from the same file exist
+            // in the pool — named symbols are more useful than file-level entries.
+            if h.kind == "file"
+                && (files_with_non_file.contains(&h.file_path)
+                    || files_with_non_file_candidates.contains(&h.file_path))
+            {
+                deferred.push(h.clone());
+                continue;
+            }
             *counts.entry(h.file_path.clone()).or_insert(0) += 1;
             if h.kind != "file" {
                 files_with_non_file.insert(h.file_path.clone());
@@ -64,14 +82,9 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
     }
 
     // Pass 3: backfill remaining slots (never waste a slot)
-    // Continue to skip redundant file-level symbols — returning fewer but
-    // higher-quality results is better than padding with redundant entries.
     for h in backfill {
         if out.len() >= limit {
             break;
-        }
-        if h.kind == "file" && files_with_non_file.contains(&h.file_path) {
-            continue;
         }
         out.push(h);
     }
@@ -154,11 +167,11 @@ mod tests {
     #[test]
     fn diversify_prefers_diverse_results_at_limit_5() {
         // 4 from score.rs + 1 from rrf.rs, limit=5
-        // max_per_file=1, total_cap=2
-        // Pass 1: a1(score.rs), b1(rrf.rs) → 2 diverse
-        // Pass 2: a2(score.rs, count=1<2) → 1 overflow
-        // Pass 3: a3, a4 backfill → 2 more
-        // Total: 5 results, rrf.rs promoted above a2-a4 despite lower score
+        // max_per_file=2, total_cap=3
+        // Pass 1: a1, a2 (score.rs, count≤2), b1(rrf.rs) → 3 results
+        // Pass 2: a3(score.rs, count=2<3) → 1 overflow
+        // Pass 3: a4 backfill → 1 more
+        // Total: 5 results, rrf.rs promoted into early results
         let hits = vec![
             hit("a1", 10.0, "score.rs"),
             hit("a2", 9.0, "score.rs"),
@@ -270,9 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn file_symbol_kept_when_highest_scorer_from_file() {
+    fn file_symbol_deferred_when_non_file_candidates_exist() {
         // Q8-like scenario: file symbol is the top result (score 1010)
-        // It should be selected in pass 1, structs fill pass 2+
+        // but non-file symbols exist from the same file.
+        // Named symbols should take priority over the file symbol.
         let hits = vec![
             file_hit("schema.rs", 1010.0, "schema.rs"),
             hit("TodoRow", 419.0, "schema.rs"),
@@ -282,9 +296,14 @@ mod tests {
         ];
         let result = diversify_by_file(hits, 5);
         assert_eq!(result.len(), 5);
-        // File symbol should be #1 (it's the highest scorer)
-        assert_eq!(result[0].kind, "file", "File symbol should be #1 when highest scorer");
-        assert_eq!(result[0].file_path, "schema.rs");
+        // Named symbols should take the file's diversity slots
+        assert_eq!(result[0].name, "TodoRow");
+        assert_eq!(result[1].name, "RepositoryRow");
+        // File symbol deferred to overflow/backfill
+        assert!(
+            result.iter().any(|h| h.kind == "file" && h.file_path == "schema.rs"),
+            "File symbol should still appear via overflow/backfill"
+        );
     }
 
     #[test]
@@ -304,19 +323,21 @@ mod tests {
     }
 
     #[test]
-    fn file_symbol_not_backfilled_when_function_exists() {
-        // File symbol is suppressed in both pass 2 AND backfill when a
-        // function from the same file exists — fewer but higher-quality results.
+    fn file_symbol_backfilled_when_slots_remain() {
+        // File symbol is deferred from pass 1 (non-file candidate exists)
+        // but backfilled in pass 3 when there are empty slots.
         let hits = vec![
             hit("fn_a", 10.0, "a.rs"),
             file_hit("a.rs", 9.0, "a.rs"),
             hit("fn_b", 8.0, "b.rs"),
         ];
         let result = diversify_by_file(hits, 5);
-        assert_eq!(result.len(), 2, "File symbol should NOT be backfilled");
+        assert_eq!(result.len(), 3, "All candidates should be returned");
+        // fn_a should come before the file symbol from the same file
+        assert_eq!(result[0].name, "fn_a");
         assert!(
-            !result.iter().any(|h| h.kind == "file"),
-            "File symbol should be suppressed"
+            result.iter().any(|h| h.kind == "file"),
+            "File symbol should be backfilled when slots remain"
         );
     }
 

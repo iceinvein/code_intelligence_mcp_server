@@ -150,7 +150,7 @@ fn promote_vector_results(
             *file_counts.entry(h.file_path.as_str()).or_insert(0) += 1;
         }
     }
-    let max_per_file_for_promotion = (limit / 5).max(1); // same as diversify_by_file
+    let max_per_file_for_promotion = (limit / 5).max(2); // same as diversify_by_file
 
     let missing: Vec<&RankedHit> = top_vector
         .into_iter()
@@ -537,7 +537,7 @@ impl Retriever {
             let is_test_intent = matches!(intent, Some(Intent::Test));
             let mut hit_ids: std::collections::HashSet<String> =
                 hits.iter().map(|h| h.id.clone()).collect();
-            let gap_max_per_file = (limit / 5).max(1) + 1; // same cap as diversify_by_file
+            let gap_max_per_file = (limit / 5).max(2) + 1; // same cap as diversify_by_file
             let mut gap_file_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             for h in &hits {
                 if h.kind != "file" {

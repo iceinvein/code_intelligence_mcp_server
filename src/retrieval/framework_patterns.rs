@@ -41,6 +41,12 @@ pub(super) fn inject_framework_patterns(
             || (kind_lower == "plugin" && query_lower.contains("plugin"));
 
         if matches {
+            // Route patterns without an HTTP path (e.g., map.get(key), params.get('id'),
+            // headers.get('content-type')) are false positives from the Elysia extractor
+            // misidentifying generic .get()/.post()/.delete() calls as routes. Skip them.
+            if kind_lower == "route" && !pattern.path.as_ref().is_some_and(|p| p.starts_with('/')) {
+                continue;
+            }
             fw_file_lines.push((pattern.file_path.clone(), pattern.line));
         }
     }

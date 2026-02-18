@@ -71,6 +71,17 @@ fn try_extract_elysia_call(node: Node, source: &str) -> Option<ExtractedFramewor
     // Extract pattern details based on kind
     let (path, name, handler, arguments) = extract_pattern_details(kind.clone(), args_node, source);
 
+    // Route patterns MUST have an HTTP-path-like first argument (string starting
+    // with "/"). Without this check, generic .get()/.delete() calls (e.g.,
+    // map.get(key), searchParams.get('id'), headers.get('content-type')) get
+    // misidentified as HTTP routes.
+    if matches!(kind, FrameworkPatternKind::Route) {
+        match &path {
+            Some(p) if p.starts_with('/') => {} // valid HTTP path
+            _ => return None,
+        }
+    }
+
     // Try to find the chain root (variable name like 'app' or 'elysia')
     let parent_chain = find_chain_root(func_node, source);
 
@@ -390,5 +401,19 @@ const app = new Elysia()
         let patterns = parse_and_extract(source);
 
         assert!(patterns.iter().any(|p| p.kind == FrameworkPatternKind::Listen));
+    }
+
+    #[test]
+    fn ignores_generic_get_delete_calls() {
+        // .get()/.delete() on Map, URLSearchParams, fetch, etc. are NOT Elysia routes.
+        // They lack a string-literal path as the first argument.
+        let source = r#"
+const result = myMap.get(key);
+searchParams.get('id');
+await api.delete(itemId);
+headers.get('content-type');
+"#;
+        let patterns = parse_and_extract(source);
+        assert_eq!(patterns.len(), 0, "Generic .get()/.delete() calls should not be routes");
     }
 }

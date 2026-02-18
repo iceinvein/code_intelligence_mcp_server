@@ -786,7 +786,10 @@ pub(crate) fn symbol_importance_adjustment(line_count: u32, exported: bool) -> f
     let log_lines = (line_count as f32).log2();
     // Center at ~45 lines (log2(45) ≈ 5.5), scale by 0.4
     let raw = (log_lines - 5.5) * 0.4;
-    let mut adj = raw.clamp(-1.5, 1.0);
+    // R101: Steeper clamp (-2.5 vs -1.5) so 1-2 line symbols (local vars,
+    // single assignments) get more penalty. Main beneficiary: camelCase consts
+    // like funnelId, startTime that escape the all-lowercase name penalty.
+    let mut adj = raw.clamp(-2.5, 1.0);
 
     // Extra penalty for small private helpers (test utilities, internal helpers)
     if !exported && line_count <= 10 {
@@ -835,13 +838,18 @@ pub(crate) fn structural_adjustment(
         if name.starts_with('{') || name.starts_with('[') {
             score -= 5.0;
         } else {
-            // Penalize short, all-lowercase const/variable names — these are almost
+            // Penalize all-lowercase const/variable names — these are almost
             // always local variables inside functions, not meaningful API exports.
             // The TS indexer hoisting bug marks function-body consts as exported=1,
             // so we can't rely on the export flag. Compound names (camelCase,
-            // snake_case, PascalCase, SCREAMING_CASE) and longer names are fine.
+            // snake_case, PascalCase, SCREAMING_CASE) are fine.
+            // R100: Extended threshold from 9→14 for medium penalty.
+            // R101: Tiered penalty — very short names (page, url, sent, data)
+            // are more generic and deserve stronger suppression.
             let is_all_lower = name.chars().all(|c| c.is_lowercase() || c.is_ascii_digit());
-            if is_all_lower && name.len() <= 9 {
+            if is_all_lower && name.len() <= 5 {
+                score -= 5.0;
+            } else if is_all_lower && name.len() <= 14 {
                 score -= 3.0;
             }
         }
@@ -1760,9 +1768,9 @@ mod tests {
 
     #[test]
     fn symbol_importance_clamp_bounds() {
-        // Very small: 1 line → log2(1) = 0 → (0 - 5.5) * 0.4 = -2.2, clamped to -1.5
+        // Very small: 1 line → log2(1) = 0 → (0 - 5.5) * 0.4 = -2.2, clamped to -2.2
         let adj = symbol_importance_adjustment(1, true);
-        assert_eq!(adj, -1.5, "should be clamped to -1.5, got {adj}");
+        assert!((adj - -2.2).abs() < 0.01, "should be -2.2, got {adj}");
 
         // Very large: 10000 lines → log2(10000) ≈ 13.29 → (13.29 - 5.5) * 0.4 ≈ 3.12, clamped to 1.0
         let adj = symbol_importance_adjustment(10000, true);

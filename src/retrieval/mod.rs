@@ -788,6 +788,23 @@ impl Retriever {
             }
         }
 
+        // Score-gap detection: drop trailing noise after extreme score drops.
+        // A 2.5x+ drop between consecutive results (ratio < 0.4) indicates
+        // a noise result that survived the pipeline. Only scan positions 3+
+        // to never truncate the top 3 results.
+        if hits.len() >= 4 {
+            let mut truncate_at = hits.len();
+            for i in 3..hits.len() {
+                if hits[i - 1].score > 0.0 && hits[i].score / hits[i - 1].score < 0.4 {
+                    truncate_at = i;
+                    break;
+                }
+            }
+            if truncate_at < hits.len() {
+                hits.truncate(truncate_at);
+            }
+        }
+
         let mut roots = Vec::new();
         let mut extra = Vec::new();
 

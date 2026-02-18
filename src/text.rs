@@ -295,7 +295,16 @@ pub fn expand_stems(query: &str) -> String {
         };
 
         if let Some(s) = stem {
-            if s.len() >= 5 && !lower.contains(&s) {
+            // Check if the stem already exists as a separate word in the query
+            // (not just as a substring of another word).
+            // E.g., "transactions" contains "transaction" as a prefix, but
+            // that shouldn't prevent adding the stem — Tantivy tokenizes
+            // each word individually and won't match "transactions" against
+            // indexed "transaction".
+            let stem_already_present = lower
+                .split_whitespace()
+                .any(|w| w == s);
+            if s.len() >= 5 && !stem_already_present {
                 result.push(' ');
                 result.push_str(&s);
             }

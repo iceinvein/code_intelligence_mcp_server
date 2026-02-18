@@ -553,7 +553,16 @@ pub(crate) fn definition_bias(
                 best = best.max(5.0);
             }
             // Symbol name contains the token (e.g. "EmbeddingCache" contains "cache")
-            else if name_lower.contains(&token_lower) && token.len() >= 4 {
+            // Also try stemmed form so "transactions" matches "withTransaction"
+            else if token.len() >= 4
+                && (name_lower.contains(&token_lower)
+                    || {
+                        let token_stem = simple_stem(&token_lower);
+                        token_stem.len() >= 4
+                            && token_stem != token_lower
+                            && name_lower.contains(&token_stem)
+                    })
+            {
                 best = best.max(0.5);
             }
         }

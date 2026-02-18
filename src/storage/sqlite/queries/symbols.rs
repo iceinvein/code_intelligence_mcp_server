@@ -529,8 +529,8 @@ pub fn batch_check_test_symbols(
         .collect::<Vec<_>>()
         .join(",");
 
-    // Find symbols that are inside a `mod tests` block (byte range containment)
-    // OR have #[test] in their text
+    // Find symbols that are inside a `mod tests` block (byte range containment),
+    // have #[test] in their text, or are members of a Mock/Test/Fake class.
     let query = format!(
         r#"
 SELECT DISTINCT s.id
@@ -550,6 +550,23 @@ WHERE s.id IN ({placeholders})
     -- Criterion 2: has #[test] attribute in source text (but not file symbols,
     -- whose text spans the entire file and would false-positive on any file with tests)
     OR (s.kind != 'file' AND instr(s.text, '#[test]') > 0)
+    -- Criterion 3: member of a Mock/Test/Fake/Stub class (e.g., MockTransaction
+    -- methods like _commit, _rollback that have normal names but are test infra).
+    -- Uses line range containment to detect class membership.
+    OR EXISTS (
+      SELECT 1 FROM symbols parent
+      WHERE parent.file_path = s.file_path
+        AND parent.kind IN ('class', 'interface')
+        AND parent.start_line <= s.start_line
+        AND parent.end_line >= s.end_line
+        AND parent.id != s.id
+        AND (
+          parent.name LIKE 'Mock%'
+          OR parent.name LIKE '%Mock'
+          OR parent.name LIKE 'Fake%'
+          OR parent.name LIKE 'Stub%'
+        )
+    )
   )
 "#
     );

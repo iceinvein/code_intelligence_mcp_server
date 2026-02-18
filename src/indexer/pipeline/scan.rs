@@ -58,7 +58,7 @@ pub fn should_skip_dir(config: &Config, path: &Path) -> bool {
     };
     match name {
         // VCS
-        ".git" => return true,
+        ".git" | ".worktrees" => return true,
         // Build output
         "dist" | "build" | "target" | ".output" | ".next" | ".nuxt" | ".svelte-kit" => {
             return true

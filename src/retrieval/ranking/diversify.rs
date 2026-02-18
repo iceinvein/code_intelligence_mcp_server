@@ -358,7 +358,13 @@ mod tests {
     }
 }
 
-/// Check if a kind represents a definition
+/// Check if a kind represents a definition (or definition-like symbol).
+///
+/// Includes `impl` blocks (they contain method implementations) and `file`
+/// symbols (they represent the same file that definitions come from).
+/// Treating these as definitions means they compete on score in
+/// `diversify_by_kind` rather than getting a guaranteed "other" slot,
+/// which previously forced low-relevance file symbols into the top results.
 pub fn is_definition_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -372,6 +378,8 @@ pub fn is_definition_kind(kind: &str) -> bool {
             | "const"
             | "trait"
             | "module"
+            | "impl"
+            | "file"
     )
 }
 

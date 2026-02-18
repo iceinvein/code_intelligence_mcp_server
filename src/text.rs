@@ -1108,6 +1108,17 @@ mod tests {
     }
 
     #[test]
+    fn test_expand_stems_substring_not_confused_with_word() {
+        // "transactions" contains "transaction" as a substring, but "transaction"
+        // should still be appended because Tantivy tokenizes by word boundaries.
+        let result = expand_stems("Database transactions and helpers");
+        assert!(
+            result.split_whitespace().any(|w| w == "transaction"),
+            "should append stem 'transaction' even though 'transactions' contains it as substring: {result}"
+        );
+    }
+
+    #[test]
     fn test_extract_rust_import_tags_basic() {
         let source = r#"
 use tree_sitter::{Language, Node, Parser, Tree};

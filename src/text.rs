@@ -29,6 +29,10 @@ static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
     m.insert("role", &["rbac", "permission", "admin", "authz", "authorization"][..]);
     m.insert("access", &["auth", "permission", "role", "authorize", "rbac"][..]);
     m.insert(
+        "transaction",
+        &["commit", "rollback", "atomic", "begin_transaction"][..],
+    );
+    m.insert(
         "configuration",
         &["config", "settings", "options", "preferences"][..],
     );
@@ -49,6 +53,11 @@ static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
     m.insert("watcher", &["watch", "observe", "monitor", "notify"][..]);
     m.insert("debounce", &["throttle", "delay", "timer"][..]);
     m.insert("fallback", &["degradation", "recovery", "retry"][..]);
+    m.insert(
+        "circuit",
+        &["breaker", "resilience", "half_open", "trip"][..],
+    );
+    m.insert("breaker", &["circuit", "trip", "half_open", "resilience"][..]);
     m.insert("schema", &["table", "ddl", "migration", "create_table"][..]);
     m.insert("parse", &["parser", "parsing", "tokenize", "lex"][..]);
     m.insert("format", &["formatting", "render", "pretty"][..]);

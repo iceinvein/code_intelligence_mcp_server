@@ -690,10 +690,12 @@ pub(crate) fn term_coverage_adjustment(
 
     let coverage = matched / total;
 
-    // Scale: coverage 0.0 → -3.0 penalty, coverage 0.33 → -1.0, coverage 0.67+ → +1.0 to +2.0
-    // Linear interpolation: adjustment = (coverage - 0.33) * 6.0 - 1.0
-    // Clamped to [-3.0, +2.0]
-    let raw = (coverage - 0.33) * 6.0 - 1.0;
+    // Scale: coverage 0.0 → -3.0 penalty, threshold → -1.0, above → positive boost
+    // For 4+ term queries, raise the neutral threshold: matching 1/4 terms should be
+    // penalized more than matching 1/2 terms. This pushes down partial-term matches
+    // like "limits.rs" matching only "limit" from "rate limiting and request throttling".
+    let threshold = if terms.len() >= 4 { 0.40 } else { 0.33 };
+    let raw = (coverage - threshold) * 6.0 - 1.0;
     raw.clamp(-3.0, 2.0)
 }
 

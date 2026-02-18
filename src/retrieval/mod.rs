@@ -441,7 +441,7 @@ impl Retriever {
 
         // Save pre-expansion candidates for gap-fill after file-symbol dedup.
         let pre_expansion_candidates = hits.clone();
-        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, pool_size, &intent)?;
+        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, pool_size, &intent, &query_without_controls)?;
 
         // Apply file/kind diversity on the expanded pool,
         // then truncate to final limit. This gives diversity enough headroom

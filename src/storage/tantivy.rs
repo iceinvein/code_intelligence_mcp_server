@@ -15,7 +15,7 @@ use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
-const TANTIVY_SCHEMA_VERSION: &str = "17";
+const TANTIVY_SCHEMA_VERSION: &str = "18";
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {

@@ -52,8 +52,11 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 }
             }
             "lexical_declaration" | "variable_declaration" => {
-                // const x = ..., let y = ..., var z = ...
-                extract_variable_declarators(node, source, &mut symbols);
+                // Only extract as a symbol when at module scope —
+                // local variables inside function bodies are not top-level symbols.
+                if !super::is_inside_function_scope(node) {
+                    extract_variable_declarators(node, source, &mut symbols);
+                }
             }
             "import_statement" => {
                 extract_imports(node, source, &mut imports);
@@ -333,5 +336,74 @@ export const CONSTANT = 42;
             .imports
             .iter()
             .any(|i| i.alias.as_deref() == Some("utils") && i.source == "./utils"));
+    }
+
+    #[test]
+    fn skips_local_variables_inside_functions() {
+        let source = r#"
+export const MODULE_CONST = 42;
+var GLOBAL_VAR = "top-level";
+
+export function handler() {
+    const startTime = Date.now();
+    let url = buildUrl("/api");
+    var legacy = true;
+    return url;
+}
+
+const topArrow = (x) => {
+    const inner = x * 2;
+    return inner;
+};
+
+class Service {
+    process() {
+        const local = this.getData();
+        let temp = local.map(x => x);
+        return temp;
+    }
+}
+"#;
+
+        let extracted = extract_javascript_symbols(source).unwrap();
+        let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+
+        // Module-level symbols ARE extracted
+        assert!(names.contains(&"MODULE_CONST"), "module const should be extracted");
+        assert!(names.contains(&"GLOBAL_VAR"), "top-level var should be extracted");
+        assert!(names.contains(&"handler"), "function should be extracted");
+        assert!(names.contains(&"topArrow"), "top-level arrow should be extracted");
+        assert!(names.contains(&"Service"), "class should be extracted");
+        assert!(names.contains(&"process"), "method should be extracted");
+
+        // Local variables inside function bodies are NOT extracted
+        assert!(!names.contains(&"startTime"), "local const in function should be skipped");
+        assert!(!names.contains(&"url"), "local let in function should be skipped");
+        assert!(!names.contains(&"legacy"), "local var in function should be skipped");
+        assert!(!names.contains(&"inner"), "local const in arrow should be skipped");
+        assert!(!names.contains(&"local"), "local const in method should be skipped");
+        assert!(!names.contains(&"temp"), "local let in method should be skipped");
+    }
+
+    #[test]
+    fn skips_variables_in_nested_scopes() {
+        let source = r#"
+export function process() {
+    if (true) {
+        const condVar = 1;
+    }
+    for (let i = 0; i < 10; i++) {
+        const loopVar = i;
+    }
+}
+"#;
+
+        let extracted = extract_javascript_symbols(source).unwrap();
+        let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+
+        assert!(names.contains(&"process"), "function should be extracted");
+        assert!(!names.contains(&"condVar"), "var inside if-block should be skipped");
+        assert!(!names.contains(&"loopVar"), "var inside for-loop should be skipped");
+        assert!(!names.contains(&"i"), "loop counter should be skipped");
     }
 }

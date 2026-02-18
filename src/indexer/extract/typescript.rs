@@ -117,8 +117,12 @@ fn extract_symbols_with_parser(
                 }
             }
             "lexical_declaration" => {
-                extract_const_declarators(node, source, &mut symbols, &mut type_edges);
-                // Extract data flow from const/let declarations with arrow functions
+                // Only extract as a symbol when at module/namespace scope —
+                // local variables inside function bodies are not top-level symbols.
+                if !super::is_inside_function_scope(node) {
+                    extract_const_declarators(node, source, &mut symbols, &mut type_edges);
+                }
+                // Dataflow extraction ALWAYS runs (used by graph engine, not search)
                 extract_dataflow_from_lexical_declaration(
                     node,
                     source,
@@ -327,13 +331,13 @@ fn extract_const_declarators(
     let exported = export_statement.is_some();
     let mut cursor = node.walk();
 
-    loop {
-        let current = cursor.node();
-        if current.kind() == "variable_declarator" && current.child_by_field_name("value").is_some()
-        {
-            if let Some(name_node) = current.child_by_field_name("name") {
+    // Only iterate direct children of the lexical_declaration — do NOT
+    // recurse into value expressions (arrow function bodies, etc.).
+    for child in node.children(&mut cursor) {
+        if child.kind() == "variable_declarator" && child.child_by_field_name("value").is_some() {
+            if let Some(name_node) = child.child_by_field_name("name") {
                 let name = text_for_node(name_node, source);
-                let def_node = const_definition_node(export_statement, node, current);
+                let def_node = const_definition_node(export_statement, node, child);
                 out.push(symbol_from_node(
                     name.clone(),
                     SymbolKind::Const,
@@ -342,24 +346,11 @@ fn extract_const_declarators(
                 ));
 
                 // Check if value is an arrow function to extract signature types
-                if let Some(value_node) = current.child_by_field_name("value") {
+                if let Some(value_node) = child.child_by_field_name("value") {
                     if value_node.kind() == "arrow_function" {
                         extract_function_signature_types(value_node, source, &name, type_edges);
                     }
                 }
-            }
-        }
-
-        if cursor.goto_first_child() {
-            continue;
-        }
-
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() {
-                return;
             }
         }
     }
@@ -1557,5 +1548,89 @@ export function processUser(user: any) {
         assert!(df_edges
             .iter()
             .any(|e| { e.from_symbol == "name" && matches!(e.flow_type, DataFlowType::Writes) }));
+    }
+
+    #[test]
+    fn skips_local_variables_inside_functions() {
+        let source = r#"
+export const MODULE_CONST = "top-level";
+
+export function handler() {
+    const startTime = Date.now();
+    const url = buildUrl("/api");
+    let result = fetch(url);
+    return result;
+}
+
+const topArrow = (x: number) => {
+    const inner = x * 2;
+    return inner;
+};
+
+class Service {
+    process() {
+        const local = this.getData();
+        return local;
+    }
+}
+"#;
+
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+
+        // Module-level symbols ARE extracted
+        assert!(names.contains(&"MODULE_CONST"), "module const should be extracted");
+        assert!(names.contains(&"handler"), "function should be extracted");
+        assert!(names.contains(&"topArrow"), "top-level arrow should be extracted");
+        assert!(names.contains(&"Service"), "class should be extracted");
+        assert!(names.contains(&"process"), "method should be extracted");
+
+        // Local variables inside function bodies are NOT extracted
+        assert!(!names.contains(&"startTime"), "local var in function should be skipped");
+        assert!(!names.contains(&"url"), "local var in function should be skipped");
+        assert!(!names.contains(&"result"), "local let in function should be skipped");
+        assert!(!names.contains(&"inner"), "local var in arrow should be skipped");
+        assert!(!names.contains(&"local"), "local var in method should be skipped");
+    }
+
+    #[test]
+    fn preserves_dataflow_for_local_variables() {
+        let source = r#"
+export function handler() {
+    const url = buildUrl("/api");
+    return url;
+}
+"#;
+
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+
+        // url should NOT be a symbol
+        assert!(
+            !extracted.symbols.iter().any(|s| s.name == "url"),
+            "local var should not be a symbol"
+        );
+
+        // But dataflow edges should still reference buildUrl
+        assert!(
+            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "buildUrl"),
+            "dataflow edges should still be extracted for local vars"
+        );
+    }
+
+    #[test]
+    fn extracts_namespace_level_consts() {
+        let source = r#"
+namespace Config {
+    export const API_URL = "https://api.example.com";
+    export const TIMEOUT = 5000;
+}
+"#;
+
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+
+        // Namespace-level consts should be extracted (namespace/internal_module is transparent)
+        assert!(names.contains(&"API_URL"), "namespace const should be extracted");
+        assert!(names.contains(&"TIMEOUT"), "namespace const should be extracted");
     }
 }

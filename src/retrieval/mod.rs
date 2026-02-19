@@ -674,7 +674,7 @@ impl Retriever {
             let hit_ids_set: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
             for sq in &sub_queries {
                 // Extract significant terms from this sub-query (>3 chars, skip stopwords)
-                let raw_terms: Vec<String> = sq
+                let mut raw_terms: Vec<String> = sq
                     .split_whitespace()
                     .filter(|w| w.len() > 3)
                     .filter(|w| {
@@ -685,6 +685,17 @@ impl Retriever {
                     })
                     .map(|w| w.to_lowercase())
                     .collect();
+                // Deduplicate stem variants: if "permission" and "permissions"
+                // are both present, keep only the shorter one. Without this,
+                // normalize_query's stems cause the 2-term check to double-count
+                // (e.g., "permissions.rs" matches both → 2 matches from 1 word).
+                raw_terms.sort_by_key(|t| t.len());
+                raw_terms = raw_terms.into_iter().fold(Vec::new(), |mut acc, t| {
+                    if !acc.iter().any(|existing: &String| t.starts_with(existing.as_str())) {
+                        acc.push(t);
+                    }
+                    acc
+                });
                 if raw_terms.is_empty() {
                     continue;
                 }
@@ -706,11 +717,24 @@ impl Retriever {
                 terms.sort();
                 terms.dedup();
 
-                // Check if any current result matches this sub-query
+                // Check if any current result matches this sub-query.
+                // For multi-term sub-queries, require 2+ term matches to prevent
+                // false positives (e.g., "permissions" in a platform/macos path
+                // falsely satisfying "role-based permissions" coverage).
                 let has_match = hits.iter().any(|h| {
                     let name_lower = h.name.to_lowercase();
                     let path_lower = h.file_path.to_lowercase();
-                    terms.iter().any(|t| name_lower.contains(t) || path_lower.contains(t))
+                    if raw_terms.len() >= 2 {
+                        // Count ORIGINAL terms (not stems) to avoid double-counting.
+                        // e.g., "access" + stem "acces" both match "accessRouter" → 2 matches
+                        // from 1 real term. Use raw_terms to require distinct real terms.
+                        let match_count = raw_terms.iter()
+                            .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
+                            .count();
+                        match_count >= 2
+                    } else {
+                        terms.iter().any(|t| name_lower.contains(t) || path_lower.contains(t))
+                    }
                 });
 
                 if !has_match {
@@ -749,7 +773,7 @@ impl Retriever {
                         // requestAccessibilityPermission for "request throttling",
                         // and the low-scoring injection triggers gap detection truncation.
                         if raw_terms.len() >= 2 {
-                            let term_match_count = terms.iter()
+                            let term_match_count = raw_terms.iter()
                                 .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
                                 .count();
                             if term_match_count < 2 {
@@ -795,7 +819,7 @@ impl Retriever {
                                     continue;
                                 }
                                 if raw_terms.len() >= 2 {
-                                    let term_match_count = terms.iter()
+                                    let term_match_count = raw_terms.iter()
                                         .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
                                         .count();
                                     if term_match_count < 2 {
@@ -885,7 +909,7 @@ impl Retriever {
         }
 
         // Score-gap detection: drop trailing noise after extreme score drops.
-        // A 2.5x+ drop between consecutive results (ratio < 0.4) indicates
+        // A ~2.5x+ drop between consecutive results (ratio < 0.4) indicates
         // a noise result that survived the pipeline. Only scan positions 3+
         // to never truncate the top 3 results.
         // Skip when sub-query coverage injected a result — the injection is
@@ -901,6 +925,32 @@ impl Retriever {
             }
             if truncate_at < hits.len() {
                 hits.truncate(truncate_at);
+            }
+        }
+
+        // Post-score-gap gap fill: if score-gap detection removed results,
+        // backfill from pre-expansion pool to maintain `limit` results.
+        // Candidates must score above the gap threshold relative to the last
+        // kept result to avoid re-injecting the same noise score-gap removed.
+        if hits.len() < limit {
+            let min_score = hits.last().map(|h| h.score * 0.4).unwrap_or(0.5);
+            let hit_ids: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
+            let hit_names: HashSet<String> = hits.iter()
+                .filter(|h| h.kind != "file")
+                .map(|h| h.name.clone())
+                .collect();
+            for c in &pre_expansion_candidates {
+                if hits.len() >= limit {
+                    break;
+                }
+                if c.kind != "file"
+                    && !hit_ids.contains(&c.id)
+                    && !hit_names.contains(&c.name)
+                    && c.score >= min_score
+                    && (is_test_intent || !ranking::is_test_file(&c.file_path))
+                {
+                    hits.push(c.clone());
+                }
             }
         }
 

@@ -924,8 +924,15 @@ pub(crate) fn structural_adjustment(
     // Module aggregator file penalty: mod.rs, mod.ts files are typically
     // re-export hubs (`pub mod foo; pub mod bar;`) with no implementation.
     // They surface as file symbols and crowd out actual implementations.
-    if kind == "file" && (file_path.ends_with("mod.rs") || file_path.ends_with("mod.ts")) {
-        score -= 4.0;
+    if kind == "file" {
+        if file_path.ends_with("mod.rs") || file_path.ends_with("mod.ts") {
+            // Module aggregator: re-export hubs with no implementation
+            score -= 5.0;
+        } else {
+            // General file symbols: less useful than specific function/class symbols.
+            // They represent entire files without highlighting which symbol matters.
+            score -= 1.0;
+        }
     }
 
     let path = file_path.to_lowercase();

@@ -9,6 +9,7 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
+use llama_cpp_2::token::LlamaToken;
 use std::num::NonZeroU32;
 
 use crate::embeddings::Embedder;
@@ -59,7 +60,12 @@ impl LlamaCppEmbedder {
         })
     }
 
+    /// Maximum total tokens across all sequences in one sub-batch.
+    /// Keeps GPU memory bounded. 8192 fits ~32 average-length symbols.
+    const SUB_BATCH_MAX_TOKENS: usize = 8192;
+
     /// Embed a single text and return the L2-normalized vector.
+    /// Used as fallback for texts that exceed SUB_BATCH_MAX_TOKENS alone.
     fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
         // Tokenize with AddBos::Always — embedding models need the BOS
         // token for proper sequence start signaling (unlike chat LLMs
@@ -119,6 +125,152 @@ impl LlamaCppEmbedder {
 
         Ok(vec)
     }
+
+    /// Embed multiple texts in a single GPU forward pass using multi-sequence batching.
+    ///
+    /// Tokenizes all texts upfront, packs them into sub-batches that fit within
+    /// `SUB_BATCH_MAX_TOKENS` total tokens, and processes each sub-batch with
+    /// one `LlamaContext` + one `decode()` call. This amortizes GPU context
+    /// creation cost and improves Metal GPU utilization.
+    ///
+    /// Texts exceeding `SUB_BATCH_MAX_TOKENS` alone fall back to single-sequence
+    /// `embed_one()`. Empty texts get zero vectors.
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        if texts.len() == 1 {
+            return Ok(vec![self.embed_one(&texts[0])?]);
+        }
+
+        // Phase 1: Tokenize all texts upfront
+        let tokenized: Vec<Vec<LlamaToken>> = texts
+            .iter()
+            .map(|text| {
+                let mut tokens = self
+                    .model
+                    .str_to_token(text, AddBos::Always)
+                    .map_err(|e| anyhow!("Tokenization failed: {:?}", e))?;
+                if tokens.len() > MAX_TOKENS {
+                    tokens.truncate(MAX_TOKENS);
+                }
+                Ok(tokens)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Phase 2: Pack into sub-batches by token budget and process
+        let mut results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let mut sub_batch_indices: Vec<usize> = Vec::new();
+        let mut sub_batch_token_count: usize = 0;
+
+        for (i, tokens) in tokenized.iter().enumerate() {
+            let token_len = tokens.len();
+
+            // Empty text: zero vector, no GPU work needed
+            if token_len == 0 {
+                results[i] = Some(vec![0.0; self.dim]);
+                continue;
+            }
+
+            // Oversized text: flush current sub-batch, then embed solo via fallback
+            if token_len > Self::SUB_BATCH_MAX_TOKENS {
+                self.flush_sub_batch(&sub_batch_indices, &tokenized, &mut results)?;
+                sub_batch_indices.clear();
+                sub_batch_token_count = 0;
+                results[i] = Some(self.embed_one(&texts[i])?);
+                continue;
+            }
+
+            // Would exceed budget: flush current sub-batch first
+            if sub_batch_token_count + token_len > Self::SUB_BATCH_MAX_TOKENS
+                && !sub_batch_indices.is_empty()
+            {
+                self.flush_sub_batch(&sub_batch_indices, &tokenized, &mut results)?;
+                sub_batch_indices.clear();
+                sub_batch_token_count = 0;
+            }
+
+            sub_batch_indices.push(i);
+            sub_batch_token_count += token_len;
+        }
+
+        // Flush remaining sub-batch
+        self.flush_sub_batch(&sub_batch_indices, &tokenized, &mut results)?;
+
+        // Unwrap Options -- all should be Some at this point
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(i, opt)| opt.ok_or_else(|| anyhow!("Missing embedding for text index {}", i)))
+            .collect()
+    }
+
+    /// Process a sub-batch of texts through a single GPU forward pass.
+    ///
+    /// Creates one `LlamaContext` sized to the total token count, packs all
+    /// sequences into one `LlamaBatch` via `add_sequence`, runs a single
+    /// `decode()`, and extracts per-sequence embeddings via `embeddings_seq_ith`.
+    fn flush_sub_batch(
+        &self,
+        indices: &[usize],
+        tokenized: &[Vec<LlamaToken>],
+        results: &mut [Option<Vec<f32>>],
+    ) -> Result<()> {
+        if indices.is_empty() {
+            return Ok(());
+        }
+
+        let total_tokens: usize = indices.iter().map(|&i| tokenized[i].len()).sum();
+        let n_seqs = indices.len() as i32;
+        let n_ctx = (total_tokens as u32).max(64);
+
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(n_ctx))
+            .with_n_batch(n_ctx)
+            .with_embeddings(true)
+            .with_pooling_type(LlamaPoolingType::Last);
+
+        let mut ctx = self
+            .model
+            .new_context(self.backend, ctx_params)
+            .map_err(|e| anyhow!("Failed to create batch embedding context: {:?}", e))?;
+
+        let mut batch = LlamaBatch::new(total_tokens, n_seqs);
+
+        for (seq_idx, &text_idx) in indices.iter().enumerate() {
+            let tokens = &tokenized[text_idx];
+            // add_sequence sets logits=true on the last token automatically,
+            // which is what Last pooling needs.
+            batch
+                .add_sequence(tokens, seq_idx as i32, false)
+                .map_err(|e| {
+                    anyhow!(
+                        "Failed to add sequence {} ({} tokens) to batch: {:?}",
+                        seq_idx,
+                        tokens.len(),
+                        e
+                    )
+                })?;
+        }
+
+        ctx.decode(&mut batch)
+            .map_err(|e| anyhow!("Batch embedding decode failed: {:?}", e))?;
+
+        for (seq_idx, &text_idx) in indices.iter().enumerate() {
+            let embedding = ctx.embeddings_seq_ith(seq_idx as i32).map_err(|e| {
+                anyhow!(
+                    "Failed to extract embedding for seq {}: {:?}",
+                    seq_idx,
+                    e
+                )
+            })?;
+            let mut vec = embedding.to_vec();
+            l2_normalize(&mut vec);
+            results[text_idx] = Some(vec);
+        }
+
+        Ok(())
+    }
 }
 
 impl Embedder for LlamaCppEmbedder {
@@ -127,11 +279,7 @@ impl Embedder for LlamaCppEmbedder {
     }
 
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut results = Vec::with_capacity(texts.len());
-        for text in texts {
-            results.push(self.embed_one(text)?);
-        }
-        Ok(results)
+        self.embed_batch(texts)
     }
 
     // query_embed() uses the default impl (calls embed()).
@@ -144,6 +292,66 @@ fn l2_normalize(v: &mut [f32]) {
     if norm > 0.0 {
         for x in v.iter_mut() {
             *x /= norm;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that multi-sequence batch embedding produces the same vectors
+    /// as single-sequence embedding (within floating-point tolerance).
+    ///
+    /// Requires the real embedding model (~531MB). Run with:
+    ///   cargo test --lib embeddings::llamacpp::tests::batch_matches_single -- --ignored
+    #[test]
+    #[ignore]
+    fn batch_matches_single() {
+        let home = std::env::var("HOME").expect("HOME not set");
+        let model_path = crate::path::Utf8PathBuf::from(format!(
+            "{}/.code-intelligence/models/jina-code-embeddings-0.5b-gguf/jina-code-embeddings-0.5b-Q8_0.gguf",
+            home
+        ));
+        if !model_path.exists() {
+            eprintln!("Skipping: embedding model not found at {}", model_path);
+            return;
+        }
+
+        let mut embedder = LlamaCppEmbedder::new(&model_path).expect("failed to load model");
+
+        let texts: Vec<String> = vec![
+            "fn hello() { println!(\"hello\"); }".to_string(),
+            "struct Config { port: u16, host: String }".to_string(),
+            "async fn fetch_data(url: &str) -> Result<Response> { reqwest::get(url).await }"
+                .to_string(),
+            "/// Parse a TOML configuration file.\nfn parse_config(path: &Path) -> Config { todo!() }"
+                .to_string(),
+        ];
+
+        // Get single-sequence embeddings (one at a time via embed_one)
+        let single: Vec<Vec<f32>> = texts
+            .iter()
+            .map(|t| embedder.embed_one(t).expect("embed_one failed"))
+            .collect();
+
+        // Get batch embeddings (multi-sequence via embed_batch)
+        let batch = embedder.embed(&texts).expect("batch embed failed");
+
+        assert_eq!(single.len(), batch.len());
+        for (i, (s, b)) in single.iter().zip(&batch).enumerate() {
+            assert_eq!(s.len(), b.len(), "Dimension mismatch for text {}", i);
+            let max_diff: f32 = s
+                .iter()
+                .zip(b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                max_diff < 1e-4,
+                "Text {} differs by {:.6} (threshold 1e-4)",
+                i,
+                max_diff
+            );
         }
     }
 }

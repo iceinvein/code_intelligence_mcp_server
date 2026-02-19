@@ -396,14 +396,16 @@ impl Retriever {
         }
 
         // Inject framework pattern matches for NL queries
-        if is_nl_query {
-            let _ = framework_patterns::inject_framework_patterns(
+        let fw_injection_count = if is_nl_query {
+            framework_patterns::inject_framework_patterns(
                 &sqlite,
                 &query_without_controls,
                 &mut uniq,
                 &mut seen,
-            );
-        }
+            ).unwrap_or(0)
+        } else {
+            0
+        };
 
         // Apply query control filters and boost signals
         let hits = postprocess::filter_and_boost(
@@ -447,7 +449,9 @@ impl Retriever {
         // diversify_by_file has room to promote diverse results, but doesn't
         // aggressively displace relevant same-file results the way pre-truncation
         // diversity did (which regressed Q14 -3, Q15 -4 by promoting noise).
-        let pool_size = limit * 4;
+        // Expand pool when framework patterns injected high-scoring symbols that
+        // would otherwise squeeze genuine BM25 results out of the pool window.
+        let pool_size = limit * 4 + fw_injection_count;
         hits = diversify_by_cluster(&sqlite, hits, pool_size);
         hits.truncate(pool_size);
 
@@ -665,6 +669,7 @@ impl Retriever {
         // ensure each sub-query branch has at least one representative. Without
         // this, one dominant branch can crowd out the other entirely (e.g.,
         // "onboarding" crowds out "invitation" in "Invitation system and user onboarding").
+        let mut coverage_injected = false;
         if sub_queries.len() > 1 && hits.len() >= 2 {
             let hit_ids_set: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
             for sq in &sub_queries {
@@ -765,10 +770,74 @@ impl Retriever {
                             if priority == 4 { break; } // best possible, stop searching
                         }
                     }
+                    // Fallback: if no candidate in pre-expansion pool, do a direct
+                    // BM25 search for the uncovered sub-query. This handles cases
+                    // where framework injection floods the pool and the middleware/
+                    // secondary symbols are pushed below pool_size.
+                    let mut fallback_hit: Option<RankedHit> = None;
+                    if best_candidate.is_none() {
+                        if let Ok(fallback_results) = self.tantivy.search(sq, 20) {
+                            let fallback_ids: Vec<String> = fallback_results.iter().map(|h| h.id.clone()).collect();
+                            let fallback_tests = sqlite.batch_check_test_symbols(&fallback_ids).unwrap_or_default();
+                            let mut fb_best_priority = 0u8;
+                            for fh in &fallback_results {
+                                if hit_ids_set.contains(&fh.id) || fh.kind == "file" {
+                                    continue;
+                                }
+                                if !is_test_intent && (fallback_tests.contains(&fh.id) || ranking::is_test_file(&fh.file_path)) {
+                                    continue;
+                                }
+                                let name_lower = fh.name.to_lowercase();
+                                let path_lower = fh.file_path.to_lowercase();
+                                let name_match = synonym_terms.iter().any(|t| name_lower.contains(t));
+                                let path_match = synonym_terms.iter().any(|t| path_lower.contains(t));
+                                if !name_match && !path_match {
+                                    continue;
+                                }
+                                if raw_terms.len() >= 2 {
+                                    let term_match_count = terms.iter()
+                                        .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
+                                        .count();
+                                    if term_match_count < 2 {
+                                        continue;
+                                    }
+                                }
+                                let is_meaningful = !matches!(fh.kind.as_str(), "const" | "variable" | "property");
+                                let priority = match (name_match, is_meaningful) {
+                                    (true, true) => 4,
+                                    (true, false) => 3,
+                                    (false, true) => 2,
+                                    (false, false) => 1,
+                                };
+                                if priority > fb_best_priority {
+                                    fb_best_priority = priority;
+                                    // Give it a reasonable score: half of the lowest current result
+                                    let inject_score = hits.last().map(|h| h.score * 0.5).unwrap_or(1.0).max(1.0);
+                                    fallback_hit = Some(RankedHit {
+                                        id: fh.id.clone(),
+                                        score: inject_score,
+                                        name: fh.name.clone(),
+                                        kind: fh.kind.clone(),
+                                        file_path: fh.file_path.clone(),
+                                        exported: fh.exported,
+                                        language: String::new(),
+                                    });
+                                    if priority == 4 { break; }
+                                }
+                            }
+                        }
+                    }
+
                     if let Some(c) = best_candidate {
                         // Replace the lowest-scoring result
                         if let Some(last) = hits.last_mut() {
                             *last = c.clone();
+                            coverage_injected = true;
+                        }
+                    } else if let Some(fb) = fallback_hit {
+                        if let Some(last) = hits.last_mut() {
+                            *last = fb;
+                            coverage_injected = true;
                         }
                     }
                 }
@@ -819,7 +888,10 @@ impl Retriever {
         // A 2.5x+ drop between consecutive results (ratio < 0.4) indicates
         // a noise result that survived the pipeline. Only scan positions 3+
         // to never truncate the top 3 results.
-        if hits.len() >= 4 {
+        // Skip when sub-query coverage injected a result — the injection is
+        // intentional and its lower score is expected (it covers a different
+        // sub-query branch, not the dominant one).
+        if hits.len() >= 4 && !coverage_injected {
             let mut truncate_at = hits.len();
             for i in 3..hits.len() {
                 if hits[i - 1].score > 0.0 && hits[i].score / hits[i - 1].score < 0.4 {

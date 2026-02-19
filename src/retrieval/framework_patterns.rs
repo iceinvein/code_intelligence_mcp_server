@@ -15,12 +15,20 @@ use std::collections::HashSet;
 /// For each framework pattern whose kind matches the query (e.g., "websocket"
 /// matches "WebSocket handler"), finds the smallest enclosing symbol and either
 /// boosts its score (if already present) or injects it as a new result.
+/// Maximum number of framework pattern symbols to inject per query.
+/// Capping prevents route-heavy queries (e.g., "API route handlers") from
+/// flooding the pool with 18+ routers, which pushes genuine BM25 results
+/// out of the pool_size window and inflates the score floor so that
+/// sub-query coverage injections trigger score-gap removal.
+const MAX_FRAMEWORK_INJECTIONS: usize = 8;
+
+/// Returns the number of new symbols injected (not just boosted).
 pub(super) fn inject_framework_patterns(
     sqlite: &SqliteStore,
     query: &str,
     hits: &mut Vec<RankedHit>,
     seen: &mut HashSet<String>,
-) -> Result<()> {
+) -> Result<usize> {
     let patterns = sqlite.search_framework_patterns(None, None, None, None, None, None, 200)?;
 
     let query_lower = query.to_lowercase();
@@ -53,8 +61,12 @@ pub(super) fn inject_framework_patterns(
 
     // Find parent symbols for matched framework patterns
     let fw_files: HashSet<String> = fw_file_lines.iter().map(|(fp, _)| fp.clone()).collect();
+    let mut injection_count = 0usize;
 
     for fw_file in &fw_files {
+        if injection_count >= MAX_FRAMEWORK_INJECTIONS {
+            break;
+        }
         if let Ok(file_symbols) = sqlite.list_symbols_by_file(fw_file) {
             for &(ref fp, line) in &fw_file_lines {
                 if fp != fw_file {
@@ -74,6 +86,9 @@ pub(super) fn inject_framework_patterns(
                             hit.score += 0.15;
                         }
                     } else {
+                        if injection_count >= MAX_FRAMEWORK_INJECTIONS {
+                            break;
+                        }
                         // Inject as new result with moderate score
                         let top_score = hits.first().map(|h| h.score).unwrap_or(1.0);
                         seen.insert(sym.id.clone());
@@ -86,11 +101,12 @@ pub(super) fn inject_framework_patterns(
                             exported: sym.exported,
                             language: sym.language.clone(),
                         });
+                        injection_count += 1;
                     }
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(injection_count)
 }

@@ -737,6 +737,20 @@ impl Retriever {
                         if !name_match && !path_match {
                             continue;
                         }
+                        // Require sufficient term coverage to prevent overly-generic
+                        // matches. For 2+ term sub-queries, the candidate must match
+                        // at least 2 distinct terms (including hyphen-split parts and
+                        // stems). Without this, "request" alone matches
+                        // requestAccessibilityPermission for "request throttling",
+                        // and the low-scoring injection triggers gap detection truncation.
+                        if raw_terms.len() >= 2 {
+                            let term_match_count = terms.iter()
+                                .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
+                                .count();
+                            if term_match_count < 2 {
+                                continue;
+                            }
+                        }
                         // Priority: name+meaningful kind > name+any kind > path-only+meaningful > path-only
                         let is_meaningful = !matches!(c.kind.as_str(), "const" | "variable" | "property");
                         let priority = match (name_match, is_meaningful) {

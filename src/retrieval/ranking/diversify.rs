@@ -31,7 +31,12 @@ pub fn diversify_by_file(hits: Vec<RankedHit>, limit: usize) -> Vec<RankedHit> {
         let max_file_count = file_counts.values().max().copied().unwrap_or(0);
         // Threshold: majority of the top-N from one file (at least 3)
         let threshold = ((limit + 1) / 2).max(3);
-        if max_file_count >= threshold {
+        if max_file_count >= check_count && check_count >= 3 {
+            // Extreme concentration: ALL top-N from one file (e.g., rate-limit.ts).
+            // The file is the only relevant source — allow more results from it
+            // rather than bringing in unrelated filler.
+            max_per_file += 2;
+        } else if max_file_count >= threshold {
             max_per_file += 1;
         }
     }

@@ -913,8 +913,11 @@ pub(crate) fn structural_adjustment(
         score -= 5.0;
     }
 
-    // Glue Code Filtering
-    if file_path.ends_with("index.ts") || file_path.ends_with("index.tsx") {
+    // Glue Code Filtering: barrel/re-export files named literally "index.ts(x)"
+    // but NOT route files like "admin.index.tsx" (TanStack Router / Remix convention
+    // where dot-separated segments denote nested routes).
+    let file_name = file_path.rsplit('/').next().unwrap_or(file_path);
+    if file_name == "index.ts" || file_name == "index.tsx" {
         score -= 5.0;
     }
 

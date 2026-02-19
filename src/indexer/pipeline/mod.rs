@@ -734,14 +734,14 @@ impl IndexPipeline {
     /// skipped with a placeholder cluster entry so they are not re-fetched.
     ///
     /// I/O is pipelined: while embedding batch N, batch N-1's vectors are
-    /// written to LanceDB in the background, overlapping compute and I/O.
+    /// written to LanceDB in a background task, overlapping compute and I/O.
     pub async fn generate_embeddings_for_orphaned_symbols(&self) -> Result<()> {
         use crate::storage::sqlite::schema::SymbolRow;
 
         const BATCH_SIZE: usize = 200;
         let mut total_embedded: usize = 0;
         let mut total_skipped: usize = 0;
-        let mut pending_write: Option<Vec<VectorRecord>> = None;
+        let mut pending_write: Option<tokio::task::JoinHandle<Result<()>>> = None;
 
         loop {
             let sqlite = SqliteStore::open(&self.db_path)?;
@@ -802,29 +802,19 @@ impl IndexPipeline {
                 for id in &to_skip_ids {
                     let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
                         symbol_id: id.clone(),
-                        cluster_key: "skip".to_string(),
+                        cluster_key: "__skipped__".to_string(),
                     });
                 }
             }
 
-            // If the previous batch produced vectors, write them to LanceDB
-            // concurrently with embedding the current batch. We flush here
-            // (before starting the new embed) so we don't accumulate unbounded
-            // pending data, but we overlap the LanceDB I/O with the skip-
-            // placeholder writes above.
-            if let Some(prev_vectors) = pending_write.take() {
-                self.vectors.add_records(&prev_vectors).await.context(
+            // Wait for the previous background write to finish before starting
+            // a new one — limits concurrency to one in-flight write at a time.
+            if let Some(handle) = pending_write.take() {
+                handle.await.context(
+                    "Background write task panicked",
+                )?.context(
                     "Failed to add vector records for parallel indexing (pipelined write)",
                 )?;
-                // Upsert similarity clusters for the previous batch
-                let prev_sqlite = SqliteStore::open(&self.db_path)?;
-                prev_sqlite.init()?;
-                for rec in &prev_vectors {
-                    let _ = prev_sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
-                        symbol_id: rec.id.clone(),
-                        cluster_key: cluster_key_from_vector(&rec.vector),
-                    });
-                }
             }
 
             if to_embed.is_empty() {
@@ -849,10 +839,23 @@ impl IndexPipeline {
 
             total_embedded += vectors.len();
 
-            // Store as pending — will be written at the start of the next
-            // iteration (overlapping with the next batch's skip-placeholder
-            // writes) or after the loop ends.
-            pending_write = Some(vectors);
+            // Spawn the LanceDB write + cluster upserts in a background task
+            // so that the next batch's embedding runs concurrently with I/O.
+            let vectors_to_write = vectors;
+            let vectors_arc = Arc::clone(&self.vectors);
+            let db_path = self.db_path.clone();
+            pending_write = Some(tokio::spawn(async move {
+                vectors_arc.add_records(&vectors_to_write).await?;
+                let write_sqlite = SqliteStore::open(&db_path)?;
+                write_sqlite.init()?;
+                for rec in &vectors_to_write {
+                    let _ = write_sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
+                        symbol_id: rec.id.clone(),
+                        cluster_key: cluster_key_from_vector(&rec.vector),
+                    });
+                }
+                Ok(())
+            }));
 
             // If we got fewer than BATCH_SIZE, there are no more symbols left
             if batch_len < BATCH_SIZE {
@@ -860,19 +863,13 @@ impl IndexPipeline {
             }
         }
 
-        // Flush the final pending batch
-        if let Some(final_vectors) = pending_write.take() {
-            self.vectors.add_records(&final_vectors).await.context(
+        // Flush the final pending write
+        if let Some(handle) = pending_write.take() {
+            handle.await.context(
+                "Background write task panicked",
+            )?.context(
                 "Failed to add vector records for parallel indexing (final flush)",
             )?;
-            let sqlite = SqliteStore::open(&self.db_path)?;
-            sqlite.init()?;
-            for rec in &final_vectors {
-                let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
-                    symbol_id: rec.id.clone(),
-                    cluster_key: cluster_key_from_vector(&rec.vector),
-                });
-            }
         }
 
         if total_embedded > 0 || total_skipped > 0 {
@@ -952,5 +949,42 @@ impl IndexPipeline {
         }
 
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_generate_embedding;
+
+    #[test]
+    fn skips_file_kind() {
+        assert!(!should_generate_embedding("file", "mod.rs", "src/mod.rs", true, 0, 100));
+    }
+
+    #[test]
+    fn skips_tiny_private_helper() {
+        // 2 lines, not exported
+        assert!(!should_generate_embedding("function", "helper", "src/lib.rs", false, 10, 12));
+    }
+
+    #[test]
+    fn keeps_tiny_exported() {
+        // 2 lines but exported — should be kept
+        assert!(should_generate_embedding("function", "get_name", "src/lib.rs", true, 10, 12));
+    }
+
+    #[test]
+    fn skips_test_file() {
+        assert!(!should_generate_embedding("function", "run", "src/lib.test.ts", true, 0, 50));
+    }
+
+    #[test]
+    fn skips_test_symbol() {
+        assert!(!should_generate_embedding("function", "test_something", "src/lib.rs", true, 0, 50));
+    }
+
+    #[test]
+    fn keeps_normal_exported_function() {
+        assert!(should_generate_embedding("function", "parse_config", "src/config.rs", true, 0, 30));
     }
 }

@@ -137,7 +137,7 @@ pub fn diversify_by_cluster(
         }
         let key = sqlite.get_similarity_cluster_key(&h.id).ok().flatten();
         match key {
-            Some(k) => {
+            Some(k) if k != "__skipped__" => {
                 let n = counts.get(&k).copied().unwrap_or(0);
                 if n < max_per_cluster {
                     counts.insert(k, n + 1);
@@ -146,7 +146,8 @@ pub fn diversify_by_cluster(
                     deferred.push(h);
                 }
             }
-            None => out.push(h),
+            // Unclustered or skipped — no diversity penalty
+            _ => out.push(h),
         }
     }
 

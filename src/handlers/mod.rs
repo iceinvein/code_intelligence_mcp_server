@@ -327,6 +327,17 @@ pub fn handle_get_similarity_cluster(
 
     let mut out = Vec::new();
     if let Some(key) = cluster_key.clone() {
+        // "__skipped__" is a sentinel for symbols that were deliberately not
+        // embedded (file-kind, tiny private helpers, test symbols).  Listing
+        // the cluster would return all such unrelated symbols.
+        if key == "__skipped__" {
+            return Ok(json!({
+                "symbol_name": root.name,
+                "cluster_key": null,
+                "count": 0,
+                "symbols": [],
+            }));
+        }
         let rows = sqlite.list_symbols_in_cluster(&key, limit + 1)?;
         for (id, name) in rows {
             if id == root.id {

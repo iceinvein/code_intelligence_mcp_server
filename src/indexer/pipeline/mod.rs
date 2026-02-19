@@ -40,6 +40,36 @@ use self::scan::{scan_files, should_index_file};
 use self::stats::IndexRunStats;
 use self::utils::{cluster_key_from_vector, file_fingerprint, file_key_path, unix_now_s};
 
+/// Determine whether a symbol warrants embedding and LLM description generation.
+///
+/// Skips symbols that almost never appear in search results:
+/// - File-kind symbols (their text is the entire file; BM25 handles them)
+/// - Unexported symbols with fewer than 3 lines (tiny private helpers)
+/// - Test symbols detected by name or file path heuristics
+pub(crate) fn should_generate_embedding(
+    kind: &str,
+    name: &str,
+    file_path: &str,
+    exported: bool,
+    start_line: u32,
+    end_line: u32,
+) -> bool {
+    if kind == "file" {
+        return false;
+    }
+    let line_count = end_line.saturating_sub(start_line);
+    if !exported && line_count < 3 {
+        return false;
+    }
+    if crate::retrieval::ranking::score::is_test_file(file_path) {
+        return false;
+    }
+    if crate::retrieval::ranking::score::is_test_symbol(name) {
+        return false;
+    }
+    true
+}
+
 #[derive(Clone)]
 pub struct IndexPipeline {
     config: Arc<Config>,
@@ -700,14 +730,18 @@ impl IndexPipeline {
     /// but symbols exist in SQLite.
     ///
     /// Processes symbols in batches of 200 to bound peak memory usage.
-    /// Each batch is fully written to LanceDB before the next is fetched,
-    /// so intermediate allocations (embedding texts, vectors, Arrow batches)
-    /// are freed between iterations.
+    /// Trivial symbols (file-kind, tiny private helpers, test symbols) are
+    /// skipped with a placeholder cluster entry so they are not re-fetched.
+    ///
+    /// I/O is pipelined: while embedding batch N, batch N-1's vectors are
+    /// written to LanceDB in the background, overlapping compute and I/O.
     pub async fn generate_embeddings_for_orphaned_symbols(&self) -> Result<()> {
         use crate::storage::sqlite::schema::SymbolRow;
 
         const BATCH_SIZE: usize = 200;
         let mut total_embedded: usize = 0;
+        let mut total_skipped: usize = 0;
+        let mut pending_write: Option<Vec<VectorRecord>> = None;
 
         loop {
             let sqlite = SqliteStore::open(&self.db_path)?;
@@ -722,7 +756,7 @@ impl IndexPipeline {
 
             let batch_len = symbols_need_embeddings.len();
 
-            if total_embedded == 0 {
+            if total_embedded == 0 && total_skipped == 0 {
                 tracing::info!(
                     repo = %self.repo_name(),
                     first_batch = batch_len,
@@ -730,48 +764,95 @@ impl IndexPipeline {
                 );
             }
 
-            let symbol_rows: Vec<SymbolRow> = symbols_need_embeddings
-                .into_iter()
-                .map(|sym| SymbolRow {
-                    id: sym.id,
-                    file_path: sym.file_path,
-                    language: sym.language,
-                    kind: sym.kind,
-                    name: sym.name,
-                    exported: sym.exported,
-                    start_byte: sym.start_byte,
-                    end_byte: sym.end_byte,
-                    start_line: sym.start_line,
-                    end_line: sym.end_line,
-                    text: sym.text,
-                })
-                .collect();
+            // Partition into symbols to embed vs skip
+            let mut to_embed: Vec<SymbolRow> = Vec::new();
+            let mut to_skip_ids: Vec<String> = Vec::new();
+
+            for sym in symbols_need_embeddings {
+                if should_generate_embedding(
+                    &sym.kind,
+                    &sym.name,
+                    &sym.file_path,
+                    sym.exported,
+                    sym.start_line,
+                    sym.end_line,
+                ) {
+                    to_embed.push(SymbolRow {
+                        id: sym.id,
+                        file_path: sym.file_path,
+                        language: sym.language,
+                        kind: sym.kind,
+                        name: sym.name,
+                        exported: sym.exported,
+                        start_byte: sym.start_byte,
+                        end_byte: sym.end_byte,
+                        start_line: sym.start_line,
+                        end_line: sym.end_line,
+                        text: sym.text,
+                    });
+                } else {
+                    to_skip_ids.push(sym.id.clone());
+                }
+            }
+
+            // Write placeholder similarity_clusters for skipped symbols
+            // so they don't get re-fetched in the next batch.
+            if !to_skip_ids.is_empty() {
+                total_skipped += to_skip_ids.len();
+                for id in &to_skip_ids {
+                    let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
+                        symbol_id: id.clone(),
+                        cluster_key: "skip".to_string(),
+                    });
+                }
+            }
+
+            // If the previous batch produced vectors, write them to LanceDB
+            // concurrently with embedding the current batch. We flush here
+            // (before starting the new embed) so we don't accumulate unbounded
+            // pending data, but we overlap the LanceDB I/O with the skip-
+            // placeholder writes above.
+            if let Some(prev_vectors) = pending_write.take() {
+                self.vectors.add_records(&prev_vectors).await.context(
+                    "Failed to add vector records for parallel indexing (pipelined write)",
+                )?;
+                // Upsert similarity clusters for the previous batch
+                let prev_sqlite = SqliteStore::open(&self.db_path)?;
+                prev_sqlite.init()?;
+                for rec in &prev_vectors {
+                    let _ = prev_sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
+                        symbol_id: rec.id.clone(),
+                        cluster_key: cluster_key_from_vector(&rec.vector),
+                    });
+                }
+            }
+
+            if to_embed.is_empty() {
+                // All symbols in this batch were skipped. If the batch was
+                // full, there may be more symbols to process.
+                if batch_len < BATCH_SIZE {
+                    break;
+                }
+                continue;
+            }
 
             // Generate embeddings for this batch
             let vectors = self
-                .embed_and_build_vector_records(&symbol_rows)
+                .embed_and_build_vector_records(&to_embed)
                 .await
                 .with_context(|| {
                     format!(
                         "Failed to embed symbols batch: batch_size={}, total_so_far={}",
-                        batch_len, total_embedded
+                        to_embed.len(), total_embedded
                     )
                 })?;
 
-            // Write batch to LanceDB
-            self.vectors.add_records(&vectors).await.context(
-                "Failed to add vector records for parallel indexing",
-            )?;
-
-            // Create similarity clusters for this batch
-            for rec in &vectors {
-                let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
-                    symbol_id: rec.id.clone(),
-                    cluster_key: cluster_key_from_vector(&rec.vector),
-                });
-            }
-
             total_embedded += vectors.len();
+
+            // Store as pending — will be written at the start of the next
+            // iteration (overlapping with the next batch's skip-placeholder
+            // writes) or after the loop ends.
+            pending_write = Some(vectors);
 
             // If we got fewer than BATCH_SIZE, there are no more symbols left
             if batch_len < BATCH_SIZE {
@@ -779,10 +860,26 @@ impl IndexPipeline {
             }
         }
 
-        if total_embedded > 0 {
+        // Flush the final pending batch
+        if let Some(final_vectors) = pending_write.take() {
+            self.vectors.add_records(&final_vectors).await.context(
+                "Failed to add vector records for parallel indexing (final flush)",
+            )?;
+            let sqlite = SqliteStore::open(&self.db_path)?;
+            sqlite.init()?;
+            for rec in &final_vectors {
+                let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
+                    symbol_id: rec.id.clone(),
+                    cluster_key: cluster_key_from_vector(&rec.vector),
+                });
+            }
+        }
+
+        if total_embedded > 0 || total_skipped > 0 {
             tracing::info!(
                 repo = %self.repo_name(),
-                count = total_embedded,
+                embedded = total_embedded,
+                skipped = total_skipped,
                 "Generated embeddings and similarity clusters after parallel indexing"
             );
         }

@@ -8,7 +8,7 @@ mod hybrid;
 pub mod hyde;
 mod postprocess;
 mod query;
-mod ranking;
+pub(crate) mod ranking;
 
 use crate::path::Utf8PathBuf;
 use crate::retrieval::hyde::HypotheticalCodeGenerator;

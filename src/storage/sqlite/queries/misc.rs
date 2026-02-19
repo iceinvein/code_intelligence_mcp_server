@@ -165,7 +165,8 @@ SELECT
 FROM symbols s
 LEFT JOIN similarity_clusters c ON s.id = c.symbol_id
 WHERE c.symbol_id IS NULL
-ORDER BY s.created_at DESC
+  AND s.kind != 'file'
+ORDER BY s.exported DESC, (s.end_line - s.start_line) DESC
 LIMIT ?1
 "#,
         )

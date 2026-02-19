@@ -78,6 +78,20 @@ pub async fn run_description_worker(
                 break;
             }
 
+            if !crate::indexer::pipeline::should_generate_embedding(
+                &sym.kind, &sym.name, &sym.file_path,
+                sym.exported, sym.start_line, sym.end_line,
+            ) {
+                // Insert a stub description so this symbol drops out of the
+                // LEFT JOIN on the next batch fetch and doesn't loop forever.
+                let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
+                {
+                    let conn = db.read().context("read conn for skip-description upsert")?;
+                    let _ = desc_queries::upsert_description(&conn, &sym.id, &content_hash, "");
+                }
+                continue;
+            }
+
             processed_count += 1;
 
             let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);

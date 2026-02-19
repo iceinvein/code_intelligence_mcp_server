@@ -10,6 +10,9 @@ pub struct SymbolForDescription {
     pub kind: String,
     pub file_path: String,
     pub text: String,
+    pub exported: bool,
+    pub start_line: u32,
+    pub end_line: u32,
 }
 
 /// Get cached description if content hash matches (symbol unchanged).
@@ -66,11 +69,12 @@ pub fn upsert_description(
 /// Joins symbols table with descriptions to find gaps.
 pub fn get_undescribed_symbols(conn: &Connection) -> Result<Vec<SymbolForDescription>> {
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.name, s.kind, s.file_path, s.text
+        "SELECT s.id, s.name, s.kind, s.file_path, s.text, s.exported, s.start_line, s.end_line
          FROM symbols s
          LEFT JOIN descriptions d ON s.id = d.symbol_id
          WHERE d.symbol_id IS NULL
-         ORDER BY s.file_path, s.name"
+           AND s.kind != 'file'
+         ORDER BY s.exported DESC, (s.end_line - s.start_line) DESC"
     )?;
     let rows = stmt
         .query_map([], |row| {
@@ -80,6 +84,9 @@ pub fn get_undescribed_symbols(conn: &Connection) -> Result<Vec<SymbolForDescrip
                 kind: row.get(2)?,
                 file_path: row.get(3)?,
                 text: row.get(4)?,
+                exported: row.get::<_, i64>(5)? != 0,
+                start_line: row.get::<_, i64>(6)? as u32,
+                end_line: row.get::<_, i64>(7)? as u32,
             })
         })
         .context("Failed to query undescribed symbols")?;
@@ -91,13 +98,16 @@ pub fn get_undescribed_symbols(conn: &Connection) -> Result<Vec<SymbolForDescrip
 ///
 /// Uses LIMIT without OFFSET — described symbols drop out of the LEFT JOIN
 /// result set automatically, so each call returns the next batch.
+/// File-kind symbols are excluded at the SQL level; further filtering
+/// (test symbols, tiny private helpers) happens in the Rust caller.
 pub fn get_undescribed_symbols_batch(conn: &Connection, limit: usize) -> Result<Vec<SymbolForDescription>> {
     let mut stmt = conn.prepare(
-        "SELECT s.id, s.name, s.kind, s.file_path, s.text
+        "SELECT s.id, s.name, s.kind, s.file_path, s.text, s.exported, s.start_line, s.end_line
          FROM symbols s
          LEFT JOIN descriptions d ON s.id = d.symbol_id
          WHERE d.symbol_id IS NULL
-         ORDER BY s.file_path, s.name
+           AND s.kind != 'file'
+         ORDER BY s.exported DESC, (s.end_line - s.start_line) DESC
          LIMIT ?1"
     )?;
     let rows = stmt
@@ -108,6 +118,9 @@ pub fn get_undescribed_symbols_batch(conn: &Connection, limit: usize) -> Result<
                 kind: row.get(2)?,
                 file_path: row.get(3)?,
                 text: row.get(4)?,
+                exported: row.get::<_, i64>(5)? != 0,
+                start_line: row.get::<_, i64>(6)? as u32,
+                end_line: row.get::<_, i64>(7)? as u32,
             })
         })
         .context("Failed to query undescribed symbols batch")?;
@@ -116,11 +129,13 @@ pub fn get_undescribed_symbols_batch(conn: &Connection, limit: usize) -> Result<
 }
 
 /// Count symbols that don't have descriptions yet.
+/// Excludes file-kind symbols which are never described.
 pub fn count_undescribed_symbols(conn: &Connection) -> Result<usize> {
     let count: usize = conn.query_row(
         "SELECT COUNT(*) FROM symbols s
          LEFT JOIN descriptions d ON s.id = d.symbol_id
-         WHERE d.symbol_id IS NULL",
+         WHERE d.symbol_id IS NULL
+           AND s.kind != 'file'",
         [],
         |row| row.get(0),
     ).context("Failed to count undescribed symbols")?;

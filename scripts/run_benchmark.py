@@ -250,8 +250,14 @@ def run_query(client, query_text, msg_id, limit=10):
             "keyword_score": bd.get("keyword_score"),
             "vector_score": bd.get("vector_score"),
             "base_score": bd.get("base_score"),
+            "structural_adjust": bd.get("structural_adjust"),
+            "definition_bias": bd.get("definition_bias"),
+            "term_coverage": bd.get("term_coverage"),
+            "symbol_importance": bd.get("symbol_importance"),
             "intent_mult": bd.get("intent_multiplier"),
             "test_penalty": bd.get("test_symbol_penalty"),
+            "popularity_boost": bd.get("popularity_boost"),
+            "docstring_boost": bd.get("docstring_boost") if "docstring_boost" in bd else None,
         })
 
     return parsed

@@ -125,6 +125,7 @@ fn promote_vector_results(
     _signals: &mut HashMap<String, HitSignals>,
     limit: usize,
     guaranteed_slots: usize,
+    query: &str,
 ) {
     if guaranteed_slots == 0 || vector_ranked.is_empty() || results.is_empty() {
         return;
@@ -159,6 +160,17 @@ fn promote_vector_results(
             // Skip if this file already has enough entries (respect diversity)
             let count = file_counts.get(h.file_path.as_str()).copied().unwrap_or(0);
             count < max_per_file_for_promotion + 1
+        })
+        .filter(|h| {
+            // Skip vector-only results with poor query-term coverage.
+            // Vector promotion bypasses scoring adjustments (structural, tc, si),
+            // assigning the 70th-percentile score regardless of actual relevance.
+            // This lets false-positive vector matches (e.g., CHECK_INTERVAL_MS
+            // matching "check" from "health check") leapfrog genuinely relevant
+            // results. Gate on term_coverage to ensure promoted results actually
+            // match multiple query terms via name/path.
+            let tc = ranking::term_coverage_adjustment(query, &h.name, &h.file_path, None);
+            tc > -1.0
         })
         .take(guaranteed_slots)
         .collect();
@@ -464,6 +476,7 @@ impl Retriever {
                 &mut hit_signals,
                 limit,
                 self.config.vector_guaranteed_results,
+                &query_without_controls,
             );
             hits.truncate(limit);
         }

@@ -98,7 +98,7 @@ pub struct GetUsageExamplesTool {
 
 #[macros::mcp_tool(
     name = "get_index_stats",
-    description = "Return index statistics (files, symbols, edges, last updated)."
+    description = "Return index statistics (files, symbols, edges, last updated). Includes description generation progress (descriptions, undescribed_symbols)."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetIndexStatsTool {}

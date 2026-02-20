@@ -140,6 +140,16 @@ impl SqliteStore {
         queries::edges::count_edges(&conn)
     }
 
+    pub fn count_descriptions(&self) -> Result<usize> {
+        let conn = self.read()?;
+        queries::descriptions::count_descriptions(&conn)
+    }
+
+    pub fn count_undescribed_symbols(&self) -> Result<usize> {
+        let conn = self.read()?;
+        queries::descriptions::count_undescribed_symbols(&conn)
+    }
+
     pub fn list_all_edges(&self) -> Result<Vec<(String, String)>> {
         let conn = self.read()?;
         queries::edges::list_all_edges(&conn)

@@ -226,6 +226,8 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
 
     let symbols = sqlite.count_symbols()?;
     let edges = sqlite.count_edges()?;
+    let descriptions = sqlite.count_descriptions()?;
+    let undescribed = sqlite.count_undescribed_symbols()?;
     let last_updated = sqlite.most_recent_symbol_update()?;
     let latest_index_run = sqlite.latest_index_run()?;
     let latest_search_run = sqlite.latest_search_run()?;
@@ -234,6 +236,8 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
         "base_dir": state.config.base_dir,
         "symbols": symbols,
         "edges": edges,
+        "descriptions": descriptions,
+        "undescribed_symbols": undescribed,
         "last_updated_unix_s": last_updated,
         "latest_index_run": latest_index_run,
         "latest_search_run": latest_search_run,

@@ -49,13 +49,25 @@ pub fn apply_selection_boost_with_signals(
         }
     };
 
-    // Apply boosts to hits
+    // Normalize boosts to [0, 1] range before applying config weight,
+    // so the max boost is always exactly learning_selection_boost.
+    let max_boost = boost_map
+        .values()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    if max_boost <= 0.0 {
+        return Ok(hits);
+    }
+
+    // Apply normalized boosts to hits
     for h in hits.iter_mut() {
         let key = format!("{}|{}", query_normalized, h.id);
         let boost = boost_map.get(&key).copied().unwrap_or(0.0);
 
         if boost > 0.0 {
-            let final_boost = config.learning_selection_boost * boost;
+            let normalized = boost / max_boost;
+            let final_boost = config.learning_selection_boost * normalized;
             h.score += final_boost;
 
             hit_signals
@@ -1938,6 +1950,160 @@ mod tests {
             assert!(!test_set.contains("mod_tests"), "mod tests declaration should not self-match");
             // prod_fn: outside mod tests, no #[test] → NOT detected
             assert!(!test_set.contains("prod_fn"), "production function should not be detected");
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn selection_boost_applied_and_capped() {
+        let db_path_buf = std::env::temp_dir().join("test_selection_boost_capped.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            insert_test_symbol(&sqlite, "sym_a", "sym_a");
+            insert_test_symbol(&sqlite, "sym_b", "sym_b");
+
+            // Record multiple selections to build up boost values
+            for _ in 0..10 {
+                sqlite
+                    .insert_query_selection("error handling", "error handling", "sym_a", 1)
+                    .unwrap();
+            }
+            sqlite
+                .insert_query_selection("error handling", "error handling", "sym_b", 3)
+                .unwrap();
+
+            let hits = vec![
+                make_hit("sym_a", "sym_a", 5.0),
+                make_hit("sym_b", "sym_b", 5.0),
+            ];
+            let mut hit_signals = HashMap::new();
+            let mut config = test_config(0.0);
+            config.learning_enabled = true;
+            config.learning_selection_boost = 0.1;
+
+            let result = apply_selection_boost_with_signals(
+                &sqlite,
+                hits,
+                &mut hit_signals,
+                "error handling",
+                &config,
+            )
+            .unwrap();
+
+            // sym_a had more selections → highest boost → should be first
+            assert_eq!(result[0].id, "sym_a");
+            // Max boost should be exactly config weight (0.1) due to normalization
+            let a_boost = hit_signals.get("sym_a").unwrap().learning_boost;
+            assert!(
+                (a_boost - 0.1).abs() < f32::EPSILON,
+                "Max selection boost should be exactly config weight, got {}",
+                a_boost
+            );
+            // sym_b should have a smaller boost
+            let b_boost = hit_signals.get("sym_b").unwrap().learning_boost;
+            assert!(b_boost > 0.0 && b_boost < 0.1, "sym_b boost should be >0 and <0.1, got {}", b_boost);
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn selection_boost_no_selections_no_change() {
+        let db_path_buf = std::env::temp_dir().join("test_selection_boost_empty.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            insert_test_symbol(&sqlite, "sym_x", "sym_x");
+
+            let hits = vec![make_hit("sym_x", "sym_x", 7.0)];
+            let mut hit_signals = HashMap::new();
+            let mut config = test_config(0.0);
+            config.learning_enabled = true;
+            config.learning_selection_boost = 0.1;
+
+            let result = apply_selection_boost_with_signals(
+                &sqlite,
+                hits,
+                &mut hit_signals,
+                "some query",
+                &config,
+            )
+            .unwrap();
+
+            // Score should be unchanged
+            assert!(
+                (result[0].score - 7.0).abs() < f32::EPSILON,
+                "Score should be unchanged with no selections, got {}",
+                result[0].score
+            );
+            assert!(hit_signals.is_empty(), "No signals should be recorded");
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn file_affinity_boost_applied_and_normalized() {
+        let db_path_buf = std::env::temp_dir().join("test_affinity_boost.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
+        let _ = std::fs::remove_file(&db_path);
+
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+
+            insert_test_symbol(&sqlite, "sym_1", "sym_1");
+            insert_test_symbol(&sqlite, "sym_2", "sym_2");
+
+            // Record file access — sym_1's file gets many edits, sym_2 gets one view
+            for _ in 0..5 {
+                sqlite
+                    .upsert_file_affinity("/path/to/sym_1.rs", 0, 1)
+                    .unwrap();
+            }
+            sqlite
+                .upsert_file_affinity("/path/to/sym_2.rs", 1, 0)
+                .unwrap();
+
+            let hits = vec![
+                make_hit("sym_1", "sym_1", 5.0),
+                make_hit("sym_2", "sym_2", 5.0),
+            ];
+            let mut hit_signals = HashMap::new();
+            let mut config = test_config(0.0);
+            config.learning_enabled = true;
+            config.learning_file_affinity_boost = 0.05;
+
+            let result = apply_file_affinity_boost_with_signals(
+                &sqlite,
+                hits,
+                &mut hit_signals,
+                &config,
+            )
+            .unwrap();
+
+            // sym_1 had more edits (2x weighted) → higher affinity → first
+            assert_eq!(result[0].id, "sym_1");
+            // Max boost should be exactly config weight (0.05) due to normalization
+            let boost_1 = hit_signals.get("sym_1").unwrap().affinity_boost;
+            assert!(
+                (boost_1 - 0.05).abs() < f32::EPSILON,
+                "Max affinity boost should be exactly config weight, got {}",
+                boost_1
+            );
+            // sym_2 should have a smaller boost
+            let boost_2 = hit_signals.get("sym_2").unwrap().affinity_boost;
+            assert!(boost_2 > 0.0 && boost_2 < 0.05, "sym_2 boost should be >0 and <0.05, got {}", boost_2);
         }
 
         let _ = std::fs::remove_file(&db_path);

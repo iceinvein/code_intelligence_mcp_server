@@ -111,6 +111,9 @@ The server reads configuration from environment variables. Key ones:
 | `INDEX_PATTERNS` | `**/*.ts,**/*.tsx,**/*.rs` | Glob patterns to index |
 | `HYBRID_ALPHA` | `0.7` | Vector vs keyword weight (0-1) |
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |
+| `LEARNING_ENABLED` | `true` | Enable selection/affinity learning |
+| `LEARNING_SELECTION_BOOST` | `0.1` | Max boost from user selection history |
+| `LEARNING_FILE_AFFINITY_BOOST` | `0.05` | Max boost from file access frequency |
 
 ## Path Handling
 

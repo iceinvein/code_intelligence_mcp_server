@@ -560,8 +560,11 @@ pub async fn handle_report_selection(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let sqlite = &state.sqlite;
 
-    // Normalize query (reuse logic from retrieval/query.rs)
-    let normalized = tool.query.to_lowercase().trim().to_string();
+    // Strip query controls (id:, file:, lang:, etc.) before normalizing,
+    // so the key matches what retrieval uses for selection boost lookup.
+    let (query_without_controls, _controls) =
+        crate::retrieval::query::parse_query_controls(&tool.query);
+    let normalized = query_without_controls.to_lowercase().trim().to_string();
 
     let row_id = sqlite.insert_query_selection(
         &tool.query,
@@ -575,6 +578,29 @@ pub async fn handle_report_selection(
         "recorded": true,
         "selection_id": row_id,
         "query_normalized": normalized,
+    }))
+}
+
+/// Handle report_file_access tool
+pub async fn handle_report_file_access(
+    state: &AppState,
+    tool: ReportFileAccessTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let action = tool.action.as_deref().unwrap_or("view");
+    let (view_inc, edit_inc) = match action {
+        "edit" => (0, 1),
+        _ => (1, 0), // default to "view"
+    };
+
+    state
+        .sqlite
+        .upsert_file_affinity(&tool.file_path, view_inc, edit_inc)?;
+
+    Ok(json!({
+        "ok": true,
+        "recorded": true,
+        "file_path": tool.file_path,
+        "action": action,
     }))
 }
 

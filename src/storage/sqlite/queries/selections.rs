@@ -112,48 +112,41 @@ pub fn batch_get_selection_boosts(
     }
 
     let mut result = HashMap::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as f64;
 
-    // Build WHERE clause for batch query
-    let placeholders: Vec<String> = (0..pairs.len())
-        .map(|i| format!("(?{} AS q{}, ?{} AS s{})", i * 2 + 1, i, i * 2 + 2, i))
-        .collect();
-
-    // Use a CTE approach for efficient batch lookup
-    let query = format!(
+    // Query per pair — simpler and avoids CTE/math function issues with SQLite.
+    // Pair count is bounded by search limit (typically 5-40), so this is fine.
+    let mut stmt = conn.prepare(
         r#"
-        WITH input_pairs(query_normalized, symbol_id) AS (
-            VALUES {}
-        )
-        SELECT
-            i.query_normalized,
-            i.symbol_id,
-            SUM(1.0 / LN(qs.position + 2.0) * EXP(-0.1 * (unixepoch() - qs.created_at) / 86400.0)) as boost_score
-        FROM input_pairs i
-        LEFT JOIN query_selections qs
-            ON qs.query_normalized = i.query_normalized
-            AND qs.selected_symbol_id = i.symbol_id
-        GROUP BY i.query_normalized, i.symbol_id
+        SELECT position, created_at
+        FROM query_selections
+        WHERE query_normalized = ?1 AND selected_symbol_id = ?2
         "#,
-        placeholders.join(", ")
-    );
+    )?;
 
-    let mut stmt = conn.prepare(&query)?;
+    for (query_normalized, symbol_id) in pairs {
+        let rows: Vec<(i64, i64)> = stmt
+            .query_map(params![query_normalized, symbol_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
 
-    // Flatten pairs into params
-    let mut params: Vec<rusqlite::types::Value> = Vec::new();
-    for (query, symbol_id) in pairs {
-        params.push(rusqlite::types::Value::Text(query.clone()));
-        params.push(rusqlite::types::Value::Text(symbol_id.clone()));
-    }
+        let mut boost = 0.0f64;
+        for (position, created_at) in &rows {
+            let age_days = (now - *created_at as f64) / 86400.0;
+            let position_weight = 1.0 / (*position as f64 + 2.0).ln();
+            let time_decay = (-0.1 * age_days).exp();
+            boost += position_weight * time_decay;
+        }
 
-    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
-
-    while let Some(row) = rows.next()? {
-        let query_normalized: String = row.get(0)?;
-        let symbol_id: String = row.get(1)?;
-        let boost_score: f64 = row.get::<_, f64>(2).unwrap_or(0.0);
-        let key = format!("{}|{}", query_normalized, symbol_id);
-        result.insert(key, boost_score as f32);
+        if boost > 0.0 {
+            let key = format!("{}|{}", query_normalized, symbol_id);
+            result.insert(key, boost as f32);
+        }
     }
 
     Ok(result)

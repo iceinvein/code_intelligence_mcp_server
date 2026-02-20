@@ -23,7 +23,7 @@ pub(super) fn filter_and_boost(
     hit_signals: &mut HashMap<String, HitSignals>,
     controls: &QueryControls,
     exported_only: bool,
-    expanded_query: &str,
+    original_query: &str,
     intent: &Option<Intent>,
     config: &Config,
 ) -> Result<Vec<RankedHit>> {
@@ -36,7 +36,7 @@ pub(super) fn filter_and_boost(
 
     let hits = apply_popularity_boost_with_signals(sqlite, hits, hit_signals, config)?;
     let hits = apply_docstring_boost_with_signals(sqlite, hits, hit_signals)?;
-    let hits = apply_selection_boost_with_signals(sqlite, hits, hit_signals, expanded_query, config)?;
+    let hits = apply_selection_boost_with_signals(sqlite, hits, hit_signals, original_query, config)?;
     let hits = apply_file_affinity_boost_with_signals(sqlite, hits, hit_signals, config)?;
 
     let query_package_id = controls.package.as_deref();

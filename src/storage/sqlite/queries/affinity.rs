@@ -110,15 +110,19 @@ pub fn batch_get_affinity_boosts(
         return Ok(HashMap::new());
     }
 
-    // Build IN clause placeholders using VALUES approach
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as f64;
+
+    // Build IN clause placeholders
     let placeholders: Vec<String> = (0..file_paths.len())
-        .map(|i| format!("(?{})", i + 1))
+        .map(|i| format!("?{}", i + 1))
         .collect();
 
     let query = format!(
         r#"
-SELECT file_path,
-       (view_count + edit_count * 2.0) * exp(-0.05 * ((unixepoch() - last_accessed_at) / 86400.0)) as affinity_score
+SELECT file_path, view_count, edit_count, last_accessed_at
 FROM user_file_affinity
 WHERE file_path IN ({})
 "#,
@@ -129,7 +133,6 @@ WHERE file_path IN ({})
         .prepare(&query)
         .context("Failed to prepare batch_get_affinity_boosts")?;
 
-    // Build params as owned strings for rusqlite compatibility
     let params: Vec<rusqlite::types::Value> = file_paths
         .iter()
         .map(|s| rusqlite::types::Value::Text(s.to_string()))
@@ -139,13 +142,20 @@ WHERE file_path IN ({})
         .query(rusqlite::params_from_iter(params))
         .context("Failed to query affinity boosts")?;
 
+    // Compute affinity scores in Rust (SQLite bundled doesn't include math functions)
     let mut result = HashMap::new();
     while let Some(row) = rows.next()? {
         let file_path: String = row.get(0)?;
-        let affinity_score: f64 = row.get(1)?;
+        let view_count: f64 = row.get::<_, i64>(1)? as f64;
+        let edit_count: f64 = row.get::<_, i64>(2)? as f64;
+        let last_accessed_at: f64 = row.get::<_, i64>(3)? as f64;
+
+        let age_days = (now - last_accessed_at) / 86400.0;
+        let time_decay = (-0.05 * age_days).exp();
+        let affinity_score = (view_count + edit_count * 2.0) * time_decay;
+
         result.insert(file_path, affinity_score as f32);
     }
 
-    // Fill in 0.0 for files not found (implicitly via HashMap::get returning None)
     Ok(result)
 }

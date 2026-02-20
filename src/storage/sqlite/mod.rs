@@ -318,6 +318,16 @@ impl SqliteStore {
         queries::selections::batch_get_selection_boosts(&conn, pairs)
     }
 
+    pub fn upsert_file_affinity(
+        &self,
+        file_path: &str,
+        view_increment: u32,
+        edit_increment: u32,
+    ) -> Result<()> {
+        let conn = self.write()?;
+        queries::affinity::upsert_file_affinity(&conn, file_path, view_increment, edit_increment)
+    }
+
     pub fn search_todos(
         &self,
         keyword: Option<&str>,

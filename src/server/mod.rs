@@ -30,6 +30,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         GetIndexStatsTool::tool(),
         HydrateSymbolsTool::tool(),
         ReportSelectionTool::tool(),
+        ReportFileAccessTool::tool(),
         ExplainSearchTool::tool(),
         FindSimilarCodeTool::tool(),
         SummarizeFileTool::tool(),
@@ -178,6 +179,17 @@ pub async fn dispatch_tool_call(
         "report_selection" => {
             let tool: ReportSelectionTool = parse_tool_args(&params)?;
             let result = handle_report_selection(state, tool)
+                .await
+                .map_err(tool_internal_error)?;
+            Ok(CallToolResult::text_content(vec![
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+                    .into(),
+            ]))
+        }
+        "report_file_access" => {
+            let tool: ReportFileAccessTool = parse_tool_args(&params)?;
+            let result = handle_report_file_access(state, tool)
                 .await
                 .map_err(tool_internal_error)?;
             Ok(CallToolResult::text_content(vec![

@@ -147,6 +147,18 @@ pub struct ReportSelectionTool {
 }
 
 #[macros::mcp_tool(
+    name = "report_file_access",
+    description = "Record file access for learning. Call this when a user views or edits a file to improve future search relevance."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct ReportFileAccessTool {
+    /// The file path being accessed (relative to repo root)
+    pub file_path: String,
+    /// Access type: "view" (default) or "edit"
+    pub action: Option<String>,
+}
+
+#[macros::mcp_tool(
     name = "explain_search",
     description = "Return detailed scoring breakdown for search results to understand why results ranked the way they did."
 )]

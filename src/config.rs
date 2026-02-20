@@ -285,7 +285,7 @@ impl StandaloneConfig {
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: Some(global_dir.join("reranker-cache")),
-            learning_enabled: false,
+            learning_enabled: true,
             learning_selection_boost: 0.1,
             learning_file_affinity_boost: 0.05,
             max_context_tokens: 8192,
@@ -617,7 +617,7 @@ impl Config {
             .as_deref()
             .map(parse_bool)
             .transpose()?
-            .unwrap_or(false);
+            .unwrap_or(true);
         let learning_selection_boost = optional_env("LEARNING_SELECTION_BOOST")
             .as_deref()
             .map(parse_any_f32)
@@ -1286,7 +1286,7 @@ mod tests {
         assert!(cfg.reranker_cache_dir.is_some());
 
         // Learning defaults
-        assert!(!cfg.learning_enabled);
+        assert!(cfg.learning_enabled);
         assert!((cfg.learning_selection_boost - 0.1).abs() < f32::EPSILON);
         assert!((cfg.learning_file_affinity_boost - 0.05).abs() < f32::EPSILON);
 

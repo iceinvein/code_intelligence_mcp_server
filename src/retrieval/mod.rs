@@ -7,7 +7,7 @@ mod framework_patterns;
 mod hybrid;
 pub mod hyde;
 mod postprocess;
-mod query;
+pub(crate) mod query;
 pub(crate) mod ranking;
 
 use crate::path::Utf8PathBuf;
@@ -328,16 +328,9 @@ impl Retriever {
         let is_nl_query = !contains_code_snippet(&query_without_controls)
             && query_without_controls.split_whitespace().count() >= 3;
 
-        // Normalize and expand query
-        let expanded_query = normalize_and_expand_query(
-            &query_without_controls,
-            self.config.synonym_expansion_enabled,
-            self.config.acronym_expansion_enabled,
-        );
-
         // Decompose compound queries from the ORIGINAL (pre-synonym-expansion) query.
-        // Using expanded_query would include synonym terms in sub-queries, causing
-        // false-positive coverage matches (e.g., "admin" synonym makes
+        // Using synonym-expanded query would include synonym terms in sub-queries,
+        // causing false-positive coverage matches (e.g., "admin" synonym makes
         // adminAppControlRouter "cover" the "role-based permissions" sub-query).
         let normalized_query = normalize_and_expand_query(&query_without_controls, false, false);
         let sub_queries = decompose_query(&normalized_query, 3);
@@ -407,14 +400,17 @@ impl Retriever {
             0
         };
 
-        // Apply query control filters and boost signals
+        // Apply query control filters and boost signals.
+        // Use simple normalized query (lowercase+trim, no synonym/stem expansion)
+        // for selection boost lookup — must match the key stored by report_selection.
+        let original_query_normalized = query_without_controls.to_lowercase();
         let hits = postprocess::filter_and_boost(
             &sqlite,
             uniq,
             &mut hit_signals,
             &controls,
             exported_only,
-            &expanded_query,
+            original_query_normalized.trim(),
             &intent,
             &self.config,
         )?;

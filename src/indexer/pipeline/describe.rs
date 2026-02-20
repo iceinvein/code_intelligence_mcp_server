@@ -30,139 +30,167 @@ pub async fn run_description_worker(
     batch_commit_size: usize,
     cancel: CancellationToken,
 ) -> Result<()> {
-    // Clean up descriptions for deleted symbols first
-    {
-        let conn = db.read().context("read conn for orphan cleanup")?;
-        let orphaned = desc_queries::cleanup_orphaned_descriptions(&conn).unwrap_or(0);
-        if orphaned > 0 {
-            tracing::info!("Cleaned up {} orphaned descriptions", orphaned);
-        }
-    }
+    /// How long to sleep between idle checks for new undescribed symbols.
+    /// Handles the startup race (worker starts before indexing completes)
+    /// and watch-mode (new files indexed after initial pass).
+    const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-    let total = {
-        let conn = db.read().context("read conn for undescribed count")?;
-        desc_queries::count_undescribed_symbols(&conn)
-            .context("Failed to count undescribed symbols")?
-    };
+    /// Maximum consecutive idle cycles before the worker exits and frees
+    /// the LLM model (~1.1 GB GPU memory). At 30s intervals, 20 cycles = 10 min.
+    const MAX_IDLE_CYCLES: u32 = 20;
 
-    if total == 0 {
-        tracing::info!("Description worker: all symbols already described");
-        return Ok(());
-    }
-
-    tracing::info!("Description worker: {} symbols to describe", total);
-
-    const PAGE_SIZE: usize = 500;
-    let mut generated_count = 0;
-    let mut processed_count = 0;
+    let mut idle_cycles: u32 = 0;
 
     loop {
         if cancel.is_cancelled() {
-            tracing::info!("Description worker cancelled at {}/{}", processed_count, total);
+            tracing::info!("Description worker cancelled");
             break;
         }
 
-        // Fetch next page. Described symbols drop out of the LEFT JOIN
-        // result set, so LIMIT without OFFSET always returns the next batch.
-        let page = {
-            let conn = db.read().context("read conn for undescribed batch")?;
-            desc_queries::get_undescribed_symbols_batch(&conn, PAGE_SIZE)?
+        // Clean up descriptions for deleted symbols
+        {
+            let conn = db.read().context("read conn for orphan cleanup")?;
+            let orphaned = desc_queries::cleanup_orphaned_descriptions(&conn).unwrap_or(0);
+            if orphaned > 0 {
+                tracing::info!("Cleaned up {} orphaned descriptions", orphaned);
+            }
+        }
+
+        let total = {
+            let conn = db.read().context("read conn for undescribed count")?;
+            desc_queries::count_undescribed_symbols(&conn)
+                .context("Failed to count undescribed symbols")?
         };
 
-        if page.is_empty() {
-            break;
+        if total == 0 {
+            idle_cycles += 1;
+            if idle_cycles >= MAX_IDLE_CYCLES {
+                tracing::info!("Description worker: idle for {}s, exiting", IDLE_POLL_INTERVAL.as_secs() * MAX_IDLE_CYCLES as u64);
+                break;
+            }
+            if idle_cycles == 1 {
+                tracing::debug!("Description worker: no undescribed symbols, waiting for indexing...");
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(IDLE_POLL_INTERVAL) => continue,
+            }
         }
 
-        for sym in &page {
+        // Found work — reset idle counter
+        idle_cycles = 0;
+        tracing::info!("Description worker: {} symbols to describe", total);
+
+        let mut generated_count = 0;
+        let mut processed_count = 0;
+
+        loop {
             if cancel.is_cancelled() {
+                tracing::info!("Description worker cancelled at {}/{}", processed_count, total);
                 break;
             }
 
-            if !crate::indexer::pipeline::should_generate_embedding(
-                &sym.kind, &sym.name, &sym.file_path,
-                sym.exported, sym.start_line, sym.end_line,
-            ) {
-                // Insert a stub description so this symbol drops out of the
-                // LEFT JOIN on the next batch fetch and doesn't loop forever.
-                let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
-                {
-                    let conn = db.read().context("read conn for skip-description upsert")?;
-                    let _ = desc_queries::upsert_description(&conn, &sym.id, &content_hash, "");
-                }
-                continue;
-            }
-
-            processed_count += 1;
-
-            let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
-
-            // Check if already described with matching content (race condition guard)
-            {
-                let conn = db.read().context("read conn for description check")?;
-                if desc_queries::get_description(&conn, &sym.id, &content_hash)?.is_some() {
-                    continue;
-                }
-            }
-
-            // Generate description
-            let prompt = llm::build_description_prompt(&sym.name, &sym.kind, &sym.file_path, &sym.text);
-            let description = match llm.generate(&prompt, max_tokens) {
-                Ok(desc) => desc,
-                Err(e) => {
-                    tracing::warn!("Failed to generate description for {}: {:#}", sym.name, e);
-                    continue;
-                }
+            // Fetch next page. Described symbols drop out of the LEFT JOIN
+            // result set, so LIMIT without OFFSET always returns the next batch.
+            let page = {
+                let conn = db.read().context("read conn for undescribed batch")?;
+                desc_queries::get_undescribed_symbols_batch(&conn, PAGE_SIZE)?
             };
 
-            // Cache in SQLite
-            {
-                let conn = db.read().context("read conn for description upsert")?;
-                desc_queries::upsert_description(&conn, &sym.id, &content_hash, &description)?;
+            if page.is_empty() {
+                break;
             }
 
-            // Re-upsert to Tantivy with description
-            {
-                let conn = db.read().context("read conn for symbol lookup")?;
-                if let Some(symbol_row) = get_symbol_row(&conn, &sym.id)? {
-                    if let Err(e) = tantivy.upsert_symbol(&symbol_row, "", "", Some(&description)) {
-                        tracing::warn!("Failed to re-upsert {} to Tantivy: {}", sym.name, e);
+            for sym in &page {
+                if cancel.is_cancelled() {
+                    break;
+                }
+
+                if !crate::indexer::pipeline::should_generate_embedding(
+                    &sym.kind, &sym.name, &sym.file_path,
+                    sym.exported, sym.start_line, sym.end_line,
+                ) {
+                    let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
+                    {
+                        let conn = db.read().context("read conn for skip-description upsert")?;
+                        let _ = desc_queries::upsert_description(&conn, &sym.id, &content_hash, "");
+                    }
+                    continue;
+                }
+
+                processed_count += 1;
+
+                let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
+
+                // Check if already described with matching content (race condition guard)
+                {
+                    let conn = db.read().context("read conn for description check")?;
+                    if desc_queries::get_description(&conn, &sym.id, &content_hash)?.is_some() {
+                        continue;
                     }
                 }
-            }
 
-            generated_count += 1;
+                // Generate description
+                let prompt = llm::build_description_prompt(&sym.name, &sym.kind, &sym.file_path, &sym.text);
+                let description = match llm.generate(&prompt, max_tokens) {
+                    Ok(desc) => desc,
+                    Err(e) => {
+                        tracing::warn!("Failed to generate description for {}: {:#}", sym.name, e);
+                        continue;
+                    }
+                };
 
-            // Batch commit for progressive search improvement
-            if generated_count % batch_commit_size == 0 {
-                if let Err(e) = tantivy.commit() {
-                    tracing::warn!("Failed to commit Tantivy batch: {}", e);
+                // Cache in SQLite
+                {
+                    let conn = db.read().context("read conn for description upsert")?;
+                    desc_queries::upsert_description(&conn, &sym.id, &content_hash, &description)?;
                 }
-                tracing::info!(
-                    "Descriptions: {}/{} processed ({} generated)",
-                    processed_count,
-                    total,
-                    generated_count
-                );
+
+                // Re-upsert to Tantivy with description
+                {
+                    let conn = db.read().context("read conn for symbol lookup")?;
+                    if let Some(symbol_row) = get_symbol_row(&conn, &sym.id)? {
+                        if let Err(e) = tantivy.upsert_symbol(&symbol_row, "", "", Some(&description)) {
+                            tracing::warn!("Failed to re-upsert {} to Tantivy: {}", sym.name, e);
+                        }
+                    }
+                }
+
+                generated_count += 1;
+
+                // Batch commit for progressive search improvement
+                if generated_count % batch_commit_size == 0 {
+                    if let Err(e) = tantivy.commit() {
+                        tracing::warn!("Failed to commit Tantivy batch: {}", e);
+                    }
+                    tracing::info!(
+                        "Descriptions: {}/{} processed ({} generated)",
+                        processed_count,
+                        total,
+                        generated_count
+                    );
+                }
             }
+            // page Vec dropped here — symbol text strings freed before next fetch
         }
-        // page Vec dropped here — symbol text strings freed before next fetch
+
+        // Final commit for this pass
+        if generated_count > 0 {
+            tantivy.commit().context("Final Tantivy commit after descriptions")?;
+        }
+        tracing::info!(
+            "Description worker: pass complete, {} symbols described out of {} total",
+            generated_count,
+            total
+        );
     }
 
     // Explicitly drop the LLM to free ~1.1 GB of GPU memory.
-    // The model is only needed for description generation, not search queries.
     drop(llm);
-
-    // Final commit
-    if generated_count > 0 {
-        tantivy.commit().context("Final Tantivy commit after descriptions")?;
-    }
-    tracing::info!(
-        "Description worker complete: {} symbols described out of {} total",
-        generated_count,
-        total
-    );
     Ok(())
 }
+
+const PAGE_SIZE: usize = 500;
 
 /// Helper to get a SymbolRow from SQLite by ID.
 fn get_symbol_row(

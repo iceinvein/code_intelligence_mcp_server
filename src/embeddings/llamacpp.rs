@@ -61,8 +61,15 @@ impl LlamaCppEmbedder {
     }
 
     /// Maximum total tokens across all sequences in one sub-batch.
-    /// Keeps GPU memory bounded. 8192 fits ~32 average-length symbols.
-    const SUB_BATCH_MAX_TOKENS: usize = 8192;
+    /// The KV cache is allocated as n_ctx * n_seq_max, so this must be
+    /// conservative. 4096 works for both large Rust symbols and many short
+    /// TypeScript symbols.
+    const SUB_BATCH_MAX_TOKENS: usize = 4096;
+
+    /// Maximum sequences per sub-batch. With n_seq_max sequences, the KV cache
+    /// grows proportionally. 32 keeps GPU memory bounded while still giving
+    /// ~10-20x speedup over single-sequence embedding.
+    const SUB_BATCH_MAX_SEQS: usize = 32;
 
     /// Embed a single text and return the L2-normalized vector.
     /// Used as fallback for texts that exceed SUB_BATCH_MAX_TOKENS alone.
@@ -181,8 +188,9 @@ impl LlamaCppEmbedder {
                 continue;
             }
 
-            // Would exceed budget: flush current sub-batch first
-            if sub_batch_token_count + token_len > Self::SUB_BATCH_MAX_TOKENS
+            // Would exceed token or sequence budget: flush current sub-batch first
+            if (sub_batch_token_count + token_len > Self::SUB_BATCH_MAX_TOKENS
+                || sub_batch_indices.len() >= Self::SUB_BATCH_MAX_SEQS)
                 && !sub_batch_indices.is_empty()
             {
                 self.flush_sub_batch(&sub_batch_indices, &tokenized, &mut results)?;
@@ -221,13 +229,18 @@ impl LlamaCppEmbedder {
         }
 
         let total_tokens: usize = indices.iter().map(|&i| tokenized[i].len()).sum();
-        let n_ctx = (total_tokens as u32).max(64);
+        let max_seq_len = indices.iter().map(|&i| tokenized[i].len()).max().unwrap_or(0);
+        let n_seqs = indices.len();
+
+        // n_ctx must be max_seq_len * n_seqs because llama.cpp divides KV cache
+        // as n_ctx / n_seq_max per sequence. Using just total_tokens would
+        // under-allocate when one sequence is much longer than average.
+        let n_ctx = ((max_seq_len * n_seqs) as u32).max(64);
 
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(n_ctx))
-            .with_n_batch(n_ctx)
-            .with_n_ubatch(n_ctx)
-            .with_n_seq_max(indices.len() as u32)
+            .with_n_batch(total_tokens as u32)
+            .with_n_seq_max(n_seqs as u32)
             .with_embeddings(true)
             .with_pooling_type(LlamaPoolingType::Last);
 

@@ -3,6 +3,10 @@ use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
 use super::elysia::extract_elysia_patterns;
+use super::express::extract_express_patterns;
+use super::fastify::extract_fastify_patterns;
+use super::hono::extract_hono_patterns;
+use super::trpc::extract_trpc_patterns;
 use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
 
 pub fn extract_javascript_symbols(source: &str) -> Result<ExtractedFile> {
@@ -67,8 +71,13 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     symbols.sort_by_key(|s| s.bytes.start);
 
-    // Extract Elysia framework patterns
-    let framework_patterns = extract_elysia_patterns(root, source);
+    // Extract framework patterns from all supported frameworks
+    let mut framework_patterns = Vec::new();
+    framework_patterns.extend(extract_elysia_patterns(root, source));
+    framework_patterns.extend(extract_hono_patterns(root, source));
+    framework_patterns.extend(extract_express_patterns(root, source));
+    framework_patterns.extend(extract_fastify_patterns(root, source));
+    framework_patterns.extend(extract_trpc_patterns(root, source));
 
     Ok(ExtractedFile {
         symbols,

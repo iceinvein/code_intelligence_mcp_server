@@ -3,6 +3,12 @@ use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
 use super::elysia::extract_elysia_patterns;
+use super::express::extract_express_patterns;
+use super::fastify::extract_fastify_patterns;
+use super::hono::extract_hono_patterns;
+use super::nestjs::extract_nestjs_patterns;
+use super::nextjs;
+use super::trpc::extract_trpc_patterns;
 use super::symbol::{
     ByteSpan, DataFlowEdge, DataFlowType, DecoratorEntry, DecoratorType, ExtractedFile,
     ExtractedSymbol, Import, JSDocEntry, JSDocParam, LineSpan, SymbolKind, TodoEntry, TodoKind,
@@ -158,8 +164,17 @@ fn extract_symbols_with_parser(
     let cursor = root.walk();
     let decorators = extract_decorators_for_symbols(&symbols, source, cursor);
 
-    // Extract Elysia framework patterns
-    let framework_patterns = extract_elysia_patterns(root, source);
+    // Extract framework patterns from all supported frameworks
+    let mut framework_patterns = Vec::new();
+    framework_patterns.extend(extract_elysia_patterns(root, source));
+    framework_patterns.extend(extract_hono_patterns(root, source));
+    framework_patterns.extend(extract_express_patterns(root, source));
+    framework_patterns.extend(extract_fastify_patterns(root, source));
+    framework_patterns.extend(extract_nestjs_patterns(root, source));
+    framework_patterns.extend(extract_trpc_patterns(root, source));
+    if nextjs::is_nextjs_convention_file(file_path) {
+        framework_patterns.extend(nextjs::extract_nextjs_patterns(root, source, file_path));
+    }
 
     Ok(ExtractedFile {
         symbols,

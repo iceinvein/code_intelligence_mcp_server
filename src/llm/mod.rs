@@ -94,12 +94,25 @@ pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &
         .strip_prefix("src/")
         .unwrap_or(file_path);
 
-    // Truncate body to first 10 lines
-    let truncated_body: String = body
-        .lines()
-        .take(10)
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Truncate body to fit within the 512-token context window.
+    // Line-based truncation alone isn't safe — generated TypeScript types can have
+    // single lines with thousands of characters (e.g. Expo Router's __routes).
+    // The system prompt + template overhead is ~150 tokens. At ~3.5 chars/token
+    // for code, 1200 chars ≈ 340 tokens, leaving headroom for max_tokens output.
+    const MAX_BODY_CHARS: usize = 1200;
+    let truncated_body: String = {
+        let by_lines: String = body.lines().take(10).collect::<Vec<_>>().join("\n");
+        if by_lines.len() <= MAX_BODY_CHARS {
+            by_lines
+        } else {
+            // Find the last char boundary at or before MAX_BODY_CHARS
+            let mut end = MAX_BODY_CHARS;
+            while end > 0 && !by_lines.is_char_boundary(end) {
+                end -= 1;
+            }
+            by_lines[..end].to_string()
+        }
+    };
 
     // Build Qwen2.5 chat template with an enhanced system prompt that requests
     // domain-specific vocabulary and technology names. The generic "Describe what

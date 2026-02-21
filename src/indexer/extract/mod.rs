@@ -1,8 +1,11 @@
 pub mod c;
 pub mod cpp;
 pub mod elysia;
+pub mod express;
+pub mod fastify;
 pub mod framework_utils;
 pub mod go;
+pub mod hono;
 pub mod java;
 pub mod javascript;
 pub mod python;

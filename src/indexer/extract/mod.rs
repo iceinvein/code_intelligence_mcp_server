@@ -8,9 +8,12 @@ pub mod go;
 pub mod hono;
 pub mod java;
 pub mod javascript;
+pub mod nestjs;
+pub mod nextjs;
 pub mod python;
 pub mod rust;
 pub mod symbol;
+pub mod trpc;
 pub mod typescript;
 
 /// Returns `true` when `node` sits inside a function body (i.e. is NOT at

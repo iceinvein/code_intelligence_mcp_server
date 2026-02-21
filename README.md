@@ -8,16 +8,16 @@
 
 ---
 
-This server indexes your codebase locally to provide **fast, semantic, and structure-aware** code navigation to tools like OpenCode, Trae, and Cursor.
+This server indexes your codebase locally to provide **fast, semantic, and structure-aware** code navigation to tools like Claude Code, OpenCode, Trae, and Cursor.
 
 ## Why Use This Server?
 
 Unlike basic text search, this server builds a local knowledge graph to understand your code.
 
-* **Advanced Hybrid Search**: Combines **Tantivy** (keyword BM25) + **LanceDB** (semantic vector) + **jina-code-embeddings-0.5b** (896-dim code-specific model via llama.cpp + Metal GPU) with Reciprocal Rank Fusion (RRF).
+* **Advanced Hybrid Search**: Combines keyword search ([BM25](#glossary) via Tantivy) with semantic vector search (via LanceDB + jina-code-embeddings-0.5b) using [Reciprocal Rank Fusion (RRF)](#glossary) — a technique that merges ranked results from different search systems by position rather than raw score.
 * **Smart Context Assembly**: Token-aware budgeting with query-aware truncation that keeps relevant lines within context limits.
-* **On-Device LLM Descriptions**: Automatically generates natural-language descriptions for every symbol using a local **Qwen2.5-Coder-1.5B** model (llama.cpp with Metal GPU), enriching search with human-readable summaries.
-* **PageRank Scoring**: Graph-based symbol importance scoring that identifies central, heavily-used components.
+* **On-Device LLM Descriptions**: Automatically generates natural-language descriptions for every symbol using a local **Qwen2.5-Coder-1.5B** model (llama.cpp with Metal GPU), enriching search with human-readable summaries. This bridges the vocabulary gap between how developers search ("auth handler") and how code is named (`authenticate_request`).
+* **PageRank Scoring**: Graph-based symbol importance scoring (similar to Google's original algorithm) that identifies central, heavily-used components by analyzing call graphs and type relationships.
 * **Learns from Feedback**: Optional learning system that adapts to user selections over time.
 * **Production First**: Multi-layer test detection (file paths, symbol names, and AST-level `#[test]`/`mod tests` analysis) ensures implementation code ranks above test helpers.
 * **Multi-Repo Support**: Index and search across multiple repositories/monorepos simultaneously.
@@ -29,6 +29,30 @@ Unlike basic text search, this server builds a local knowledge graph to understa
 ## Quick Start
 
 Runs directly via `npx` without requiring a local Rust toolchain.
+
+### Claude Code
+
+Add to your MCP settings (global `~/.claude.json` or project-level `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "command": "npx",
+      "args": ["-y", "@iceinvein/code-intelligence-mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+Or install via the CLI:
+
+```bash
+claude mcp add code-intelligence -- npx -y @iceinvein/code-intelligence-mcp
+```
+
+Once connected, Claude Code gains 23 MCP tools for semantic search (`search_code`), symbol navigation (`get_definition`, `find_references`), call/type graphs (`get_call_hierarchy`, `get_type_graph`), impact analysis (`find_affected_code`, `trace_data_flow`), and more. The server auto-detects the working directory and begins indexing in the background.
 
 ### OpenCode / Trae
 
@@ -77,7 +101,7 @@ CIMCP_MODE=standalone ./target/release/code-intelligence-mcp-server
 
 Point your MCP clients to the standalone server using Streamable HTTP transport:
 
-**Claude Code** (`~/.claude/claude_desktop_config.json`):
+**Claude Code** (`~/.claude.json` or project-level `.mcp.json`):
 ```json
 {
   "mcpServers": {
@@ -87,6 +111,11 @@ Point your MCP clients to the standalone server using Streamable HTTP transport:
     }
   }
 }
+```
+
+Or via the CLI:
+```bash
+claude mcp add --transport http code-intelligence http://localhost:3333/mcp
 ```
 
 **OpenCode** (`opencode.json`):
@@ -258,7 +287,7 @@ The server supports semantic navigation and symbol extraction for the following 
 
 ## Smart Ranking & Context Enhancement
 
-The ranking engine optimizes results for relevance using sophisticated signals:
+The search pipeline runs two parallel searches — keyword (BM25 via Tantivy) and semantic (vector embeddings via LanceDB) — then merges them using Reciprocal Rank Fusion (RRF). On top of this hybrid base, the ranking engine applies structural signals to optimize for relevance:
 
 1. **PageRank Symbol Importance**: Graph-based scoring that identifies central, heavily-used components (similar to Google's PageRank).
 2. **Reciprocal Rank Fusion (RRF)**: Combines keyword, vector, and graph search results using statistically optimal rank fusion.
@@ -288,6 +317,23 @@ The system detects query intent and adjusts ranking accordingly:
 | "auth and authz"  | Multi-query decomposition | Splits into sub-queries, merges via RRF |
 
 For a deep dive into the system's design, see [System Architecture](SYSTEM_ARCHITECTURE.md).
+
+---
+
+## Glossary
+
+Key terms used throughout this documentation:
+
+| Term | Full Name | What It Means |
+|------|-----------|---------------|
+| **MCP** | Model Context Protocol | An open protocol for connecting LLM-based tools (like Claude Code, Cursor, OpenCode) to external data sources and capabilities. This server implements MCP to expose code search and navigation tools. |
+| **BM25** | Best Matching 25 | A probabilistic text search algorithm (used by Tantivy). Ranks results by how often your search terms appear in a document (term frequency) weighted by how rare those terms are across all documents (inverse document frequency / IDF). The standard algorithm behind most full-text search engines. |
+| **IDF** | Inverse Document Frequency | A component of BM25 that measures how rare a term is. A term like `authenticate` appearing in only 3 files has high IDF (very discriminating), while `error` appearing in 200 files has low IDF (less useful for ranking). |
+| **RRF** | Reciprocal Rank Fusion | A technique for merging ranked result lists from different search systems. Instead of comparing raw scores (which have different scales), RRF uses rank positions: a result ranked #1 in keyword search and #3 in vector search gets a combined score based on those positions. This makes it robust when combining fundamentally different search approaches. |
+| **GGUF** | GGML Unified Format | A binary format for storing quantized (compressed) neural network weights. Used by llama.cpp to run both the embedding model and the LLM efficiently on consumer hardware. Q4_K_M quantization reduces the 1.5B parameter model from ~3GB to ~1.1GB with minimal quality loss. |
+| **LLM** | Large Language Model | In this project, a local Qwen2.5-Coder-1.5B model that generates one-sentence natural-language descriptions for each code symbol (function, class, type). These descriptions are indexed alongside the code, helping BM25 match natural-language queries to technically-named code. |
+| **PageRank** | — | A graph algorithm (originally from Google Search) adapted here to score symbol importance. Symbols that are called/referenced by many other symbols get higher PageRank scores, indicating they are central to the codebase. |
+| **Tree-Sitter** | — | A parser generator that builds concrete syntax trees (CSTs) for source code. Used to extract symbols (functions, classes, types), their relationships (calls, imports, type hierarchies), and structural information from 8 supported languages. |
 
 ---
 

@@ -10,6 +10,74 @@ Code Intelligence MCP Server is a Rust-based local code indexing and semantic se
 
 **Core technologies:** Rust 2021, Tree-Sitter (parsing), SQLite (metadata), Tantivy (full-text search), LanceDB (vector embeddings), llama.cpp (Metal GPU inference for both embeddings and LLM descriptions).
 
+## Glossary
+
+Key acronyms and concepts used throughout the codebase:
+
+| Term | Full Name | Description |
+|------|-----------|-------------|
+| **MCP** | Model Context Protocol | Open protocol for connecting LLM agents to external tools and data sources. This server implements MCP to expose code search/navigation tools. |
+| **BM25** | Best Matching 25 | Probabilistic text retrieval algorithm used by Tantivy. Ranks documents by term frequency (TF) and inverse document frequency (IDF) — how often a term appears in a document vs. how rare it is across the corpus. |
+| **IDF** | Inverse Document Frequency | A BM25 component measuring term rarity. High IDF = rare term = more discriminating. Low IDF = common term (e.g., "error") = less useful for ranking. IDF dilution is a recurring concern when adding synonyms or descriptions. |
+| **RRF** | Reciprocal Rank Fusion | Technique for combining ranked lists from different search systems (BM25 keyword search + vector semantic search). Merges by reciprocal rank position rather than raw scores, making it robust across different scoring scales. |
+| **GGUF** | GGML Unified Format | Binary format for quantized LLM model weights. Used by llama.cpp for both the embedding model (jina-code-0.5b) and the description LLM (Qwen2.5-Coder-1.5B). Q4_K_M quantization balances quality and speed. |
+| **LLM** | Large Language Model | Used on-device (Qwen2.5-Coder-1.5B via llama.cpp) to generate natural-language descriptions for each indexed symbol, enriching BM25 search with human-readable terms. |
+
+## Usage in Claude Code
+
+### Embedded Mode (Default)
+
+Add to `~/.claude.json` (or project-level `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "command": "npx",
+      "args": ["-y", "@iceinvein/code-intelligence-mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+Each Claude Code session spawns its own server process. The server auto-detects the working directory as `BASE_DIR` and begins indexing in the background. The embedding model (~531MB) and LLM (~1.1GB) are downloaded on first launch and cached in `~/.code-intelligence/models/`.
+
+### Standalone Mode (Recommended for Multiple Sessions)
+
+If you run multiple Claude Code sessions simultaneously, standalone mode avoids loading duplicate copies of the embedding model:
+
+1. Start the standalone server (once):
+   ```bash
+   npx @iceinvein/code-intelligence-mcp-standalone
+   ```
+
+2. Configure Claude Code to connect (`~/.claude.json`):
+   ```json
+   {
+     "mcpServers": {
+       "code-intelligence": {
+         "type": "streamable-http",
+         "url": "http://localhost:3333/mcp"
+       }
+     }
+   }
+   ```
+
+The standalone server auto-detects each session's workspace root via the MCP `roots` capability — no `BASE_DIR` needed.
+
+### What Claude Code Gets
+
+Once connected, Claude Code gains access to 23 MCP tools including:
+
+- **`search_code`** — Primary semantic + keyword hybrid search (e.g., "how does auth work?" or "class User")
+- **`get_definition`** / **`find_references`** — Jump to definitions and find all usages
+- **`get_call_hierarchy`** / **`get_type_graph`** — Navigate call chains and type hierarchies
+- **`explore_dependency_graph`** — Trace module-level imports/exports
+- **`find_affected_code`** — Impact analysis before refactoring
+- **`trace_data_flow`** — Follow variable reads/writes through the code
+- **`get_index_stats`** / **`refresh_index`** — Monitor and trigger re-indexing
+
 ## Build & Run Commands
 
 ```bash
@@ -81,9 +149,9 @@ Optional config: `~/.code-intelligence/server.toml`.
 
 ### Storage Layers
 
-- **SQLite** (`storage/sqlite/`): Symbols, edges, file metadata, index/search telemetry
-- **Tantivy** (`storage/tantivy.rs`): BM25 full-text search with n-gram tokenization
-- **LanceDB** (`storage/vector.rs`): Vector embeddings for semantic similarity
+- **SQLite** (`storage/sqlite/`): Symbols, edges, file metadata, index/search telemetry, LLM descriptions
+- **Tantivy** (`storage/tantivy.rs`): Full-text search using BM25 ranking with n-gram tokenization. Indexes symbol names, code text (comments stripped), morphological variants, and LLM-generated descriptions.
+- **LanceDB** (`storage/vector.rs`): Vector embeddings (896-dim, jina-code-0.5b via llama.cpp) for semantic similarity search. Combined with Tantivy results via RRF.
 
 ### Runtime Data Location
 
@@ -197,10 +265,13 @@ The `src/path/mod.rs` module includes comprehensive parameterized tests using th
 
 ## Ranking Signals
 
-The scoring system in `src/retrieval/ranking/score.rs` applies:
+The retrieval pipeline uses a hybrid search approach: BM25 keyword search (via Tantivy) and vector semantic search (via LanceDB) are run in parallel, then merged using RRF (Reciprocal Rank Fusion) to produce a combined ranking. On top of this, the scoring system in `src/retrieval/ranking/score.rs` applies structural signals:
+
 - Test file penalty (0.5x unless Intent::Test)
-- Glue code filtering (index.ts deprioritized)
+- Glue code filtering (index.ts barrel files deprioritized)
 - Directory semantics (src/ boosted, dist/ penalized)
-- Export status boost
-- Intent multipliers (Definition 1.5x, Schema 50-75x)
-- Popularity boost by incoming edge count
+- Export status boost (exported/public symbols represent the primary API surface)
+- Intent multipliers (Definition 1.5x, Schema 50-75x) — detected from query patterns
+- Popularity boost by incoming edge count (PageRank-style graph signal)
+- Score-gap detection — drops trailing results with a >2.5x score drop from the previous result
+- Sub-query coverage — ensures multi-term queries have results matching each sub-query

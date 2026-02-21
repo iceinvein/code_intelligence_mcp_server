@@ -237,8 +237,8 @@ pub fn derive_nextjs_route_path(file_path: &str) -> Option<String> {
     let path = file_path.replace('\\', "/");
 
     // Accept paths that start with "app/" (no leading slash) or contain "/app/".
-    let after_app = if path.starts_with("app/") {
-        &path[4..]
+    let after_app = if let Some(rest) = path.strip_prefix("app/") {
+        rest
     } else {
         let app_idx = path.find("/app/")?;
         &path[app_idx + 5..]
@@ -256,7 +256,7 @@ pub fn derive_nextjs_route_path(file_path: &str) -> Option<String> {
                 } else if seg.starts_with("[...") && seg.ends_with(']') {
                     format!("*{}", &seg[4..seg.len() - 1])
                 } else if seg.starts_with('(') && seg.ends_with(')') {
-                    return String::new();
+                    String::new()
                 } else if seg.starts_with('[') && seg.ends_with(']') {
                     format!(":{}", &seg[1..seg.len() - 1])
                 } else {

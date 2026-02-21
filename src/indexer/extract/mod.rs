@@ -1,6 +1,7 @@
 pub mod c;
 pub mod cpp;
 pub mod elysia;
+pub mod framework_utils;
 pub mod go;
 pub mod java;
 pub mod javascript;

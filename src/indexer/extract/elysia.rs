@@ -4,12 +4,11 @@
 
 use tree_sitter::Node;
 
+use super::framework_utils::{
+    extract_handler_name, extract_object_keys, extract_plugin_name, extract_string_value,
+    find_chain_root, is_http_path, text_for_node, truncate_text, ROUTE_METHODS,
+};
 use super::symbol::{ExtractedFrameworkPattern, FrameworkPatternKind};
-
-/// HTTP methods recognized as Elysia routes
-const ROUTE_METHODS: &[&str] = &[
-    "get", "post", "put", "delete", "patch", "options", "head", "all",
-];
 
 /// Extract Elysia framework patterns from a TypeScript AST
 pub fn extract_elysia_patterns(root: Node, source: &str) -> Vec<ExtractedFrameworkPattern> {
@@ -77,7 +76,7 @@ fn try_extract_elysia_call(node: Node, source: &str) -> Option<ExtractedFramewor
     // misidentified as HTTP routes.
     if matches!(kind, FrameworkPatternKind::Route) {
         match &path {
-            Some(p) if p.starts_with('/') => {} // valid HTTP path
+            Some(p) if is_http_path(p) => {}
             _ => return None,
         }
     }
@@ -192,112 +191,6 @@ fn extract_pattern_details(
     }
 
     (path, name, handler, arguments)
-}
-
-/// Extract string content without quotes
-fn extract_string_value(node: Node, source: &str) -> String {
-    let text = text_for_node(node, source);
-    text.trim_matches(|c| c == '"' || c == '\'' || c == '`')
-        .to_string()
-}
-
-/// Try to extract handler function name
-fn extract_handler_name(node: Node, source: &str) -> Option<String> {
-    match node.kind() {
-        "identifier" => Some(text_for_node(node, source)),
-        "arrow_function" | "function_expression" => Some("<anonymous>".to_string()),
-        "call_expression" => {
-            // Could be a wrapper like `handler(fn)`
-            if let Some(func) = node.child_by_field_name("function") {
-                return Some(text_for_node(func, source));
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Extract object keys as comma-separated string
-fn extract_object_keys(node: Node, source: &str) -> Option<String> {
-    let mut keys = Vec::new();
-    let mut cursor = node.walk();
-
-    for child in node.children(&mut cursor) {
-        if child.kind() == "pair" {
-            if let Some(key_node) = child.child_by_field_name("key") {
-                keys.push(text_for_node(key_node, source));
-            }
-        }
-        // Shorthand property
-        if child.kind() == "shorthand_property_identifier" {
-            keys.push(text_for_node(child, source));
-        }
-    }
-
-    if keys.is_empty() {
-        None
-    } else {
-        Some(keys.join(", "))
-    }
-}
-
-/// Extract plugin name from various node types
-fn extract_plugin_name(node: Node, source: &str) -> Option<String> {
-    match node.kind() {
-        "identifier" => Some(text_for_node(node, source)),
-        "call_expression" => {
-            // plugin() call - get the function name
-            if let Some(func) = node.child_by_field_name("function") {
-                return Some(text_for_node(func, source));
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Find the root variable of a method chain
-fn find_chain_root(member_expr: Node, source: &str) -> Option<String> {
-    let object = member_expr.child_by_field_name("object")?;
-
-    match object.kind() {
-        "identifier" => Some(text_for_node(object, source)),
-        "call_expression" => {
-            // Keep traversing up the chain
-            if let Some(inner_func) = object.child_by_field_name("function") {
-                if inner_func.kind() == "member_expression" {
-                    find_chain_root(inner_func, source)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-        "member_expression" => find_chain_root(object, source),
-        "new_expression" => {
-            // new Elysia()
-            object
-                .child_by_field_name("constructor")
-                .map(|constructor| text_for_node(constructor, source))
-        }
-        _ => None,
-    }
-}
-
-fn text_for_node(node: Node, source: &str) -> String {
-    source
-        .get(node.start_byte()..node.end_byte())
-        .unwrap_or("")
-        .to_string()
-}
-
-fn truncate_text(text: &str, max_len: usize) -> String {
-    if text.len() <= max_len {
-        text.to_string()
-    } else {
-        format!("{}...", &text[..max_len])
-    }
 }
 
 #[cfg(test)]

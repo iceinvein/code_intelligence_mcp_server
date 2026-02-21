@@ -136,6 +136,10 @@ pub async fn run_description_worker(
                     Ok(desc) => desc,
                     Err(e) => {
                         tracing::warn!("Failed to generate description for {}: {:#}", sym.name, e);
+                        // Mark as described (empty) to prevent infinite retry on
+                        // permanently-failing symbols (e.g. text too large for context window).
+                        let conn = db.read().context("read conn for failed-description upsert")?;
+                        let _ = desc_queries::upsert_description(&conn, &sym.id, &content_hash, "");
                         continue;
                     }
                 };
@@ -341,5 +345,35 @@ mod tests {
         let conn = db.read().unwrap();
         let count = desc_queries::count_descriptions(&conn).unwrap();
         assert_eq!(count, 0);
+    }
+
+    /// LLM generator that always fails (simulates InsufficientSpace or other errors).
+    struct FailingLlmGenerator;
+    impl LlmGenerator for FailingLlmGenerator {
+        fn generate(&self, _prompt: &str, _max_tokens: u32) -> Result<String> {
+            anyhow::bail!("Failed to add token to batch: InsufficientSpace(512)")
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_marks_failed_symbols_as_described() {
+        let (db, tantivy) = setup_test_env();
+        insert_test_symbol(&db, "s1", "my_func", "function");
+        insert_test_symbol(&db, "s2", "other_func", "function");
+
+        let llm: Arc<dyn LlmGenerator> = Arc::new(FailingLlmGenerator);
+        let cancel = CancellationToken::new();
+
+        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel)
+            .await
+            .unwrap();
+
+        // Both symbols should have empty descriptions to prevent infinite retry
+        let conn = db.read().unwrap();
+        let count = desc_queries::count_descriptions(&conn).unwrap();
+        assert_eq!(count, 2);
+        // Descriptions should be empty (not generated)
+        let desc = desc_queries::get_description_for_symbol(&conn, "s1").unwrap();
+        assert_eq!(desc, Some("".to_string()));
     }
 }

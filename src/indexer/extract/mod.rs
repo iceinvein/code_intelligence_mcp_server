@@ -1,4 +1,5 @@
 pub mod c;
+pub mod convex;
 pub mod cpp;
 pub mod elysia;
 pub mod express;

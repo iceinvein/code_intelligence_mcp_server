@@ -94,7 +94,7 @@ pub enum DecoratorType {
     Unknown,
 }
 
-/// Framework pattern kind for Elysia/Hono/Express/Fastify/NestJS/tRPC/Next.js
+/// Framework pattern kind for Elysia/Hono/Express/Fastify/NestJS/tRPC/Next.js/Convex
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrameworkPatternKind {
@@ -121,6 +121,10 @@ pub enum FrameworkPatternKind {
     Hook,
     Schema,
     FileRoute,
+    Query,
+    Mutation,
+    Action,
+    CronJob,
 }
 
 impl std::fmt::Display for FrameworkPatternKind {
@@ -149,6 +153,10 @@ impl std::fmt::Display for FrameworkPatternKind {
             Self::Hook => write!(f, "hook"),
             Self::Schema => write!(f, "schema"),
             Self::FileRoute => write!(f, "file_route"),
+            Self::Query => write!(f, "query"),
+            Self::Mutation => write!(f, "mutation"),
+            Self::Action => write!(f, "action"),
+            Self::CronJob => write!(f, "cron_job"),
         }
     }
 }

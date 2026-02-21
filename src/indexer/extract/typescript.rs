@@ -2,6 +2,7 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
+use super::convex;
 use super::elysia::extract_elysia_patterns;
 use super::express::extract_express_patterns;
 use super::fastify::extract_fastify_patterns;
@@ -174,6 +175,9 @@ fn extract_symbols_with_parser(
     framework_patterns.extend(extract_trpc_patterns(root, source));
     if nextjs::is_nextjs_convention_file(file_path) {
         framework_patterns.extend(nextjs::extract_nextjs_patterns(root, source, file_path));
+    }
+    if convex::is_convex_file(file_path) {
+        framework_patterns.extend(convex::extract_convex_patterns(root, source, file_path));
     }
 
     Ok(ExtractedFile {

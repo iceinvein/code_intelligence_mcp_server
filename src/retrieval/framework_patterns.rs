@@ -1,9 +1,9 @@
 //! Framework pattern injection for NL queries.
 //!
-//! Framework patterns (WebSocket handlers, routes, middleware) live in a
-//! separate SQLite table and aren't directly searchable via BM25/vector.
-//! This module queries them and boosts/injects matching parent symbols
-//! into the search results.
+//! Framework patterns (WebSocket handlers, routes, middleware, Convex functions,
+//! cron jobs) live in a separate SQLite table and aren't directly searchable
+//! via BM25/vector. This module queries them and boosts/injects matching
+//! parent symbols into the search results.
 
 use super::RankedHit;
 use crate::storage::sqlite::SqliteStore;
@@ -87,7 +87,24 @@ pub(super) fn inject_framework_patterns(
             || (kind_lower == "file_route"
                 && (query_lower.contains("page")
                     || query_lower.contains("layout")
-                    || query_lower.contains("file route")));
+                    || query_lower.contains("file route")))
+            // Query aliases (Convex)
+            || (kind_lower == "query"
+                && (query_lower.contains("query")
+                    || query_lower.contains("convex")))
+            // Mutation aliases (Convex)
+            || (kind_lower == "mutation"
+                && (query_lower.contains("mutation")
+                    || query_lower.contains("convex")))
+            // Action aliases (Convex)
+            || (kind_lower == "action"
+                && (query_lower.contains("action")
+                    || query_lower.contains("convex")))
+            // CronJob aliases (Convex)
+            || (kind_lower == "cron_job"
+                && (query_lower.contains("cron")
+                    || query_lower.contains("scheduled")
+                    || query_lower.contains("periodic")));
 
         if matches {
             // Route patterns without an HTTP path (e.g., map.get(key), params.get('id'),

@@ -94,7 +94,7 @@ pub enum DecoratorType {
     Unknown,
 }
 
-/// Framework pattern kind for Elysia/Hono/Express
+/// Framework pattern kind for Elysia/Hono/Express/Fastify/NestJS/tRPC/Next.js
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrameworkPatternKind {
@@ -109,6 +109,18 @@ pub enum FrameworkPatternKind {
     Guard,
     Group,
     Listen,
+    Middleware,
+    Controller,
+    Injectable,
+    Module,
+    Pipe,
+    Interceptor,
+    Procedure,
+    Router,
+    ErrorHandler,
+    Hook,
+    Schema,
+    FileRoute,
 }
 
 impl std::fmt::Display for FrameworkPatternKind {
@@ -125,6 +137,18 @@ impl std::fmt::Display for FrameworkPatternKind {
             Self::Guard => write!(f, "guard"),
             Self::Group => write!(f, "group"),
             Self::Listen => write!(f, "listen"),
+            Self::Middleware => write!(f, "middleware"),
+            Self::Controller => write!(f, "controller"),
+            Self::Injectable => write!(f, "injectable"),
+            Self::Module => write!(f, "module"),
+            Self::Pipe => write!(f, "pipe"),
+            Self::Interceptor => write!(f, "interceptor"),
+            Self::Procedure => write!(f, "procedure"),
+            Self::Router => write!(f, "router"),
+            Self::ErrorHandler => write!(f, "error_handler"),
+            Self::Hook => write!(f, "hook"),
+            Self::Schema => write!(f, "schema"),
+            Self::FileRoute => write!(f, "file_route"),
         }
     }
 }

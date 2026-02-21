@@ -187,6 +187,8 @@ fn extract_pattern_details(
                 arguments = Some(truncate_text(&text_for_node(*first, source), 200));
             }
         }
+        // New variants (Middleware, Controller, etc.) not used by Elysia
+        _ => {}
     }
 
     (path, name, handler, arguments)

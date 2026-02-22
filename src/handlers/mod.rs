@@ -948,8 +948,8 @@ pub fn handle_trace_data_flow(
         "file_path": root.file_path,
         "direction": direction,
         "depth": depth,
-        "read_count": reads.len(),
-        "write_count": writes.len(),
+        "read_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("read")).count(),
+        "write_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write")).count(),
         "flows": flows,
         "display": display,
     }))
@@ -978,19 +978,21 @@ fn trace_data_flow_edges(
         let mut next_queue = Vec::new();
 
         for (current_id, path) in queue.drain(..) {
-            // Get outgoing edges
+            // --- Outgoing edges: what does this symbol read/write/call? ---
             let outgoing = sqlite.list_edges_from(&current_id, limit)?;
 
-            for edge in outgoing {
+            for edge in &outgoing {
                 if reads.len() + writes.len() >= limit {
                     break;
                 }
 
-                // Infer data flow from edge type
+                // Map actual reads/writes edge types first; fall back to
+                // call/reference as secondary data-flow signals.
                 let flow_type = match edge.edge_type.as_str() {
-                    "call" => "read",
-                    "reference" => "read",
-                    "extends" | "implements" => "read",
+                    "reads" => "read",
+                    "writes" => "write",
+                    "call" | "reference" => "read",
+                    // "extends", "implements", "type", "alias" are structural, not data-flow
                     _ => continue,
                 };
 
@@ -1008,17 +1010,65 @@ fn trace_data_flow_edges(
                     let mut new_path = path.clone();
                     new_path.push(edge.to_symbol_id.clone());
 
-                    let target = if flow_type == "read" {
-                        &mut reads
-                    } else {
+                    let target = if flow_type == "write" {
                         &mut writes
+                    } else {
+                        &mut reads
                     };
                     target.push((
                         edge.to_symbol_id.clone(),
                         flow_type.to_string(),
                         new_path.clone(),
                     ));
-                    next_queue.push((edge.to_symbol_id, new_path));
+                    next_queue.push((edge.to_symbol_id.clone(), new_path));
+                }
+            }
+
+            // --- Incoming edges: who reads/writes/calls this symbol? ---
+            let incoming = sqlite.list_edges_to(&current_id, limit)?;
+
+            for edge in &incoming {
+                if reads.len() + writes.len() >= limit {
+                    break;
+                }
+
+                // For incoming edges the source is the actor performing the
+                // read/write.  Skip "reference" to avoid noise (import
+                // declarations, type aliases, etc.).
+                let flow_type = match edge.edge_type.as_str() {
+                    "reads" => "read",
+                    "writes" => "write",
+                    "call" => "read",
+                    // "reference" skipped incoming to avoid noise from imports/type aliases
+                    _ => continue,
+                };
+
+                let match_direction = match direction {
+                    "reads" => flow_type == "read",
+                    "writes" => flow_type == "write",
+                    _ => true,
+                };
+
+                if !match_direction {
+                    continue;
+                }
+
+                // The node discovered is the *source* of the incoming edge.
+                if visited.insert(edge.from_symbol_id.clone()) {
+                    let mut new_path = path.clone();
+                    new_path.push(edge.from_symbol_id.clone());
+
+                    let target = if flow_type == "write" {
+                        &mut writes
+                    } else {
+                        &mut reads
+                    };
+                    target.push((
+                        edge.from_symbol_id.clone(),
+                        flow_type.to_string(),
+                        new_path.clone(),
+                    ));
+                    next_queue.push((edge.from_symbol_id.clone(), new_path));
                 }
             }
         }
@@ -2100,5 +2150,129 @@ mod tests {
         let purpose = infer_file_purpose_for_summary(&symbols);
         assert!(purpose.contains("module"));
         assert!(purpose.contains("classes"));
+    }
+
+    // --- trace_data_flow_edges tests ---
+
+    fn make_sqlite() -> SqliteStore {
+        let sqlite =
+            SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+        sqlite
+    }
+
+    fn sym(id: &str, name: &str, file: &str) -> crate::storage::sqlite::SymbolRow {
+        crate::storage::sqlite::SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            end_line: 5,
+            text: format!("function {name}() {{}}"),
+        }
+    }
+
+    fn edge(from: &str, to: &str, edge_type: &str) -> crate::storage::sqlite::EdgeRow {
+        crate::storage::sqlite::EdgeRow {
+            from_symbol_id: from.to_string(),
+            to_symbol_id: to.to_string(),
+            edge_type: edge_type.to_string(),
+            at_file: Some("src/a.ts".to_string()),
+            at_line: Some(1),
+            confidence: 0.7,
+            evidence_count: 1,
+            resolution: "local".to_string(),
+        }
+    }
+
+    #[test]
+    fn trace_data_flow_follows_reads_and_writes_edges() {
+        let sqlite = make_sqlite();
+
+        // Insert root symbol and two targets
+        sqlite.upsert_symbol(&sym("root", "rootFn", "src/root.ts")).unwrap();
+        sqlite.upsert_symbol(&sym("tgt_r", "readTarget", "src/a.ts")).unwrap();
+        sqlite.upsert_symbol(&sym("tgt_w", "writeTarget", "src/b.ts")).unwrap();
+
+        // root --reads--> tgt_r
+        sqlite.upsert_edge(&edge("root", "tgt_r", "reads")).unwrap();
+        // root --writes--> tgt_w
+        sqlite.upsert_edge(&edge("root", "tgt_w", "writes")).unwrap();
+
+        let (reads, writes) =
+            trace_data_flow_edges(&sqlite, "root", 3, 20, "both").unwrap();
+
+        let read_ids: Vec<&str> = reads.iter().map(|(id, _, _)| id.as_str()).collect();
+        let write_ids: Vec<&str> = writes.iter().map(|(id, _, _)| id.as_str()).collect();
+
+        assert!(
+            read_ids.contains(&"tgt_r"),
+            "reads edge target must appear in reads: got {read_ids:?}"
+        );
+        assert!(
+            write_ids.contains(&"tgt_w"),
+            "writes edge target must appear in writes: got {write_ids:?}"
+        );
+    }
+
+    #[test]
+    fn trace_data_flow_incoming_edges() {
+        let sqlite = make_sqlite();
+
+        sqlite.upsert_symbol(&sym("root", "rootFn", "src/root.ts")).unwrap();
+        sqlite.upsert_symbol(&sym("reader", "readerFn", "src/c.ts")).unwrap();
+
+        // reader --reads--> root  (incoming to root)
+        sqlite.upsert_edge(&edge("reader", "root", "reads")).unwrap();
+
+        let (reads, _writes) =
+            trace_data_flow_edges(&sqlite, "root", 3, 20, "both").unwrap();
+
+        let read_ids: Vec<&str> = reads.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert!(
+            read_ids.contains(&"reader"),
+            "incoming reads-edge source must appear in reads: got {read_ids:?}"
+        );
+    }
+
+    #[test]
+    fn trace_data_flow_direction_filter() {
+        let sqlite = make_sqlite();
+
+        sqlite.upsert_symbol(&sym("root", "rootFn", "src/root.ts")).unwrap();
+        sqlite.upsert_symbol(&sym("tgt_r", "readTarget", "src/a.ts")).unwrap();
+        sqlite.upsert_symbol(&sym("tgt_w", "writeTarget", "src/b.ts")).unwrap();
+
+        sqlite.upsert_edge(&edge("root", "tgt_r", "reads")).unwrap();
+        sqlite.upsert_edge(&edge("root", "tgt_w", "writes")).unwrap();
+
+        // direction="reads" should only return reads, not writes
+        let (reads_only, writes_only) =
+            trace_data_flow_edges(&sqlite, "root", 3, 20, "reads").unwrap();
+        assert!(
+            reads_only.iter().any(|(id, _, _)| id == "tgt_r"),
+            "reads filter must include read target"
+        );
+        assert!(
+            writes_only.is_empty(),
+            "reads filter must exclude writes: got {writes_only:?}"
+        );
+
+        // direction="writes" should only return writes, not reads
+        let (reads_empty, writes_only2) =
+            trace_data_flow_edges(&sqlite, "root", 3, 20, "writes").unwrap();
+        assert!(
+            writes_only2.iter().any(|(id, _, _)| id == "tgt_w"),
+            "writes filter must include write target"
+        );
+        assert!(
+            reads_empty.is_empty(),
+            "writes filter must exclude reads: got {reads_empty:?}"
+        );
     }
 }

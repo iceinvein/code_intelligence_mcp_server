@@ -100,7 +100,7 @@ EMBEDDINGS_BACKEND=hash cargo test
 
 ## Standalone Server Mode
 
-The server can run as a long-lived HTTP daemon serving multiple repos via Streamable HTTP transport. This is ideal when running multiple MCP clients (e.g. 5-6 Claude Code instances) — the embedding model (~500MB) is loaded once and shared.
+The server can run as a long-lived HTTP daemon serving multiple repos via Streamable HTTP transport. This is ideal when running multiple MCP clients (e.g. 5-6 Claude Code instances) — the embedding model (~531MB) and LLM (~1.1GB) are loaded once and shared. The LLM is automatically freed after descriptions are generated; the embedding model stays resident for queries. In stdio mode, leader election ensures only one instance per repo performs indexing/descriptions; followers never load the LLM.
 
 ```bash
 # Start standalone server (default: localhost:3333)

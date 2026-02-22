@@ -76,9 +76,9 @@ Add to your `opencode.json` (or global config):
 
 ## Standalone Server Mode
 
-By default, each MCP client spawns its own server process (stdio transport). If you run multiple clients — say 5-6 Claude Code instances — each loads its own copy of the embedding model (~500MB), consuming ~3.6GB total.
+By default, each MCP client spawns its own server process (stdio transport). If you run multiple clients against the same repo, a per-repo leader lock (`flock()`) ensures only one instance performs indexing, file watching, and LLM description generation. The leader loads the LLM (~1.1GB) during indexing and automatically frees it once descriptions are complete. Follower instances never load the LLM — they open the search index read-only and pick up the leader's changes. All instances load their own copy of the embedding model (~531MB) for query-time vector search.
 
-**Standalone mode** runs a single long-lived HTTP server that all clients share. One embedding model, one process, ~70% memory reduction.
+**Standalone mode** runs a single long-lived HTTP server that all clients share. The main advantage is cross-repo deduplication — in stdio mode, each instance loads its own embedding model regardless of which repo it's on. With 5 instances across 3 repos, that's 5 copies (~2.6GB). Standalone loads the models once and shares them across all repos and clients.
 
 ### Starting the Server
 

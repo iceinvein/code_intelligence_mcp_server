@@ -186,3 +186,76 @@ ORDER BY s.name ASC
     }
     Ok(out)
 }
+
+/// Find test symbols that have call/reference edges to a target symbol.
+///
+/// Returns tuples of `(symbol_id, symbol_name, file_path, start_line, edge_type)` for
+/// every symbol whose file is one of `test_file_paths` and that has a `call` or
+/// `reference` edge pointing at `target_symbol_id`.
+///
+/// # Errors
+///
+/// Returns an error if the SQLite query fails.
+pub fn find_test_symbols_calling(
+    conn: &Connection,
+    test_file_paths: &[String],
+    target_symbol_id: &str,
+    limit: usize,
+) -> Result<Vec<(String, String, String, u32, String)>> {
+    if test_file_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build positional placeholders for the IN clause: ?1, ?2, …, ?N
+    // The target symbol id occupies ?N+1 and the limit occupies ?N+2.
+    let placeholders: Vec<String> = (1..=test_file_paths.len())
+        .map(|i| format!("?{i}"))
+        .collect();
+    let in_clause = placeholders.join(", ");
+    let target_param_idx = test_file_paths.len() + 1;
+    let limit_param_idx = test_file_paths.len() + 2;
+
+    let sql = format!(
+        r#"
+SELECT s.id, s.name, s.file_path, s.start_line,
+       GROUP_CONCAT(DISTINCT e.edge_type) AS edge_types
+FROM symbols s
+JOIN edges e ON e.from_symbol_id = s.id
+WHERE s.file_path IN ({in_clause})
+  AND e.to_symbol_id = ?{target_param_idx}
+  AND e.edge_type IN ('call', 'reference')
+GROUP BY s.id, s.name, s.file_path, s.start_line
+ORDER BY s.file_path, s.start_line
+LIMIT ?{limit_param_idx}
+"#
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .context("Failed to prepare find_test_symbols_calling")?;
+
+    // Build the parameter list: test file paths first, then target id, then limit.
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = test_file_paths
+        .iter()
+        .map(|p| -> Box<dyn rusqlite::types::ToSql> { Box::new(p.clone()) })
+        .collect();
+    param_values.push(Box::new(target_symbol_id.to_string()));
+    param_values.push(Box::new(limit as i64));
+
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(param_values.iter()))
+        .context("Failed to execute find_test_symbols_calling")?;
+
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let start_line: i64 = row.get(3)?;
+        out.push((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            start_line as u32,
+            row.get(4)?,
+        ));
+    }
+    Ok(out)
+}

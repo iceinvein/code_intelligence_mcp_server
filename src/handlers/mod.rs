@@ -1722,7 +1722,7 @@ pub fn handle_find_tests_for_symbol(
     state: &AppState,
     tool: FindTestsForSymbolTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let _limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let limit = tool.limit.unwrap_or(20).max(1) as usize;
 
     let sqlite = &state.sqlite;
 
@@ -1741,6 +1741,25 @@ pub fn handle_find_tests_for_symbol(
     // Get test files for this symbol's source file
     let test_files = sqlite.get_tests_for_source(&root.file_path)?;
 
+    // Use call-graph edges to find which test functions actually call the target symbol.
+    let tests_for_symbol = if !test_files.is_empty() {
+        sqlite
+            .find_test_symbols_calling(&test_files, &root.id, limit)?
+            .into_iter()
+            .map(|(id, name, file_path, line, edge_type)| {
+                json!({
+                    "test_id": id,
+                    "test_name": name,
+                    "test_file": file_path,
+                    "line": line,
+                    "edge_type": edge_type,
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
     // Get symbols with tests for more detail
     let symbols_with_tests = sqlite.get_symbols_with_tests(&root.file_path)?;
 
@@ -1753,6 +1772,7 @@ pub fn handle_find_tests_for_symbol(
         "source_file": root.file_path,
         "test_file_count": test_files.len(),
         "test_files": test_files,
+        "tests_for_symbol": tests_for_symbol,
         "symbols_with_tests": symbols_with_tests,
         "display": display,
     }))
@@ -2275,5 +2295,51 @@ mod tests {
             reads_empty.is_empty(),
             "writes filter must exclude reads: got {reads_empty:?}"
         );
+    }
+
+    #[test]
+    fn find_tests_for_symbol_returns_calling_test_functions() {
+        let sqlite = make_sqlite();
+
+        // Source symbol
+        sqlite
+            .upsert_symbol(&sym("auth_fn", "authenticate", "src/auth.ts"))
+            .unwrap();
+        // Test symbols
+        sqlite
+            .upsert_symbol(&sym("test1", "should_reject_invalid", "src/auth.test.ts"))
+            .unwrap();
+        sqlite
+            .upsert_symbol(&sym("test2", "should_accept_valid", "src/auth.test.ts"))
+            .unwrap();
+        sqlite
+            .upsert_symbol(&sym("test3", "unrelated_test", "src/auth.test.ts"))
+            .unwrap();
+
+        // test1 and test2 call authenticate; test3 does not
+        sqlite
+            .upsert_edge(&edge("test1", "auth_fn", "call"))
+            .unwrap();
+        sqlite
+            .upsert_edge(&edge("test2", "auth_fn", "call"))
+            .unwrap();
+
+        let test_files = vec!["src/auth.test.ts".to_string()];
+        let results = sqlite
+            .find_test_symbols_calling(&test_files, "auth_fn", 20)
+            .unwrap();
+
+        assert_eq!(
+            results.len(),
+            2,
+            "Should find 2 test functions. Got: {results:?}"
+        );
+        let names: Vec<&str> = results
+            .iter()
+            .map(|(_, name, _, _, _)| name.as_str())
+            .collect();
+        assert!(names.contains(&"should_reject_invalid"));
+        assert!(names.contains(&"should_accept_valid"));
+        assert!(!names.contains(&"unrelated_test"));
     }
 }

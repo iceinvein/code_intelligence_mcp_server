@@ -434,6 +434,16 @@ impl SqliteStore {
         queries::tests::get_symbols_with_tests(&conn, file_path)
     }
 
+    pub fn find_test_symbols_calling(
+        &self,
+        test_file_paths: &[String],
+        target_symbol_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, u32, String)>> {
+        let conn = self.read()?;
+        queries::tests::find_test_symbols_calling(&conn, test_file_paths, target_symbol_id, limit)
+    }
+
     pub fn get_cached_embedding(&self, cache_key: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.read()?;
         queries::cache::get_cached_embedding(&conn, cache_key)

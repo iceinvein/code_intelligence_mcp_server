@@ -2,7 +2,7 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
-use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, LineSpan, SymbolKind};
+use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
 
 pub fn extract_rust_symbols(source: &str) -> Result<ExtractedFile> {
     let mut parser = parser_for_id(LanguageId::Rust)?;
@@ -18,8 +18,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut type_edges = Vec::new();
+    let mut imports = Vec::new();
 
     walk(cursor, &mut |node| match node.kind() {
+        "use_declaration" => {
+            extract_use_imports(node, source, &mut imports);
+        }
         "function_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
                 symbols.push(symbol_from_node(
@@ -88,7 +92,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     symbols.sort_by_key(|s| s.bytes.start);
     Ok(ExtractedFile {
         symbols,
-        imports: Vec::new(),
+        imports,
         type_edges,
         dataflow_edges: Vec::new(),
         todos: Vec::new(),
@@ -237,6 +241,197 @@ fn extract_type_ref(
     // But generic_type handler manually walks type_arguments.
 }
 
+/// Extract all `Import` entries from a single `use_declaration` node.
+///
+/// A `use_declaration` has one child that is the use tree; the tree can be:
+/// - `scoped_identifier`   — `std::collections::HashMap`
+/// - `identifier`          — `HashMap` (bare, no path prefix)
+/// - `scoped_use_list`     — `std::io::{Read, Write}`
+/// - `use_list`            — `{Read, Write}` (rare at top level, but valid)
+/// - `use_as_clause`       — `foo as bar`
+/// - `use_wildcard`        — `path::*`
+fn extract_use_imports(node: Node<'_>, source: &str, out: &mut Vec<Import>) {
+    // The first non-punctuation child of use_declaration is the use tree.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let k = child.kind();
+        if k == "use" || k == ";" || k == "pub" || k == "pub(crate)" {
+            continue;
+        }
+        // Visibility nodes: pub, pub(crate), pub(super), pub(self), pub(in ...)
+        if k == "visibility_modifier" {
+            continue;
+        }
+        extract_use_tree(child, source, "", out);
+        break; // only one use tree per declaration
+    }
+}
+
+/// Recursively expand a use tree node into individual `Import` entries.
+///
+/// `prefix` accumulates the path segments found so far (e.g. `"std::io"`).
+fn extract_use_tree(node: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Import>) {
+    match node.kind() {
+        // `crate::path::Name` or `std::collections::HashMap`
+        "scoped_identifier" => {
+            let full = text_for_node(node, source);
+            // The last segment after the final `::` is the imported name.
+            let name = full
+                .rsplit("::")
+                .next()
+                .unwrap_or(&full)
+                .to_string();
+            // `source` is the full path; if there is a prefix from a parent
+            // scoped_use_list we join it, otherwise use the full scoped text.
+            let source_path = if prefix.is_empty() {
+                full.clone()
+            } else {
+                format!("{prefix}::{full}")
+            };
+            out.push(Import {
+                name,
+                source: source_path,
+                alias: None,
+            });
+        }
+
+        // A plain identifier with no path prefix (e.g. `use HashMap;` or an
+        // item inside `{HashMap, BTreeMap}`)
+        "identifier" => {
+            let name = text_for_node(node, source);
+            let source_path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}::{name}")
+            };
+            out.push(Import {
+                name,
+                source: source_path,
+                alias: None,
+            });
+        }
+
+        // `std::io::{Read, Write}` — has `path` and `list` children fields.
+        "scoped_use_list" => {
+            // Build the new prefix from the path part.
+            let path_text = node
+                .child_by_field_name("path")
+                .map(|p| text_for_node(p, source))
+                .unwrap_or_default();
+            let new_prefix = if prefix.is_empty() {
+                path_text
+            } else if path_text.is_empty() {
+                prefix.to_string()
+            } else {
+                format!("{prefix}::{path_text}")
+            };
+            // Now recurse into the list.
+            if let Some(list) = node.child_by_field_name("list") {
+                extract_use_tree(list, source, &new_prefix, out);
+            }
+        }
+
+        // `{Read, Write}` — iterate children, skipping punctuation.
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let k = child.kind();
+                if k == "{" || k == "}" || k == "," {
+                    continue;
+                }
+                extract_use_tree(child, source, prefix, out);
+            }
+        }
+
+        // `HashMap as HM` or `crate::path as alias`
+        "use_as_clause" => {
+            // `path` field is the imported path; `alias` field is the local name.
+            let path_node = node.child_by_field_name("path");
+            let alias_node = node.child_by_field_name("alias");
+
+            let (name, source_path) = if let Some(p) = path_node {
+                let path_text = text_for_node(p, source);
+                let last = path_text
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&path_text)
+                    .to_string();
+                let sp = if prefix.is_empty() {
+                    path_text.clone()
+                } else {
+                    format!("{prefix}::{path_text}")
+                };
+                (last, sp)
+            } else {
+                // Fallback: extract from raw text before " as ".
+                let raw = text_for_node(node, source);
+                let before_as = raw.split(" as ").next().unwrap_or(&raw).trim().to_string();
+                let last = before_as
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&before_as)
+                    .to_string();
+                let sp = if prefix.is_empty() {
+                    before_as.clone()
+                } else {
+                    format!("{prefix}::{before_as}")
+                };
+                (last, sp)
+            };
+
+            let alias = alias_node.map(|a| text_for_node(a, source));
+
+            out.push(Import {
+                name,
+                source: source_path,
+                alias,
+            });
+        }
+
+        // `path::*`
+        //
+        // tree-sitter represents `use super::symbol::*` as:
+        //   use_wildcard
+        //     scoped_identifier ("super::symbol")
+        //     :: ("::"),
+        //     * ("*")
+        //
+        // The path is embedded as the first child (scoped_identifier or
+        // identifier), NOT passed down via the `prefix` argument (the wildcard
+        // is a direct child of `use_declaration`, not of `scoped_use_list`).
+        "use_wildcard" => {
+            // Walk children to find the path node (anything that isn't "::" or "*").
+            let mut path_text = prefix.to_string();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let k = child.kind();
+                if k == "::" || k == "*" {
+                    continue;
+                }
+                let child_text = text_for_node(child, source);
+                path_text = if path_text.is_empty() {
+                    child_text
+                } else {
+                    format!("{path_text}::{child_text}")
+                };
+            }
+            // `path_text` is now the module path; emit name="*".
+            let source_path = if path_text.is_empty() {
+                "*".to_string() // bare `use *;` — extremely rare
+            } else {
+                path_text
+            };
+            out.push(Import {
+                name: "*".to_string(),
+                source: source_path,
+                alias: None,
+            });
+        }
+
+        _ => {}
+    }
+}
+
 fn symbol_from_node(
     name: String,
     kind: SymbolKind,
@@ -366,6 +561,68 @@ mod inner {
     }
 
     #[test]
+    fn extracts_rust_use_imports() {
+        let source = r#"
+use std::collections::HashMap;
+use crate::path::PathNormalizer;
+use super::symbol::{ExtractedFile, Import};
+use anyhow::Result;
+use std::io::{Read, Write};
+use foo as bar;
+use super::symbol::*;
+"#;
+
+        let extracted = extract_rust_symbols(source).unwrap();
+        let imports = &extracted.imports;
+
+        // Helper: find an import by name
+        let find = |name: &str| imports.iter().find(|i| i.name == name);
+
+        // use std::collections::HashMap;
+        let h = find("HashMap").expect("HashMap import");
+        assert_eq!(h.source, "std::collections::HashMap");
+        assert_eq!(h.alias, None);
+
+        // use crate::path::PathNormalizer;
+        let pn = find("PathNormalizer").expect("PathNormalizer import");
+        assert_eq!(pn.source, "crate::path::PathNormalizer");
+        assert_eq!(pn.alias, None);
+
+        // use super::symbol::{ExtractedFile, Import};  — two entries, same source
+        let ef = find("ExtractedFile").expect("ExtractedFile import");
+        assert_eq!(ef.source, "super::symbol::ExtractedFile");
+        assert_eq!(ef.alias, None);
+
+        let imp = find("Import").expect("Import import");
+        assert_eq!(imp.source, "super::symbol::Import");
+        assert_eq!(imp.alias, None);
+
+        // use anyhow::Result;
+        let r = find("Result").expect("Result import");
+        assert_eq!(r.source, "anyhow::Result");
+        assert_eq!(r.alias, None);
+
+        // use std::io::{Read, Write};
+        let rd = find("Read").expect("Read import");
+        assert_eq!(rd.source, "std::io::Read");
+        assert_eq!(rd.alias, None);
+
+        let wr = find("Write").expect("Write import");
+        assert_eq!(wr.source, "std::io::Write");
+        assert_eq!(wr.alias, None);
+
+        // use foo as bar;
+        let fb = find("foo").expect("foo as bar import");
+        assert_eq!(fb.source, "foo");
+        assert_eq!(fb.alias.as_deref(), Some("bar"));
+
+        // use super::symbol::*;
+        let wc = find("*").expect("wildcard import");
+        assert_eq!(wc.source, "super::symbol");
+        assert_eq!(wc.alias, None);
+    }
+
+    #[test]
     fn extracts_rust_type_edges() {
         let source = r#"
         struct User { name: String }
@@ -388,4 +645,5 @@ mod inner {
         assert!(has_edge("new", "String"));
         assert!(has_edge("new", "Self"));
     }
+
 }

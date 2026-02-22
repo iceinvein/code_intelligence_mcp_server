@@ -2,6 +2,7 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
+use super::go_frameworks::extract_go_framework_patterns;
 use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
 
 pub fn extract_go_symbols(source: &str) -> Result<ExtractedFile> {
@@ -88,6 +89,9 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     });
 
     symbols.sort_by_key(|s| s.bytes.start);
+
+    let framework_patterns = extract_go_framework_patterns(root, source);
+
     Ok(ExtractedFile {
         symbols,
         imports,
@@ -96,7 +100,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
-        framework_patterns: Vec::new(),
+        framework_patterns,
     })
 }
 

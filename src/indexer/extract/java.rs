@@ -2,6 +2,7 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
+use super::spring::extract_spring_patterns;
 use super::symbol::{
     ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
     SymbolKind,
@@ -228,6 +229,9 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     });
 
     symbols.sort_by_key(|s| s.bytes.start);
+
+    let framework_patterns = extract_spring_patterns(root, source);
+
     Ok(ExtractedFile {
         symbols,
         imports,
@@ -236,7 +240,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
-        framework_patterns: Vec::new(),
+        framework_patterns,
     })
 }
 

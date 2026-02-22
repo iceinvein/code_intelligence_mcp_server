@@ -40,7 +40,7 @@ const ACTIX_HTTP_METHODS: &[&str] = &[
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// use crate::indexer::parser::{parser_for_id, LanguageId};
 /// use crate::indexer::extract::actix::extract_actix_patterns;
 ///

@@ -690,7 +690,12 @@ impl IndexPipeline {
         };
 
         let (embed_result, pagerank_result) = tokio::join!(embed_fut, pagerank_fut);
-        embed_result?;
+        if let Err(e) = embed_result {
+            tracing::warn!(
+                "Embedding generation failed (model may still be loading): {e}. \
+                 Vectors will be generated once the model is ready."
+            );
+        }
         pagerank_result?;
 
         // Log cache statistics

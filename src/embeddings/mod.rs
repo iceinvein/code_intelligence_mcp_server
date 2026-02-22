@@ -2,6 +2,7 @@ pub mod hash;
 pub mod llamacpp;
 
 use anyhow::Result;
+use std::sync::Arc;
 
 pub trait Embedder {
     fn dim(&self) -> usize;
@@ -13,6 +14,76 @@ pub trait Embedder {
     /// the same embedding space. Default implementation falls back to `embed()`.
     fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.embed(texts)
+    }
+}
+
+/// Known embedding dimension for jina-code-0.5b (the LlamaCpp backend model).
+const JINA_CODE_DIM: usize = 896;
+
+/// Returns the embedding dimension for a given backend without loading the model.
+pub fn default_embedding_dim(backend: crate::config::EmbeddingsBackend, hash_dim: usize) -> usize {
+    match backend {
+        crate::config::EmbeddingsBackend::LlamaCpp => JINA_CODE_DIM,
+        crate::config::EmbeddingsBackend::Hash => hash_dim,
+    }
+}
+
+/// A deferred embedder that starts without a loaded model and allows a real
+/// embedder to be "slotted in" later from a background task.
+///
+/// Before the real embedder is set, `dim()` returns a pre-configured dimension
+/// and `embed()`/`query_embed()` return errors. The hybrid search pipeline
+/// already handles embedding errors gracefully — it degrades to BM25-only.
+pub struct DeferredEmbedder {
+    dim: usize,
+    inner: Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>,
+}
+
+impl DeferredEmbedder {
+    pub fn new(dim: usize) -> Self {
+        Self {
+            dim,
+            inner: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Slot in the real embedder once it's downloaded and loaded.
+    pub fn set_inner(&self, embedder: Box<dyn Embedder + Send>) {
+        let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
+        *guard = Some(embedder);
+    }
+
+    /// Check whether the real embedder has been loaded.
+    pub fn is_ready(&self) -> bool {
+        let guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
+        guard.is_some()
+    }
+
+    /// Get a clone of the inner Arc for sharing with a background task.
+    pub fn inner_slot(&self) -> Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>> {
+        Arc::clone(&self.inner)
+    }
+}
+
+impl Embedder for DeferredEmbedder {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
+        match guard.as_mut() {
+            Some(embedder) => embedder.embed(texts),
+            None => anyhow::bail!("Embedding model is still loading — search will use BM25-only until ready"),
+        }
+    }
+
+    fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
+        match guard.as_mut() {
+            Some(embedder) => embedder.query_embed(texts),
+            None => anyhow::bail!("Embedding model is still loading — search will use BM25-only until ready"),
+        }
     }
 }
 

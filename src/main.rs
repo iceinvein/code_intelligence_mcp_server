@@ -19,7 +19,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::config::Config;
-use code_intelligence_mcp_server::embeddings::{create_embedder, Embedder};
+use code_intelligence_mcp_server::embeddings::{create_embedder, default_embedding_dim, DeferredEmbedder, Embedder};
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::leader::{LeaderElection, Role};
@@ -135,15 +135,28 @@ async fn run_standalone(host: Option<&str>, port: Option<u16>) -> SdkResult<()> 
     std::fs::create_dir_all(data_dir.join("logs").as_std_path())
         .map_err(|e| McpSdkError::Internal { description: format!("Failed to create logs dir: {}", e) })?;
 
-    // Create shared embedder (loaded once, shared across all repos)
-    let embedder = create_embedder(
-        standalone_config.embeddings_backend,
-        standalone_config.embeddings_model_dir.as_deref(),
-        standalone_config.embeddings_device,
-        standalone_config.hash_embedding_dim,
-    ).map_err(|e| McpSdkError::Internal { description: format!("Failed to create embedder: {}", e) })?;
-
-    info!("Shared embedder loaded with dimension: {}", embedder.dim());
+    // Create shared embedder (loaded once, shared across all repos).
+    // For llamacpp backend, use DeferredEmbedder so the HTTP server starts immediately.
+    let (embedder, standalone_deferred_slot): (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>) =
+        match standalone_config.embeddings_backend {
+            code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
+                let e = create_embedder(
+                    standalone_config.embeddings_backend,
+                    standalone_config.embeddings_model_dir.as_deref(),
+                    standalone_config.embeddings_device,
+                    standalone_config.hash_embedding_dim,
+                ).map_err(|e| McpSdkError::Internal { description: format!("Failed to create embedder: {}", e) })?;
+                info!("Created hash embedder with dimension: {}", e.dim());
+                (e, None)
+            }
+            code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
+                let dim = default_embedding_dim(standalone_config.embeddings_backend, standalone_config.hash_embedding_dim);
+                let deferred = DeferredEmbedder::new(dim);
+                let slot = deferred.inner_slot();
+                info!(dim, "Created deferred embedder — model will load in background");
+                (Box::new(deferred), Some(slot))
+            }
+        };
 
     // Create registry and session manager
     let registry = code_intelligence_mcp_server::registry::RepoRegistry::new(
@@ -193,6 +206,37 @@ async fn run_standalone(host: Option<&str>, port: Option<u16>) -> SdkResult<()> 
             ..Default::default()
         },
     );
+
+    // Spawn background embedder loading for LlamaCpp backend in standalone mode.
+    if let Some(slot) = standalone_deferred_slot {
+        let model_dir = standalone_config.embeddings_model_dir.clone();
+        let device = standalone_config.embeddings_device;
+        let hash_dim = standalone_config.hash_embedding_dim;
+        tokio::spawn(async move {
+            info!("Starting background embedding model download/load (standalone)...");
+            let result = tokio::task::spawn_blocking(move || {
+                create_embedder(
+                    code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp,
+                    model_dir.as_deref(),
+                    device,
+                    hash_dim,
+                )
+            }).await;
+            match result {
+                Ok(Ok(real_embedder)) => {
+                    let mut guard = slot.lock().expect("DeferredEmbedder mutex poisoned");
+                    *guard = Some(real_embedder);
+                    info!("Embedding model loaded — vector search is now available (standalone)");
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to load embedding model: {}. Vector search will remain unavailable.", e);
+                }
+                Err(e) => {
+                    error!("Embedding model loading task panicked: {}. Vector search will remain unavailable.", e);
+                }
+            }
+        });
+    }
 
     info!(
         host = %bind_host,
@@ -254,17 +298,32 @@ async fn run_embedded() -> SdkResult<()> {
         description: err.to_string(),
     })?;
 
-    let embedder = create_embedder(
-        config.embeddings_backend,
-        config.embeddings_model_dir.as_deref(),
-        config.embeddings_device,
-        config.hash_embedding_dim,
-    )
-    .map_err(|err| McpSdkError::Internal {
-        description: format!("Failed to create embedder: {}", err),
-    })?;
-
-    info!("Created embedder with dimension: {}", embedder.dim());
+    // Create embedder — for hash backend (instant), load synchronously.
+    // For llamacpp backend (downloads ~531 MB on first run), use a DeferredEmbedder
+    // so the MCP server starts immediately and degrades to BM25-only until ready.
+    let (embedder, deferred_slot): (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>) =
+        match config.embeddings_backend {
+            code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
+                let e = create_embedder(
+                    config.embeddings_backend,
+                    config.embeddings_model_dir.as_deref(),
+                    config.embeddings_device,
+                    config.hash_embedding_dim,
+                )
+                .map_err(|err| McpSdkError::Internal {
+                    description: format!("Failed to create embedder: {}", err),
+                })?;
+                info!("Created hash embedder with dimension: {}", e.dim());
+                (e, None)
+            }
+            code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
+                let dim = default_embedding_dim(config.embeddings_backend, config.hash_embedding_dim);
+                let deferred = DeferredEmbedder::new(dim);
+                let slot = deferred.inner_slot();
+                info!(dim, "Created deferred embedder — model will load in background");
+                (Box::new(deferred), Some(slot))
+            }
+        };
 
     // --- Leader election ---
     let (is_leader_flag, role_rx, mut _leader_guard) = if config.leader_election_enabled {
@@ -592,6 +651,38 @@ async fn run_embedded() -> SdkResult<()> {
         repo_roots = ?config.repo_roots,
         "Loaded config"
     );
+
+    // Spawn background embedder loading for LlamaCpp backend.
+    // The deferred_slot is None for hash backend (loaded synchronously above).
+    if let Some(slot) = deferred_slot {
+        let model_dir = config.embeddings_model_dir.clone();
+        let device = config.embeddings_device;
+        let hash_dim = config.hash_embedding_dim;
+        tokio::spawn(async move {
+            info!("Starting background embedding model download/load...");
+            let result = tokio::task::spawn_blocking(move || {
+                create_embedder(
+                    code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp,
+                    model_dir.as_deref(),
+                    device,
+                    hash_dim,
+                )
+            }).await;
+            match result {
+                Ok(Ok(real_embedder)) => {
+                    let mut guard = slot.lock().expect("DeferredEmbedder mutex poisoned");
+                    *guard = Some(real_embedder);
+                    info!("Embedding model loaded — vector search is now available");
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to load embedding model: {}. Vector search will remain unavailable.", e);
+                }
+                Err(e) => {
+                    error!("Embedding model loading task panicked: {}. Vector search will remain unavailable.", e);
+                }
+            }
+        });
+    }
 
     info!(
         embeddings_backend = ?config.embeddings_backend,

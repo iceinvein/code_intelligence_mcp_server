@@ -291,6 +291,9 @@ fn walk_dataflow(node: Node<'_>, source: &str, fn_name: &str, edges: &mut Vec<Da
                         "call" => {
                             extract_call_reads(sub, source, fn_name, edges);
                         }
+                        "await" => {
+                            extract_await_edges(sub, source, fn_name, edges);
+                        }
                         _ => {}
                     }
                 }
@@ -313,6 +316,9 @@ fn walk_dataflow(node: Node<'_>, source: &str, fn_name: &str, edges: &mut Vec<Da
                         }
                         "call" => {
                             extract_call_reads(sub, source, fn_name, edges);
+                        }
+                        "await" => {
+                            extract_await_edges(sub, source, fn_name, edges);
                         }
                         _ => {}
                     }
@@ -369,6 +375,9 @@ fn walk_dataflow_children(
             }
             "call" => {
                 extract_call_reads(child, source, fn_name, edges);
+            }
+            "await" => {
+                extract_await_edges(child, source, fn_name, edges);
             }
             _ => {}
         }
@@ -464,6 +473,9 @@ fn extract_augmented_assignment_dataflow(
 }
 
 /// Emit `Reads` edges for the callee and each argument of a call expression.
+///
+/// Also detects `asyncio.create_task(...)` and `asyncio.gather(...)` patterns,
+/// emitting `spawn:asyncio.<method>` edges to signal concurrent task spawning.
 fn extract_call_reads(
     node: Node<'_>,
     source: &str,
@@ -488,18 +500,30 @@ fn extract_call_reads(
                 }
             }
             "attribute" => {
-                // obj.method() → read obj (skip self/cls)
-                if let Some(obj) = function.child_by_field_name("object") {
-                    if obj.kind() == "identifier" {
-                        let name = obj.utf8_text(source.as_bytes()).unwrap_or("");
-                        if !is_python_keyword(name) && name != "self" && name != "cls" {
-                            edges.push(DataFlowEdge {
-                                from_symbol: name.to_string(),
-                                to_symbol: fn_name.to_string(),
-                                flow_type: DataFlowType::Reads,
-                                at_line: line,
-                                scope: Some(fn_name.to_string()),
-                            });
+                // Detect asyncio.create_task / asyncio.gather as spawn edges.
+                let spawn_label = extract_asyncio_spawn_label(function, source);
+                if let Some(label) = spawn_label {
+                    edges.push(DataFlowEdge {
+                        from_symbol: label,
+                        to_symbol: fn_name.to_string(),
+                        flow_type: DataFlowType::Reads,
+                        at_line: line,
+                        scope: Some(fn_name.to_string()),
+                    });
+                } else {
+                    // obj.method() → read obj (skip self/cls)
+                    if let Some(obj) = function.child_by_field_name("object") {
+                        if obj.kind() == "identifier" {
+                            let name = obj.utf8_text(source.as_bytes()).unwrap_or("");
+                            if !is_python_keyword(name) && name != "self" && name != "cls" {
+                                edges.push(DataFlowEdge {
+                                    from_symbol: name.to_string(),
+                                    to_symbol: fn_name.to_string(),
+                                    flow_type: DataFlowType::Reads,
+                                    at_line: line,
+                                    scope: Some(fn_name.to_string()),
+                                });
+                            }
                         }
                     }
                 }
@@ -513,6 +537,124 @@ fn extract_call_reads(
         let mut cursor = args.walk();
         for arg in args.children(&mut cursor) {
             collect_reads_from_expr(arg, source, fn_name, edges);
+        }
+    }
+}
+
+/// If `attribute_node` represents `asyncio.create_task` or `asyncio.gather`,
+/// return the corresponding `spawn:asyncio.<method>` label.  Returns `None`
+/// for any other attribute expression.
+fn extract_asyncio_spawn_label(attribute_node: Node<'_>, source: &str) -> Option<String> {
+    let obj = attribute_node.child_by_field_name("object")?;
+    let attr = attribute_node.child_by_field_name("attribute")?;
+    let obj_text = obj.utf8_text(source.as_bytes()).ok()?;
+    let attr_text = attr.utf8_text(source.as_bytes()).ok()?;
+    if obj_text == "asyncio"
+        && matches!(attr_text, "create_task" | "gather" | "ensure_future")
+    {
+        Some(format!("spawn:asyncio.{attr_text}"))
+    } else {
+        None
+    }
+}
+
+/// Emit async boundary edges for a Python `await` expression node.
+///
+/// The tree-sitter-python grammar represents `await expr` as:
+/// ```text
+/// await
+///   "await"       ← keyword token (kind == "await", not named)
+///   primary_expr  ← the awaited expression (call, identifier, attribute, …)
+/// ```
+///
+/// When the awaited expression is a `call`, the callee name is extracted and
+/// an `await:<callee>` edge is emitted.  For any other expression kind the raw
+/// text is used.  Recursion into the inner expression also captures regular
+/// reads from arguments.
+fn extract_await_edges(
+    node: Node<'_>,
+    source: &str,
+    fn_name: &str,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let line = node.start_position().row as u32 + 1;
+
+    // Walk children, skipping the "await" keyword token.
+    let mut cursor = node.walk();
+    let mut first_child = false;
+    if cursor.goto_first_child() {
+        loop {
+            let child = cursor.node();
+            // Skip the "await" keyword literal token.
+            if child.kind() == "await" && !child.is_named() {
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+                continue;
+            }
+            if !first_child {
+                first_child = true;
+                match child.kind() {
+                    "call" => {
+                        // Extract the callee name from the call node.
+                        if let Some(func) = child.child_by_field_name("function") {
+                            if let Some(callee) = extract_python_callee_name(func, source) {
+                                edges.push(DataFlowEdge {
+                                    from_symbol: format!("await:{callee}"),
+                                    to_symbol: fn_name.to_string(),
+                                    flow_type: DataFlowType::Reads,
+                                    at_line: line,
+                                    scope: Some(fn_name.to_string()),
+                                });
+                            }
+                        }
+                        // Also recurse so argument reads are captured.
+                        extract_call_reads(child, source, fn_name, edges);
+                    }
+                    _ => {
+                        // For awaited identifiers / attribute expressions / other
+                        // expressions, emit an edge using the raw text.
+                        let name = child.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                        if !name.is_empty() && !is_python_keyword(name) {
+                            edges.push(DataFlowEdge {
+                                from_symbol: format!("await:{name}"),
+                                to_symbol: fn_name.to_string(),
+                                flow_type: DataFlowType::Reads,
+                                at_line: line,
+                                scope: Some(fn_name.to_string()),
+                            });
+                        }
+                    }
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+}
+
+/// Extract the callee name from a `call` function field node.
+///
+/// Handles `identifier` (bare function calls) and `attribute` (method calls of
+/// the form `obj.method`).
+fn extract_python_callee_name(func_node: Node<'_>, source: &str) -> Option<String> {
+    match func_node.kind() {
+        "identifier" => {
+            let name = func_node.utf8_text(source.as_bytes()).ok()?.to_string();
+            if is_python_keyword(&name) { None } else { Some(name) }
+        }
+        "attribute" => {
+            // obj.method → "obj.method"
+            let obj = func_node.child_by_field_name("object")?;
+            let attr = func_node.child_by_field_name("attribute")?;
+            let obj_text = obj.utf8_text(source.as_bytes()).ok()?;
+            let attr_text = attr.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("{obj_text}.{attr_text}"))
+        }
+        _ => {
+            let text = func_node.utf8_text(source.as_bytes()).ok()?.to_string();
+            if text.is_empty() { None } else { Some(text) }
         }
     }
 }
@@ -568,13 +710,16 @@ fn collect_reads_from_expr(
                 }
             }
         }
+        "await" => {
+            extract_await_edges(node, source, fn_name, edges);
+        }
         _ => {
             // Recurse into children for compound expressions (binary_operator,
             // conditional_expression, list, tuple, etc.)
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 match child.kind() {
-                    "identifier" | "call" | "attribute" => {
+                    "identifier" | "call" | "attribute" | "await" => {
                         collect_reads_from_expr(child, source, fn_name, edges);
                     }
                     _ => {}
@@ -1120,6 +1265,43 @@ regular_var = "not a constant"
             !extracted.symbols.iter().any(|s| s.name == "regular_var"),
             "regular_var should not be extracted as constant, got: {:?}",
             extracted.symbols
+        );
+    }
+
+    #[test]
+    fn test_async_boundary_detection() {
+        let source =
+            "async def fetch_data():\n    result = await get_items()\n    tasks = asyncio.gather(task1(), task2())\n";
+        let file = extract_python_symbols(source).unwrap();
+        let async_edges: Vec<_> = file
+            .dataflow_edges
+            .iter()
+            .filter(|e| {
+                e.from_symbol.starts_with("await:") || e.from_symbol.starts_with("spawn:")
+            })
+            .collect();
+        assert!(
+            !async_edges.is_empty(),
+            "Should detect await/spawn: {:?}",
+            file.dataflow_edges
+        );
+
+        // `await get_items()` → await:get_items
+        assert!(
+            file.dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "await:get_items"),
+            "Expected await:get_items edge, got: {:?}",
+            file.dataflow_edges
+        );
+
+        // `asyncio.gather(...)` → spawn:asyncio.gather
+        assert!(
+            file.dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "spawn:asyncio.gather"),
+            "Expected spawn:asyncio.gather edge, got: {:?}",
+            file.dataflow_edges
         );
     }
 

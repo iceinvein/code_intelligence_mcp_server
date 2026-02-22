@@ -3,7 +3,10 @@ use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
 use super::go_frameworks::extract_go_framework_patterns;
-use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
+use super::symbol::{
+    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
+    SymbolKind,
+};
 
 pub fn extract_go_symbols(source: &str) -> Result<ExtractedFile> {
     let mut parser = parser_for_id(LanguageId::Go)?;
@@ -91,12 +94,13 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     symbols.sort_by_key(|s| s.bytes.start);
 
     let framework_patterns = extract_go_framework_patterns(root, source);
+    let dataflow_edges = extract_go_goroutine_edges(root, source);
 
     Ok(ExtractedFile {
         symbols,
         imports,
         type_edges,
-        dataflow_edges: Vec::new(),
+        dataflow_edges,
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
@@ -515,6 +519,118 @@ fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Goroutine / async boundary detection
+// ---------------------------------------------------------------------------
+
+/// Walk the entire AST and emit `spawn:<callee>` data-flow edges for every
+/// `go_statement` (goroutine spawn).
+///
+/// The tree-sitter-go grammar represents `go f()` as:
+/// ```text
+/// go_statement
+///   "go"            ← keyword token
+///   call_expression ← the spawned call (function field = callee)
+/// ```
+///
+/// The enclosing function name is resolved by walking up to the nearest
+/// `function_declaration` or `method_declaration` ancestor.
+fn extract_go_goroutine_edges(root: Node<'_>, source: &str) -> Vec<DataFlowEdge> {
+    let mut edges = Vec::new();
+    collect_goroutine_edges(root, source, &mut edges);
+    edges
+}
+
+fn collect_goroutine_edges(node: Node<'_>, source: &str, out: &mut Vec<DataFlowEdge>) {
+    if node.kind() == "go_statement" {
+        let line = node.start_position().row as u32 + 1;
+
+        // The second child (after the "go" keyword token) is the call expression.
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            // Skip the "go" keyword token.
+            cursor.goto_next_sibling();
+            let call_node = cursor.node();
+            if call_node.kind() == "call_expression" {
+                if let Some(callee) = extract_go_call_callee(call_node, source) {
+                    let enclosing = enclosing_function_name(node, source)
+                        .unwrap_or_else(|| "<module>".to_string());
+                    out.push(DataFlowEdge {
+                        from_symbol: format!("spawn:{callee}"),
+                        to_symbol: enclosing.clone(),
+                        flow_type: DataFlowType::Reads,
+                        at_line: line,
+                        scope: Some(enclosing),
+                    });
+                }
+            }
+        }
+    }
+
+    // Recurse into all children.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_goroutine_edges(child, source, out);
+    }
+}
+
+/// Extract the callee name from a Go `call_expression` node.
+///
+/// Handles:
+/// - `identifier` — bare function calls like `handleRequest()`
+/// - `selector_expression` — qualified calls like `pkg.Func()` or method calls
+///   like `s.Handle()`
+fn extract_go_call_callee(call_node: Node<'_>, source: &str) -> Option<String> {
+    let func = call_node.child_by_field_name("function")?;
+    match func.kind() {
+        "identifier" => Some(text_for_node(func, source)),
+        "selector_expression" => {
+            // operand.field — e.g. `wg.Done` or `http.ListenAndServe`
+            let operand = func.child_by_field_name("operand")?;
+            let field = func.child_by_field_name("field")?;
+            Some(format!(
+                "{}.{}",
+                text_for_node(operand, source),
+                text_for_node(field, source)
+            ))
+        }
+        _ => {
+            let t = text_for_node(func, source);
+            if t.is_empty() { None } else { Some(t) }
+        }
+    }
+}
+
+/// Walk up the tree from `node` to find the nearest enclosing
+/// `function_declaration` or `method_declaration` and return its qualified name.
+///
+/// For `method_declaration` this returns `"ReceiverType.MethodName"` (matching
+/// the symbol names emitted by the main extractor walk).  For
+/// `function_declaration` it returns the bare function name.
+fn enclosing_function_name(node: Node<'_>, source: &str) -> Option<String> {
+    let mut current = node.parent()?;
+    loop {
+        match current.kind() {
+            "function_declaration" => {
+                return current
+                    .child_by_field_name("name")
+                    .map(|n| text_for_node(n, source));
+            }
+            "method_declaration" => {
+                let recv = receiver_type_name(current, source)
+                    .unwrap_or_else(|| "_".to_string());
+                let meth = current
+                    .child_by_field_name("name")
+                    .map(|n| text_for_node(n, source))
+                    .unwrap_or_else(|| "_".to_string());
+                return Some(format!("{recv}.{meth}"));
+            }
+            _ => {}
+        }
+        current = current.parent()?;
+    }
+}
+
 fn extract_import(node: Node, source: &str, imports: &mut Vec<Import>) {
     // import_spec: (name)? (path)
     let path_node = node.child_by_field_name("path");
@@ -774,6 +890,61 @@ func (s Server) GetPort() int {
                 .any(|e| e.0 == "Server.Start" && e.1 == "error"),
             "Server.Start → error return edge"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Goroutine spawn detection
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_goroutine_spawn_detection() {
+        let source = "package main\n\nfunc process() {\n\tgo handleRequest()\n}\n";
+        let file = extract_go_symbols(source).unwrap();
+        let spawn_edges: Vec<_> = file
+            .dataflow_edges
+            .iter()
+            .filter(|e| e.from_symbol.starts_with("spawn:"))
+            .collect();
+        assert_eq!(
+            spawn_edges.len(),
+            1,
+            "Should detect goroutine spawn, edges: {:?}",
+            file.dataflow_edges
+        );
+        assert_eq!(
+            spawn_edges[0].from_symbol, "spawn:handleRequest",
+            "Expected spawn:handleRequest"
+        );
+        assert_eq!(
+            spawn_edges[0].to_symbol, "process",
+            "Enclosing function should be 'process'"
+        );
+    }
+
+    #[test]
+    fn test_goroutine_spawn_method_receiver() {
+        let source = r#"package main
+
+type Server struct{}
+
+func (s *Server) Run() {
+    go s.handleConn()
+}
+"#;
+        let file = extract_go_symbols(source).unwrap();
+        let spawn_edges: Vec<_> = file
+            .dataflow_edges
+            .iter()
+            .filter(|e| e.from_symbol.starts_with("spawn:"))
+            .collect();
+        assert_eq!(
+            spawn_edges.len(),
+            1,
+            "Should detect goroutine spawn inside method, edges: {:?}",
+            file.dataflow_edges
+        );
+        assert_eq!(spawn_edges[0].from_symbol, "spawn:s.handleConn");
+        assert_eq!(spawn_edges[0].to_symbol, "Server.Run");
     }
 
     // ---------------------------------------------------------------------------

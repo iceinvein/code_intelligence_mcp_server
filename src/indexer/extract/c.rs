@@ -28,10 +28,16 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                         symbols.push(symbol_from_node(
                             name,
                             SymbolKind::Function,
-                            true, // C functions are generally global/exported unless static, but we'll assume exported for now
+                            !is_static(node, source),
                             node,
                         ));
                     }
+                }
+            }
+            "union_specifier" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = name_node.utf8_text(source.as_bytes()).unwrap().to_string();
+                    symbols.push(symbol_from_node(name, SymbolKind::Struct, true, node));
                 }
             }
             "struct_specifier" => {
@@ -121,6 +127,18 @@ fn name_from_declarator(node: Node, source: &str) -> Option<String> {
     None
 }
 
+fn is_static(node: Node, source: &str) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "storage_class_specifier" {
+            if child.utf8_text(source.as_bytes()).unwrap() == "static" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) -> ExtractedSymbol {
     let start = node.start_position();
     let end = node.end_position();
@@ -133,8 +151,8 @@ fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) 
             end: node.end_byte(),
         },
         lines: LineSpan {
-            start: start.row as u32,
-            end: end.row as u32,
+            start: start.row as u32 + 1,
+            end: end.row as u32 + 1,
         },
     }
 }
@@ -195,5 +213,37 @@ void main() {
         assert_eq!(extracted.imports.len(), 2);
         assert!(extracted.imports.iter().any(|i| i.name == "stdio.h"));
         assert!(extracted.imports.iter().any(|i| i.name == "myheader.h"));
+    }
+
+    #[test]
+    fn test_c_line_numbers_1_indexed() {
+        let source = "int add(int a, int b) {\n    return a + b;\n}\n";
+        let extracted = extract_c_symbols(source).unwrap();
+        let add = extracted.symbols.iter().find(|s| s.name == "add").unwrap();
+        assert_eq!(add.lines.start, 1, "Expected line 1, got {}", add.lines.start);
+    }
+
+    #[test]
+    fn test_c_static_not_exported() {
+        let source = "static int helper(int x) { return x; }\nint public_fn() { return 0; }\n";
+        let extracted = extract_c_symbols(source).unwrap();
+        let helper = extracted.symbols.iter().find(|s| s.name == "helper").unwrap();
+        assert!(!helper.exported, "static functions should not be exported");
+        let public_fn = extracted.symbols.iter().find(|s| s.name == "public_fn").unwrap();
+        assert!(public_fn.exported, "non-static functions should be exported");
+    }
+
+    #[test]
+    fn test_c_union() {
+        let source = "union Data {\n    int i;\n    float f;\n};\n";
+        let extracted = extract_c_symbols(source).unwrap();
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Data" && s.kind == SymbolKind::Struct),
+            "Expected union Data as Struct, got: {:?}",
+            extracted.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
     }
 }

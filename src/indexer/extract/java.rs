@@ -100,6 +100,14 @@ fn symbol_name(node: Node, source: &str) -> Option<String> {
 }
 
 fn is_public(node: Node) -> bool {
+    // Interface methods are implicitly public even without an explicit `public` modifier.
+    if node.kind() == "method_declaration" {
+        if let Some(parent) = node.parent() {
+            if parent.kind() == "interface_body" {
+                return true;
+            }
+        }
+    }
     // Check for "modifiers" child node (it might not be a field in some versions of grammar)
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -127,8 +135,8 @@ fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) 
             end: node.end_byte(),
         },
         lines: LineSpan {
-            start: start.row as u32,
-            end: end.row as u32,
+            start: start.row as u32 + 1,
+            end: end.row as u32 + 1,
         },
     }
 }
@@ -243,5 +251,23 @@ public enum Color {
         assert_eq!(extracted.imports.len(), 1);
         assert_eq!(extracted.imports[0].name, "List");
         assert_eq!(extracted.imports[0].source, "java.util.List");
+    }
+
+    #[test]
+    fn test_java_line_numbers_1_indexed() {
+        let source = "public class Foo {\n    public void bar() {}\n}\n";
+        let extracted = extract_java_symbols(source).unwrap();
+        let foo = extracted.symbols.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(foo.lines.start, 1, "Expected line 1, got {}", foo.lines.start);
+    }
+
+    #[test]
+    fn test_interface_methods_exported() {
+        let source = "public interface Service {\n    void process();\n    String getName();\n}\n";
+        let extracted = extract_java_symbols(source).unwrap();
+        let process = extracted.symbols.iter().find(|s| s.name == "process").unwrap();
+        assert!(process.exported, "Interface methods are implicitly public");
+        let get_name = extracted.symbols.iter().find(|s| s.name == "getName").unwrap();
+        assert!(get_name.exported, "Interface methods are implicitly public");
     }
 }

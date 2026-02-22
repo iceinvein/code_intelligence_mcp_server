@@ -2,7 +2,10 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
-use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
+use super::symbol::{
+    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
+    SymbolKind,
+};
 
 pub fn extract_rust_symbols(source: &str) -> Result<ExtractedFile> {
     let mut parser = parser_for_id(LanguageId::Rust)?;
@@ -19,12 +22,23 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let mut symbols = Vec::new();
     let mut type_edges = Vec::new();
     let mut imports = Vec::new();
+    let mut dataflow_edges: Vec<DataFlowEdge> = Vec::new();
 
     walk(cursor, &mut |node| match node.kind() {
         "use_declaration" => {
             extract_use_imports(node, source, &mut imports);
         }
         "function_item" => {
+            // Skip methods inside impl blocks or trait blocks — handled by those arms with type prefix
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "declaration_list" {
+                    if let Some(grandparent) = parent.parent() {
+                        if grandparent.kind() == "impl_item" || grandparent.kind() == "trait_item" {
+                            return;
+                        }
+                    }
+                }
+            }
             if let Some(name) = symbol_name_from_declaration(node, source) {
                 symbols.push(symbol_from_node(
                     name.clone(),
@@ -33,6 +47,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                     node,
                 ));
                 extract_function_signature_types(node, source, &name, &mut type_edges);
+                extract_rust_dataflow(node, source, &name, &mut dataflow_edges);
             }
         }
         "struct_item" => {
@@ -60,21 +75,99 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         "trait_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
                 symbols.push(symbol_from_node(
-                    name,
+                    name.clone(),
                     SymbolKind::Trait,
                     is_public(node, source),
                     node,
                 ));
+
+                // Extract method signatures from trait body
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut body_cursor = body.walk();
+                    for child in body.children(&mut body_cursor) {
+                        // function_signature_item = trait method declaration (no body)
+                        // function_item = default method implementation (has body)
+                        if child.kind() == "function_signature_item"
+                            || child.kind() == "function_item"
+                        {
+                            if let Some(method_name) =
+                                symbol_name_from_declaration(child, source)
+                            {
+                                let prefixed = format!("{name}::{method_name}");
+                                symbols.push(symbol_from_node(
+                                    prefixed.clone(),
+                                    SymbolKind::Function,
+                                    is_public(child, source),
+                                    child,
+                                ));
+                                extract_function_signature_types(
+                                    child,
+                                    source,
+                                    &prefixed,
+                                    &mut type_edges,
+                                );
+                                if child.kind() == "function_item" {
+                                    extract_rust_dataflow(
+                                        child,
+                                        source,
+                                        &prefixed,
+                                        &mut dataflow_edges,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         "impl_item" => {
-            let name = impl_display_name(node, source);
+            let display_name = impl_display_name(node, source);
             symbols.push(symbol_from_node(
-                name,
+                display_name.clone(),
                 SymbolKind::Impl,
                 is_public(node, source),
                 node,
             ));
+
+            // Emit type edges to both the implemented type and the trait (if any)
+            let type_name = node
+                .child_by_field_name("type")
+                .map(|n| text_for_node(n, source));
+            let trait_name = node
+                .child_by_field_name("trait")
+                .map(|n| text_for_node(n, source));
+            if let Some(ref tn) = type_name {
+                type_edges.push((display_name.clone(), tn.clone()));
+            }
+            if let Some(ref tr) = trait_name {
+                type_edges.push((display_name.clone(), tr.clone()));
+            }
+
+            // Extract methods with type-prefixed names
+            let prefix = type_name.as_deref().unwrap_or("unknown");
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut body_cursor = body.walk();
+                for child in body.children(&mut body_cursor) {
+                    if child.kind() == "function_item" {
+                        if let Some(method_name) = symbol_name_from_declaration(child, source) {
+                            let prefixed = format!("{prefix}::{method_name}");
+                            symbols.push(symbol_from_node(
+                                prefixed.clone(),
+                                SymbolKind::Function,
+                                is_public(child, source),
+                                child,
+                            ));
+                            extract_function_signature_types(
+                                child,
+                                source,
+                                &prefixed,
+                                &mut type_edges,
+                            );
+                            extract_rust_dataflow(child, source, &prefixed, &mut dataflow_edges);
+                        }
+                    }
+                }
+            }
         }
         "mod_item" => {
             if let Some(name) = symbol_name_from_declaration(node, source) {
@@ -121,7 +214,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         symbols,
         imports,
         type_edges,
-        dataflow_edges: Vec::new(),
+        dataflow_edges,
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
@@ -524,6 +617,179 @@ fn is_public(node: Node<'_>, source: &str) -> bool {
     slice.trim_start().starts_with("pub ")
 }
 
+/// Walk a function node's body block and emit data flow edges for all
+/// statements and expressions found directly within it.
+fn extract_rust_dataflow(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    let body = match node.child_by_field_name("body") {
+        Some(b) if b.kind() == "block" => b,
+        _ => return,
+    };
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        extract_rust_dataflow_from_node(child, source, context_name, out);
+    }
+}
+
+/// Recursively emit data flow edges from a single tree-sitter node.
+fn extract_rust_dataflow_from_node(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    match node.kind() {
+        "let_declaration" => {
+            let line = node.start_position().row as u32;
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                if pattern.kind() == "identifier" {
+                    out.push(DataFlowEdge {
+                        from_symbol: text_for_node(pattern, source),
+                        to_symbol: context_name.to_string(),
+                        flow_type: DataFlowType::Writes,
+                        at_line: line,
+                    });
+                }
+            }
+            if let Some(value) = node.child_by_field_name("value") {
+                extract_rust_reads_from_expr(value, source, context_name, out);
+            }
+        }
+        "assignment_expression" | "compound_assignment_expr" => {
+            let line = node.start_position().row as u32;
+            if let Some(left) = node.child_by_field_name("left") {
+                if let Some(n) = extract_rust_lhs_identifier(left, source) {
+                    out.push(DataFlowEdge {
+                        from_symbol: n,
+                        to_symbol: context_name.to_string(),
+                        flow_type: DataFlowType::Writes,
+                        at_line: line,
+                    });
+                }
+            }
+            if let Some(right) = node.child_by_field_name("right") {
+                extract_rust_reads_from_expr(right, source, context_name, out);
+            }
+        }
+        "call_expression" => {
+            let line = node.start_position().row as u32;
+            if let Some(func) = node.child_by_field_name("function") {
+                if let Some(n) = extract_rust_callee_name(func, source) {
+                    out.push(DataFlowEdge {
+                        from_symbol: n,
+                        to_symbol: context_name.to_string(),
+                        flow_type: DataFlowType::Reads,
+                        at_line: line,
+                    });
+                }
+            }
+            if let Some(args) = node.child_by_field_name("arguments") {
+                let mut cursor = args.walk();
+                for child in args.children(&mut cursor) {
+                    extract_rust_reads_from_expr(child, source, context_name, out);
+                }
+            }
+        }
+        "expression_statement" | "block" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                extract_rust_dataflow_from_node(child, source, context_name, out);
+            }
+        }
+        _ => {
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    extract_rust_dataflow_from_node(cursor.node(), source, context_name, out);
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Emit `Reads` edges for all identifiers and call-sites within an expression.
+fn extract_rust_reads_from_expr(
+    node: Node<'_>,
+    source: &str,
+    context_name: &str,
+    out: &mut Vec<DataFlowEdge>,
+) {
+    let line = node.start_position().row as u32;
+    match node.kind() {
+        "identifier" => {
+            let name = text_for_node(node, source);
+            // Skip Rust keywords and common enum variants that add no signal.
+            if !matches!(
+                name.as_str(),
+                "self" | "Self" | "true" | "false" | "None" | "Some" | "Ok" | "Err"
+            ) {
+                out.push(DataFlowEdge {
+                    from_symbol: name,
+                    to_symbol: context_name.to_string(),
+                    flow_type: DataFlowType::Reads,
+                    at_line: line,
+                });
+            }
+        }
+        "call_expression" => {
+            // Delegate to the main handler so we also capture the callee.
+            extract_rust_dataflow_from_node(node, source, context_name, out);
+        }
+        "field_expression" => {
+            // `obj.field` — read the receiver object, not the field name itself.
+            if let Some(obj) = node.child_by_field_name("value") {
+                if obj.kind() == "identifier" {
+                    let name = text_for_node(obj, source);
+                    if name != "self" {
+                        out.push(DataFlowEdge {
+                            from_symbol: name,
+                            to_symbol: context_name.to_string(),
+                            flow_type: DataFlowType::Reads,
+                            at_line: line,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                extract_rust_reads_from_expr(child, source, context_name, out);
+            }
+        }
+    }
+}
+
+/// Extract the identifier name from the left-hand side of an assignment.
+fn extract_rust_lhs_identifier(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(text_for_node(node, source)),
+        "field_expression" => node
+            .child_by_field_name("field")
+            .map(|f| text_for_node(f, source)),
+        _ => None,
+    }
+}
+
+/// Extract the callable name from a call expression's function position.
+fn extract_rust_callee_name(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(text_for_node(node, source)),
+        "field_expression" => node
+            .child_by_field_name("field")
+            .map(|f| text_for_node(f, source)),
+        "scoped_identifier" => Some(text_for_node(node, source)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,6 +839,10 @@ mod inner {
             .symbols
             .iter()
             .any(|s| s.kind == SymbolKind::Function && s.name == "top"));
+        assert!(syms
+            .symbols
+            .iter()
+            .any(|s| s.kind == SymbolKind::Function && s.name == "Foo::new"));
         assert!(syms
             .symbols
             .iter()
@@ -669,8 +939,8 @@ use super::symbol::*;
         assert!(has_edge("process", "User"));
         assert!(has_edge("process", "Result"));
         assert!(has_edge("process", "Error"));
-        assert!(has_edge("new", "String"));
-        assert!(has_edge("new", "Self"));
+        assert!(has_edge("User::new", "String"));
+        assert!(has_edge("User::new", "Self"));
     }
 
     #[test]
@@ -738,6 +1008,228 @@ pub type Result<T> = std::result::Result<T, Error>;
         assert!(
             has_edge("INSTANCE", "Config"),
             "expected type edge (INSTANCE, Config)"
+        );
+    }
+
+    #[test]
+    fn extracts_rust_impl_edges_and_method_prefix() {
+        let source = r#"
+pub struct Foo { x: i32 }
+
+pub trait Display {
+    fn fmt(&self) -> String;
+}
+
+impl Display for Foo {
+    fn fmt(&self) -> String {
+        format!("{}", self.x)
+    }
+}
+
+impl Foo {
+    pub fn new(x: i32) -> Self {
+        Self { x }
+    }
+
+    pub fn value(&self) -> i32 {
+        self.x
+    }
+}
+"#;
+        let extracted = extract_rust_symbols(source).unwrap();
+
+        // impl Display for Foo should have type edges to both Display and Foo
+        let impl_display = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name.contains("impl Display for Foo"))
+            .expect("impl Display for Foo symbol");
+        assert_eq!(impl_display.kind, SymbolKind::Impl);
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == impl_display.name && e.1 == "Display"),
+            "expected type edge from impl to Display trait"
+        );
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == impl_display.name && e.1 == "Foo"),
+            "expected type edge from impl to Foo type"
+        );
+
+        // Methods inside impl should be prefixed with the type name
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Foo::new" && s.kind == SymbolKind::Function),
+            "expected Foo::new symbol"
+        );
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Foo::value" && s.kind == SymbolKind::Function),
+            "expected Foo::value symbol"
+        );
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Foo::fmt" && s.kind == SymbolKind::Function),
+            "expected Foo::fmt symbol"
+        );
+
+        // Method type edges should use prefixed name
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Foo::new" && e.1 == "Self"),
+            "expected type edge Foo::new -> Self"
+        );
+
+        // Unprefixed bare method names must not exist
+        assert!(
+            !extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "new" && s.kind == SymbolKind::Function),
+            "bare 'new' must not exist — should be 'Foo::new'"
+        );
+        assert!(
+            !extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "fmt" && s.kind == SymbolKind::Function),
+            "bare 'fmt' must not exist — should be 'Foo::fmt'"
+        );
+    }
+
+    #[test]
+    fn extracts_rust_trait_method_types() {
+        let source = r#"
+pub trait Processor {
+    fn process(&self, input: Input) -> Output;
+    fn validate(&self, data: &Data) -> Result<(), Error>;
+}
+"#;
+        let extracted = extract_rust_symbols(source).unwrap();
+
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Processor" && s.kind == SymbolKind::Trait),
+            "expected Processor trait symbol"
+        );
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Processor::process" && s.kind == SymbolKind::Function),
+            "expected Processor::process symbol"
+        );
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Processor::validate" && s.kind == SymbolKind::Function),
+            "expected Processor::validate symbol"
+        );
+
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Processor::process" && e.1 == "Input"),
+            "expected type edge Processor::process -> Input"
+        );
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Processor::process" && e.1 == "Output"),
+            "expected type edge Processor::process -> Output"
+        );
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Processor::validate" && e.1 == "Data"),
+            "expected type edge Processor::validate -> Data"
+        );
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Processor::validate" && e.1 == "Result"),
+            "expected type edge Processor::validate -> Result"
+        );
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Processor::validate" && e.1 == "Error"),
+            "expected type edge Processor::validate -> Error"
+        );
+
+        // Bare unprefixed method names must not be emitted
+        assert!(
+            !extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "process" && s.kind == SymbolKind::Function),
+            "bare 'process' must not exist — should be 'Processor::process'"
+        );
+        assert!(
+            !extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "validate" && s.kind == SymbolKind::Function),
+            "bare 'validate' must not exist — should be 'Processor::validate'"
+        );
+    }
+
+    #[test]
+    fn extracts_rust_dataflow_edges() {
+        let source = r#"
+fn process(data: Vec<u8>) -> String {
+    let result = transform(data);
+    let count = result.len();
+    output = format_output(result, count);
+    output
+}
+"#;
+        let extracted = extract_rust_symbols(source).unwrap();
+
+        let has_read = |sym: &str| {
+            extracted.dataflow_edges.iter().any(|e| {
+                e.from_symbol == sym && matches!(e.flow_type, DataFlowType::Reads)
+            })
+        };
+        let has_write = |sym: &str| {
+            extracted.dataflow_edges.iter().any(|e| {
+                e.from_symbol == sym && matches!(e.flow_type, DataFlowType::Writes)
+            })
+        };
+
+        // let result = transform(data)
+        assert!(has_write("result"), "expected write edge for 'result'");
+        assert!(has_read("transform"), "expected read edge for 'transform'");
+        assert!(has_read("data"), "expected read edge for 'data'");
+
+        // let count = result.len()
+        assert!(has_write("count"), "expected write edge for 'count'");
+
+        // output = format_output(result, count)
+        assert!(has_write("output"), "expected write edge for 'output'");
+        assert!(
+            has_read("format_output"),
+            "expected read edge for 'format_output'"
         );
     }
 

@@ -18,6 +18,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut type_edges: Vec<(String, String)> = Vec::new();
 
     walk(cursor, &mut |node| match node.kind() {
         "class_declaration" => {
@@ -25,7 +26,38 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 let exported = is_public(node);
                 symbols.push(symbol_from_node(name.clone(), SymbolKind::Class, exported, node));
 
-                // Walk class body for methods and constructors
+                // extends — superclass field wraps `extends <type>` as a child sequence;
+                // the type is NOT a named sub-field, so we iterate children of the
+                // superclass node to find the type node.
+                if let Some(superclass) = node.child_by_field_name("superclass") {
+                    let mut sc_cursor = superclass.walk();
+                    for child in superclass.children(&mut sc_cursor) {
+                        if let Some(type_name) = extract_java_type_name(child, source) {
+                            type_edges.push((name.clone(), type_name));
+                        }
+                    }
+                }
+
+                // implements — interfaces field points to super_interfaces which contains
+                // `implements type_list`; type_list children are the actual type nodes.
+                if let Some(interfaces) = node.child_by_field_name("interfaces") {
+                    let mut iface_cursor = interfaces.walk();
+                    for child in interfaces.children(&mut iface_cursor) {
+                        // type_list is an intermediate wrapper; descend one more level
+                        if child.kind() == "type_list" {
+                            let mut tl_cursor = child.walk();
+                            for type_node in child.children(&mut tl_cursor) {
+                                if let Some(type_name) = extract_java_type_name(type_node, source) {
+                                    type_edges.push((name.clone(), type_name));
+                                }
+                            }
+                        } else if let Some(type_name) = extract_java_type_name(child, source) {
+                            type_edges.push((name.clone(), type_name));
+                        }
+                    }
+                }
+
+                // Walk class body for methods, constructors, and field declarations
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut body_cursor = body.walk();
                     for child in body.children(&mut body_cursor) {
@@ -33,22 +65,31 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                             if let Some(method_name) = symbol_name(child, source) {
                                 let prefixed = format!("{name}.{method_name}");
                                 symbols.push(symbol_from_node(
-                                    prefixed,
+                                    prefixed.clone(),
                                     SymbolKind::Function,
                                     is_public(child),
                                     child,
                                 ));
+                                extract_method_type_edges(child, source, &prefixed, &mut type_edges);
                             }
                         }
                         if child.kind() == "constructor_declaration" {
                             if let Some(ctor_name) = symbol_name(child, source) {
                                 let prefixed = format!("{name}.{ctor_name}");
                                 symbols.push(symbol_from_node(
-                                    prefixed,
+                                    prefixed.clone(),
                                     SymbolKind::Function,
                                     is_public(child),
                                     child,
                                 ));
+                                extract_method_type_edges(child, source, &prefixed, &mut type_edges);
+                            }
+                        }
+                        if child.kind() == "field_declaration" {
+                            if let Some(type_node) = child.child_by_field_name("type") {
+                                if let Some(type_name) = extract_java_type_name(type_node, source) {
+                                    type_edges.push((name.clone(), type_name));
+                                }
                             }
                         }
                     }
@@ -65,6 +106,27 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                     node,
                 ));
 
+                // Interface extends — `extends_interfaces` is an unnamed child node of
+                // kind "extends_interfaces" containing `extends type_list`.
+                let mut node_cursor = node.walk();
+                for child in node.children(&mut node_cursor) {
+                    if child.kind() == "extends_interfaces" {
+                        let mut ext_cursor = child.walk();
+                        for ext_child in child.children(&mut ext_cursor) {
+                            if ext_child.kind() == "type_list" {
+                                let mut tl_cursor = ext_child.walk();
+                                for type_node in ext_child.children(&mut tl_cursor) {
+                                    if let Some(type_name) = extract_java_type_name(type_node, source) {
+                                        type_edges.push((name.clone(), type_name));
+                                    }
+                                }
+                            } else if let Some(type_name) = extract_java_type_name(ext_child, source) {
+                                type_edges.push((name.clone(), type_name));
+                            }
+                        }
+                    }
+                }
+
                 // Walk interface body for methods (all implicitly public)
                 if let Some(body) = node.child_by_field_name("body") {
                     let mut body_cursor = body.walk();
@@ -73,11 +135,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                             if let Some(method_name) = symbol_name(child, source) {
                                 let prefixed = format!("{name}.{method_name}");
                                 symbols.push(symbol_from_node(
-                                    prefixed,
+                                    prefixed.clone(),
                                     SymbolKind::Function,
                                     is_public(child),
                                     child,
                                 ));
+                                extract_method_type_edges(child, source, &prefixed, &mut type_edges);
                             }
                         }
                     }
@@ -143,13 +206,80 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
-        type_edges: Vec::new(),
+        type_edges,
         dataflow_edges: Vec::new(),
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
         framework_patterns: Vec::new(),
     })
+}
+
+/// Extract the base type name from a Java type node, stripping generics and array
+/// brackets. Returns `None` for primitive types (`void`, `int`, `long`, etc.).
+fn extract_java_type_name(node: Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => {
+            let name = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
+        }
+        "generic_type" => {
+            // `List<User>` — first child is the base type (`type_identifier`)
+            node.child(0).and_then(|n| extract_java_type_name(n, source))
+        }
+        "array_type" => {
+            // `User[]` — element type is under field "element" or is the first child
+            node.child_by_field_name("element")
+                .or_else(|| node.child(0))
+                .and_then(|n| extract_java_type_name(n, source))
+        }
+        "scoped_type_identifier" => {
+            // `java.io.InputStream` — take the trailing "name" field (the simple name)
+            node.child_by_field_name("name")
+                .and_then(|n| extract_java_type_name(n, source))
+        }
+        // Skip Java primitive and void types
+        "void_type" | "integral_type" | "floating_point_type" | "boolean_type" => None,
+        _ => None,
+    }
+}
+
+/// Extract type edges from a method or constructor declaration's signature:
+/// parameter types and the return type.
+///
+/// The `method_name` should already be the fully prefixed name (e.g. `"MyClass.findById"`).
+fn extract_method_type_edges(
+    node: Node,
+    source: &str,
+    method_name: &str,
+    type_edges: &mut Vec<(String, String)>,
+) {
+    // Parameter types
+    if let Some(params) = node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for child in params.children(&mut cursor) {
+            if child.kind() == "formal_parameter" || child.kind() == "spread_parameter" {
+                if let Some(type_node) = child.child_by_field_name("type") {
+                    if let Some(type_name) = extract_java_type_name(type_node, source) {
+                        type_edges.push((method_name.to_string(), type_name));
+                    }
+                }
+            }
+        }
+    }
+
+    // Return type — the "type" field is defined in the inlined `_method_header` rule
+    // and is accessible directly on the `method_declaration` node.
+    // `constructor_declaration` has no return type, so this is a no-op for them.
+    if let Some(return_type) = node.child_by_field_name("type") {
+        if let Some(type_name) = extract_java_type_name(return_type, source) {
+            type_edges.push((method_name.to_string(), type_name));
+        }
+    }
 }
 
 fn walk(mut cursor: TreeCursor<'_>, f: &mut impl FnMut(Node<'_>)) {
@@ -458,6 +588,119 @@ public enum Status {
                 .iter()
                 .map(|s| &s.name)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_java_type_edges() {
+        let source = r#"
+public class UserService extends BaseService implements Serializable {
+    private UserRepository repo;
+    public User findById(Long id) { return null; }
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+
+        // extends
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "UserService" && e.1 == "BaseService"),
+            "Expected type edge UserService->BaseService, got: {:?}",
+            extracted.type_edges
+        );
+        // implements
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "UserService" && e.1 == "Serializable"),
+            "Expected type edge UserService->Serializable, got: {:?}",
+            extracted.type_edges
+        );
+        // Method return type
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "UserService.findById" && e.1 == "User"),
+            "Expected type edge UserService.findById->User, got: {:?}",
+            extracted.type_edges
+        );
+        // Method parameter type
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "UserService.findById" && e.1 == "Long"),
+            "Expected type edge UserService.findById->Long, got: {:?}",
+            extracted.type_edges
+        );
+        // Field type
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "UserService" && e.1 == "UserRepository"),
+            "Expected type edge UserService->UserRepository, got: {:?}",
+            extracted.type_edges
+        );
+    }
+
+    #[test]
+    fn test_java_type_edges_interface_extends() {
+        let source = r#"
+public interface ReadableRepository extends Repository, Closeable {
+    Object findById(Long id);
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "ReadableRepository" && e.1 == "Repository"),
+            "Expected type edge ReadableRepository->Repository, got: {:?}",
+            extracted.type_edges
+        );
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "ReadableRepository" && e.1 == "Closeable"),
+            "Expected type edge ReadableRepository->Closeable, got: {:?}",
+            extracted.type_edges
+        );
+    }
+
+    #[test]
+    fn test_java_type_edges_primitives_skipped() {
+        let source = r#"
+public class Calculator {
+    private int count;
+    public double compute(int x, boolean flag) { return 0.0; }
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+
+        // Primitive types (int, double, boolean) must not appear in type_edges
+        let primitives = ["int", "double", "boolean", "float", "long", "char", "byte", "short"];
+        for primitive in primitives {
+            assert!(
+                !extracted.type_edges.iter().any(|e| e.1 == primitive),
+                "Primitive type '{}' should not appear in type_edges, got: {:?}",
+                primitive,
+                extracted.type_edges
+            );
+        }
+    }
+
+    #[test]
+    fn test_java_type_edges_generics() {
+        let source = r#"
+public class OrderService {
+    private List<Order> orders;
+    public Optional<User> findUser(Map<String, Long> params) { return null; }
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+
+        // Generic base types should be extracted (stripped of type parameters)
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "OrderService" && e.1 == "List"),
+            "Expected type edge OrderService->List (from List<Order> field), got: {:?}",
+            extracted.type_edges
+        );
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "OrderService.findUser" && e.1 == "Optional"),
+            "Expected type edge OrderService.findUser->Optional (return type), got: {:?}",
+            extracted.type_edges
+        );
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "OrderService.findUser" && e.1 == "Map"),
+            "Expected type edge OrderService.findUser->Map (param type), got: {:?}",
+            extracted.type_edges
         );
     }
 }

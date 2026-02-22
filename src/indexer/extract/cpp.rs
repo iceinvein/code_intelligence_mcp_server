@@ -18,6 +18,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut type_edges: Vec<(String, String)> = Vec::new();
 
     walk(cursor, &mut |node| {
         let kind = node.kind();
@@ -31,6 +32,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 }
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     if let Some(name) = name_from_declarator(declarator, source) {
+                        extract_cpp_function_type_edges(node, source, &name, &mut type_edges);
                         symbols.push(symbol_from_node(name, SymbolKind::Function, true, node));
                     }
                 }
@@ -44,6 +46,21 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source.as_bytes()).unwrap().to_string();
                     symbols.push(symbol_from_node(name.clone(), kind_type, true, node));
+
+                    // Extract inheritance edges from base_class_clause.
+                    let mut node_cursor = node.walk();
+                    for child in node.children(&mut node_cursor) {
+                        if child.kind() == "base_class_clause" {
+                            let mut base_cursor = child.walk();
+                            for base in child.children(&mut base_cursor) {
+                                // base_class_clause contains access_specifier keywords and
+                                // type nodes — only extract the type identifiers.
+                                if let Some(type_name) = extract_cpp_type_name(base, source) {
+                                    type_edges.push((name.clone(), type_name));
+                                }
+                            }
+                        }
+                    }
 
                     // Walk the body and extract methods with access specifier tracking.
                     if let Some(body) = node.child_by_field_name("body") {
@@ -81,6 +98,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                         {
                                             let prefixed = format!("{name}.{method_name}");
                                             let exported = current_access == "public";
+                                            extract_cpp_function_type_edges(
+                                                child,
+                                                source,
+                                                &prefixed,
+                                                &mut type_edges,
+                                            );
                                             symbols.push(symbol_from_node(
                                                 prefixed,
                                                 SymbolKind::Function,
@@ -104,6 +127,23 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                             {
                                                 let prefixed = format!("{name}.{method_name}");
                                                 let exported = current_access == "public";
+                                                extract_params_from_cpp_declarator(
+                                                    sub,
+                                                    source,
+                                                    &prefixed,
+                                                    &mut type_edges,
+                                                );
+                                                // Return type is on the declaration node itself.
+                                                if let Some(type_node) =
+                                                    child.child_by_field_name("type")
+                                                {
+                                                    if let Some(type_name) =
+                                                        extract_cpp_type_name(type_node, source)
+                                                    {
+                                                        type_edges
+                                                            .push((prefixed.clone(), type_name));
+                                                    }
+                                                }
                                                 symbols.push(symbol_from_node(
                                                     prefixed,
                                                     SymbolKind::Function,
@@ -117,20 +157,55 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                 "field_declaration" => {
                                     // May contain a function declarator (e.g. virtual methods
                                     // written as field_declaration in some tree-sitter grammars).
+                                    // Also extract field type edges for non-function fields.
+                                    let mut has_function_decl = false;
                                     let mut decl_cursor = child.walk();
                                     for sub in child.children(&mut decl_cursor) {
                                         if sub.kind() == "function_declarator" {
+                                            has_function_decl = true;
                                             if let Some(method_name) =
                                                 name_from_declarator(sub, source)
                                             {
                                                 let prefixed = format!("{name}.{method_name}");
                                                 let exported = current_access == "public";
+                                                extract_params_from_cpp_declarator(
+                                                    sub,
+                                                    source,
+                                                    &prefixed,
+                                                    &mut type_edges,
+                                                );
+                                                // Return type on the field_declaration itself.
+                                                if let Some(type_node) =
+                                                    child.child_by_field_name("type")
+                                                {
+                                                    if let Some(type_name) =
+                                                        extract_cpp_type_name(type_node, source)
+                                                    {
+                                                        type_edges
+                                                            .push((prefixed.clone(), type_name));
+                                                    }
+                                                }
                                                 symbols.push(symbol_from_node(
                                                     prefixed,
                                                     SymbolKind::Function,
                                                     exported,
                                                     child,
                                                 ));
+                                            }
+                                        }
+                                    }
+
+                                    // Non-function field: record a type edge from the class to
+                                    // the field's type (e.g. `Dog d;` → Dog→d is not useful, but
+                                    // recording the *field type* as a dependency of the class is).
+                                    if !has_function_decl {
+                                        if let Some(type_node) =
+                                            child.child_by_field_name("type")
+                                        {
+                                            if let Some(type_name) =
+                                                extract_cpp_type_name(type_node, source)
+                                            {
+                                                type_edges.push((name.clone(), type_name));
                                             }
                                         }
                                     }
@@ -189,7 +264,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
-        type_edges: Vec::new(),
+        type_edges,
         dataflow_edges: Vec::new(),
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
@@ -210,6 +285,83 @@ fn walk(mut cursor: TreeCursor<'_>, f: &mut impl FnMut(Node<'_>)) {
                 return;
             }
         }
+    }
+}
+
+/// Extract the base type name from a C++ type node, skipping primitives.
+fn extract_cpp_type_name(node: Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => Some(node.utf8_text(source.as_bytes()).unwrap().to_string()),
+        "qualified_identifier" | "scoped_identifier" => {
+            // std::string or MyNamespace::MyType — take the full qualified name.
+            Some(node.utf8_text(source.as_bytes()).unwrap().to_string())
+        }
+        "template_type" => {
+            // vector<User> — extract the base template name (first child).
+            node.child(0).and_then(|n| extract_cpp_type_name(n, source))
+        }
+        "struct_specifier" | "class_specifier" | "enum_specifier" => node
+            .child_by_field_name("name")
+            .map(|n| n.utf8_text(source.as_bytes()).unwrap().to_string()),
+        // Skip primitive/built-in types.
+        "sized_type_specifier" | "primitive_type" | "auto" => None,
+        _ => None,
+    }
+}
+
+/// Extract type edges from a function/method node: return type and parameter types.
+///
+/// `fn_name` should already be the prefixed name (e.g. `"Dog.fetch"` for a method).
+fn extract_cpp_function_type_edges(
+    node: Node,
+    source: &str,
+    fn_name: &str,
+    type_edges: &mut Vec<(String, String)>,
+) {
+    // Return type lives on the `type` field of the function_definition / declaration.
+    if let Some(type_node) = node.child_by_field_name("type") {
+        if let Some(type_name) = extract_cpp_type_name(type_node, source) {
+            type_edges.push((fn_name.to_string(), type_name));
+        }
+    }
+
+    // Parameter types live inside the function_declarator.
+    if let Some(declarator) = node.child_by_field_name("declarator") {
+        extract_params_from_cpp_declarator(declarator, source, fn_name, type_edges);
+    }
+}
+
+/// Recurse through declarator wrappers to reach `function_declarator` and collect
+/// parameter type edges.
+fn extract_params_from_cpp_declarator(
+    node: Node,
+    source: &str,
+    fn_name: &str,
+    type_edges: &mut Vec<(String, String)>,
+) {
+    match node.kind() {
+        "function_declarator" => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                let mut cursor = params.walk();
+                for child in params.children(&mut cursor) {
+                    if child.kind() == "parameter_declaration"
+                        || child.kind() == "optional_parameter_declaration"
+                    {
+                        if let Some(type_node) = child.child_by_field_name("type") {
+                            if let Some(type_name) = extract_cpp_type_name(type_node, source) {
+                                type_edges.push((fn_name.to_string(), type_name));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "pointer_declarator" | "reference_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                extract_params_from_cpp_declarator(inner, source, fn_name, type_edges);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -465,5 +617,67 @@ struct Point {
                 )
             });
         assert!(scale.exported, "struct members are public by default");
+    }
+
+    #[test]
+    fn test_cpp_type_edges() {
+        let source = r#"
+class Animal {
+public:
+    virtual void speak() = 0;
+};
+
+class Dog : public Animal {
+public:
+    void fetch(Ball *ball) {}
+};
+"#;
+        let extracted = extract_cpp_symbols(source).unwrap();
+
+        // Inheritance
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Dog" && e.1 == "Animal"),
+            "Expected Dog->Animal inheritance edge, got: {:?}",
+            extracted.type_edges
+        );
+
+        // Method param types
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Dog.fetch" && e.1 == "Ball"),
+            "Expected Dog.fetch->Ball type edge, got: {:?}",
+            extracted.type_edges
+        );
+    }
+
+    #[test]
+    fn test_cpp_type_edges_multiple_inheritance() {
+        let source = r#"
+class A {};
+class B {};
+class C : public A, public B {};
+"#;
+        let extracted = extract_cpp_symbols(source).unwrap();
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "C" && e.1 == "A"),
+            "Expected C->A, got: {:?}",
+            extracted.type_edges
+        );
+        assert!(
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "C" && e.1 == "B"),
+            "Expected C->B, got: {:?}",
+            extracted.type_edges
+        );
     }
 }

@@ -147,8 +147,8 @@ fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) 
             end: node.end_byte(),
         },
         lines: LineSpan {
-            start: start.row as u32,
-            end: end.row as u32,
+            start: start.row as u32 + 1,
+            end: end.row as u32 + 1,
         },
     }
 }
@@ -224,5 +224,22 @@ int main() {
         // Imports
         assert!(extracted.imports.iter().any(|i| i.name == "iostream"));
         assert!(extracted.imports.iter().any(|i| i.name == "myheader.h"));
+    }
+
+    #[test]
+    fn test_cpp_line_numbers_1_indexed() {
+        let source = "class Foo {};\n";
+        let extracted = extract_cpp_symbols(source).unwrap();
+        let foo = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Foo")
+            .unwrap();
+        assert_eq!(
+            foo.lines.start,
+            1,
+            "Expected line 1, got {}",
+            foo.lines.start
+        );
     }
 }

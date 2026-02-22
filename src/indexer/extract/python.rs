@@ -22,7 +22,8 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     walk(cursor, &mut |node| match node.kind() {
         "function_definition" => {
             if let Some(name) = symbol_name(node, source) {
-                let exported = !name.starts_with('_');
+                let is_dunder = name.starts_with("__") && name.ends_with("__");
+                let exported = is_dunder || !name.starts_with('_');
                 symbols.push(symbol_from_node(name, SymbolKind::Function, exported, node));
             }
         }
@@ -86,8 +87,8 @@ fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) 
             end: node.end_byte(),
         },
         lines: LineSpan {
-            start: start.row as u32,
-            end: end.row as u32,
+            start: start.row as u32 + 1,
+            end: end.row as u32 + 1,
         },
     }
 }
@@ -226,5 +227,25 @@ def _private():
             .imports
             .iter()
             .any(|i| i.name == "path" && i.source == "sys"));
+    }
+
+    #[test]
+    fn test_line_numbers_are_1_indexed() {
+        let source = "def hello():\n    pass\n";
+        let extracted = extract_python_symbols(source).unwrap();
+        let hello = extracted.symbols.iter().find(|s| s.name == "hello").unwrap();
+        assert_eq!(hello.lines.start, 1); // line 1, not 0
+        assert_eq!(hello.lines.end, 2);
+    }
+
+    #[test]
+    fn test_dunder_methods_exported() {
+        let source = "class Foo:\n    def __init__(self):\n        pass\n    def __str__(self):\n        return ''\n";
+        let extracted = extract_python_symbols(source).unwrap();
+        // Find __init__ (currently not prefixed, that's Task 2)
+        let init = extracted.symbols.iter().find(|s| s.name == "__init__").unwrap();
+        assert!(init.exported, "__init__ should be exported (dunder methods are public API)");
+        let str_m = extracted.symbols.iter().find(|s| s.name == "__str__").unwrap();
+        assert!(str_m.exported, "__str__ should be exported");
     }
 }

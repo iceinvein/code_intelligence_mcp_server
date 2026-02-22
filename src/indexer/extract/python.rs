@@ -2,7 +2,10 @@ use crate::indexer::parser::{parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
-use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
+use super::symbol::{
+    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
+    SymbolKind,
+};
 
 pub fn extract_python_symbols(source: &str) -> Result<ExtractedFile> {
     let mut parser = parser_for_id(LanguageId::Python)?;
@@ -19,6 +22,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut type_edges: Vec<(String, String)> = Vec::new();
+    let mut dataflow_edges: Vec<DataFlowEdge> = Vec::new();
 
     walk(cursor, &mut |node| match node.kind() {
         "function_definition" => {
@@ -51,6 +55,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 let exported = is_dunder || !name.starts_with('_');
                 symbols.push(symbol_from_node(name.clone(), SymbolKind::Function, exported, node));
                 extract_function_type_edges(node, source, &name, &mut type_edges);
+                extract_python_dataflow(node, source, &name, &mut dataflow_edges);
             }
         }
         "class_definition" => {
@@ -85,6 +90,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                 source,
                                 &mut symbols,
                                 &mut type_edges,
+                                &mut dataflow_edges,
                             );
                         } else if child.kind() == "decorated_definition" {
                             // A decorator wraps the actual function_definition.
@@ -98,6 +104,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                         source,
                                         &mut symbols,
                                         &mut type_edges,
+                                        &mut dataflow_edges,
                                     );
                                 }
                             }
@@ -169,7 +176,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         symbols,
         imports,
         type_edges,
-        dataflow_edges: Vec::new(),
+        dataflow_edges,
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
@@ -185,6 +192,7 @@ fn extract_method(
     source: &str,
     symbols: &mut Vec<ExtractedSymbol>,
     type_edges: &mut Vec<(String, String)>,
+    dataflow_edges: &mut Vec<DataFlowEdge>,
 ) {
     if let Some(method_name) = symbol_name(node, source) {
         let prefixed = format!("{class_name}.{method_name}");
@@ -200,6 +208,7 @@ fn extract_method(
             node,
         ));
         extract_function_type_edges(node, source, &prefixed, type_edges);
+        extract_python_dataflow(node, source, &prefixed, dataflow_edges);
     }
 }
 
@@ -233,6 +242,386 @@ fn extract_function_type_edges(
             type_edges.push((fn_name.to_string(), type_name));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Data flow edge extraction
+// ---------------------------------------------------------------------------
+
+/// Extract data flow edges (reads/writes) from a Python function body.
+///
+/// Walks the `body` block of a `function_definition` node and emits
+/// `DataFlowEdge::Writes` for assignment left-hand sides and
+/// `DataFlowEdge::Reads` for identifiers/callees on the right-hand side and
+/// in stand-alone call expressions.
+fn extract_python_dataflow(
+    node: Node<'_>,
+    source: &str,
+    fn_name: &str,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let body = match node.child_by_field_name("body") {
+        Some(b) => b,
+        None => return,
+    };
+    walk_dataflow(body, source, fn_name, edges);
+}
+
+/// Walk a block (or any compound statement node) and dispatch on statement kinds.
+fn walk_dataflow(node: Node<'_>, source: &str, fn_name: &str, edges: &mut Vec<DataFlowEdge>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "expression_statement" => {
+                let mut es_cursor = child.walk();
+                for sub in child.children(&mut es_cursor) {
+                    match sub.kind() {
+                        "assignment" => {
+                            extract_assignment_dataflow(sub, source, fn_name, edges);
+                        }
+                        "augmented_assignment" => {
+                            extract_augmented_assignment_dataflow(sub, source, fn_name, edges);
+                        }
+                        "call" => {
+                            extract_call_reads(sub, source, fn_name, edges);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "return_statement" => {
+                let mut ret_cursor = child.walk();
+                for sub in child.children(&mut ret_cursor) {
+                    match sub.kind() {
+                        "identifier" => {
+                            let name = sub.utf8_text(source.as_bytes()).unwrap_or("");
+                            if !is_python_keyword(name) {
+                                edges.push(DataFlowEdge {
+                                    from_symbol: name.to_string(),
+                                    to_symbol: fn_name.to_string(),
+                                    flow_type: DataFlowType::Reads,
+                                    at_line: sub.start_position().row as u32 + 1,
+                                });
+                            }
+                        }
+                        "call" => {
+                            extract_call_reads(sub, source, fn_name, edges);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Recurse into compound statement bodies.
+            "if_statement"
+            | "for_statement"
+            | "while_statement"
+            | "try_statement"
+            | "with_statement"
+            | "block"
+            | "else_clause"
+            | "elif_clause"
+            | "except_clause"
+            | "finally_clause" => {
+                walk_dataflow_children(child, source, fn_name, edges);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Recurse into the children of a compound statement node, re-dispatching on
+/// statement and expression kinds.
+fn walk_dataflow_children(
+    node: Node<'_>,
+    source: &str,
+    fn_name: &str,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "expression_statement"
+            | "return_statement"
+            | "if_statement"
+            | "for_statement"
+            | "while_statement"
+            | "try_statement"
+            | "with_statement"
+            | "block"
+            | "else_clause"
+            | "elif_clause"
+            | "except_clause"
+            | "finally_clause" => {
+                walk_dataflow_children(child, source, fn_name, edges);
+            }
+            "assignment" => {
+                extract_assignment_dataflow(child, source, fn_name, edges);
+            }
+            "augmented_assignment" => {
+                extract_augmented_assignment_dataflow(child, source, fn_name, edges);
+            }
+            "call" => {
+                extract_call_reads(child, source, fn_name, edges);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Emit a `Writes` edge for the LHS and `Reads` edges for identifiers in the RHS
+/// of a plain assignment (`x = expr`).
+fn extract_assignment_dataflow(
+    node: Node<'_>,
+    source: &str,
+    fn_name: &str,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let line = node.start_position().row as u32 + 1;
+
+    // LHS → write
+    if let Some(left) = node.child_by_field_name("left") {
+        match left.kind() {
+            "identifier" => {
+                let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+                if !is_python_keyword(name) {
+                    edges.push(DataFlowEdge {
+                        from_symbol: name.to_string(),
+                        to_symbol: fn_name.to_string(),
+                        flow_type: DataFlowType::Writes,
+                        at_line: line,
+                    });
+                }
+            }
+            "attribute" => {
+                // self.field = … → emit a write edge for "field"
+                if let Some(attr) = left.child_by_field_name("attribute") {
+                    let name = attr.utf8_text(source.as_bytes()).unwrap_or("");
+                    if !name.is_empty() {
+                        edges.push(DataFlowEdge {
+                            from_symbol: name.to_string(),
+                            to_symbol: fn_name.to_string(),
+                            flow_type: DataFlowType::Writes,
+                            at_line: line,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // RHS → reads
+    if let Some(right) = node.child_by_field_name("right") {
+        collect_reads_from_expr(right, source, fn_name, edges);
+    }
+}
+
+/// Emit `Reads` and `Writes` edges for an augmented assignment (`x += expr`).
+///
+/// The target variable is both read (its current value is consumed) and written
+/// (the result is stored back), matching the semantics of `x = x <op> expr`.
+fn extract_augmented_assignment_dataflow(
+    node: Node<'_>,
+    source: &str,
+    fn_name: &str,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let line = node.start_position().row as u32 + 1;
+    if let Some(left) = node.child_by_field_name("left") {
+        if left.kind() == "identifier" {
+            let name = left.utf8_text(source.as_bytes()).unwrap_or("");
+            if !is_python_keyword(name) {
+                // x += 1 → reads x, then writes x
+                edges.push(DataFlowEdge {
+                    from_symbol: name.to_string(),
+                    to_symbol: fn_name.to_string(),
+                    flow_type: DataFlowType::Reads,
+                    at_line: line,
+                });
+                edges.push(DataFlowEdge {
+                    from_symbol: name.to_string(),
+                    to_symbol: fn_name.to_string(),
+                    flow_type: DataFlowType::Writes,
+                    at_line: line,
+                });
+            }
+        }
+    }
+    if let Some(right) = node.child_by_field_name("right") {
+        collect_reads_from_expr(right, source, fn_name, edges);
+    }
+}
+
+/// Emit `Reads` edges for the callee and each argument of a call expression.
+fn extract_call_reads(
+    node: Node<'_>,
+    source: &str,
+    fn_name: &str,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let line = node.start_position().row as u32 + 1;
+
+    // Function name / callee → read
+    if let Some(function) = node.child_by_field_name("function") {
+        match function.kind() {
+            "identifier" => {
+                let name = function.utf8_text(source.as_bytes()).unwrap_or("");
+                if !is_python_keyword(name) {
+                    edges.push(DataFlowEdge {
+                        from_symbol: name.to_string(),
+                        to_symbol: fn_name.to_string(),
+                        flow_type: DataFlowType::Reads,
+                        at_line: line,
+                    });
+                }
+            }
+            "attribute" => {
+                // obj.method() → read obj (skip self/cls)
+                if let Some(obj) = function.child_by_field_name("object") {
+                    if obj.kind() == "identifier" {
+                        let name = obj.utf8_text(source.as_bytes()).unwrap_or("");
+                        if !is_python_keyword(name) && name != "self" && name != "cls" {
+                            edges.push(DataFlowEdge {
+                                from_symbol: name.to_string(),
+                                to_symbol: fn_name.to_string(),
+                                flow_type: DataFlowType::Reads,
+                                at_line: line,
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Arguments → reads
+    if let Some(args) = node.child_by_field_name("arguments") {
+        let mut cursor = args.walk();
+        for arg in args.children(&mut cursor) {
+            collect_reads_from_expr(arg, source, fn_name, edges);
+        }
+    }
+}
+
+/// Recursively collect `Reads` edges from an expression node.
+///
+/// Only the top-level identifiers, calls, and attribute object references are
+/// visited — no deep recursive descent into nested sub-expressions — keeping
+/// the output shallow and avoiding duplicate edges.
+fn collect_reads_from_expr(
+    node: Node<'_>,
+    source: &str,
+    fn_name: &str,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    match node.kind() {
+        "identifier" => {
+            let name = node.utf8_text(source.as_bytes()).unwrap_or("");
+            if !is_python_keyword(name)
+                && name != "self"
+                && name != "cls"
+                && name != "True"
+                && name != "False"
+                && name != "None"
+                && !name.is_empty()
+            {
+                edges.push(DataFlowEdge {
+                    from_symbol: name.to_string(),
+                    to_symbol: fn_name.to_string(),
+                    flow_type: DataFlowType::Reads,
+                    at_line: node.start_position().row as u32 + 1,
+                });
+            }
+        }
+        "call" => {
+            extract_call_reads(node, source, fn_name, edges);
+        }
+        "attribute" => {
+            // x.y → read x (skip self/cls)
+            if let Some(obj) = node.child_by_field_name("object") {
+                if obj.kind() == "identifier" {
+                    let name = obj.utf8_text(source.as_bytes()).unwrap_or("");
+                    if !is_python_keyword(name) && name != "self" && name != "cls" {
+                        edges.push(DataFlowEdge {
+                            from_symbol: name.to_string(),
+                            to_symbol: fn_name.to_string(),
+                            flow_type: DataFlowType::Reads,
+                            at_line: obj.start_position().row as u32 + 1,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {
+            // Recurse into children for compound expressions (binary_operator,
+            // conditional_expression, list, tuple, etc.)
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "identifier" | "call" | "attribute" => {
+                        collect_reads_from_expr(child, source, fn_name, edges);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Return `true` if `name` is a Python keyword or built-in that carries no
+/// meaningful data-flow signal.
+fn is_python_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "self"
+            | "cls"
+            | "True"
+            | "False"
+            | "None"
+            | "if"
+            | "else"
+            | "elif"
+            | "for"
+            | "while"
+            | "in"
+            | "not"
+            | "and"
+            | "or"
+            | "return"
+            | "pass"
+            | "break"
+            | "continue"
+            | "raise"
+            | "yield"
+            | "import"
+            | "from"
+            | "as"
+            | "try"
+            | "except"
+            | "finally"
+            | "with"
+            | "def"
+            | "class"
+            | "lambda"
+            | "global"
+            | "nonlocal"
+            | "assert"
+            | "del"
+            | "print"
+            | "len"
+            | "range"
+            | "enumerate"
+            | "zip"
+            | "map"
+            | "filter"
+            | "isinstance"
+            | "issubclass"
+            | "super"
+            | "property"
+            | "staticmethod"
+            | "classmethod"
+    )
 }
 
 /// Extract the base type name from a Python type annotation node.
@@ -716,6 +1105,40 @@ regular_var = "not a constant"
             !extracted.symbols.iter().any(|s| s.name == "regular_var"),
             "regular_var should not be extracted as constant, got: {:?}",
             extracted.symbols
+        );
+    }
+
+    #[test]
+    fn test_python_dataflow() {
+        let source = r#"
+def process(data):
+    result = transform(data)
+    save(result)
+"#;
+        let extracted = extract_python_symbols(source).unwrap();
+
+        // result = transform(data) → writes("result")
+        assert!(
+            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "result"
+                && matches!(e.flow_type, DataFlowType::Writes)),
+            "Expected writes edge for result, got: {:?}",
+            extracted.dataflow_edges
+        );
+
+        // transform(data) → reads("transform")
+        assert!(
+            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "transform"
+                && matches!(e.flow_type, DataFlowType::Reads)),
+            "Expected reads edge for transform, got: {:?}",
+            extracted.dataflow_edges
+        );
+
+        // save(result) → reads("save")
+        assert!(
+            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "save"
+                && matches!(e.flow_type, DataFlowType::Reads)),
+            "Expected reads edge for save, got: {:?}",
+            extracted.dataflow_edges
         );
     }
 }

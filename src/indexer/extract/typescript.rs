@@ -640,6 +640,7 @@ fn extract_dataflow_from_lexical_declaration(
                         to_symbol: "<scope>".to_string(),
                         flow_type: DataFlowType::Writes,
                         at_line: node.start_position().row as u32,
+                        scope: Some(name.clone()),
                     });
                 }
             }
@@ -744,6 +745,7 @@ fn extract_dataflow_from_assignment(
             to_symbol: context_name.to_string(),
             flow_type: DataFlowType::Writes,
             at_line: line,
+            scope: Some(context_name.to_string()),
         });
     }
 
@@ -754,6 +756,7 @@ fn extract_dataflow_from_assignment(
             to_symbol: context_name.to_string(),
             flow_type: DataFlowType::Reads,
             at_line: line,
+            scope: Some(context_name.to_string()),
         });
     }
 }
@@ -775,6 +778,7 @@ fn extract_dataflow_from_call(
                 to_symbol: context_name.to_string(),
                 flow_type: DataFlowType::Reads,
                 at_line: line,
+                scope: Some(context_name.to_string()),
             });
         }
     }
@@ -789,6 +793,7 @@ fn extract_dataflow_from_call(
                     to_symbol: context_name.to_string(),
                     flow_type: DataFlowType::Reads,
                     at_line: line,
+                    scope: Some(context_name.to_string()),
                 });
             }
         }
@@ -809,6 +814,7 @@ fn extract_reads_from_expression(
             to_symbol: context_name.to_string(),
             flow_type: DataFlowType::Reads,
             at_line: line,
+            scope: Some(context_name.to_string()),
         });
     }
 }

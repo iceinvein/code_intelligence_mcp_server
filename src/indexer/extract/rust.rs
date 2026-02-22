@@ -659,6 +659,7 @@ fn extract_rust_dataflow_from_node(
                         to_symbol: context_name.to_string(),
                         flow_type: DataFlowType::Writes,
                         at_line: line,
+                        scope: Some(context_name.to_string()),
                     });
                 }
             }
@@ -675,6 +676,7 @@ fn extract_rust_dataflow_from_node(
                         to_symbol: context_name.to_string(),
                         flow_type: DataFlowType::Writes,
                         at_line: line,
+                        scope: Some(context_name.to_string()),
                     });
                 }
             }
@@ -691,6 +693,7 @@ fn extract_rust_dataflow_from_node(
                         to_symbol: context_name.to_string(),
                         flow_type: DataFlowType::Reads,
                         at_line: line,
+                        scope: Some(context_name.to_string()),
                     });
                 }
             }
@@ -742,6 +745,7 @@ fn extract_rust_reads_from_expr(
                     to_symbol: context_name.to_string(),
                     flow_type: DataFlowType::Reads,
                     at_line: line,
+                    scope: Some(context_name.to_string()),
                 });
             }
         }
@@ -760,6 +764,7 @@ fn extract_rust_reads_from_expr(
                             to_symbol: context_name.to_string(),
                             flow_type: DataFlowType::Reads,
                             at_line: line,
+                            scope: Some(context_name.to_string()),
                         });
                     }
                 }

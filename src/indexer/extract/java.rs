@@ -293,12 +293,14 @@ fn walk_java_dataflow(node: Node, source: &str, method_name: &str, edges: &mut V
                                                 to_symbol: method_name.to_string(),
                                                 flow_type: DataFlowType::Reads,
                                                 at_line: line,
+                                                scope: Some(method_name.to_string()),
                                             });
                                             edges.push(DataFlowEdge {
                                                 from_symbol: name.to_string(),
                                                 to_symbol: method_name.to_string(),
                                                 flow_type: DataFlowType::Writes,
                                                 at_line: line,
+                                                scope: Some(method_name.to_string()),
                                             });
                                         }
                                     }
@@ -320,6 +322,7 @@ fn walk_java_dataflow(node: Node, source: &str, method_name: &str, edges: &mut V
                                     to_symbol: method_name.to_string(),
                                     flow_type: DataFlowType::Reads,
                                     at_line: sub.start_position().row as u32 + 1,
+                                    scope: Some(method_name.to_string()),
                                 });
                             }
                         }
@@ -368,6 +371,7 @@ fn extract_local_var_dataflow(
                         to_symbol: method_name.to_string(),
                         flow_type: DataFlowType::Writes,
                         at_line: line,
+                        scope: Some(method_name.to_string()),
                     });
                 }
             }
@@ -397,6 +401,7 @@ fn extract_java_assignment_dataflow(
                             to_symbol: method_name.to_string(),
                             flow_type: DataFlowType::Writes,
                             at_line: line,
+                            scope: Some(method_name.to_string()),
                         });
                     }
                 }
@@ -410,6 +415,7 @@ fn extract_java_assignment_dataflow(
                             to_symbol: method_name.to_string(),
                             flow_type: DataFlowType::Writes,
                             at_line: line,
+                            scope: Some(method_name.to_string()),
                         });
                     }
                 }
@@ -439,6 +445,7 @@ fn extract_java_call_reads(
                     to_symbol: method_name.to_string(),
                     flow_type: DataFlowType::Reads,
                     at_line: line,
+                    scope: Some(method_name.to_string()),
                 });
             }
         }
@@ -453,6 +460,7 @@ fn extract_java_call_reads(
                         to_symbol: method_name.to_string(),
                         flow_type: DataFlowType::Reads,
                         at_line: line,
+                        scope: Some(method_name.to_string()),
                     });
                 }
             }
@@ -488,6 +496,7 @@ fn collect_java_reads(
                         to_symbol: method_name.to_string(),
                         flow_type: DataFlowType::Reads,
                         at_line: node.start_position().row as u32 + 1,
+                        scope: Some(method_name.to_string()),
                     });
                 }
             }
@@ -505,6 +514,7 @@ fn collect_java_reads(
                                 to_symbol: method_name.to_string(),
                                 flow_type: DataFlowType::Reads,
                                 at_line: obj.start_position().row as u32 + 1,
+                                scope: Some(method_name.to_string()),
                             });
                         }
                     }

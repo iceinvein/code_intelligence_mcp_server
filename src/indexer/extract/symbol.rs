@@ -197,6 +197,8 @@ pub struct DataFlowEdge {
     pub flow_type: DataFlowType,
     /// Line number where this flow occurs
     pub at_line: u32,
+    /// Enclosing function/method name for local variable resolution
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

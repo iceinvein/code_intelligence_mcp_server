@@ -307,6 +307,7 @@ fn walk_dataflow(node: Node<'_>, source: &str, fn_name: &str, edges: &mut Vec<Da
                                     to_symbol: fn_name.to_string(),
                                     flow_type: DataFlowType::Reads,
                                     at_line: sub.start_position().row as u32 + 1,
+                                    scope: Some(fn_name.to_string()),
                                 });
                             }
                         }
@@ -395,6 +396,7 @@ fn extract_assignment_dataflow(
                         to_symbol: fn_name.to_string(),
                         flow_type: DataFlowType::Writes,
                         at_line: line,
+                        scope: Some(fn_name.to_string()),
                     });
                 }
             }
@@ -408,6 +410,7 @@ fn extract_assignment_dataflow(
                             to_symbol: fn_name.to_string(),
                             flow_type: DataFlowType::Writes,
                             at_line: line,
+                            scope: Some(fn_name.to_string()),
                         });
                     }
                 }
@@ -443,12 +446,14 @@ fn extract_augmented_assignment_dataflow(
                     to_symbol: fn_name.to_string(),
                     flow_type: DataFlowType::Reads,
                     at_line: line,
+                    scope: Some(fn_name.to_string()),
                 });
                 edges.push(DataFlowEdge {
                     from_symbol: name.to_string(),
                     to_symbol: fn_name.to_string(),
                     flow_type: DataFlowType::Writes,
                     at_line: line,
+                    scope: Some(fn_name.to_string()),
                 });
             }
         }
@@ -478,6 +483,7 @@ fn extract_call_reads(
                         to_symbol: fn_name.to_string(),
                         flow_type: DataFlowType::Reads,
                         at_line: line,
+                        scope: Some(fn_name.to_string()),
                     });
                 }
             }
@@ -492,6 +498,7 @@ fn extract_call_reads(
                                 to_symbol: fn_name.to_string(),
                                 flow_type: DataFlowType::Reads,
                                 at_line: line,
+                                scope: Some(fn_name.to_string()),
                             });
                         }
                     }
@@ -537,6 +544,7 @@ fn collect_reads_from_expr(
                     to_symbol: fn_name.to_string(),
                     flow_type: DataFlowType::Reads,
                     at_line: node.start_position().row as u32 + 1,
+                    scope: Some(fn_name.to_string()),
                 });
             }
         }
@@ -554,6 +562,7 @@ fn collect_reads_from_expr(
                             to_symbol: fn_name.to_string(),
                             flow_type: DataFlowType::Reads,
                             at_line: obj.start_position().row as u32 + 1,
+                            scope: Some(fn_name.to_string()),
                         });
                     }
                 }

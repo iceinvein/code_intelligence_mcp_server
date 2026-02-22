@@ -23,11 +23,14 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         let kind = node.kind();
         match kind {
             "function_definition" => {
+                // Skip methods inside class/struct bodies — handled by the class/struct arms.
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "field_declaration_list" {
+                        return;
+                    }
+                }
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     if let Some(name) = name_from_declarator(declarator, source) {
-                        // Check if it's a method (inside a class/struct) - simplistic check
-                        // For now just assume Function. Method vs Function distinction requires parent context check which walk doesn't easily give unless we pass state.
-                        // But since we flatten symbols, Function is okay.
                         symbols.push(symbol_from_node(name, SymbolKind::Function, true, node));
                     }
                 }
@@ -40,7 +43,102 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 };
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source.as_bytes()).unwrap().to_string();
-                    symbols.push(symbol_from_node(name, kind_type, true, node));
+                    symbols.push(symbol_from_node(name.clone(), kind_type, true, node));
+
+                    // Walk the body and extract methods with access specifier tracking.
+                    if let Some(body) = node.child_by_field_name("body") {
+                        // Default access: private for class, public for struct.
+                        let mut current_access = if kind == "class_specifier" {
+                            "private"
+                        } else {
+                            "public"
+                        };
+
+                        let mut body_cursor = body.walk();
+                        for child in body.children(&mut body_cursor) {
+                            match child.kind() {
+                                "access_specifier" => {
+                                    // Node text is e.g. "public:", "private:", "protected:"
+                                    let text = child
+                                        .utf8_text(source.as_bytes())
+                                        .unwrap()
+                                        .trim_end_matches(':')
+                                        .trim();
+                                    current_access = match text {
+                                        "public" => "public",
+                                        "private" => "private",
+                                        "protected" => "protected",
+                                        _ => current_access,
+                                    };
+                                }
+                                "function_definition" => {
+                                    // Inline method definition with body.
+                                    if let Some(declarator) =
+                                        child.child_by_field_name("declarator")
+                                    {
+                                        if let Some(method_name) =
+                                            name_from_declarator(declarator, source)
+                                        {
+                                            let prefixed = format!("{name}.{method_name}");
+                                            let exported = current_access == "public";
+                                            symbols.push(symbol_from_node(
+                                                prefixed,
+                                                SymbolKind::Function,
+                                                exported,
+                                                child,
+                                            ));
+                                        }
+                                    }
+                                }
+                                "declaration" => {
+                                    // Method declaration (no body) — may contain a
+                                    // function_declarator or pointer_declarator wrapping one.
+                                    let mut decl_cursor = child.walk();
+                                    for sub in child.children(&mut decl_cursor) {
+                                        if sub.kind() == "function_declarator"
+                                            || (sub.kind() == "pointer_declarator"
+                                                && contains_function_declarator(sub))
+                                        {
+                                            if let Some(method_name) =
+                                                name_from_declarator(sub, source)
+                                            {
+                                                let prefixed = format!("{name}.{method_name}");
+                                                let exported = current_access == "public";
+                                                symbols.push(symbol_from_node(
+                                                    prefixed,
+                                                    SymbolKind::Function,
+                                                    exported,
+                                                    child,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                "field_declaration" => {
+                                    // May contain a function declarator (e.g. virtual methods
+                                    // written as field_declaration in some tree-sitter grammars).
+                                    let mut decl_cursor = child.walk();
+                                    for sub in child.children(&mut decl_cursor) {
+                                        if sub.kind() == "function_declarator" {
+                                            if let Some(method_name) =
+                                                name_from_declarator(sub, source)
+                                            {
+                                                let prefixed = format!("{name}.{method_name}");
+                                                let exported = current_access == "public";
+                                                symbols.push(symbol_from_node(
+                                                    prefixed,
+                                                    SymbolKind::Function,
+                                                    exported,
+                                                    child,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
             }
             "enum_specifier" => {
@@ -115,6 +213,20 @@ fn walk(mut cursor: TreeCursor<'_>, f: &mut impl FnMut(Node<'_>)) {
     }
 }
 
+/// Returns `true` if `node` or any of its descendants is a `function_declarator`.
+fn contains_function_declarator(node: Node) -> bool {
+    if node.kind() == "function_declarator" {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if contains_function_declarator(child) {
+            return true;
+        }
+    }
+    false
+}
+
 fn name_from_declarator(node: Node, source: &str) -> Option<String> {
     let kind = node.kind();
     if kind == "identifier" || kind == "field_identifier" || kind == "type_identifier" {
@@ -129,8 +241,6 @@ fn name_from_declarator(node: Node, source: &str) -> Option<String> {
     if let Some(child) = node.child_by_field_name("declarator") {
         return name_from_declarator(child, source);
     }
-
-    // function_declarator might have declarator as a child
 
     None
 }
@@ -187,12 +297,7 @@ int main() {
 "#;
         let extracted = extract_cpp_symbols(source).unwrap();
 
-        // Symbols: MyNamespace, MyClass, Point, Point2D, MyNamespace::MyClass::myMethod, main
-        // Note: myMethod declaration inside class is not currently extracted because we walk flat.
-        // Wait, we walk the tree. "function_definition" is for implementation. "function_declarator" inside "field_declaration" inside class is for declaration.
-        // My implementation only looks for "function_definition" (implementation) and "class_specifier", etc.
-        // So MyNamespace, MyClass, Point, Point2D, MyNamespace::MyClass::myMethod, main.
-
+        // Namespace, class, struct, type alias, out-of-class method impl, standalone main.
         assert!(extracted
             .symbols
             .iter()
@@ -214,12 +319,34 @@ int main() {
             .iter()
             .any(|s| s.name == "main" && s.kind == SymbolKind::Function));
 
-        // Check for the method implementation
-        // The name extractor for qualified_identifier should return the full name
-        assert!(extracted
-            .symbols
-            .iter()
-            .any(|s| s.name.contains("myMethod") && s.kind == SymbolKind::Function));
+        // Out-of-class qualified method definition — extracted as a standalone function_definition
+        // with the full qualified name returned by name_from_declarator.
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name.contains("myMethod") && s.kind == SymbolKind::Function),
+            "Expected a symbol whose name contains 'myMethod', got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
+
+        // The in-class declaration should now be extracted with the prefixed name.
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "MyClass.myMethod"),
+            "Expected MyClass.myMethod from declaration, got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
 
         // Imports
         assert!(extracted.imports.iter().any(|i| i.name == "iostream"));
@@ -241,5 +368,102 @@ int main() {
             "Expected line 1, got {}",
             foo.lines.start
         );
+    }
+
+    #[test]
+    fn test_cpp_method_prefixing() {
+        let source = r#"
+class Server {
+public:
+    void start() {}
+private:
+    void stop() {}
+};
+"#;
+        let extracted = extract_cpp_symbols(source).unwrap();
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "Server.start"),
+            "Expected Server.start, got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "Server.stop"),
+            "Expected Server.stop"
+        );
+
+        // Visibility check.
+        let start = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Server.start")
+            .unwrap();
+        assert!(start.exported, "public method should be exported");
+
+        let stop = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Server.stop")
+            .unwrap();
+        assert!(!stop.exported, "private method should not be exported");
+    }
+
+    #[test]
+    fn test_cpp_method_declarations() {
+        let source = r#"
+class Widget {
+public:
+    void render();
+    int width();
+};
+"#;
+        let extracted = extract_cpp_symbols(source).unwrap();
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Widget.render"),
+            "Expected Widget.render declaration, got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Widget.width"),
+            "Expected Widget.width declaration"
+        );
+    }
+
+    #[test]
+    fn test_cpp_struct_default_public() {
+        let source = r#"
+struct Point {
+    void scale() {}
+};
+"#;
+        let extracted = extract_cpp_symbols(source).unwrap();
+        let scale = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Point.scale")
+            .unwrap_or_else(|| {
+                panic!(
+                    "Expected Point.scale, got: {:?}",
+                    extracted
+                        .symbols
+                        .iter()
+                        .map(|s| &s.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(scale.exported, "struct members are public by default");
     }
 }

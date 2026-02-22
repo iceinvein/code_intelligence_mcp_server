@@ -22,35 +22,108 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     walk(cursor, &mut |node| match node.kind() {
         "class_declaration" => {
             if let Some(name) = symbol_name(node, source) {
-                symbols.push(symbol_from_node(
-                    name,
-                    SymbolKind::Class,
-                    is_public(node),
-                    node,
-                ));
+                let exported = is_public(node);
+                symbols.push(symbol_from_node(name.clone(), SymbolKind::Class, exported, node));
+
+                // Walk class body for methods and constructors
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut body_cursor = body.walk();
+                    for child in body.children(&mut body_cursor) {
+                        if child.kind() == "method_declaration" {
+                            if let Some(method_name) = symbol_name(child, source) {
+                                let prefixed = format!("{name}.{method_name}");
+                                symbols.push(symbol_from_node(
+                                    prefixed,
+                                    SymbolKind::Function,
+                                    is_public(child),
+                                    child,
+                                ));
+                            }
+                        }
+                        if child.kind() == "constructor_declaration" {
+                            if let Some(ctor_name) = symbol_name(child, source) {
+                                let prefixed = format!("{name}.{ctor_name}");
+                                symbols.push(symbol_from_node(
+                                    prefixed,
+                                    SymbolKind::Function,
+                                    is_public(child),
+                                    child,
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
         "interface_declaration" => {
             if let Some(name) = symbol_name(node, source) {
+                let exported = is_public(node);
                 symbols.push(symbol_from_node(
-                    name,
+                    name.clone(),
                     SymbolKind::Interface,
-                    is_public(node),
+                    exported,
                     node,
                 ));
+
+                // Walk interface body for methods (all implicitly public)
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut body_cursor = body.walk();
+                    for child in body.children(&mut body_cursor) {
+                        if child.kind() == "method_declaration" {
+                            if let Some(method_name) = symbol_name(child, source) {
+                                let prefixed = format!("{name}.{method_name}");
+                                symbols.push(symbol_from_node(
+                                    prefixed,
+                                    SymbolKind::Function,
+                                    is_public(child),
+                                    child,
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
         "enum_declaration" => {
             if let Some(name) = symbol_name(node, source) {
-                symbols.push(symbol_from_node(
-                    name,
-                    SymbolKind::Enum,
-                    is_public(node),
-                    node,
-                ));
+                let exported = is_public(node);
+                symbols.push(symbol_from_node(name.clone(), SymbolKind::Enum, exported, node));
+
+                // Walk enum body for method declarations inside enum_body_declarations
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut body_cursor = body.walk();
+                    for child in body.children(&mut body_cursor) {
+                        if child.kind() == "enum_body_declarations" {
+                            let mut decl_cursor = child.walk();
+                            for decl in child.children(&mut decl_cursor) {
+                                if decl.kind() == "method_declaration" {
+                                    if let Some(method_name) = symbol_name(decl, source) {
+                                        let prefixed = format!("{name}.{method_name}");
+                                        symbols.push(symbol_from_node(
+                                            prefixed,
+                                            SymbolKind::Function,
+                                            is_public(decl),
+                                            decl,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         "method_declaration" => {
+            // Skip methods inside classes/interfaces/enums — handled by those arms.
+            // Only extract standalone methods (rare in Java, but guard for completeness).
+            if let Some(parent) = node.parent() {
+                if matches!(
+                    parent.kind(),
+                    "class_body" | "interface_body" | "enum_body" | "enum_body_declarations"
+                ) {
+                    return;
+                }
+            }
             if let Some(name) = symbol_name(node, source) {
                 symbols.push(symbol_from_node(
                     name,
@@ -189,22 +262,8 @@ public enum Color {
 "#;
         let extracted = extract_java_symbols(source).unwrap();
 
-        // Symbols: MyClass, myMethod, internalMethod, MyInterface, doSomething, Color
-        // Note: doSomething inside interface is "method_declaration"? Yes usually.
-        // Enum constants? I don't extract them currently (enum_constant)
-
-        // Current logic:
-        // class_declaration MyClass (public)
-        // method_declaration myMethod (public)
-        // method_declaration internalMethod (private)
-        // interface_declaration MyInterface (package-private -> exported=false)
-        // method_declaration doSomething (implicitly public in interface, but check is_public logic? Interface methods don't have modifiers node usually if implicit)
-        // enum_declaration Color (public)
-
-        // Wait, is_public only checks "modifiers" -> "public".
-        // Interface methods are public by default, but my is_public will return false if "public" keyword is missing.
-        // For now, that's acceptable behavior (following strict "public" keyword presence).
-
+        // Symbols: MyClass, MyClass.myMethod, MyClass.internalMethod,
+        //          MyInterface, MyInterface.doSomething, Color
         assert_eq!(extracted.symbols.len(), 6);
 
         let cls = extracted
@@ -218,7 +277,7 @@ public enum Color {
         let method = extracted
             .symbols
             .iter()
-            .find(|s| s.name == "myMethod")
+            .find(|s| s.name == "MyClass.myMethod")
             .unwrap();
         assert_eq!(method.kind, SymbolKind::Function);
         assert!(method.exported);
@@ -226,7 +285,7 @@ public enum Color {
         let internal = extracted
             .symbols
             .iter()
-            .find(|s| s.name == "internalMethod")
+            .find(|s| s.name == "MyClass.internalMethod")
             .unwrap();
         assert_eq!(internal.kind, SymbolKind::Function);
         assert!(!internal.exported);
@@ -247,6 +306,20 @@ public enum Color {
         assert_eq!(color.kind, SymbolKind::Enum);
         assert!(color.exported);
 
+        // Standalone (unprefixed) method names must NOT appear
+        assert!(
+            !extracted.symbols.iter().any(|s| s.name == "myMethod"),
+            "myMethod should be prefixed as MyClass.myMethod"
+        );
+        assert!(
+            !extracted.symbols.iter().any(|s| s.name == "internalMethod"),
+            "internalMethod should be prefixed as MyClass.internalMethod"
+        );
+        assert!(
+            !extracted.symbols.iter().any(|s| s.name == "doSomething"),
+            "doSomething should be prefixed as MyInterface.doSomething"
+        );
+
         // Imports
         assert_eq!(extracted.imports.len(), 1);
         assert_eq!(extracted.imports[0].name, "List");
@@ -263,11 +336,128 @@ public enum Color {
 
     #[test]
     fn test_interface_methods_exported() {
-        let source = "public interface Service {\n    void process();\n    String getName();\n}\n";
+        let source =
+            "public interface Service {\n    void process();\n    String getName();\n}\n";
         let extracted = extract_java_symbols(source).unwrap();
-        let process = extracted.symbols.iter().find(|s| s.name == "process").unwrap();
+        let process = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Service.process")
+            .unwrap();
         assert!(process.exported, "Interface methods are implicitly public");
-        let get_name = extracted.symbols.iter().find(|s| s.name == "getName").unwrap();
+        let get_name = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "Service.getName")
+            .unwrap();
         assert!(get_name.exported, "Interface methods are implicitly public");
+    }
+
+    #[test]
+    fn test_java_method_prefixing() {
+        let source = r#"
+public class UserService {
+    public void save() {}
+    private void validate() {}
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "UserService.save"),
+            "Expected UserService.save, got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "UserService.validate"),
+            "Expected UserService.validate"
+        );
+        // Standalone names should NOT exist
+        assert!(
+            !extracted.symbols.iter().any(|s| s.name == "save"),
+            "save should be prefixed"
+        );
+        assert!(
+            !extracted.symbols.iter().any(|s| s.name == "validate"),
+            "validate should be prefixed"
+        );
+    }
+
+    #[test]
+    fn test_java_constructors() {
+        let source = r#"
+public class User {
+    public User(String name) {}
+    private User() {}
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+        // Both constructors should be present as User.User
+        let ctors: Vec<_> = extracted
+            .symbols
+            .iter()
+            .filter(|s| s.name == "User.User" && s.kind == SymbolKind::Function)
+            .collect();
+        assert!(
+            !ctors.is_empty(),
+            "Expected User.User constructor, got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
+        // At least one constructor should be public
+        let public_ctor = ctors.iter().any(|s| s.exported);
+        assert!(public_ctor, "At least one constructor should be public");
+    }
+
+    #[test]
+    fn test_java_interface_method_prefixing() {
+        let source = r#"
+public interface Repository {
+    void save(Object entity);
+    Object findById(Long id);
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "Repository.save"),
+            "Expected Repository.save"
+        );
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "Repository.findById"),
+            "Expected Repository.findById"
+        );
+    }
+
+    #[test]
+    fn test_java_enum_methods() {
+        let source = r#"
+public enum Status {
+    ACTIVE, INACTIVE;
+
+    public String display() {
+        return name().toLowerCase();
+    }
+}
+"#;
+        let extracted = extract_java_symbols(source).unwrap();
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "Status"),
+            "Expected Status enum"
+        );
+        assert!(
+            extracted.symbols.iter().any(|s| s.name == "Status.display"),
+            "Expected Status.display method, got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
+        );
     }
 }

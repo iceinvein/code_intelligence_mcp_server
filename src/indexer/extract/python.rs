@@ -127,6 +127,40 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         "import_from_statement" => {
             extract_from_imports(node, source, &mut imports);
         }
+        "expression_statement" => {
+            // Module-level constants: ALL_CAPS assignments at top level only.
+            // Only extract when the immediate parent is the root `module` node.
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "module" {
+                    let mut es_cursor = node.walk();
+                    for child in node.children(&mut es_cursor) {
+                        if child.kind() == "assignment" {
+                            if let Some(left) = child.child_by_field_name("left") {
+                                if left.kind() == "identifier" {
+                                    let name =
+                                        left.utf8_text(source.as_bytes()).unwrap().to_string();
+                                    // Python constant convention: ALL_CAPS with optional underscores,
+                                    // at least 2 characters, no lowercase letters.
+                                    if name.len() >= 2
+                                        && name
+                                            .chars()
+                                            .all(|c| c.is_ascii_uppercase() || c == '_')
+                                    {
+                                        let exported = !name.starts_with('_');
+                                        symbols.push(symbol_from_node(
+                                            name,
+                                            SymbolKind::Const,
+                                            exported,
+                                            child,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     });
 
@@ -629,6 +663,59 @@ def fetch(items: List[Item]) -> Optional[Result]:
             extracted.type_edges.iter().any(|e| e.0 == "fetch" && e.1 == "Result"),
             "Expected type edge fetch->Result (unwrapped from Optional), got: {:?}",
             extracted.type_edges
+        );
+    }
+
+    #[test]
+    fn test_async_functions() {
+        let source = "async def fetch_data():\n    pass\n";
+        let extracted = extract_python_symbols(source).unwrap();
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "fetch_data" && s.kind == SymbolKind::Function),
+            "Expected async function fetch_data, got: {:?}",
+            extracted.symbols
+        );
+    }
+
+    #[test]
+    fn test_module_constants() {
+        let source = r#"
+MAX_RETRIES = 3
+DEFAULT_TIMEOUT: int = 30
+_INTERNAL = "secret"
+regular_var = "not a constant"
+"#;
+        let extracted = extract_python_symbols(source).unwrap();
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "MAX_RETRIES" && s.kind == SymbolKind::Const),
+            "Expected MAX_RETRIES constant, got: {:?}",
+            extracted.symbols
+        );
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "DEFAULT_TIMEOUT" && s.kind == SymbolKind::Const),
+            "Expected DEFAULT_TIMEOUT constant, got: {:?}",
+            extracted.symbols
+        );
+        let internal = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "_INTERNAL")
+            .expect("Expected _INTERNAL to be extracted");
+        assert!(!internal.exported, "_INTERNAL should not be exported");
+        // regular_var is not ALL_CAPS — must not be extracted as a constant.
+        assert!(
+            !extracted.symbols.iter().any(|s| s.name == "regular_var"),
+            "regular_var should not be extracted as constant, got: {:?}",
+            extracted.symbols
         );
     }
 }

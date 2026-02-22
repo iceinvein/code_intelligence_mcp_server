@@ -18,6 +18,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut type_edges: Vec<(String, String)> = Vec::new();
 
     walk(cursor, &mut |node| {
         let kind = node.kind();
@@ -25,6 +26,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             "function_definition" => {
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     if let Some(name) = name_from_declarator(declarator, source) {
+                        extract_function_param_types(node, source, &name, &mut type_edges);
                         symbols.push(symbol_from_node(
                             name,
                             SymbolKind::Function,
@@ -37,12 +39,14 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             "union_specifier" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source.as_bytes()).unwrap().to_string();
+                    extract_struct_field_types(node, source, &name, &mut type_edges);
                     symbols.push(symbol_from_node(name, SymbolKind::Struct, true, node));
                 }
             }
             "struct_specifier" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = name_node.utf8_text(source.as_bytes()).unwrap().to_string();
+                    extract_struct_field_types(node, source, &name, &mut type_edges);
                     symbols.push(symbol_from_node(name, SymbolKind::Struct, true, node));
                 }
             }
@@ -56,6 +60,54 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     if let Some(name) = name_from_declarator(declarator, source) {
                         symbols.push(symbol_from_node(name, SymbolKind::TypeAlias, true, node));
+                    }
+                }
+            }
+            "declaration" => {
+                // Only extract top-level declarations (direct children of translation_unit)
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "translation_unit" {
+                        let exported = !is_static(node, source);
+                        let mut cursor2 = node.walk();
+                        for child in node.children(&mut cursor2) {
+                            // Determine which node holds the declarator name.
+                            // - `init_declarator` wraps `declarator` + initializer
+                            // - `pointer_declarator`, `array_declarator`, `identifier` are
+                            //   direct declarator children (no-init case)
+                            // Skip type-specifier and storage-class nodes.
+                            let decl_node: Option<Node> = match child.kind() {
+                                "init_declarator" => child.child_by_field_name("declarator"),
+                                // Type / qualifier nodes — not declarators
+                                "type_specifier"
+                                | "type_qualifier"
+                                | "storage_class_specifier"
+                                | "primitive_type"
+                                | "type_identifier"
+                                | "sized_type_specifier"
+                                | "struct_specifier"
+                                | "union_specifier"
+                                | "enum_specifier"
+                                | ";"
+                                | "comment" => None,
+                                // Everything else that can carry a name (identifier,
+                                // pointer_declarator, array_declarator, …)
+                                _ => Some(child),
+                            };
+                            if let Some(decl) = decl_node {
+                                // Skip function prototypes
+                                if is_function_declaration(decl) {
+                                    continue;
+                                }
+                                if let Some(name) = name_from_declarator(decl, source) {
+                                    symbols.push(symbol_from_node(
+                                        name,
+                                        SymbolKind::Const,
+                                        exported,
+                                        node,
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -81,7 +133,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
-        type_edges: Vec::new(),
+        type_edges,
         dataflow_edges: Vec::new(),
         todos: Vec::new(),
         jsdoc_entries: Vec::new(),
@@ -102,6 +154,106 @@ fn walk(mut cursor: TreeCursor<'_>, f: &mut impl FnMut(Node<'_>)) {
                 return;
             }
         }
+    }
+}
+
+/// Extract the base type name from a C type node, skipping primitives.
+fn extract_c_type_name(node: Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => Some(node.utf8_text(source.as_bytes()).unwrap().to_string()),
+        "struct_specifier" | "union_specifier" | "enum_specifier" => node
+            .child_by_field_name("name")
+            .map(|n| n.utf8_text(source.as_bytes()).unwrap().to_string()),
+        // Skip int, char, float, double, void, etc.
+        "sized_type_specifier" | "primitive_type" => None,
+        _ => None,
+    }
+}
+
+/// Extract type edges from struct/union field declarations.
+fn extract_struct_field_types(
+    node: Node, // struct_specifier or union_specifier
+    source: &str,
+    struct_name: &str,
+    type_edges: &mut Vec<(String, String)>,
+) {
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for child in body.children(&mut cursor) {
+            if child.kind() == "field_declaration" {
+                if let Some(type_node) = child.child_by_field_name("type") {
+                    if let Some(type_name) = extract_c_type_name(type_node, source) {
+                        type_edges.push((struct_name.to_string(), type_name));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extract type edges from function parameter types and return type.
+fn extract_function_param_types(
+    node: Node, // function_definition
+    source: &str,
+    fn_name: &str,
+    type_edges: &mut Vec<(String, String)>,
+) {
+    // The declarator contains the parameter_list
+    if let Some(declarator) = node.child_by_field_name("declarator") {
+        extract_param_types_from_declarator(declarator, source, fn_name, type_edges);
+    }
+
+    // Return type — the type specifier of the function
+    if let Some(type_node) = node.child_by_field_name("type") {
+        if let Some(type_name) = extract_c_type_name(type_node, source) {
+            type_edges.push((fn_name.to_string(), type_name));
+        }
+    }
+}
+
+fn extract_param_types_from_declarator(
+    node: Node,
+    source: &str,
+    fn_name: &str,
+    type_edges: &mut Vec<(String, String)>,
+) {
+    match node.kind() {
+        "function_declarator" => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                let mut cursor = params.walk();
+                for child in params.children(&mut cursor) {
+                    if child.kind() == "parameter_declaration" {
+                        if let Some(type_node) = child.child_by_field_name("type") {
+                            if let Some(type_name) = extract_c_type_name(type_node, source) {
+                                type_edges.push((fn_name.to_string(), type_name));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        "pointer_declarator" => {
+            // Recurse to find the actual function_declarator
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                extract_param_types_from_declarator(inner, source, fn_name, type_edges);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Returns true if the given declarator node represents a function prototype.
+fn is_function_declaration(decl_node: Node) -> bool {
+    match decl_node.kind() {
+        "function_declarator" => true,
+        "pointer_declarator" => {
+            if let Some(inner) = decl_node.child_by_field_name("declarator") {
+                is_function_declaration(inner)
+            } else {
+                false
+            }
+        }
+        _ => false,
     }
 }
 
@@ -245,5 +397,68 @@ void main() {
             "Expected union Data as Struct, got: {:?}",
             extracted.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_c_type_edges() {
+        let source = r#"
+struct Config {
+    Database *db;
+    Logger *log;
+};
+
+int process(User *user, Config *cfg) {
+    return 0;
+}
+"#;
+        let extracted = extract_c_symbols(source).unwrap();
+
+        // Struct field types: Database and Logger are type_identifiers
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "Config" && e.1 == "Database"),
+            "Expected Config->Database, got: {:?}",
+            extracted.type_edges
+        );
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "Config" && e.1 == "Logger"),
+            "Expected Config->Logger, got: {:?}",
+            extracted.type_edges
+        );
+
+        // Function param types
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "process" && e.1 == "User"),
+            "Expected process->User, got: {:?}",
+            extracted.type_edges
+        );
+        assert!(
+            extracted.type_edges.iter().any(|e| e.0 == "process" && e.1 == "Config"),
+            "Expected process->Config, got: {:?}",
+            extracted.type_edges
+        );
+    }
+
+    #[test]
+    fn test_c_global_variables() {
+        let source = "int global_count = 0;\nstatic char *internal_buf;\n";
+        let extracted = extract_c_symbols(source).unwrap();
+        assert!(
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "global_count" && s.kind == SymbolKind::Const),
+            "Expected global_count, got: {:?}",
+            extracted
+                .symbols
+                .iter()
+                .map(|s| (&s.name, &s.kind))
+                .collect::<Vec<_>>()
+        );
+        let internal = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "internal_buf")
+            .unwrap();
+        assert!(!internal.exported, "static global should not be exported");
     }
 }

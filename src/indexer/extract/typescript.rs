@@ -672,6 +672,25 @@ fn extract_dataflow_from_arrow_function(
     }
 }
 
+/// Extract the full dotted name from a member_expression node, e.g. "Promise.all".
+/// Returns `None` when the expression is not a simple `Object.property` form.
+fn extract_member_expression_full_name(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() != "member_expression" {
+        return None;
+    }
+    let obj = node.child_by_field_name("object")?;
+    let prop = node.child_by_field_name("property")?;
+    if obj.kind() == "identifier" && prop.kind() == "property_identifier" {
+        Some(format!(
+            "{}.{}",
+            text_for_node(obj, source),
+            text_for_node(prop, source)
+        ))
+    } else {
+        None
+    }
+}
+
 /// Recursively extract data flow from a node
 fn extract_dataflow_from_node(
     node: Node<'_>,
@@ -683,7 +702,87 @@ fn extract_dataflow_from_node(
         "assignment_expression" => {
             extract_dataflow_from_assignment(node, source, context_name, out);
         }
+        "await_expression" => {
+            let line = node.start_position().row as u32;
+            // The child of an await_expression is the expression being awaited.
+            // It is typically a call_expression; extract its callee name.
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    // Skip the "await" keyword token itself.
+                    if child.kind() == "await" {
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                        continue;
+                    }
+                    // Extract callee name from a call_expression child.
+                    if child.kind() == "call_expression" {
+                        if let Some(func) = child.child_by_field_name("function") {
+                            if let Some(callee) = extract_callee_name(func, source) {
+                                out.push(DataFlowEdge {
+                                    from_symbol: format!("await:{callee}"),
+                                    to_symbol: context_name.to_string(),
+                                    flow_type: DataFlowType::Reads,
+                                    at_line: line,
+                                    scope: Some(context_name.to_string()),
+                                });
+                            }
+                        }
+                        // Also recurse into the awaited call's arguments.
+                        extract_dataflow_from_node(child, source, context_name, out);
+                    } else {
+                        // For other awaited expressions (identifier, member_expression, etc.)
+                        // emit a generic await edge using whatever text we can extract.
+                        let name = text_for_node(child, source);
+                        if !name.is_empty() {
+                            out.push(DataFlowEdge {
+                                from_symbol: format!("await:{name}"),
+                                to_symbol: context_name.to_string(),
+                                flow_type: DataFlowType::Reads,
+                                at_line: line,
+                                scope: Some(context_name.to_string()),
+                            });
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
         "call_expression" => {
+            // Before delegating to the generic call handler, check for Promise.all/race/allSettled.
+            let is_promise_combinator =
+                if let Some(func) = node.child_by_field_name("function") {
+                    if let Some(full_name) = extract_member_expression_full_name(func, source) {
+                        matches!(
+                            full_name.as_str(),
+                            "Promise.all" | "Promise.race" | "Promise.allSettled" | "Promise.any"
+                        )
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+            if is_promise_combinator {
+                if let Some(func) = node.child_by_field_name("function") {
+                    if let Some(full_name) = extract_member_expression_full_name(func, source) {
+                        let line = node.start_position().row as u32;
+                        out.push(DataFlowEdge {
+                            from_symbol: format!("spawn:{full_name}"),
+                            to_symbol: context_name.to_string(),
+                            flow_type: DataFlowType::Reads,
+                            at_line: line,
+                            scope: Some(context_name.to_string()),
+                        });
+                    }
+                }
+            }
+
             extract_dataflow_from_call(node, source, context_name, out);
         }
         "statement_block" => {
@@ -1639,6 +1738,55 @@ export function handler() {
         assert!(
             extracted.dataflow_edges.iter().any(|e| e.from_symbol == "buildUrl"),
             "dataflow edges should still be extracted for local vars"
+        );
+    }
+
+    #[test]
+    fn test_async_boundary_detection() {
+        let source = r#"
+async function fetchData() {
+    const result = await fetch("/api");
+    const items = await Promise.all([fetchA(), fetchB()]);
+}
+"#;
+        let file = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let await_edges: Vec<_> = file
+            .dataflow_edges
+            .iter()
+            .filter(|e| e.from_symbol.starts_with("await:"))
+            .collect();
+        assert!(
+            await_edges.len() >= 1,
+            "Should detect await expressions, got edges: {:?}",
+            file.dataflow_edges
+                .iter()
+                .map(|e| &e.from_symbol)
+                .collect::<Vec<_>>()
+        );
+
+        // Verify the specific await:fetch edge is present.
+        assert!(
+            file.dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "await:fetch"),
+            "Expected await:fetch edge"
+        );
+
+        // Verify spawn:Promise.all edge from await Promise.all(...).
+        let spawn_edges: Vec<_> = file
+            .dataflow_edges
+            .iter()
+            .filter(|e| e.from_symbol.starts_with("spawn:"))
+            .collect();
+        assert!(
+            !spawn_edges.is_empty(),
+            "Should detect Promise.all as a spawn edge"
+        );
+        assert!(
+            file.dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "spawn:Promise.all"),
+            "Expected spawn:Promise.all edge"
         );
     }
 

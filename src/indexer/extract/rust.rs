@@ -684,10 +684,76 @@ fn extract_rust_dataflow_from_node(
                 extract_rust_reads_from_expr(right, source, context_name, out);
             }
         }
+        "await_expression" => {
+            // In tree-sitter-rust, `.await` is a postfix expression represented as:
+            //   await_expression
+            //     <inner_expression>   (first named child — no field name)
+            //     "."
+            //     "await"
+            // There is no named field; the inner expression is simply the first child.
+            let line = node.start_position().row as u32;
+            let inner = {
+                let mut cur = node.walk();
+                cur.goto_first_child();
+                // The first child is the expression being awaited (skip if it's a keyword token).
+                let first = cur.node();
+                if first.kind() == "." || first.kind() == "await" {
+                    None
+                } else {
+                    Some(first)
+                }
+            };
+            if let Some(inner) = inner {
+                let callee_name = match inner.kind() {
+                    "call_expression" => inner
+                        .child_by_field_name("function")
+                        .and_then(|f| extract_rust_callee_name(f, source)),
+                    "identifier" => Some(text_for_node(inner, source)),
+                    "field_expression" => inner
+                        .child_by_field_name("field")
+                        .map(|f| text_for_node(f, source)),
+                    _ => {
+                        let t = text_for_node(inner, source);
+                        if t.is_empty() { None } else { Some(t) }
+                    }
+                };
+                if let Some(name) = callee_name {
+                    out.push(DataFlowEdge {
+                        from_symbol: format!("await:{name}"),
+                        to_symbol: context_name.to_string(),
+                        flow_type: DataFlowType::Reads,
+                        at_line: line,
+                        scope: Some(context_name.to_string()),
+                    });
+                }
+                // Also recurse into the inner expression so regular dataflow edges
+                // (callee reads, argument reads) are still captured.
+                extract_rust_dataflow_from_node(inner, source, context_name, out);
+            }
+        }
         "call_expression" => {
             let line = node.start_position().row as u32;
+
+            // Detect tokio::spawn / tokio::spawn_blocking before the generic handler.
             if let Some(func) = node.child_by_field_name("function") {
-                if let Some(n) = extract_rust_callee_name(func, source) {
+                let func_text = text_for_node(func, source);
+                let spawn_label = if func_text == "tokio::spawn"
+                    || func_text == "tokio::spawn_blocking"
+                {
+                    Some(format!("spawn:{func_text}"))
+                } else {
+                    None
+                };
+
+                if let Some(label) = spawn_label {
+                    out.push(DataFlowEdge {
+                        from_symbol: label,
+                        to_symbol: context_name.to_string(),
+                        flow_type: DataFlowType::Reads,
+                        at_line: line,
+                        scope: Some(context_name.to_string()),
+                    });
+                } else if let Some(n) = extract_rust_callee_name(func, source) {
                     out.push(DataFlowEdge {
                         from_symbol: n,
                         to_symbol: context_name.to_string(),
@@ -697,6 +763,7 @@ fn extract_rust_dataflow_from_node(
                     });
                 }
             }
+
             if let Some(args) = node.child_by_field_name("arguments") {
                 let mut cursor = args.walk();
                 for child in args.children(&mut cursor) {
@@ -733,6 +800,10 @@ fn extract_rust_reads_from_expr(
 ) {
     let line = node.start_position().row as u32;
     match node.kind() {
+        "await_expression" => {
+            // Delegate to the main handler which knows how to emit the await: edge.
+            extract_rust_dataflow_from_node(node, source, context_name, out);
+        }
         "identifier" => {
             let name = text_for_node(node, source);
             // Skip Rust keywords and common enum variants that add no signal.
@@ -1203,6 +1274,48 @@ pub trait Processor {
                 .iter()
                 .any(|s| s.name == "validate" && s.kind == SymbolKind::Function),
             "bare 'validate' must not exist — should be 'Processor::validate'"
+        );
+    }
+
+    #[test]
+    fn test_async_boundary_detection() {
+        let source = r#"
+async fn process() {
+    let data = fetch_data().await;
+    tokio::spawn(async { background_work() });
+}
+"#;
+        let file = extract_rust_symbols(source).unwrap();
+        let async_edges: Vec<_> = file
+            .dataflow_edges
+            .iter()
+            .filter(|e| {
+                e.from_symbol.starts_with("await:") || e.from_symbol.starts_with("spawn:")
+            })
+            .collect();
+        assert!(
+            async_edges.len() >= 1,
+            "Should detect await/spawn expressions, got edges: {:?}",
+            file.dataflow_edges
+                .iter()
+                .map(|e| &e.from_symbol)
+                .collect::<Vec<_>>()
+        );
+
+        // Verify await:fetch_data edge.
+        assert!(
+            file.dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "await:fetch_data"),
+            "Expected await:fetch_data edge"
+        );
+
+        // Verify spawn:tokio::spawn edge.
+        assert!(
+            file.dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "spawn:tokio::spawn"),
+            "Expected spawn:tokio::spawn edge"
         );
     }
 

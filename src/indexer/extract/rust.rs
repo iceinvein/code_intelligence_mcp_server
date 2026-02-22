@@ -86,6 +86,33 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 ));
             }
         }
+        "const_item" | "static_item" => {
+            if let Some(name) = symbol_name_from_declaration(node, source) {
+                symbols.push(symbol_from_node(
+                    name.clone(),
+                    SymbolKind::Const,
+                    is_public(node, source),
+                    node,
+                ));
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    extract_type_ref(type_node, source, &name, &mut type_edges);
+                }
+            }
+        }
+        "type_item" => {
+            if let Some(name) = symbol_name_from_declaration(node, source) {
+                symbols.push(symbol_from_node(
+                    name.clone(),
+                    SymbolKind::TypeAlias,
+                    is_public(node, source),
+                    node,
+                ));
+                // Extract type edges for the aliased type
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    extract_type_ref(type_node, source, &name, &mut type_edges);
+                }
+            }
+        }
         _ => {}
     });
 
@@ -644,6 +671,74 @@ use super::symbol::*;
         assert!(has_edge("process", "Error"));
         assert!(has_edge("new", "String"));
         assert!(has_edge("new", "Self"));
+    }
+
+    #[test]
+    fn extracts_rust_const_static_type() {
+        let source = r#"
+pub const MAX_SIZE: usize = 100;
+static INSTANCE: Mutex<Config> = Mutex::new(Config::default());
+pub type Result<T> = std::result::Result<T, Error>;
+"#;
+
+        let extracted = extract_rust_symbols(source).unwrap();
+        let syms = &extracted.symbols;
+        let edges = &extracted.type_edges;
+
+        // --- symbol checks ---
+
+        let max_size = syms
+            .iter()
+            .find(|s| s.name == "MAX_SIZE")
+            .expect("MAX_SIZE symbol");
+        assert_eq!(max_size.kind, SymbolKind::Const, "MAX_SIZE should be Const");
+        assert!(max_size.exported, "MAX_SIZE should be exported (pub const)");
+
+        let instance = syms
+            .iter()
+            .find(|s| s.name == "INSTANCE")
+            .expect("INSTANCE symbol");
+        assert_eq!(
+            instance.kind,
+            SymbolKind::Const,
+            "INSTANCE should be Const"
+        );
+        assert!(
+            !instance.exported,
+            "INSTANCE should not be exported (no pub)"
+        );
+
+        let result_alias = syms
+            .iter()
+            .find(|s| s.name == "Result")
+            .expect("Result type alias symbol");
+        assert_eq!(
+            result_alias.kind,
+            SymbolKind::TypeAlias,
+            "Result should be TypeAlias"
+        );
+        assert!(
+            result_alias.exported,
+            "Result should be exported (pub type)"
+        );
+
+        // --- type edge checks ---
+
+        let has_edge =
+            |parent: &str, ty: &str| edges.contains(&(parent.to_string(), ty.to_string()));
+
+        assert!(
+            has_edge("MAX_SIZE", "usize"),
+            "expected type edge (MAX_SIZE, usize)"
+        );
+        assert!(
+            has_edge("INSTANCE", "Mutex"),
+            "expected type edge (INSTANCE, Mutex)"
+        );
+        assert!(
+            has_edge("INSTANCE", "Config"),
+            "expected type edge (INSTANCE, Config)"
+        );
     }
 
 }

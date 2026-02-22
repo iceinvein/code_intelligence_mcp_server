@@ -500,9 +500,15 @@ pub fn extract_edges_for_symbol(
             (Some(local_id.clone()), false)
         } else if let Some(imp) = import_map.get(dfe.from_symbol.as_str()) {
             (resolve_import(&row.file_path, imp), true)
+        } else if let Some(ref scope) = dfe.scope {
+            // Local variable — create synthetic ID for scope-aware tracking.
+            // SQLite FK enforcement is OFF during batch writes, so synthetic IDs
+            // without corresponding symbol rows are safe.
+            let synthetic_id =
+                format!("local:{}#{}::{}", row.file_path, scope, dfe.from_symbol);
+            (Some(synthetic_id), false)
         } else {
-            // For data flow edges, we might not have a symbol ID yet
-            // Skip edges to unknown symbols for now
+            // No scope information available — cannot create a useful edge
             continue;
         };
 
@@ -517,7 +523,12 @@ pub fn extract_edges_for_symbol(
                 continue;
             }
 
-            let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+            let resolution = if id.starts_with("local:") {
+                // Synthetic local-variable ID — no real symbol to look up
+                "local-variable".to_string()
+            } else {
+                compute_resolution_for_target(&resolution_ctx, &id, was_import)
+            };
 
             out.push((
                 EdgeRow {
@@ -726,6 +737,126 @@ mod tests {
         assert!(edge_to_b.is_some());
         // Same file should be "local"
         assert_eq!(edge_to_b.unwrap().0.resolution, "local");
+    }
+
+    #[test]
+    fn test_dataflow_local_variable_creates_synthetic_edge() {
+        // Function symbol that contains a local variable "x"
+        let row = symbol(
+            "fn-1",
+            "process",
+            "function",
+            "fn process() { let x = foo(); }",
+            "src/main.rs",
+        );
+        // Peer function "foo" that is resolvable via name_to_id
+        let foo = symbol(
+            "fn-2",
+            "foo",
+            "function",
+            "fn foo() -> i32 { 42 }",
+            "src/main.rs",
+        );
+
+        let mut name_to_id = HashMap::new();
+        upsert_name_mapping(&mut name_to_id, &foo);
+        // "x" is intentionally absent — it is a local variable
+
+        let mut id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+        id_to_symbol.insert("fn-2".to_string(), &foo);
+
+        let dataflow_edges = vec![
+            DataFlowEdge {
+                from_symbol: "foo".to_string(), // Resolvable via name_to_id
+                to_symbol: "process".to_string(),
+                flow_type: DataFlowType::Reads,
+                at_line: 1,
+                scope: Some("process".to_string()),
+            },
+            DataFlowEdge {
+                from_symbol: "x".to_string(), // Local variable — not in name_to_id
+                to_symbol: "process".to_string(),
+                flow_type: DataFlowType::Writes,
+                at_line: 1,
+                scope: Some("process".to_string()),
+            },
+        ];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &[],        // no imports
+            &[],        // no type edges
+            &dataflow_edges,
+            None,       // no package lookup
+            None,       // no sqlite
+        );
+
+        // The "foo" reads edge must resolve to fn-2 with normal resolution
+        let foo_edge = edges
+            .iter()
+            .find(|(e, _)| e.to_symbol_id == "fn-2" && e.edge_type == "reads");
+        assert!(foo_edge.is_some(), "Expected a 'reads' edge to fn-2 (foo)");
+        assert_eq!(
+            foo_edge.unwrap().0.resolution,
+            "local",
+            "foo is in the same file, so resolution must be 'local'"
+        );
+
+        // The "x" writes edge must use a synthetic ID and resolution = "local-variable"
+        let expected_synthetic_id = "local:src/main.rs#process::x";
+        let x_edge = edges
+            .iter()
+            .find(|(e, _)| e.to_symbol_id == expected_synthetic_id && e.edge_type == "writes");
+        assert!(
+            x_edge.is_some(),
+            "Expected a 'writes' edge with synthetic ID '{expected_synthetic_id}'"
+        );
+        assert_eq!(
+            x_edge.unwrap().0.resolution,
+            "local-variable",
+            "Synthetic local variable edge must have resolution 'local-variable'"
+        );
+    }
+
+    #[test]
+    fn test_dataflow_local_variable_no_scope_drops_edge() {
+        // When scope is None and the symbol is unknown, the edge must be dropped
+        let row = symbol(
+            "fn-3",
+            "compute",
+            "function",
+            "fn compute() { let z = bar(); }",
+            "src/lib.rs",
+        );
+
+        let name_to_id = HashMap::new(); // "bar" and "z" are both absent
+        let id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+
+        let dataflow_edges = vec![DataFlowEdge {
+            from_symbol: "z".to_string(), // Local variable with NO scope
+            to_symbol: "compute".to_string(),
+            flow_type: DataFlowType::Writes,
+            at_line: 1,
+            scope: None, // No scope — edge must be silently dropped
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &dataflow_edges,
+            None,
+            None,
+        );
+
+        assert!(
+            edges.is_empty(),
+            "Edge with unknown symbol and no scope must be dropped"
+        );
     }
 
     #[test]

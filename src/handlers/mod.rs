@@ -538,6 +538,7 @@ pub fn handle_get_type_graph(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = tool.depth.unwrap_or(2) as usize;
     let limit = tool.limit.unwrap_or(200).max(1) as usize;
+    let direction = tool.direction.as_deref().unwrap_or("both");
 
     let sqlite = &state.sqlite;
 
@@ -547,13 +548,13 @@ pub fn handle_get_type_graph(
     let Some(root) = root else {
         return Ok(json!({
             "symbol_name": tool.symbol_name,
+            "direction": direction,
             "depth": depth,
             "nodes": [],
             "edges": [],
         }));
     };
-
-    let graph = build_type_graph(sqlite, &root, depth, limit)?;
+    let graph = build_type_graph(sqlite, &root, direction, depth, limit)?;
     Ok(graph)
 }
 

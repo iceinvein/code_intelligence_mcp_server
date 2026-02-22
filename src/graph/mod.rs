@@ -318,10 +318,16 @@ pub fn build_call_hierarchy(
     }))
 }
 
-/// Build a type graph starting from a root symbol
+/// Build a type graph starting from a root symbol.
+///
+/// `direction` controls traversal:
+/// - `"downstream"` — follows edges *from* the root (what does this extend/implement)
+/// - `"upstream"`   — follows edges *to* the root (who extends/implements this)
+/// - `"both"`       — combines both directions (default)
 pub fn build_type_graph(
     sqlite: &SqliteStore,
     root: &SymbolRow,
+    direction: &str,
     depth: usize,
     limit: usize,
 ) -> anyhow::Result<serde_json::Value> {
@@ -343,68 +349,142 @@ pub fn build_type_graph(
     );
     visited.insert(root.id.clone());
 
-    let mut frontier = vec![root.id.clone()];
-    for _ in 0..depth {
-        if edges.len() >= limit {
-            break;
-        }
-        let mut next = Vec::new();
-        for current_id in frontier {
+    let do_downstream = direction == "downstream" || direction == "both";
+    let do_upstream = direction == "upstream" || direction == "both";
+
+    // Downstream frontier: follow outgoing type edges (extends/implements/alias)
+    if do_downstream {
+        let mut frontier = vec![root.id.clone()];
+        for _ in 0..depth {
             if edges.len() >= limit {
                 break;
             }
-            let outgoing = sqlite.list_edges_from(&current_id, limit)?;
-            for e in outgoing {
+            let mut next = Vec::new();
+            for current_id in frontier {
                 if edges.len() >= limit {
                     break;
                 }
-                if e.edge_type != "extends" && e.edge_type != "implements" && e.edge_type != "alias"
-                {
-                    continue;
-                }
-                let Some(to_sym) = sqlite.get_symbol_by_id(&e.to_symbol_id)? else {
-                    continue;
-                };
-                nodes.entry(to_sym.id.clone()).or_insert_with(|| {
-                    json!({
-                        "id": to_sym.id,
-                        "name": to_sym.name,
-                        "kind": to_sym.kind,
-                        "file_path": to_sym.file_path,
-                        "language": to_sym.language,
-                        "exported": to_sym.exported,
-                        "line_range": [to_sym.start_line, to_sym.end_line],
-                    })
-                });
-                edges.push(json!({
-                    "from": e.from_symbol_id,
-                    "to": e.to_symbol_id,
-                    "edge_type": e.edge_type,
-                    "at_file": e.at_file,
-                    "at_line": e.at_line,
-                    "evidence_count": e.evidence_count,
-                    "resolution": e.resolution,
-                    "evidence": sqlite
-                        .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|ev| json!({
-                            "at_file": ev.at_file,
-                            "at_line": ev.at_line,
-                            "count": ev.count,
-                        }))
-                        .collect::<Vec<_>>(),
-                }));
-                if visited.insert(to_sym.id.clone()) {
-                    next.push(to_sym.id);
+                let outgoing = sqlite.list_edges_from(&current_id, limit)?;
+                for e in outgoing {
+                    if edges.len() >= limit {
+                        break;
+                    }
+                    if e.edge_type != "extends"
+                        && e.edge_type != "implements"
+                        && e.edge_type != "alias"
+                    {
+                        continue;
+                    }
+                    let Some(to_sym) = sqlite.get_symbol_by_id(&e.to_symbol_id)? else {
+                        continue;
+                    };
+                    nodes.entry(to_sym.id.clone()).or_insert_with(|| {
+                        json!({
+                            "id": to_sym.id,
+                            "name": to_sym.name,
+                            "kind": to_sym.kind,
+                            "file_path": to_sym.file_path,
+                            "language": to_sym.language,
+                            "exported": to_sym.exported,
+                            "line_range": [to_sym.start_line, to_sym.end_line],
+                        })
+                    });
+                    edges.push(json!({
+                        "from": e.from_symbol_id,
+                        "to": e.to_symbol_id,
+                        "edge_type": e.edge_type,
+                        "at_file": e.at_file,
+                        "at_line": e.at_line,
+                        "evidence_count": e.evidence_count,
+                        "resolution": e.resolution,
+                        "evidence": sqlite
+                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|ev| json!({
+                                "at_file": ev.at_file,
+                                "at_line": ev.at_line,
+                                "count": ev.count,
+                            }))
+                            .collect::<Vec<_>>(),
+                    }));
+                    if visited.insert(to_sym.id.clone()) {
+                        next.push(to_sym.id);
+                    }
                 }
             }
+            frontier = next;
         }
-        frontier = next;
+    }
+
+    // Upstream frontier: follow incoming type edges (who extends/implements/aliases this symbol)
+    if do_upstream {
+        let mut frontier = vec![root.id.clone()];
+        for _ in 0..depth {
+            if edges.len() >= limit {
+                break;
+            }
+            let mut next = Vec::new();
+            for current_id in frontier {
+                if edges.len() >= limit {
+                    break;
+                }
+                let incoming = sqlite.list_edges_to(&current_id, limit)?;
+                for e in incoming {
+                    if edges.len() >= limit {
+                        break;
+                    }
+                    if e.edge_type != "extends"
+                        && e.edge_type != "implements"
+                        && e.edge_type != "alias"
+                    {
+                        continue;
+                    }
+                    let Some(from_sym) = sqlite.get_symbol_by_id(&e.from_symbol_id)? else {
+                        continue;
+                    };
+                    nodes.entry(from_sym.id.clone()).or_insert_with(|| {
+                        json!({
+                            "id": from_sym.id,
+                            "name": from_sym.name,
+                            "kind": from_sym.kind,
+                            "file_path": from_sym.file_path,
+                            "language": from_sym.language,
+                            "exported": from_sym.exported,
+                            "line_range": [from_sym.start_line, from_sym.end_line],
+                        })
+                    });
+                    edges.push(json!({
+                        "from": e.from_symbol_id,
+                        "to": e.to_symbol_id,
+                        "edge_type": e.edge_type,
+                        "at_file": e.at_file,
+                        "at_line": e.at_line,
+                        "evidence_count": e.evidence_count,
+                        "resolution": e.resolution,
+                        "evidence": sqlite
+                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|ev| json!({
+                                "at_file": ev.at_file,
+                                "at_line": ev.at_line,
+                                "count": ev.count,
+                            }))
+                            .collect::<Vec<_>>(),
+                    }));
+                    if visited.insert(from_sym.id.clone()) {
+                        next.push(from_sym.id);
+                    }
+                }
+            }
+            frontier = next;
+        }
     }
 
     Ok(json!({
         "symbol_name": root.name,
+        "direction": direction,
         "depth": depth,
         "nodes": nodes.into_values().collect::<Vec<_>>(),
         "edges": edges,
@@ -515,10 +595,87 @@ mod tests {
                 .unwrap();
         }
 
-        let g = build_type_graph(&sqlite, &a, 3, 100).unwrap();
+        let g = build_type_graph(&sqlite, &a, "downstream", 3, 100).unwrap();
         let nodes = g.get("nodes").unwrap().as_array().unwrap();
         let edges = g.get("edges").unwrap().as_array().unwrap();
         assert_eq!(nodes.len(), 4);
         assert_eq!(edges.len(), 3);
+    }
+
+    #[test]
+    fn type_graph_upstream_finds_implementors() {
+        // B→A (implements), C→A (extends): upstream from A should find B and C
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let a = sym("a", "A");
+        let b = sym("b", "B");
+        let c = sym("c", "C");
+        sqlite.upsert_symbol(&a).unwrap();
+        sqlite.upsert_symbol(&b).unwrap();
+        sqlite.upsert_symbol(&c).unwrap();
+
+        for (from, to, ty) in [("b", "a", "implements"), ("c", "a", "extends")] {
+            sqlite
+                .upsert_edge(&EdgeRow {
+                    from_symbol_id: from.to_string(),
+                    to_symbol_id: to.to_string(),
+                    edge_type: ty.to_string(),
+                    at_file: Some("src/a.ts".to_string()),
+                    at_line: Some(1),
+                    confidence: 1.0,
+                    evidence_count: 1,
+                    resolution: "local".to_string(),
+                })
+                .unwrap();
+        }
+
+        let g = build_type_graph(&sqlite, &a, "upstream", 3, 100).unwrap();
+        let nodes = g.get("nodes").unwrap().as_array().unwrap();
+        let edges = g.get("edges").unwrap().as_array().unwrap();
+        // root A + implementor B + extender C
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn type_graph_both_directions() {
+        // B→A (implements), D→B (extends)
+        // Starting from B with direction="both":
+        //   downstream: B→A
+        //   upstream:   D→B
+        // Nodes: B (root), A (downstream), D (upstream) = 3
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let a = sym("a", "A");
+        let b = sym("b", "B");
+        let d = sym("d", "D");
+        sqlite.upsert_symbol(&a).unwrap();
+        sqlite.upsert_symbol(&b).unwrap();
+        sqlite.upsert_symbol(&d).unwrap();
+
+        for (from, to, ty) in [("b", "a", "implements"), ("d", "b", "extends")] {
+            sqlite
+                .upsert_edge(&EdgeRow {
+                    from_symbol_id: from.to_string(),
+                    to_symbol_id: to.to_string(),
+                    edge_type: ty.to_string(),
+                    at_file: Some("src/b.ts".to_string()),
+                    at_line: Some(1),
+                    confidence: 1.0,
+                    evidence_count: 1,
+                    resolution: "local".to_string(),
+                })
+                .unwrap();
+        }
+
+        let g = build_type_graph(&sqlite, &b, "both", 3, 100).unwrap();
+        let nodes = g.get("nodes").unwrap().as_array().unwrap();
+        let edges = g.get("edges").unwrap().as_array().unwrap();
+        // B (root) + A (downstream) + D (upstream) = 3 nodes
+        assert_eq!(nodes.len(), 3);
+        // B→A and D→B = 2 edges
+        assert_eq!(edges.len(), 2);
     }
 }

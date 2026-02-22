@@ -82,6 +82,8 @@ pub struct GetCallHierarchyTool {
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetTypeGraphTool {
     pub symbol_name: String,
+    /// Direction of traversal: "downstream" (what does this extend/implement), "upstream" (who extends/implements this), or "both" (default)
+    pub direction: Option<String>,
     pub depth: Option<u32>,
     pub limit: Option<u32>,
 }

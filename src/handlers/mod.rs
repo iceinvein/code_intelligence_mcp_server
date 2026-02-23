@@ -2055,6 +2055,128 @@ fn format_framework_patterns(patterns: &[serde_json::Value]) -> String {
     out
 }
 
+/// Handle find_dead_code tool - find unused symbols with zero incoming references
+pub fn handle_find_dead_code(
+    state: &AppState,
+    tool: FindDeadCodeTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let include_tests = tool.include_tests.unwrap_or(false);
+
+    let sqlite = &state.sqlite;
+
+    let dead_symbols = sqlite.find_dead_symbols(
+        tool.file_path.as_deref(),
+        tool.language.as_deref(),
+        tool.kind.as_deref(),
+        include_tests,
+        limit,
+    )?;
+
+    // Classify into high priority (exported) and medium priority (private)
+    let mut high_priority = Vec::new();
+    let mut medium_priority = Vec::new();
+
+    let mut dead_files = std::collections::HashSet::new();
+    let mut dead_symbol_entries = Vec::new();
+
+    for sym in &dead_symbols {
+        dead_files.insert(sym.file_path.clone());
+
+        let priority = if sym.exported { "high" } else { "medium" };
+
+        let entry = json!({
+            "symbol_name": sym.name,
+            "symbol_id": sym.id,
+            "kind": sym.kind,
+            "file_path": sym.file_path,
+            "line": sym.start_line,
+            "exported": sym.exported,
+            "priority": priority,
+            "language": sym.language,
+        });
+
+        if sym.exported {
+            high_priority.push(entry.clone());
+        } else {
+            medium_priority.push(entry.clone());
+        }
+
+        dead_symbol_entries.push(entry);
+    }
+
+    // Build display
+    let display = format_dead_code(&high_priority, &medium_priority);
+
+    Ok(json!({
+        "dead_symbol_count": dead_symbols.len(),
+        "dead_files": dead_files.len(),
+        "high_priority_count": high_priority.len(),
+        "medium_priority_count": medium_priority.len(),
+        "dead_symbols": dead_symbol_entries,
+        "display": display,
+    }))
+}
+
+/// Format dead code results as markdown
+fn format_dead_code(
+    high_priority: &[serde_json::Value],
+    medium_priority: &[serde_json::Value],
+) -> String {
+    let total = high_priority.len() + medium_priority.len();
+    let mut out = String::from("# Dead Code Analysis\n\n");
+    out.push_str(&format!(
+        "**Total unused symbols:** {} ({} high priority, {} medium priority)\n\n",
+        total,
+        high_priority.len(),
+        medium_priority.len()
+    ));
+
+    if total == 0 {
+        out.push_str("*No dead code found*\n");
+        return out;
+    }
+
+    if !high_priority.is_empty() {
+        out.push_str("## High Priority (exported but unused)\n\n");
+        for sym in high_priority.iter().take(30) {
+            let name = sym.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let kind = sym.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let file = sym.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let file_short = file.split('/').next_back().unwrap_or(file);
+            let line = sym.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+            out.push_str(&format!(
+                "- **{}** ({}) - `{}`:{}\n",
+                name, kind, file_short, line
+            ));
+        }
+        if high_priority.len() > 30 {
+            out.push_str(&format!("*... and {} more*\n", high_priority.len() - 30));
+        }
+        out.push('\n');
+    }
+
+    if !medium_priority.is_empty() {
+        out.push_str("## Medium Priority (private unused)\n\n");
+        for sym in medium_priority.iter().take(30) {
+            let name = sym.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let kind = sym.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let file = sym.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let file_short = file.split('/').next_back().unwrap_or(file);
+            let line = sym.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+            out.push_str(&format!(
+                "- **{}** ({}) - `{}`:{}\n",
+                name, kind, file_short, line
+            ));
+        }
+        if medium_priority.len() > 30 {
+            out.push_str(&format!("*... and {} more*\n", medium_priority.len() - 30));
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

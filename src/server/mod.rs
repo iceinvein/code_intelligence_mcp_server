@@ -41,6 +41,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         FindTestsForSymbolTool::tool(),
         SearchDecoratorsTool::tool(),
         SearchFrameworkPatternsTool::tool(),
+        FindDeadCodeTool::tool(),
     ]
 }
 
@@ -297,6 +298,16 @@ pub async fn dispatch_tool_call(
             Ok(CallToolResult::text_content(vec![
                 serde_json::to_string_pretty(&result)
                     .unwrap_or_else(|_| "{}".to_string())
+                    .into(),
+            ]))
+        }
+        "find_dead_code" => {
+            let tool: FindDeadCodeTool = parse_tool_args(&params)?;
+            let result = handle_find_dead_code(state, tool)
+                .map_err(tool_internal_error)?;
+            Ok(CallToolResult::text_content(vec![
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_default()
                     .into(),
             ]))
         }

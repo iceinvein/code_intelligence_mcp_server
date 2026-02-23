@@ -293,3 +293,21 @@ pub struct SearchFrameworkPatternsTool {
     /// Maximum number of results to return (default: 50)
     pub limit: Option<u32>,
 }
+
+#[macros::mcp_tool(
+    name = "find_dead_code",
+    description = "Find unused symbols (functions, classes, types) with zero incoming references. Identifies dead code that can be safely removed."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct FindDeadCodeTool {
+    /// Scope to specific file path
+    pub file_path: Option<String>,
+    /// Filter by language (e.g., "rust", "typescript")
+    pub language: Option<String>,
+    /// Filter by kind (e.g., "function", "class", "struct")
+    pub kind: Option<String>,
+    /// Include test symbols (default false)
+    pub include_tests: Option<bool>,
+    /// Maximum number of results (default 50)
+    pub limit: Option<u32>,
+}

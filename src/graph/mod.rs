@@ -12,6 +12,7 @@ pub fn build_dependency_graph(
     direction: &str,
     depth: usize,
     limit: usize,
+    edge_types: Option<&[&str]>,
 ) -> anyhow::Result<serde_json::Value> {
     let mut nodes = std::collections::HashMap::<String, serde_json::Value>::new();
     let mut edges = Vec::<serde_json::Value>::new();
@@ -38,6 +39,9 @@ pub fn build_dependency_graph(
     let traverse_upstream = direction == "upstream" || direction == "bidirectional";
     let traverse_downstream = direction == "downstream" || direction == "bidirectional";
 
+    // Compute allowed edge types once before the loop
+    let allowed_types = edge_types.unwrap_or(&["call", "reference"]);
+
     for _ in 0..depth {
         if edges.len() >= limit {
             break;
@@ -57,8 +61,7 @@ pub fn build_dependency_graph(
                         break;
                     }
 
-                    // Filter edge types? "call" is primary. "reference" maybe?
-                    if e.edge_type != "call" && e.edge_type != "reference" {
+                    if !allowed_types.contains(&e.edge_type.as_str()) {
                         continue;
                     }
 
@@ -115,7 +118,7 @@ pub fn build_dependency_graph(
                         break;
                     }
 
-                    if e.edge_type != "call" && e.edge_type != "reference" {
+                    if !allowed_types.contains(&e.edge_type.as_str()) {
                         continue;
                     }
 

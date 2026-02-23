@@ -302,7 +302,7 @@ pub fn handle_explore_dependency_graph(
         }));
     };
 
-    let graph = build_dependency_graph(sqlite, &root, &direction, depth, limit)?;
+    let graph = build_dependency_graph(sqlite, &root, &direction, depth, limit, None)?;
     Ok(graph)
 }
 
@@ -1520,7 +1520,7 @@ pub fn handle_find_affected_code(
     };
 
     // Use build_dependency_graph with "upstream" direction
-    let graph_result = build_dependency_graph(sqlite, root, "upstream", depth, limit);
+    let graph_result = build_dependency_graph(sqlite, root, "upstream", depth, limit, None);
 
     let (affected, warning) = match graph_result {
         Ok(graph) => {

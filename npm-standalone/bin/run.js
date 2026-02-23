@@ -2,7 +2,6 @@
 
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const os = require('node:os');
 const fs = require('node:fs');
 
 const BINARY_NAME = 'code-intelligence-mcp-server';
@@ -10,7 +9,7 @@ const BINARY_PATH = path.join(__dirname, BINARY_NAME);
 
 if (!fs.existsSync(BINARY_PATH)) {
     console.error(`Binary not found at ${BINARY_PATH}`);
-    console.error('Please try reinstalling the package: npm install -g @iceinvein/code-intelligence-mcp');
+    console.error('Please try reinstalling the package: npm install -g @iceinvein/code-intelligence-mcp-standalone');
     process.exit(1);
 }
 

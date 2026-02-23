@@ -26,18 +26,25 @@ cargo check > /dev/null 2>&1 || true
 echo "Updated Cargo.lock"
 
 # 2. Update npm/package.json (Node)
-# Copy README to npm package
+# Copy README to npm packages
 cp README.md npm/README.md
-echo "Copied README.md to npm/"
+cp README.md npm-standalone/README.md
+echo "Copied README.md to npm/ and npm-standalone/"
 
 cd npm
 npm pkg set version=$VERSION
 cd ..
 echo "Updated npm/package.json"
 
-# 3. Commit and Tag
+# 3. Update npm-standalone/package.json (Node)
+cd npm-standalone
+npm pkg set version=$VERSION
+cd ..
+echo "Updated npm-standalone/package.json"
+
+# 4. Commit and Tag
 echo "Creating git commit and tag..."
-git add Cargo.toml Cargo.lock npm/package.json npm/README.md
+git add Cargo.toml Cargo.lock npm/package.json npm/README.md npm-standalone/package.json npm-standalone/README.md
 git commit -m "chore: release v$VERSION"
 git tag "v$VERSION"
 
@@ -51,3 +58,4 @@ echo "3. CI will automatically:"
 echo "   - Build the macOS binary"
 echo "   - Create a GitHub Release with auto-generated notes"
 echo "   - Publish to npm (@iceinvein/code-intelligence-mcp)"
+echo "   - Publish to npm (@iceinvein/code-intelligence-mcp-standalone)"

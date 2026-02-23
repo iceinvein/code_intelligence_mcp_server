@@ -87,3 +87,10 @@ jobs:
       - name: Publish to npm
         working-directory: npm
         run: npm publish --provenance --access public
+
+      - name: Copy README to standalone package
+        run: cp README.md npm-standalone/README.md
+
+      - name: Publish standalone to npm
+        working-directory: npm-standalone
+        run: npm publish --provenance --access public

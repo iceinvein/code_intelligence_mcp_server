@@ -1,9 +1,9 @@
 {
-  "name": "@iceinvein/code-intelligence-mcp",
+  "name": "@iceinvein/code-intelligence-mcp-standalone",
   "version": "1.5.0",
-  "description": "Code Intelligence MCP Server - Smart context for your LLM coding agent",
+  "description": "Code Intelligence MCP Server - Standalone HTTP mode for multi-client setups",
   "bin": {
-    "code-intelligence-mcp": "bin/run.js"
+    "code-intelligence-mcp-standalone": "bin/run.js"
   },
   "scripts": {
     "postinstall": "node install.js"

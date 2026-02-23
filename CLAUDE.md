@@ -138,6 +138,7 @@ Optional config: `~/.code-intelligence/server.toml`.
 1. **Indexing Pipeline** (`src/indexer/`): File scanning → Tree-Sitter parsing → Symbol extraction → Embedding generation → Multi-modal storage
 2. **Retrieval Engine** (`src/retrieval/`): Query normalization → Hybrid search (Tantivy + LanceDB) → Intent detection → Signal-based ranking → Context assembly
 3. **Graph Engine** (`src/graph/`): Call hierarchy, type graphs, and dependency graph traversal
+4. **Chat Agent** (`src/chat/`): Web UI → Agent loop (up to 3 tool rounds) → Streaming LLM response via SSE
 
 ### Key Directories
 
@@ -146,6 +147,7 @@ Optional config: `~/.code-intelligence/server.toml`.
 - `src/retrieval/ranking/` - Scoring signals and ranking logic
 - `src/handlers/` - MCP tool implementations
 - `src/server/` - MCP protocol handler routing
+- `src/chat/` - Chat mode: agent loop, LLM backend, tool dispatch, web UI
 
 ### Storage Layers
 
@@ -161,7 +163,8 @@ All data stored under `~/.code-intelligence/`:
 - `repos/<hash>/tantivy-index/` (per-repo)
 - `repos/registry.json` (shared repo registry)
 - `models/jina-code-embeddings-0.5b-gguf/` (shared embedding model, GGUF via llama.cpp)
-- `models/qwen2.5-coder-1.5b-gguf/` (shared LLM model, GGUF via llama.cpp)
+- `models/qwen2.5-coder-1.5b-gguf/` (shared description LLM model, GGUF via llama.cpp)
+- `models/qwen2.5-coder-14b-gguf/` (chat LLM model, only downloaded when `--chat` is used)
 - `logs/` (shared log files)
 
 The `<hash>` is the first 16 characters of `SHA256(BASE_DIR)`.
@@ -262,6 +265,28 @@ The `src/path/mod.rs` module includes comprehensive parameterized tests using th
 1. Define tool with `#[macros::mcp_tool]` in `src/tools/mod.rs`
 2. Implement handler in `src/handlers/mod.rs`
 3. Add routing in `src/server/mod.rs`
+
+## Adding a New Chat Tool
+
+Chat tools are a curated subset of MCP tools exposed to the on-device LLM. To add an existing MCP tool to the chat agent:
+
+1. Add a JSON tool definition to `tool_definitions()` in `src/chat/tools.rs`
+2. Add a dispatch arm to `execute_tool()` in the same file
+3. The handler function (from `src/handlers/mod.rs`) is called directly — no MCP routing needed
+
+Keep tool descriptions concise — they are embedded in the LLM system prompt and consume context tokens. Tool results are truncated to 4,000 characters.
+
+## Chat Architecture
+
+The chat subsystem (`src/chat/`) provides a browser-based RAG chatbot using the same tool handlers as MCP:
+
+- **`mod.rs`** — Axum HTTP server (routes: `GET /`, `POST /api/chat`, `GET /api/status`), SSE streaming, `ChatState`
+- **`agent.rs`** — Multi-round agent loop (up to 3 tool rounds), Qwen2.5 Hermes-style prompt building, `<tool_call>` XML parsing
+- **`llm.rs`** — `ChatLlm` struct wrapping Qwen2.5-Coder-14B (GGUF Q4_K_M, ~9GB), streaming + non-streaming generation via llama.cpp with Metal GPU
+- **`tools.rs`** — 10 tool definitions as JSON (for LLM system prompt) + `execute_tool()` dispatch to `src/handlers/`
+- **`ui.html`** — Single-file web UI (vanilla JS, marked.js, highlight.js, dark/light theme)
+
+Activated by `--chat` flag in standalone mode. The 14B model loads in a background `tokio::spawn_blocking` task so the MCP server is not blocked. Chat HTTP server spawns on a separate port (default 3334).
 
 ## Ranking Signals
 

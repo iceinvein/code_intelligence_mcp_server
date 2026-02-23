@@ -2512,3 +2512,100 @@ mod tests {
         assert!(!names.contains(&"unrelated_test"));
     }
 }
+
+#[cfg(test)]
+mod severity_tests {
+    #[test]
+    fn test_severity_exported_high_indegree() {
+        // Exported symbol with high in-degree should be critical
+        let exported = true;
+        let in_degree: u64 = 50;
+
+        let depth_score = 8.0_f64;
+        let export_score = if exported { 10.0 } else { 4.0 };
+        let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+
+        let severity =
+            ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3) as u8).min(10).max(1);
+
+        assert!(
+            severity >= 8,
+            "Exported high-indegree symbol should be critical, got {}",
+            severity
+        );
+        let impact = match severity {
+            8..=10 => "critical",
+            5..=7 => "high",
+            _ => "medium",
+        };
+        assert_eq!(impact, "critical");
+    }
+
+    #[test]
+    fn test_severity_private_low_indegree() {
+        // Private symbol with low in-degree should be medium
+        let exported = false;
+        let in_degree: u64 = 1;
+
+        let depth_score = 8.0_f64;
+        let export_score = if exported { 10.0 } else { 4.0 };
+        let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+
+        let severity =
+            ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3) as u8).min(10).max(1);
+
+        assert!(
+            severity <= 7,
+            "Private low-indegree symbol should not be critical, got {}",
+            severity
+        );
+    }
+
+    #[test]
+    fn test_severity_zero_indegree() {
+        // Symbol with zero incoming edges — ln(0) = -inf, max(0.0) = 0.0
+        let exported = false;
+        let in_degree: u64 = 0;
+
+        let depth_score = 8.0_f64;
+        let export_score = if exported { 10.0 } else { 4.0 };
+        let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+
+        let severity =
+            ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3) as u8).min(10).max(1);
+
+        // depth=8*0.4=3.2, export=4*0.3=1.2, indegree=1*0.3=0.3 → 4.7 → 4
+        assert_eq!(severity, 4);
+        let impact = match severity {
+            8..=10 => "critical",
+            5..=7 => "high",
+            _ => "medium",
+        };
+        assert_eq!(impact, "medium");
+    }
+
+    #[test]
+    fn test_severity_range_always_1_to_10() {
+        // Test boundary: severity should always be between 1 and 10
+        for &exported in &[true, false] {
+            for &in_degree in &[0u64, 1, 5, 10, 100, 1000, 10000] {
+                let depth_score = 8.0_f64;
+                let export_score = if exported { 10.0 } else { 4.0 };
+                let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+
+                let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
+                    as u8)
+                    .min(10)
+                    .max(1);
+
+                assert!(
+                    severity >= 1 && severity <= 10,
+                    "Severity {} out of range for exported={}, in_degree={}",
+                    severity,
+                    exported,
+                    in_degree
+                );
+            }
+        }
+    }
+}

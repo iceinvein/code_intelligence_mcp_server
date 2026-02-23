@@ -671,6 +671,7 @@ async fn test_find_affected_code_tool() {
         depth: Some(2),
         limit: Some(50),
         include_tests: Some(false),
+        edge_types: None,
     };
 
     let result = handle_find_affected_code(&state, params).unwrap();
@@ -692,6 +693,7 @@ async fn test_find_affected_code_not_found() {
         depth: Some(2),
         limit: Some(50),
         include_tests: Some(false),
+        edge_types: None,
     };
 
     let result = handle_find_affected_code(&state, params).unwrap();

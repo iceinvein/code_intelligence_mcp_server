@@ -406,3 +406,144 @@ fn edge_resolution_rank(resolution: &str) -> i64 {
         _ => 0,
     }
 }
+
+#[cfg(test)]
+mod dead_code_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::storage::sqlite::schema::SCHEMA_SQL)
+            .unwrap();
+        conn
+    }
+
+    fn insert_symbol(
+        conn: &Connection,
+        id: &str,
+        file_path: &str,
+        language: &str,
+        kind: &str,
+        name: &str,
+        exported: bool,
+    ) {
+        conn.execute(
+            "INSERT INTO symbols (id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 100, 1, 10, '')",
+            params![id, file_path, language, kind, name, exported as i32],
+        )
+        .unwrap();
+    }
+
+    fn insert_edge(conn: &Connection, from_id: &str, to_id: &str, edge_type: &str) {
+        conn.execute(
+            "INSERT INTO edges (from_symbol_id, to_symbol_id, edge_type) VALUES (?1, ?2, ?3)",
+            params![from_id, to_id, edge_type],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_find_dead_symbols_returns_unreferenced() {
+        let conn = setup_test_db();
+        // A calls B, C has no edges at all
+        insert_symbol(&conn, "a", "src/lib.rs", "rust", "function", "func_a", false);
+        insert_symbol(&conn, "b", "src/lib.rs", "rust", "function", "func_b", false);
+        insert_symbol(&conn, "c", "src/lib.rs", "rust", "function", "func_c", false);
+        insert_edge(&conn, "a", "b", "call");
+
+        let dead = find_dead_symbols(&conn, None, None, None, true, 100).unwrap();
+        let dead_ids: Vec<&str> = dead.iter().map(|s| s.id.as_str()).collect();
+
+        // B has an incoming edge (a->b), so B is NOT dead
+        assert!(!dead_ids.contains(&"b"), "b has incoming edge, should not be dead");
+        // C has no incoming edges, so C IS dead
+        assert!(dead_ids.contains(&"c"), "c has no incoming edges, should be dead");
+        // A only has outgoing edges, no incoming, so A IS dead
+        assert!(dead_ids.contains(&"a"), "a has only outgoing edges, should be dead");
+    }
+
+    #[test]
+    fn test_find_dead_symbols_excludes_file_and_module_kinds() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "f1", "src/lib.rs", "rust", "file", "lib.rs", false);
+        insert_symbol(&conn, "m1", "src/lib.rs", "rust", "module", "my_mod", false);
+        insert_symbol(&conn, "i1", "src/lib.rs", "rust", "impl", "MyStruct", false);
+        // Also add a regular function with no edges to confirm it IS returned
+        insert_symbol(&conn, "fn1", "src/lib.rs", "rust", "function", "helper", false);
+
+        let dead = find_dead_symbols(&conn, None, None, None, true, 100).unwrap();
+        let dead_ids: Vec<&str> = dead.iter().map(|s| s.id.as_str()).collect();
+
+        assert!(!dead_ids.contains(&"f1"), "file kind should be excluded");
+        assert!(!dead_ids.contains(&"m1"), "module kind should be excluded");
+        assert!(!dead_ids.contains(&"i1"), "impl kind should be excluded");
+        assert!(dead_ids.contains(&"fn1"), "regular function should be returned");
+    }
+
+    #[test]
+    fn test_find_dead_symbols_excludes_framework_entry_points() {
+        let conn = setup_test_db();
+        insert_symbol(
+            &conn,
+            "h1",
+            "src/routes.rs",
+            "rust",
+            "function",
+            "handle_login",
+            true,
+        );
+        // Insert a matching framework_patterns row
+        conn.execute(
+            "INSERT INTO framework_patterns (id, file_path, line, framework, kind, name)
+             VALUES ('fp1', 'src/routes.rs', 1, 'axum', 'route', 'handle_login')",
+            [],
+        )
+        .unwrap();
+
+        let dead = find_dead_symbols(&conn, None, None, None, true, 100).unwrap();
+        let dead_ids: Vec<&str> = dead.iter().map(|s| s.id.as_str()).collect();
+
+        assert!(
+            !dead_ids.contains(&"h1"),
+            "framework entry point should not be reported as dead"
+        );
+    }
+
+    #[test]
+    fn test_find_dead_symbols_filters_by_file_path() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "a1", "src/alpha.rs", "rust", "function", "alpha_fn", false);
+        insert_symbol(&conn, "b1", "src/beta.rs", "rust", "function", "beta_fn", false);
+
+        // Filter to only src/alpha.rs
+        let dead =
+            find_dead_symbols(&conn, Some("src/alpha.rs"), None, None, true, 100).unwrap();
+        let dead_ids: Vec<&str> = dead.iter().map(|s| s.id.as_str()).collect();
+
+        assert!(dead_ids.contains(&"a1"), "alpha_fn should be returned for its file");
+        assert!(!dead_ids.contains(&"b1"), "beta_fn should be excluded by file filter");
+    }
+
+    #[test]
+    fn test_find_dead_symbols_exported_first() {
+        let conn = setup_test_db();
+        // Insert private first (lower start_line to ensure ordering is by exported, not insertion)
+        insert_symbol(&conn, "priv1", "src/lib.rs", "rust", "function", "private_fn", false);
+        insert_symbol(&conn, "pub1", "src/lib.rs", "rust", "function", "public_fn", true);
+
+        let dead = find_dead_symbols(&conn, None, None, None, true, 100).unwrap();
+        assert!(dead.len() >= 2, "should have at least 2 dead symbols");
+
+        // Find positions of both symbols
+        let pub_pos = dead.iter().position(|s| s.id == "pub1").unwrap();
+        let priv_pos = dead.iter().position(|s| s.id == "priv1").unwrap();
+        assert!(
+            pub_pos < priv_pos,
+            "exported symbol should come before private: pub_pos={}, priv_pos={}",
+            pub_pos,
+            priv_pos
+        );
+    }
+}

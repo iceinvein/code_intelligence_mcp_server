@@ -255,6 +255,11 @@ pub fn tool_definitions() -> Vec<Value> {
                         "include_tests": {
                             "type": "boolean",
                             "description": "If true, include test files in the results (default: false)"
+                        },
+                        "edge_types": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Filter by edge types (default: [\"call\", \"reference\"]). Options: call, reference, type, extends, implements, alias"
                         }
                     },
                     "required": ["symbol_name"]
@@ -424,6 +429,14 @@ pub async fn execute_tool(state: &AppState, tool_call: &ToolCall) -> Result<Stri
                 depth: args.get("depth").and_then(|v| v.as_u64()).map(|v| v as u32),
                 limit: args.get("limit").and_then(|v| v.as_u64()).map(|v| v as u32),
                 include_tests: args.get("include_tests").and_then(|v| v.as_bool()),
+                edge_types: args
+                    .get("edge_types")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    }),
             };
             handle_find_affected_code(state, tool)?
         }

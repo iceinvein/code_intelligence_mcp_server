@@ -282,10 +282,10 @@ fn name_from_declarator(node: Node, source: &str) -> Option<String> {
 fn is_static(node: Node, source: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "storage_class_specifier" {
-            if child.utf8_text(source.as_bytes()).unwrap() == "static" {
-                return true;
-            }
+        if child.kind() == "storage_class_specifier"
+            && child.utf8_text(source.as_bytes()).unwrap() == "static"
+        {
+            return true;
         }
     }
     false

@@ -196,7 +196,7 @@ fn try_extract_router_new(
     let path_text = text_for_node(path_node, source);
 
     // Accept `Router`, `axum::Router`, etc.
-    let last_segment = path_text.rsplitn(2, "::").next().unwrap_or("");
+    let last_segment = path_text.rsplit("::").next().unwrap_or("");
     if last_segment != "Router" {
         return None;
     }
@@ -303,58 +303,54 @@ fn collect_verb_handlers(
     source: &str,
     out: &mut Vec<(String, Option<String>)>,
 ) {
-    match node.kind() {
-        "call_expression" => {
-            let Some(func) = node.child_by_field_name("function") else {
-                return;
-            };
+    if node.kind() == "call_expression" {
+        let Some(func) = node.child_by_field_name("function") else {
+            return;
+        };
 
-            match func.kind() {
-                // Simple call: `get(handler)` or `routing::get(handler)`
-                "identifier" => {
-                    let verb = text_for_node(func, source);
+        match func.kind() {
+            // Simple call: `get(handler)` or `routing::get(handler)`
+            "identifier" => {
+                let verb = text_for_node(func, source);
+                if let Some(method) = axum_verb_to_method(&verb) {
+                    let handler = extract_first_identifier_arg(node, source);
+                    out.push((method, handler));
+                }
+            }
+
+            // Scoped call: `routing::get(handler)` or `axum::routing::get(handler)`
+            "scoped_identifier" => {
+                if let Some(name_node) = func.child_by_field_name("name") {
+                    let verb = text_for_node(name_node, source);
                     if let Some(method) = axum_verb_to_method(&verb) {
                         let handler = extract_first_identifier_arg(node, source);
                         out.push((method, handler));
                     }
                 }
-
-                // Scoped call: `routing::get(handler)` or `axum::routing::get(handler)`
-                "scoped_identifier" => {
-                    if let Some(name_node) = func.child_by_field_name("name") {
-                        let verb = text_for_node(name_node, source);
-                        if let Some(method) = axum_verb_to_method(&verb) {
-                            let handler = extract_first_identifier_arg(node, source);
-                            out.push((method, handler));
-                        }
-                    }
-                }
-
-                // Chained call: `get(h1).post(h2)` where `func` is a `field_expression`
-                // pointing to `get(h1)` as the receiver and `post` as the field.
-                // In tree-sitter-rust `field_expression` uses `value` and `field`
-                // (not `object`/`property` as in TypeScript).
-                "field_expression" => {
-                    // Recurse into the receiver to collect earlier verbs in the chain.
-                    if let Some(receiver) = func.child_by_field_name("value") {
-                        collect_verb_handlers(receiver, source, out);
-                    }
-
-                    // Then emit the current verb (field name in tree-sitter-rust is "field").
-                    if let Some(field_node) = func.child_by_field_name("field") {
-                        let verb = text_for_node(field_node, source);
-                        if let Some(method) = axum_verb_to_method(&verb) {
-                            let handler = extract_first_identifier_arg(node, source);
-                            out.push((method, handler));
-                        }
-                    }
-                }
-
-                _ => {}
             }
-        }
 
-        _ => {}
+            // Chained call: `get(h1).post(h2)` where `func` is a `field_expression`
+            // pointing to `get(h1)` as the receiver and `post` as the field.
+            // In tree-sitter-rust `field_expression` uses `value` and `field`
+            // (not `object`/`property` as in TypeScript).
+            "field_expression" => {
+                // Recurse into the receiver to collect earlier verbs in the chain.
+                if let Some(receiver) = func.child_by_field_name("value") {
+                    collect_verb_handlers(receiver, source, out);
+                }
+
+                // Then emit the current verb (field name in tree-sitter-rust is "field").
+                if let Some(field_node) = func.child_by_field_name("field") {
+                    let verb = text_for_node(field_node, source);
+                    if let Some(method) = axum_verb_to_method(&verb) {
+                        let handler = extract_first_identifier_arg(node, source);
+                        out.push((method, handler));
+                    }
+                }
+            }
+
+            _ => {}
+        }
     }
 }
 

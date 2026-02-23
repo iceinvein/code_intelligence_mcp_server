@@ -30,8 +30,6 @@ const HF_MODEL_FILE: &str = "qwen2.5-coder-14b-instruct-q4_k_m.gguf";
 /// Context window size in tokens.
 const CTX_SIZE: u32 = 8192;
 
-/// Maximum tokens to generate per response before stopping.
-const MAX_RESPONSE_TOKENS: u32 = 2048;
 
 /// Download the Qwen2.5-Coder-14B-Instruct GGUF model from HuggingFace.
 ///
@@ -402,6 +400,5 @@ mod tests {
         assert_eq!(HF_REPO, "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF");
         assert_eq!(HF_MODEL_FILE, "qwen2.5-coder-14b-instruct-q4_k_m.gguf");
         assert_eq!(CTX_SIZE, 8192);
-        assert_eq!(MAX_RESPONSE_TOKENS, 2048);
     }
 }

@@ -891,7 +891,7 @@ pub(crate) fn structural_adjustment(
             // (not intent type) to only guard schema files, not all db/ files.
             let is_schema_path = file_path.to_lowercase().contains("schema");
             if !is_all_lower && !is_schema_path {
-                let is_camel = name.chars().next().map_or(false, |c| c.is_lowercase())
+                let is_camel = name.chars().next().is_some_and(|c| c.is_lowercase())
                     && name.chars().any(|c| c.is_uppercase());
                 if is_camel && name.len() <= 12 {
                     let query_terms: Vec<String> = query

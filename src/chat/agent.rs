@@ -83,11 +83,7 @@ pub fn build_prompt(messages: &[ChatMessage], repo_name: &str, repo_path: &str) 
         (None, messages)
     };
 
-    let base_instruction = custom_system.unwrap_or_else(|| {
-        // Leak-free: format! gives an owned String; we keep it alive via a local.
-        // Because we need a `&str` to return, we use a static format approach below.
-        ""
-    });
+    let base_instruction = custom_system.unwrap_or("");
 
     // Build the system message content.
     let system_body = if let Some(custom) = custom_system {

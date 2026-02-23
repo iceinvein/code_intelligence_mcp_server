@@ -3,6 +3,9 @@ use rusqlite::{params, Connection};
 
 use crate::storage::sqlite::schema::TestLinkRow;
 
+/// `(symbol_id, symbol_name, file_path, start_line, edge_type)` for a test caller.
+pub type TestCallerRow = (String, String, String, u32, String);
+
 /// Determine if a file path is a test file
 pub fn is_test_file(path: &str) -> bool {
     let lower = path.to_lowercase();
@@ -201,7 +204,7 @@ pub fn find_test_symbols_calling(
     test_file_paths: &[String],
     target_symbol_id: &str,
     limit: usize,
-) -> Result<Vec<(String, String, String, u32, String)>> {
+) -> Result<Vec<TestCallerRow>> {
     if test_file_paths.is_empty() {
         return Ok(Vec::new());
     }

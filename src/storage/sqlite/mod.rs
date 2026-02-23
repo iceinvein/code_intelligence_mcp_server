@@ -451,7 +451,7 @@ impl SqliteStore {
         test_file_paths: &[String],
         target_symbol_id: &str,
         limit: usize,
-    ) -> Result<Vec<(String, String, String, u32, String)>> {
+    ) -> Result<Vec<queries::tests::TestCallerRow>> {
         let conn = self.read()?;
         queries::tests::find_test_symbols_calling(&conn, test_file_paths, target_symbol_id, limit)
     }

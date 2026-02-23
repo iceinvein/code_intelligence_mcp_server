@@ -1571,8 +1571,7 @@ pub fn handle_find_affected_code(
 
                 let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
                     as u8)
-                    .min(10)
-                    .max(1);
+                    .clamp(1, 10);
                 let impact_level = match severity {
                     8..=10 => "critical",
                     5..=7 => "high",
@@ -2595,8 +2594,7 @@ mod severity_tests {
 
                 let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
                     as u8)
-                    .min(10)
-                    .max(1);
+                    .clamp(1, 10);
 
                 assert!(
                     severity >= 1 && severity <= 10,

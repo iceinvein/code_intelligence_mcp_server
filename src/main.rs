@@ -20,6 +20,9 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::config::Config;
 use code_intelligence_mcp_server::embeddings::{create_embedder, default_embedding_dim, DeferredEmbedder, Embedder};
+
+/// Type alias for the (embedder, optional-deferred-slot) pair returned by embedder creation.
+type EmbedderWithSlot = (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>);
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::leader::{LeaderElection, Role};
@@ -147,7 +150,7 @@ async fn run_standalone(
 
     // Create shared embedder (loaded once, shared across all repos).
     // For llamacpp backend, use DeferredEmbedder so the HTTP server starts immediately.
-    let (embedder, standalone_deferred_slot): (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>) =
+    let (embedder, standalone_deferred_slot): EmbedderWithSlot =
         match standalone_config.embeddings_backend {
             code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
                 let e = create_embedder(
@@ -354,7 +357,7 @@ async fn run_embedded() -> SdkResult<()> {
     // Create embedder — for hash backend (instant), load synchronously.
     // For llamacpp backend (downloads ~531 MB on first run), use a DeferredEmbedder
     // so the MCP server starts immediately and degrades to BM25-only until ready.
-    let (embedder, deferred_slot): (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>) =
+    let (embedder, deferred_slot): EmbedderWithSlot =
         match config.embeddings_backend {
             code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
                 let e = create_embedder(

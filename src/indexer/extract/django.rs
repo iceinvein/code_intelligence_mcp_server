@@ -332,29 +332,29 @@ fn try_extract_class_pattern(
 fn extract_action_routes(body: Node, source: &str, patterns: &mut Vec<ExtractedFrameworkPattern>) {
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
-        if child.kind() == "decorated_definition" {
-            if has_action_decorator(child, source) {
-                // The last child of a `decorated_definition` is the actual
-                // `function_definition`.
-                if let Some(fn_def) = find_named_child_of_kind(child, "function_definition") {
-                    let fn_name = fn_def
-                        .child_by_field_name("name")
-                        .map(|n| text_for_node(n, source));
+        if child.kind() == "decorated_definition"
+            && has_action_decorator(child, source)
+        {
+            // The last child of a `decorated_definition` is the actual
+            // `function_definition`.
+            if let Some(fn_def) = find_named_child_of_kind(child, "function_definition") {
+                let fn_name = fn_def
+                    .child_by_field_name("name")
+                    .map(|n| text_for_node(n, source));
 
-                    let pos = child.start_position();
-                    patterns.push(ExtractedFrameworkPattern {
-                        line: pos.row as u32 + 1,
-                        column: pos.column as u32,
-                        framework: "django".to_string(),
-                        kind: FrameworkPatternKind::Route,
-                        http_method: None,
-                        path: None,
-                        name: fn_name.clone(),
-                        handler: fn_name,
-                        arguments: None,
-                        parent_chain: None,
-                    });
-                }
+                let pos = child.start_position();
+                patterns.push(ExtractedFrameworkPattern {
+                    line: pos.row as u32 + 1,
+                    column: pos.column as u32,
+                    framework: "django".to_string(),
+                    kind: FrameworkPatternKind::Route,
+                    http_method: None,
+                    path: None,
+                    name: fn_name.clone(),
+                    handler: fn_name,
+                    arguments: None,
+                    parent_chain: None,
+                });
             }
         }
     }
@@ -577,7 +577,7 @@ fn extract_string_literal(node: Node, source: &str) -> Option<String> {
     // Fallback: strip outer quote characters from the raw token.
     let raw = text_for_node(node, source);
     // Strip leading r/b/f prefixes (raw strings, byte strings, f-strings).
-    let stripped = raw.trim_start_matches(|c: char| c == 'r' || c == 'b' || c == 'f' || c == 'R' || c == 'B' || c == 'F');
+    let stripped = raw.trim_start_matches(['r', 'b', 'f', 'R', 'B', 'F']);
     let value = extract_string_value(node, source);
     // If nothing was stripped or the result equals the raw text, it means
     // `extract_string_value` already handled it correctly.

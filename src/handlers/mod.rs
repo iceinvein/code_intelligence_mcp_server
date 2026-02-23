@@ -1519,8 +1519,16 @@ pub fn handle_find_affected_code(
         }));
     };
 
+    // Convert edge_types from Vec<String> to Option<&[&str]>
+    let edge_type_strs: Option<Vec<&str>> = tool
+        .edge_types
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect());
+    let edge_types_slice: Option<&[&str]> = edge_type_strs.as_deref();
+
     // Use build_dependency_graph with "upstream" direction
-    let graph_result = build_dependency_graph(sqlite, root, "upstream", depth, limit, None);
+    let graph_result =
+        build_dependency_graph(sqlite, root, "upstream", depth, limit, edge_types_slice);
 
     let (affected, warning) = match graph_result {
         Ok(graph) => {
@@ -1554,29 +1562,40 @@ pub fn handle_find_affected_code(
 
                 *file_counts.entry(file_path.to_string()).or_insert(0) += 1;
 
+                // Severity scoring: depth (40%) + export (30%) + in-degree (30%)
+                let in_degree = sqlite.count_incoming_edges(id).unwrap_or(0);
+                let depth_score = 8.0_f64; // Direct callers get high depth score
+                let export_score = if exported { 10.0 } else { 4.0 };
+                let indegree_score =
+                    ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+
+                let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
+                    as u8)
+                    .min(10)
+                    .max(1);
+                let impact_level = match severity {
+                    8..=10 => "critical",
+                    5..=7 => "high",
+                    _ => "medium",
+                };
+
                 affected_list.push(json!({
                     "symbol_id": id,
                     "symbol_name": node.get("name").and_then(|v| v.as_str()).unwrap_or(""),
                     "kind": node.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
                     "file_path": file_path,
                     "exported": exported,
-                    "impact": if exported { "high" } else { "medium" },
+                    "severity": severity,
+                    "impact": impact_level,
+                    "in_degree": in_degree,
                 }));
             }
 
-            // Sort by impact then by file
+            // Sort by severity descending
             affected_list.sort_by(|a, b| {
-                let ia = a.get("impact").and_then(|v| v.as_str()).unwrap_or("");
-                let ib = b.get("impact").and_then(|v| v.as_str()).unwrap_or("");
-                match (ia, ib) {
-                    ("high", "medium") => std::cmp::Ordering::Less,
-                    ("medium", "high") => std::cmp::Ordering::Greater,
-                    _ => {
-                        let fa_path = a.get("file_path").and_then(|v| v.as_str());
-                        let fb_path = b.get("file_path").and_then(|v| v.as_str());
-                        fa_path.cmp(&fb_path)
-                    }
-                }
+                let sa = a.get("severity").and_then(|v| v.as_u64()).unwrap_or(0);
+                let sb = b.get("severity").and_then(|v| v.as_u64()).unwrap_or(0);
+                sb.cmp(&sa)
             });
 
             (affected_list, None)
@@ -1607,6 +1626,11 @@ pub fn handle_find_affected_code(
         "depth": depth,
         "affected_count": affected.len(),
         "affected_files": affected_files,
+        "severity_breakdown": {
+            "critical": affected.iter().filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("critical")).count(),
+            "high": affected.iter().filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("high")).count(),
+            "medium": affected.iter().filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("medium")).count(),
+        },
         "affected": affected,
         "warning": warning,
         "display": display,
@@ -1649,43 +1673,66 @@ fn format_affected_code(
         return out;
     }
 
-    // Group by impact level
-    let high_impact: Vec<_> = affected
+    // Group by severity level
+    let critical: Vec<_> = affected
+        .iter()
+        .filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("critical"))
+        .collect();
+    let high: Vec<_> = affected
         .iter()
         .filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("high"))
         .collect();
-    let medium_impact: Vec<_> = affected
+    let medium: Vec<_> = affected
         .iter()
         .filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("medium"))
         .collect();
 
-    if !high_impact.is_empty() {
-        out.push_str("## [!] High Impact (Exported)\n\n");
-        for a in high_impact.iter().take(20) {
-            let name = a.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+    fn format_group(out: &mut String, items: &[&serde_json::Value], max_display: usize) {
+        for a in items.iter().take(max_display) {
+            let name = a
+                .get("symbol_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let file = a
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let file_short = file.split('/').next_back().unwrap_or(file);
-            out.push_str(&format!("- **{}** ({}) - `{}`\n", name, kind, file_short));
+            let severity = a.get("severity").and_then(|v| v.as_u64()).unwrap_or(0);
+            out.push_str(&format!(
+                "- **{}** ({}) [severity={}] - `{}`\n",
+                name, kind, severity, file_short
+            ));
         }
-        if high_impact.len() > 20 {
-            out.push_str(&format!("*... and {} more*\n", high_impact.len() - 20));
+        if items.len() > max_display {
+            out.push_str(&format!("*... and {} more*\n", items.len() - max_display));
         }
         out.push('\n');
     }
 
-    if !medium_impact.is_empty() {
-        out.push_str("## Medium Impact (Internal)\n\n");
-        for a in medium_impact.iter().take(20) {
-            let name = a.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
-            let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
-            let file_short = file.split('/').next_back().unwrap_or(file);
-            out.push_str(&format!("- **{}** ({}) - `{}`\n", name, kind, file_short));
-        }
-        if medium_impact.len() > 20 {
-            out.push_str(&format!("*... and {} more*\n", medium_impact.len() - 20));
-        }
+    if !critical.is_empty() {
+        out.push_str(&format!(
+            "## [!!!] Critical Impact ({} symbols)\n\n",
+            critical.len()
+        ));
+        format_group(&mut out, &critical, 20);
+    }
+
+    if !high.is_empty() {
+        out.push_str(&format!(
+            "## [!] High Impact ({} symbols)\n\n",
+            high.len()
+        ));
+        format_group(&mut out, &high, 20);
+    }
+
+    if !medium.is_empty() {
+        out.push_str(&format!(
+            "## Medium Impact ({} symbols)\n\n",
+            medium.len()
+        ));
+        format_group(&mut out, &medium, 20);
     }
 
     out

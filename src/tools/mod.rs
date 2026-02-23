@@ -220,6 +220,8 @@ pub struct FindAffectedCodeTool {
     pub depth: Option<u32>,
     pub limit: Option<u32>,
     pub include_tests: Option<bool>,
+    /// Filter by edge types (default: ["call", "reference"]). Options: call, reference, type, extends, implements, alias
+    pub edge_types: Option<Vec<String>>,
 }
 
 #[macros::mcp_tool(

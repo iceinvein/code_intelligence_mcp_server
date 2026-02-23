@@ -140,6 +140,18 @@ impl SqliteStore {
         queries::edges::count_edges(&conn)
     }
 
+    pub fn find_dead_symbols(
+        &self,
+        file_path: Option<&str>,
+        language: Option<&str>,
+        kind: Option<&str>,
+        include_tests: bool,
+        limit: usize,
+    ) -> Result<Vec<SymbolRow>> {
+        let conn = self.read()?;
+        queries::edges::find_dead_symbols(&conn, file_path, language, kind, include_tests, limit)
+    }
+
     pub fn count_descriptions(&self) -> Result<usize> {
         let conn = self.read()?;
         queries::descriptions::count_descriptions(&conn)

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::storage::sqlite::schema::{EdgeEvidenceRow, EdgeRow};
+use crate::storage::sqlite::schema::{EdgeEvidenceRow, EdgeRow, SymbolRow};
 
 pub fn upsert_edge(conn: &Connection, edge: &EdgeRow) -> Result<()> {
     let resolution_rank = edge_resolution_rank(edge.resolution.as_str());
@@ -298,6 +298,102 @@ SELECT id, kind FROM symbols
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push((row.get(0)?, row.get(1)?));
+    }
+    Ok(out)
+}
+
+pub fn find_dead_symbols(
+    conn: &Connection,
+    file_path: Option<&str>,
+    language: Option<&str>,
+    kind: Option<&str>,
+    include_tests: bool,
+    limit: usize,
+) -> Result<Vec<SymbolRow>> {
+    let mut conditions = Vec::new();
+    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    // Core condition: no incoming edges (LEFT JOIN + IS NULL)
+    // Already handled in the JOIN clause
+
+    // Exclude structural kinds that are not callable
+    conditions.push("s.kind NOT IN ('file', 'module', 'impl')".to_string());
+
+    // Exclude program entry points
+    conditions.push("s.name != 'main'".to_string());
+
+    // Exclude framework entry points
+    conditions.push(
+        "NOT EXISTS (SELECT 1 FROM framework_patterns fp WHERE fp.name = s.name AND fp.file_path = s.file_path)"
+            .to_string(),
+    );
+
+    // Filter out test files unless include_tests is true
+    if !include_tests {
+        conditions.push(
+            "(s.file_path NOT LIKE '%test%' AND s.file_path NOT LIKE '%.test.%' AND s.file_path NOT LIKE '%.spec.%')"
+                .to_string(),
+        );
+    }
+
+    // Optional filters
+    if let Some(fp) = file_path {
+        conditions.push("s.file_path = ?".to_string());
+        param_values.push(Box::new(fp.to_string()));
+    }
+    if let Some(lang) = language {
+        conditions.push("s.language = ?".to_string());
+        param_values.push(Box::new(lang.to_string()));
+    }
+    if let Some(k) = kind {
+        conditions.push("s.kind = ?".to_string());
+        param_values.push(Box::new(k.to_string()));
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let sql = format!(
+        r#"
+SELECT s.id, s.file_path, s.language, s.kind, s.name, s.exported, s.start_byte, s.end_byte, s.start_line, s.end_line, s.text
+FROM symbols s
+LEFT JOIN edges e ON s.id = e.to_symbol_id
+{}
+  AND e.to_symbol_id IS NULL
+ORDER BY s.exported DESC, s.file_path ASC, s.start_line ASC
+LIMIT ?
+"#,
+        where_clause
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .context("Failed to prepare find_dead_symbols")?;
+
+    let mut param_refs: Vec<&dyn rusqlite::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let limit_i64 = limit as i64;
+    param_refs.push(&limit_i64);
+
+    let mut rows = stmt.query(param_refs.as_slice())?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(SymbolRow {
+            id: row.get(0)?,
+            file_path: row.get(1)?,
+            language: row.get(2)?,
+            kind: row.get(3)?,
+            name: row.get(4)?,
+            exported: row.get(5)?,
+            start_byte: row.get::<_, i64>(6)? as u32,
+            end_byte: row.get::<_, i64>(7)? as u32,
+            start_line: row.get::<_, i64>(8)? as u32,
+            end_line: row.get::<_, i64>(9)? as u32,
+            text: row.get(10)?,
+        });
     }
     Ok(out)
 }

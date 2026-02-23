@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+async-stream = "0.3"
 async-trait = "0.1"
 rust-mcp-sdk = { version = "0.8.1", features = ["macros", "server", "stdio", "hyper-server", "streamable-http"] }
 serde = { version = "1", features = ["derive"] }

@@ -114,7 +114,12 @@ async fn main() -> SdkResult<()> {
 
     // Branch into standalone or embedded mode
     if cli_args.standalone {
-        return run_standalone(cli_args.host.as_deref(), cli_args.port).await;
+        return run_standalone(
+            cli_args.host.as_deref(),
+            cli_args.port,
+            cli_args.chat,
+            cli_args.chat_port,
+        ).await;
     }
 
     if let Err(err) = run_embedded().await {
@@ -124,7 +129,12 @@ async fn main() -> SdkResult<()> {
     Ok(())
 }
 
-async fn run_standalone(host: Option<&str>, port: Option<u16>) -> SdkResult<()> {
+async fn run_standalone(
+    host: Option<&str>,
+    port: Option<u16>,
+    chat_enabled: bool,
+    chat_port: Option<u16>,
+) -> SdkResult<()> {
     let standalone_config = code_intelligence_mcp_server::config::StandaloneConfig::load(host, port)
         .map_err(|e| McpSdkError::Internal { description: e.to_string() })?;
 
@@ -189,6 +199,13 @@ async fn run_standalone(host: Option<&str>, port: Option<u16>) -> SdkResult<()> 
         meta: None,
     };
 
+    // Clone session_manager for chat before it's moved into StandaloneHandler
+    let chat_session_manager = if chat_enabled {
+        Some(session_manager.clone())
+    } else {
+        None
+    };
+
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
         session_manager, server_details.clone(),
     );
@@ -233,6 +250,42 @@ async fn run_standalone(host: Option<&str>, port: Option<u16>) -> SdkResult<()> 
                 }
                 Err(e) => {
                     error!("Embedding model loading task panicked: {}. Vector search will remain unavailable.", e);
+                }
+            }
+        });
+    }
+
+    // Spawn chat server if --chat flag is set
+    if let Some(chat_sm) = chat_session_manager {
+        let chat_port = chat_port
+            .or_else(|| std::env::var("CIMCP_CHAT_PORT").ok().and_then(|v| v.parse().ok()))
+            .unwrap_or(3334);
+
+        let chat_model_dir = standalone_config.data_dir.join("models/qwen2.5-coder-14b-gguf");
+
+        // Load chat LLM in background
+        tokio::spawn(async move {
+            info!("Starting chat model download/load in background...");
+            let result = tokio::task::spawn_blocking(move || {
+                let model_path = code_intelligence_mcp_server::chat::llm::download_chat_model(&chat_model_dir)?;
+                code_intelligence_mcp_server::chat::llm::ChatLlm::new(&model_path)
+            }).await;
+
+            match result {
+                Ok(Ok(llm)) => {
+                    let llm = Arc::new(llm);
+                    info!("Chat model loaded successfully");
+                    if let Err(e) = code_intelligence_mcp_server::chat::spawn(
+                        chat_sm, llm, chat_port,
+                    ).await {
+                        error!("Failed to start chat server: {}", e);
+                    }
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to load chat model: {}. Chat UI will not be available.", e);
+                }
+                Err(e) => {
+                    error!("Chat model loading panicked: {}. Chat UI will not be available.", e);
                 }
             }
         });

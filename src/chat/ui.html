@@ -102,6 +102,7 @@
     }
 
     #repo-trigger:hover { border-color: var(--accent); }
+    #repo-trigger:focus { outline: none; border-color: var(--accent); }
     #repo-trigger.open { border-color: var(--accent); }
 
     #repo-trigger::after {
@@ -128,6 +129,10 @@
       max-height: 240px;
       overflow-y: auto;
       box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    }
+
+    body.light #repo-dropdown {
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
     }
 
     #repo-dropdown.show { display: block; }
@@ -483,6 +488,7 @@
     }).catch(function() {
       repos = [];
       buildDropdown();
+      setStatus('error', 'Failed to load repos');
     });
   }
 
@@ -492,7 +498,7 @@
 
     repos.forEach(function(repo) {
       var opt = document.createElement('div');
-      opt.className = 'repo-option';
+      opt.className = 'repo-option' + (repo.path === selectedRepoPath ? ' active' : '');
 
       var name = document.createElement('div');
       name.className = 'repo-option-name';

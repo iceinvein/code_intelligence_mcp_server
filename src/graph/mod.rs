@@ -221,7 +221,7 @@ pub fn build_call_hierarchy(
                     if edges.len() >= limit {
                         break;
                     }
-                    if e.edge_type != "call" {
+                    if e.edge_type != "call" && e.edge_type != "async_call" && e.edge_type != "spawn" {
                         continue;
                     }
                     let Some(caller) = sqlite.get_symbol_by_id(&e.from_symbol_id)? else {
@@ -241,13 +241,14 @@ pub fn build_call_hierarchy(
                     edges.push(json!({
                         "from": e.from_symbol_id,
                         "to": e.to_symbol_id,
-                        "edge_type": "call",
+                        "edge_type": &e.edge_type,
+                        "is_async": e.edge_type == "async_call" || e.edge_type == "spawn",
                         "at_file": e.at_file,
                         "at_line": e.at_line,
                         "evidence_count": e.evidence_count,
                         "resolution": e.resolution,
                         "evidence": sqlite
-                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, "call", 3)
+                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
                             .unwrap_or_default()
                             .into_iter()
                             .map(|ev| json!({
@@ -267,7 +268,7 @@ pub fn build_call_hierarchy(
                     if edges.len() >= limit {
                         break;
                     }
-                    if e.edge_type != "call" {
+                    if e.edge_type != "call" && e.edge_type != "async_call" && e.edge_type != "spawn" {
                         continue;
                     }
                     let Some(callee) = sqlite.get_symbol_by_id(&e.to_symbol_id)? else {
@@ -287,13 +288,14 @@ pub fn build_call_hierarchy(
                     edges.push(json!({
                         "from": e.from_symbol_id,
                         "to": e.to_symbol_id,
-                        "edge_type": "call",
+                        "edge_type": &e.edge_type,
+                        "is_async": e.edge_type == "async_call" || e.edge_type == "spawn",
                         "at_file": e.at_file,
                         "at_line": e.at_line,
                         "evidence_count": e.evidence_count,
                         "resolution": e.resolution,
                         "evidence": sqlite
-                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, "call", 3)
+                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
                             .unwrap_or_default()
                             .into_iter()
                             .map(|ev| json!({

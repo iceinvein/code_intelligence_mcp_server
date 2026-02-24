@@ -949,8 +949,12 @@ pub fn handle_trace_data_flow(
         "file_path": root.file_path,
         "direction": direction,
         "depth": depth,
-        "read_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("read")).count(),
+        "read_count": flows.iter().filter(|f| {
+            let ft = f.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
+            ft == "read" || ft == "async_read"
+        }).count(),
         "write_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write")).count(),
+        "spawn_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("spawn")).count(),
         "flows": flows,
         "display": display,
     }))
@@ -993,12 +997,14 @@ fn trace_data_flow_edges(
                     "reads" => "read",
                     "writes" => "write",
                     "call" | "reference" => "read",
+                    "async_call" => "async_read",
+                    "spawn" => "spawn",
                     // "extends", "implements", "type", "alias" are structural, not data-flow
                     _ => continue,
                 };
 
                 let match_direction = match direction {
-                    "reads" => flow_type == "read",
+                    "reads" => flow_type == "read" || flow_type == "async_read",
                     "writes" => flow_type == "write",
                     _ => true,
                 };
@@ -1040,12 +1046,14 @@ fn trace_data_flow_edges(
                     "reads" => "read",
                     "writes" => "write",
                     "call" => "read",
+                    "async_call" => "async_read",
+                    "spawn" => "spawn",
                     // "reference" skipped incoming to avoid noise from imports/type aliases
                     _ => continue,
                 };
 
                 let match_direction = match direction {
-                    "reads" => flow_type == "read",
+                    "reads" => flow_type == "read" || flow_type == "async_read",
                     "writes" => flow_type == "write",
                     _ => true,
                 };

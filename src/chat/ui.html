@@ -76,19 +76,112 @@
       white-space: nowrap;
     }
 
-    #repo-input {
+    /* ---------- Repo dropdown ---------- */
+    #repo-selector {
       flex: 1;
       min-width: 0;
-      padding: 6px 10px;
+      position: relative;
+    }
+
+    #repo-trigger {
+      width: 100%;
+      padding: 6px 30px 6px 10px;
       border-radius: 6px;
       border: 1px solid var(--border);
       background: var(--input-bg);
       color: var(--text);
       font-size: 0.85rem;
       font-family: "SF Mono", "Fira Code", monospace;
+      cursor: pointer;
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      appearance: none;
+      position: relative;
     }
 
-    #repo-input:focus { outline: none; border-color: var(--accent); }
+    #repo-trigger:hover { border-color: var(--accent); }
+    #repo-trigger.open { border-color: var(--accent); }
+
+    #repo-trigger::after {
+      content: "\25BE";
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      pointer-events: none;
+    }
+
+    #repo-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      z-index: 100;
+      max-height: 240px;
+      overflow-y: auto;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    }
+
+    #repo-dropdown.show { display: block; }
+
+    .repo-option {
+      padding: 8px 12px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .repo-option:last-child { border-bottom: none; }
+    .repo-option:hover { background: var(--user-bg); }
+    .repo-option.active { background: var(--user-bg); }
+
+    .repo-option-name {
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: var(--text);
+    }
+
+    .repo-option-path {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      font-family: "SF Mono", "Fira Code", monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .repo-option.other-option {
+      flex-direction: row;
+      align-items: center;
+      color: var(--accent);
+      font-size: 0.85rem;
+      gap: 6px;
+    }
+
+    #repo-custom-input {
+      width: 100%;
+      padding: 8px 12px;
+      border: none;
+      border-top: 1px solid var(--border);
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 0.85rem;
+      font-family: "SF Mono", "Fira Code", monospace;
+      outline: none;
+      border-radius: 0 0 8px 8px;
+    }
+
+    #repo-custom-input::placeholder { color: var(--text-dim); }
 
     #theme-btn {
       background: none;
@@ -305,7 +398,10 @@
 <div id="app">
   <div id="header">
     <h1>Code Intelligence Chat</h1>
-    <input id="repo-input" type="text" placeholder="/path/to/repo" spellcheck="false" />
+    <div id="repo-selector">
+      <button id="repo-trigger">Select repo...</button>
+      <div id="repo-dropdown"></div>
+    </div>
     <button id="theme-btn" title="Toggle light/dark mode">&#9788;</button>
   </div>
 
@@ -346,6 +442,8 @@
   var userScrolledUp = false;
   var currentBubble = null;
   var currentText = '';
+  var selectedRepoPath = '';
+  var repos = [];
 
   // ---------------------------------------------------------------------------
   // DOM refs
@@ -355,7 +453,9 @@
   var sendBtn    = document.getElementById('send-btn');
   var newChatBtn = document.getElementById('new-chat-btn');
   var themeBtn   = document.getElementById('theme-btn');
-  var repoInput  = document.getElementById('repo-input');
+  var repoTrigger  = document.getElementById('repo-trigger');
+  var repoDropdown = document.getElementById('repo-dropdown');
+  var repoSelector = document.getElementById('repo-selector');
   var statusDot  = document.getElementById('status-dot');
   var statusLbl  = document.getElementById('status-label');
 
@@ -364,6 +464,137 @@
   // ---------------------------------------------------------------------------
   themeBtn.addEventListener('click', function() {
     document.body.classList.toggle('light');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Repo dropdown
+  // ---------------------------------------------------------------------------
+  function fetchRepos() {
+    fetch('/api/repos').then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }).then(function(data) {
+      repos = data || [];
+      buildDropdown();
+      // Auto-select most recent if available
+      if (repos.length > 0 && !selectedRepoPath) {
+        selectRepo(repos[0].name, repos[0].path);
+      }
+    }).catch(function() {
+      repos = [];
+      buildDropdown();
+    });
+  }
+
+  function buildDropdown() {
+    // Clear
+    while (repoDropdown.firstChild) repoDropdown.removeChild(repoDropdown.firstChild);
+
+    repos.forEach(function(repo) {
+      var opt = document.createElement('div');
+      opt.className = 'repo-option';
+
+      var name = document.createElement('div');
+      name.className = 'repo-option-name';
+      name.textContent = repo.name;
+
+      var path = document.createElement('div');
+      path.className = 'repo-option-path';
+      path.textContent = repo.path;
+
+      opt.appendChild(name);
+      opt.appendChild(path);
+      opt.addEventListener('click', function() {
+        selectRepo(repo.name, repo.path);
+        closeDropdown();
+      });
+      repoDropdown.appendChild(opt);
+    });
+
+    // "Other..." option
+    var other = document.createElement('div');
+    other.className = 'repo-option other-option';
+    other.textContent = 'Other...';
+    other.addEventListener('click', function(e) {
+      e.stopPropagation();
+      showCustomInput();
+    });
+    repoDropdown.appendChild(other);
+  }
+
+  function showCustomInput() {
+    // Remove existing custom input if any
+    var existing = document.getElementById('repo-custom-input');
+    if (existing) { existing.focus(); return; }
+
+    var input = document.createElement('input');
+    input.id = 'repo-custom-input';
+    input.type = 'text';
+    input.placeholder = '/path/to/repo';
+    input.spellcheck = false;
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        var val = input.value.trim();
+        if (val) {
+          var name = val.split('/').filter(Boolean).pop() || val;
+          selectRepo(name, val);
+          closeDropdown();
+        }
+      }
+      if (e.key === 'Escape') {
+        closeDropdown();
+      }
+    });
+    input.addEventListener('click', function(e) { e.stopPropagation(); });
+    repoDropdown.appendChild(input);
+    input.focus();
+  }
+
+  function selectRepo(name, path) {
+    selectedRepoPath = path;
+    repoTrigger.textContent = name;
+    setStatus('ready', 'Repo: ' + name);
+    // Reset status after 2 seconds
+    setTimeout(function() {
+      if (statusLbl.textContent === 'Repo: ' + name) {
+        setStatus('ready', 'Ready');
+      }
+    }, 2000);
+  }
+
+  function toggleDropdown() {
+    var isOpen = repoDropdown.classList.contains('show');
+    if (isOpen) {
+      closeDropdown();
+    } else {
+      repoDropdown.classList.add('show');
+      repoTrigger.classList.add('open');
+    }
+  }
+
+  function closeDropdown() {
+    repoDropdown.classList.remove('show');
+    repoTrigger.classList.remove('open');
+    // Remove custom input if present
+    var customInput = document.getElementById('repo-custom-input');
+    if (customInput) customInput.remove();
+  }
+
+  repoTrigger.addEventListener('click', function(e) {
+    e.stopPropagation();
+    toggleDropdown();
+  });
+
+  // Close on outside click
+  document.addEventListener('click', function(e) {
+    if (!repoSelector.contains(e.target)) {
+      closeDropdown();
+    }
+  });
+
+  // Keyboard navigation
+  repoTrigger.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeDropdown();
   });
 
   // ---------------------------------------------------------------------------
@@ -554,7 +785,7 @@
     var text = inputEl.value.trim();
     if (!text || isStreaming) return;
 
-    var repoPath = repoInput.value.trim() || '.';
+    var repoPath = selectedRepoPath || '.';
 
     messages.push({ role: 'user', content: text });
     appendUserMessage(text);
@@ -670,7 +901,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Check server status on load
+  // Init: fetch status + repos on load
   // ---------------------------------------------------------------------------
   fetch('/api/status').then(function(res) {
     if (res.ok) {
@@ -681,6 +912,8 @@
   }).catch(function() {
     setStatus('error', 'Server unavailable');
   });
+
+  fetchRepos();
 </script>
 </body>
 </html>

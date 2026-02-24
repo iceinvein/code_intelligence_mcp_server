@@ -943,4 +943,248 @@ mod tests {
         // Cross-package (local reference, different packages) should be "cross-package"
         assert_eq!(edge_to_b.unwrap().0.resolution, "cross-package");
     }
+
+    #[test]
+    fn test_async_await_prefix_creates_async_call_edge() {
+        let row = symbol(
+            "fn-caller",
+            "fetch_user",
+            "function",
+            "async fn fetch_user() { let data = fetch_data().await; }",
+            "src/api.rs",
+        );
+
+        let callee = symbol(
+            "fn-callee",
+            "fetch_data",
+            "function",
+            "async fn fetch_data() -> Vec<u8> { vec![] }",
+            "src/api.rs",
+        );
+
+        let mut name_to_id = HashMap::new();
+        upsert_name_mapping(&mut name_to_id, &callee);
+
+        let mut id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+        id_to_symbol.insert("fn-callee".to_string(), &callee);
+
+        let dataflow_edges = vec![DataFlowEdge {
+            from_symbol: "await:fetch_data".to_string(),
+            to_symbol: "fetch_user".to_string(),
+            flow_type: DataFlowType::Reads,
+            at_line: 2,
+            scope: Some("fetch_user".to_string()),
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &dataflow_edges,
+            None,
+            None,
+        );
+
+        let async_edge = edges
+            .iter()
+            .find(|(e, _)| e.edge_type == "async_call" && e.to_symbol_id == "fn-callee");
+
+        assert!(
+            async_edge.is_some(),
+            "Expected an async_call edge to fn-callee, got: {edges:?}"
+        );
+        let (edge, _) = async_edge.unwrap();
+        assert!(
+            (edge.confidence - 0.9_f32).abs() < f32::EPSILON,
+            "async_call confidence must be 0.9, got {}",
+            edge.confidence
+        );
+    }
+
+    #[test]
+    fn test_spawn_prefix_creates_spawn_edge() {
+        let row = symbol(
+            "fn-spawner",
+            "start_worker",
+            "function",
+            "fn start_worker() { tokio::spawn(worker()); }",
+            "src/tasks.rs",
+        );
+
+        let worker = symbol(
+            "fn-worker",
+            "worker",
+            "function",
+            "async fn worker() {}",
+            "src/tasks.rs",
+        );
+
+        let mut name_to_id = HashMap::new();
+        upsert_name_mapping(&mut name_to_id, &worker);
+
+        let mut id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+        id_to_symbol.insert("fn-worker".to_string(), &worker);
+
+        let dataflow_edges = vec![DataFlowEdge {
+            from_symbol: "spawn:worker".to_string(),
+            to_symbol: "start_worker".to_string(),
+            flow_type: DataFlowType::Reads,
+            at_line: 1,
+            scope: Some("start_worker".to_string()),
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &dataflow_edges,
+            None,
+            None,
+        );
+
+        let spawn_edge = edges
+            .iter()
+            .find(|(e, _)| e.edge_type == "spawn" && e.to_symbol_id == "fn-worker");
+
+        assert!(
+            spawn_edge.is_some(),
+            "Expected a spawn edge to fn-worker, got: {edges:?}"
+        );
+        let (edge, _) = spawn_edge.unwrap();
+        assert!(
+            (edge.confidence - 0.9_f32).abs() < f32::EPSILON,
+            "spawn confidence must be 0.9, got {}",
+            edge.confidence
+        );
+    }
+
+    #[test]
+    fn test_no_prefix_creates_reads_writes_edge() {
+        let row = symbol(
+            "fn-main",
+            "process",
+            "function",
+            "fn process() { let x = helper(); }",
+            "src/lib.rs",
+        );
+
+        let helper = symbol(
+            "fn-helper",
+            "helper",
+            "function",
+            "fn helper() -> i32 { 0 }",
+            "src/lib.rs",
+        );
+
+        let mut name_to_id = HashMap::new();
+        upsert_name_mapping(&mut name_to_id, &helper);
+
+        let mut id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+        id_to_symbol.insert("fn-helper".to_string(), &helper);
+
+        let dataflow_edges = vec![DataFlowEdge {
+            from_symbol: "helper".to_string(),
+            to_symbol: "process".to_string(),
+            flow_type: DataFlowType::Reads,
+            at_line: 1,
+            scope: Some("process".to_string()),
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &dataflow_edges,
+            None,
+            None,
+        );
+
+        let reads_edge = edges
+            .iter()
+            .find(|(e, _)| e.to_symbol_id == "fn-helper" && e.edge_type == "reads");
+
+        assert!(
+            reads_edge.is_some(),
+            "Expected a reads edge to fn-helper, got: {edges:?}"
+        );
+        let (edge, _) = reads_edge.unwrap();
+        assert!(
+            (edge.confidence - 0.7_f32).abs() < f32::EPSILON,
+            "reads confidence must be 0.7, got {}",
+            edge.confidence
+        );
+
+        assert!(
+            !edges
+                .iter()
+                .any(|(e, _)| e.edge_type == "async_call" || e.edge_type == "spawn"),
+            "Unexpected async edge in plain reads scenario"
+        );
+    }
+
+    #[test]
+    fn test_async_edge_without_scope_gets_synthetic_id() {
+        let row = symbol(
+            "fn-entry",
+            "run",
+            "function",
+            "async fn run() { unknown_func().await; }",
+            "src/main.rs",
+        );
+
+        let name_to_id = HashMap::new();
+        let id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+
+        let dataflow_edges = vec![DataFlowEdge {
+            from_symbol: "await:unknown_func".to_string(),
+            to_symbol: "run".to_string(),
+            flow_type: DataFlowType::Reads,
+            at_line: 1,
+            scope: None,
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &dataflow_edges,
+            None,
+            None,
+        );
+
+        assert!(
+            !edges.is_empty(),
+            "async edge with unknown callee must not be dropped"
+        );
+
+        let async_edge = edges
+            .iter()
+            .find(|(e, _)| e.edge_type == "async_call");
+
+        assert!(
+            async_edge.is_some(),
+            "Expected an async_call edge, got: {edges:?}"
+        );
+        let (edge, _) = async_edge.unwrap();
+
+        assert!(
+            edge.to_symbol_id.starts_with("async:"),
+            "to_symbol_id must start with 'async:', got '{}'",
+            edge.to_symbol_id
+        );
+
+        assert_eq!(
+            edge.resolution, "async-boundary",
+            "resolution must be 'async-boundary', got '{}'",
+            edge.resolution
+        );
+    }
 }

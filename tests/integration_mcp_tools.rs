@@ -613,6 +613,7 @@ async fn test_trace_data_flow_tool() {
         direction: Some("both".to_string()),
         depth: Some(2),
         limit: Some(50),
+        inter_procedural: None,
     };
 
     let result = handle_trace_data_flow(&state, params).unwrap();
@@ -635,6 +636,7 @@ async fn test_trace_data_flow_not_found() {
         direction: Some("both".to_string()),
         depth: Some(2),
         limit: Some(50),
+        inter_procedural: None,
     };
 
     let result = handle_trace_data_flow(&state, params).unwrap();

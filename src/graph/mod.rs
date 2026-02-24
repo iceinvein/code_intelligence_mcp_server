@@ -683,6 +683,87 @@ mod tests {
         // B→A and D→B = 2 edges
         assert_eq!(edges.len(), 2);
     }
+
+    #[test]
+    fn test_call_hierarchy_includes_async_call_edges() {
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let caller = sym("caller_id", "caller_fn");
+        let callee = sym("callee_id", "callee_fn");
+        sqlite.upsert_symbol(&caller).unwrap();
+        sqlite.upsert_symbol(&callee).unwrap();
+
+        sqlite
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "caller_id".to_string(),
+                to_symbol_id: "callee_id".to_string(),
+                edge_type: "async_call".to_string(),
+                at_file: Some("src/a.ts".to_string()),
+                at_line: Some(10),
+                confidence: 1.0,
+                evidence_count: 1,
+                resolution: "local".to_string(),
+            })
+            .unwrap();
+
+        let g = build_call_hierarchy(&sqlite, &caller, "callees", 3, 100).unwrap();
+        let nodes = g.get("nodes").unwrap().as_array().unwrap();
+        let edges = g.get("edges").unwrap().as_array().unwrap();
+
+        assert_eq!(nodes.len(), 2, "both caller and callee must be in nodes");
+        assert_eq!(edges.len(), 1, "the async_call edge must be included");
+
+        let callee_present = nodes
+            .iter()
+            .any(|n| n.get("id").and_then(|v| v.as_str()) == Some("callee_id"));
+        assert!(callee_present, "callee_id must appear in nodes");
+    }
+
+    #[test]
+    fn test_call_hierarchy_edge_type_not_hardcoded() {
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let caller = sym("caller_id", "caller_fn");
+        let callee = sym("callee_id", "callee_fn");
+        sqlite.upsert_symbol(&caller).unwrap();
+        sqlite.upsert_symbol(&callee).unwrap();
+
+        sqlite
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "caller_id".to_string(),
+                to_symbol_id: "callee_id".to_string(),
+                edge_type: "async_call".to_string(),
+                at_file: Some("src/a.ts".to_string()),
+                at_line: Some(5),
+                confidence: 1.0,
+                evidence_count: 1,
+                resolution: "local".to_string(),
+            })
+            .unwrap();
+
+        let g = build_call_hierarchy(&sqlite, &caller, "callees", 3, 100).unwrap();
+        let edges = g.get("edges").unwrap().as_array().unwrap();
+        assert_eq!(edges.len(), 1, "expected exactly one edge");
+
+        let edge = &edges[0];
+
+        let edge_type = edge
+            .get("edge_type")
+            .and_then(|v| v.as_str())
+            .expect("edge_type field must be present");
+        assert_eq!(
+            edge_type, "async_call",
+            "edge_type must be 'async_call', not hardcoded 'call'"
+        );
+
+        let is_async = edge
+            .get("is_async")
+            .and_then(|v| v.as_bool())
+            .expect("is_async field must be present");
+        assert!(is_async, "is_async must be true for async_call edges");
+    }
 }
 
 #[cfg(test)]

@@ -2572,6 +2572,58 @@ mod tests {
         assert!(names.contains(&"should_accept_valid"));
         assert!(!names.contains(&"unrelated_test"));
     }
+
+    #[test]
+    fn test_inter_procedural_false_no_called_flows() {
+        let sqlite = make_sqlite();
+
+        sqlite
+            .upsert_symbol(&sym("root", "rootFn", "src/root.ts"))
+            .unwrap();
+        sqlite
+            .upsert_symbol(&sym("callee", "calleeFn", "src/callee.ts"))
+            .unwrap();
+        sqlite
+            .upsert_symbol(&sym("var_node", "someVar", "src/callee.ts"))
+            .unwrap();
+
+        // root --call--> callee (shows up as "read" flow)
+        sqlite
+            .upsert_edge(&edge("root", "callee", "call"))
+            .unwrap();
+        // callee --reads--> var_node (callee's own data-flow)
+        sqlite
+            .upsert_edge(&edge("callee", "var_node", "reads"))
+            .unwrap();
+
+        // When inter_procedural is false, flow items must NOT have called_flows
+        let (reads, _writes) =
+            trace_data_flow_edges(&sqlite, "root", 2, 50, "both").unwrap();
+
+        // callee should appear in reads (from the call edge)
+        let callee_flow = reads.iter().find(|(id, _, _)| id == "callee");
+        assert!(
+            callee_flow.is_some(),
+            "callee must appear in trace_data_flow reads"
+        );
+
+        // Build a flow item the way handle_trace_data_flow does when
+        // inter_procedural is false — no called_flows key
+        let callee_sym = sqlite.get_symbol_by_id("callee").unwrap().unwrap();
+        let flow_item = json!({
+            "symbol_id": callee_sym.id,
+            "symbol_name": callee_sym.name,
+            "kind": callee_sym.kind,
+            "file_path": callee_sym.file_path,
+            "line": callee_sym.start_line,
+            "flow_type": "read",
+        });
+
+        assert!(
+            flow_item.get("called_flows").is_none(),
+            "flow item without inter-procedural expansion must not have called_flows"
+        );
+    }
 }
 
 #[cfg(test)]

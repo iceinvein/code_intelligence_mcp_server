@@ -492,20 +492,33 @@ pub fn extract_edges_for_symbol(
 
     // Handle data flow edges
     for dfe in dataflow_edges {
-        // Resolve from_symbol to actual symbol ID
-        let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&dfe.from_symbol) {
+        // Detect async boundary prefixes before resolution
+        let (async_kind, actual_from) = if let Some(rest) = dfe.from_symbol.strip_prefix("await:") {
+            (Some("async_call"), rest.to_string())
+        } else if let Some(rest) = dfe.from_symbol.strip_prefix("spawn:") {
+            (Some("spawn"), rest.to_string())
+        } else {
+            (None, dfe.from_symbol.clone())
+        };
+
+        // Resolve actual_from to actual symbol ID
+        let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&actual_from) {
             if local_id == &row.id {
                 continue;
             }
             (Some(local_id.clone()), false)
-        } else if let Some(imp) = import_map.get(dfe.from_symbol.as_str()) {
+        } else if let Some(imp) = import_map.get(actual_from.as_str()) {
             (resolve_import(&row.file_path, imp), true)
         } else if let Some(ref scope) = dfe.scope {
             // Local variable — create synthetic ID for scope-aware tracking.
             // SQLite FK enforcement is OFF during batch writes, so synthetic IDs
             // without corresponding symbol rows are safe.
             let synthetic_id =
-                format!("local:{}#{}::{}", row.file_path, scope, dfe.from_symbol);
+                format!("local:{}#{}::{}", row.file_path, scope, actual_from);
+            (Some(synthetic_id), false)
+        } else if async_kind.is_some() {
+            // Async edge without scope — create a synthetic boundary ID
+            let synthetic_id = format!("async:{}#{}", row.file_path, actual_from);
             (Some(synthetic_id), false)
         } else {
             // No scope information available — cannot create a useful edge
@@ -513,10 +526,16 @@ pub fn extract_edges_for_symbol(
         };
 
         if let Some(id) = to_id {
-            let edge_type = match dfe.flow_type {
-                DataFlowType::Reads => "reads",
-                DataFlowType::Writes => "writes",
+            let edge_type = if let Some(ak) = async_kind {
+                ak
+            } else {
+                match dfe.flow_type {
+                    DataFlowType::Reads => "reads",
+                    DataFlowType::Writes => "writes",
+                }
             };
+
+            let confidence = if async_kind.is_some() { 0.9 } else { 0.7 };
 
             // Skip if we already have this edge type to this target
             if !used_edges.insert((edge_type.to_string(), id.clone())) {
@@ -526,6 +545,9 @@ pub fn extract_edges_for_symbol(
             let resolution = if id.starts_with("local:") {
                 // Synthetic local-variable ID — no real symbol to look up
                 "local-variable".to_string()
+            } else if id.starts_with("async:") {
+                // Synthetic async-boundary ID — no real symbol to look up
+                "async-boundary".to_string()
             } else {
                 compute_resolution_for_target(&resolution_ctx, &id, was_import)
             };
@@ -537,7 +559,7 @@ pub fn extract_edges_for_symbol(
                     edge_type: edge_type.to_string(),
                     at_file: Some(row.file_path.clone()),
                     at_line: Some(dfe.at_line),
-                    confidence: 0.7,
+                    confidence,
                     evidence_count: 1,
                     resolution,
                 },

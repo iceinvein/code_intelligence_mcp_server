@@ -453,6 +453,7 @@ pub async fn execute_tool(state: &AppState, tool_call: &ToolCall) -> Result<Stri
                     .map(str::to_string),
                 depth: args.get("depth").and_then(|v| v.as_u64()).map(|v| v as u32),
                 limit: args.get("limit").and_then(|v| v.as_u64()).map(|v| v as u32),
+                inter_procedural: args.get("inter_procedural").and_then(|v| v.as_bool()),
             };
             handle_trace_data_flow(state, tool)?
         }

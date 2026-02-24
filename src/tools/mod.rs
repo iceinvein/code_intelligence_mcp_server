@@ -196,6 +196,8 @@ pub struct TraceDataFlowTool {
     pub direction: Option<String>,
     pub depth: Option<u32>,
     pub limit: Option<u32>,
+    /// Enable 1-level inter-procedural expansion into called functions (default false)
+    pub inter_procedural: Option<bool>,
 }
 
 #[macros::mcp_tool(

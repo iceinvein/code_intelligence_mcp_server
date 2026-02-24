@@ -940,6 +940,60 @@ pub fn handle_trace_data_flow(
     });
     flows.truncate(limit);
 
+    // Inter-procedural expansion: for each call/async_call edge, get callee's data flow
+    let inter_proc = tool.inter_procedural.unwrap_or(false);
+    if inter_proc {
+        for flow in &mut flows {
+            let flow_type = flow.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
+            if flow_type != "read" && flow_type != "async_read" {
+                continue;
+            }
+
+            let sym_id = flow
+                .get("symbol_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let sym_kind = flow.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+
+            // Only expand functions/methods
+            if sym_kind != "function" && sym_kind != "method" && sym_kind != "arrow_function" {
+                continue;
+            }
+
+            // Get callee's direct data flow edges (limit 20)
+            let callee_edges = sqlite.list_edges_from(sym_id, 20)?;
+            let mut called_flows = Vec::new();
+
+            for edge in callee_edges {
+                let ft = match edge.edge_type.as_str() {
+                    "reads" => "read",
+                    "writes" => "write",
+                    "call" => "read",
+                    "async_call" => "async_read",
+                    "spawn" => "spawn",
+                    _ => continue,
+                };
+
+                if let Some(target) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
+                    called_flows.push(json!({
+                        "symbol_name": target.name,
+                        "symbol_id": target.id,
+                        "kind": target.kind,
+                        "flow_type": ft,
+                        "file_path": target.file_path,
+                        "line": target.start_line,
+                    }));
+                }
+            }
+
+            if !called_flows.is_empty() {
+                flow.as_object_mut()
+                    .unwrap()
+                    .insert("called_flows".to_string(), json!(called_flows));
+            }
+        }
+    }
+
     // Build display
     let display = format_data_flow(root, &flows);
 

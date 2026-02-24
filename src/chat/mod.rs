@@ -45,6 +45,13 @@ pub struct StatusResponse {
     pub model_name: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RepoListEntry {
+    pub name: String,
+    pub path: String,
+    pub last_accessed: String,
+}
+
 /// Spawn the chat HTTP server on the given port.
 pub async fn spawn(
     session_manager: Arc<SessionManager>,
@@ -60,6 +67,7 @@ pub async fn spawn(
         .route("/", get(index_page))
         .route("/api/chat", post(chat_handler))
         .route("/api/status", get(status_handler))
+        .route("/api/repos", get(repos_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -86,6 +94,28 @@ async fn status_handler(
         model_loaded: true,
         model_name: "Qwen2.5-Coder-14B-Instruct".to_string(),
     })
+}
+
+async fn repos_handler(
+    State(state): State<Arc<ChatState>>,
+) -> impl IntoResponse {
+    match state.session_manager.registry.list_all() {
+        Ok(entries) => {
+            let list: Vec<RepoListEntry> = entries
+                .into_iter()
+                .map(|e| RepoListEntry {
+                    name: e.name,
+                    path: e.path,
+                    last_accessed: e.last_accessed,
+                })
+                .collect();
+            Json(list).into_response()
+        }
+        Err(e) => {
+            tracing::warn!("Failed to list repos: {}", e);
+            Json(Vec::<RepoListEntry>::new()).into_response()
+        }
+    }
 }
 
 async fn chat_handler(

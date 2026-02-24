@@ -99,6 +99,14 @@ impl RepoRegistry {
         Ok(registry.repos.get(&hash).cloned())
     }
 
+    /// List all registered repositories, sorted by most recently accessed first
+    pub fn list_all(&self) -> Result<Vec<RepoEntry>> {
+        let registry = self.load()?;
+        let mut entries: Vec<RepoEntry> = registry.repos.into_values().collect();
+        entries.sort_by(|a, b| b.last_accessed.cmp(&a.last_accessed));
+        Ok(entries)
+    }
+
     /// Update the last_accessed timestamp for a repository
     pub fn touch(&self, repo_path: &str) -> Result<()> {
         let hash = Self::path_hash(repo_path);
@@ -203,5 +211,37 @@ mod tests {
         let e2 = reg.register("/Users/dev/project").unwrap();
         assert_eq!(e1.path, e2.path);
         assert_eq!(e1.data_dir, e2.data_dir);
+    }
+
+    #[test]
+    fn list_all_returns_sorted_by_last_accessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path =
+            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+
+        // Register three repos (register sets last_accessed = now)
+        reg.register("/a/first").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        reg.register("/b/second").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        reg.register("/c/third").unwrap();
+
+        let all = reg.list_all().unwrap();
+        assert_eq!(all.len(), 3);
+        // Most recently accessed first
+        assert_eq!(all[0].name, "third");
+        assert_eq!(all[1].name, "second");
+        assert_eq!(all[2].name, "first");
+    }
+
+    #[test]
+    fn list_all_empty_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path =
+            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+        let all = reg.list_all().unwrap();
+        assert!(all.is_empty());
     }
 }

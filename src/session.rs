@@ -229,6 +229,43 @@ impl SessionManager {
         Ok((state, watch_cancel))
     }
 
+    /// Resolve a cross-repo symbol synchronously by looking up the target repo's AppState.
+    ///
+    /// This is a blocking helper used by the `CrossRepoResolver` trait implementation.
+    /// It accesses the DashMap directly (no async init), so the target repo must already
+    /// be initialized. Returns None if the repo is not currently loaded.
+    fn resolve_symbol_in_loaded_repo(
+        &self,
+        to_repo_hash: &str,
+        to_symbol_name: &str,
+        to_symbol_file: Option<&str>,
+    ) -> anyhow::Result<Option<(std::sync::Arc<crate::storage::sqlite::SqliteStore>, crate::storage::sqlite::SymbolRow)>> {
+        // Look up the repo entry by hash to get its canonical path
+        let entry = self.registry.get_by_hash(to_repo_hash)?;
+        let entry = match entry {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Check if the repo is currently loaded
+        let state = match self.repos.get(&entry.path) {
+            Some(s) => s.0.clone(),
+            None => return Ok(None),
+        };
+
+        // Search for the symbol by name, optionally scoped to file
+        let symbols = state.sqlite.search_symbols_by_exact_name(
+            to_symbol_name,
+            to_symbol_file,
+            1,
+        )?;
+
+        match symbols.into_iter().next() {
+            Some(sym) => Ok(Some((state.sqlite.clone(), sym))),
+            None => Ok(None),
+        }
+    }
+
     #[cfg(test)]
     pub async fn new_for_test(data_dir: Utf8PathBuf) -> Self {
         use crate::config::EmbeddingsBackend;
@@ -275,6 +312,31 @@ impl SessionManager {
         Self::new(standalone_config, registry, embedder)
             .await
             .expect("Failed to create test SessionManager")
+    }
+}
+
+impl crate::graph::CrossRepoResolver for SessionManager {
+    fn resolve_cross_repo_symbol(
+        &self,
+        to_repo_hash: &str,
+        to_symbol_name: &str,
+        to_symbol_file: Option<&str>,
+    ) -> anyhow::Result<Option<(std::sync::Arc<crate::storage::sqlite::SqliteStore>, crate::storage::sqlite::SymbolRow)>> {
+        self.resolve_symbol_in_loaded_repo(to_repo_hash, to_symbol_name, to_symbol_file)
+    }
+
+    fn list_cross_repo_edges_from(
+        &self,
+        sqlite: &crate::storage::sqlite::SqliteStore,
+        from_symbol_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<crate::storage::sqlite::CrossRepoEdgeRow>> {
+        sqlite.list_cross_repo_edges_from(from_symbol_id, limit)
+    }
+
+    fn repo_name_for_hash(&self, repo_hash: &str) -> anyhow::Result<Option<String>> {
+        let entry = self.registry.get_by_hash(repo_hash)?;
+        Ok(entry.map(|e| e.name))
     }
 }
 

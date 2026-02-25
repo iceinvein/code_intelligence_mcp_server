@@ -601,6 +601,49 @@ impl SqliteStore {
         queries::framework::delete_framework_patterns_by_file(&conn, file_path)
     }
 
+    // Cross-repo edge operations
+    pub fn upsert_cross_repo_edge(&self, edge: &CrossRepoEdgeRow) -> Result<()> {
+        let conn = self.write()?;
+        queries::cross_repo::upsert_cross_repo_edge(&conn, edge)
+    }
+
+    pub fn list_cross_repo_edges_from(
+        &self,
+        from_symbol_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CrossRepoEdgeRow>> {
+        let conn = self.read()?;
+        queries::cross_repo::list_cross_repo_edges_from(&conn, from_symbol_id, limit)
+    }
+
+    pub fn list_cross_repo_edges_to_repo(
+        &self,
+        to_repo_hash: &str,
+        limit: usize,
+    ) -> Result<Vec<CrossRepoEdgeRow>> {
+        let conn = self.read()?;
+        queries::cross_repo::list_cross_repo_edges_to_repo(&conn, to_repo_hash, limit)
+    }
+
+    pub fn list_unresolved_cross_repo_edges(
+        &self,
+        to_repo_hash: &str,
+        limit: usize,
+    ) -> Result<Vec<CrossRepoEdgeRow>> {
+        let conn = self.read()?;
+        queries::cross_repo::list_unresolved_edges_to_repo(&conn, to_repo_hash, limit)
+    }
+
+    pub fn resolve_cross_repo_edge(&self, edge_id: i64, to_symbol_id: &str) -> Result<()> {
+        let conn = self.write()?;
+        queries::cross_repo::resolve_cross_repo_edge(&conn, edge_id, to_symbol_id)
+    }
+
+    pub fn count_cross_repo_edges(&self) -> Result<u64> {
+        let conn = self.read()?;
+        queries::cross_repo::count_cross_repo_edges(&conn)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn search_framework_patterns(
         &self,

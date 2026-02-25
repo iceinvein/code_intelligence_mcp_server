@@ -1,10 +1,10 @@
 //! Standalone mode MCP handler — routes sessions to per-repo AppState
 
-use crate::handlers::{handle_search_across_repos, parse_tool_args, tool_internal_error, AppState};
+use crate::handlers::{handle_explore_cross_repo_dependencies, handle_search_across_repos, parse_tool_args, tool_internal_error, AppState};
 use crate::path::Utf8PathBuf;
 use crate::server::{all_tools, dispatch_tool_call};
 use crate::session::SessionManager;
-use crate::tools::SearchAcrossReposTool;
+use crate::tools::{ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rust_mcp_sdk::{
@@ -179,6 +179,23 @@ impl ServerHandler for StandaloneHandler {
             let result = handle_search_across_repos(&self.session_manager, tool)
                 .await
                 .map_err(tool_internal_error)?;
+            return Ok(CallToolResult::text_content(vec![
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| "{}".to_string())
+                    .into(),
+            ]));
+        }
+
+        // Cross-repo dependency exploration needs both per-repo state AND SessionManager
+        if params.name == "explore_cross_repo_dependencies" {
+            let state = self.resolve_state(&runtime).await?;
+            let tool: ExploreCrossRepoDependenciesTool = parse_tool_args(&params)?;
+            let result = handle_explore_cross_repo_dependencies(
+                &state,
+                self.session_manager.as_ref(),
+                tool,
+            )
+            .map_err(tool_internal_error)?;
             return Ok(CallToolResult::text_content(vec![
                 serde_json::to_string_pretty(&result)
                     .unwrap_or_else(|_| "{}".to_string())

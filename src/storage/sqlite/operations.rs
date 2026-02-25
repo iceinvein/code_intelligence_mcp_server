@@ -114,6 +114,7 @@ impl SqliteStore {
         self.write()?
             .execute_batch(
                 r#"
+DELETE FROM cross_repo_edges;
 DELETE FROM edges;
 DELETE FROM edge_evidence;
 DELETE FROM symbols;

@@ -191,6 +191,22 @@ pub struct DecoratorRow {
     pub updated_at: i64,
 }
 
+/// Cross-repo edge row — tracks edges from symbols in this repo to symbols in other repos
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrossRepoEdgeRow {
+    pub id: i64,
+    pub from_symbol_id: String,
+    pub to_repo_hash: String,
+    pub to_symbol_name: String,
+    pub to_symbol_file: Option<String>,
+    pub to_symbol_id: Option<String>,
+    pub edge_type: String,
+    pub at_file: Option<String>,
+    pub at_line: Option<u32>,
+    pub confidence: f32,
+    pub resolution: String,
+}
+
 /// Framework pattern row for Elysia/Hono/Express route and plugin metadata
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameworkPatternRow {
@@ -484,4 +500,24 @@ CREATE TABLE IF NOT EXISTS descriptions (
     generated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_descriptions_hash ON descriptions(content_hash);
+
+-- Cross-repo edges: track references from symbols in this repo to symbols in other repos
+CREATE TABLE IF NOT EXISTS cross_repo_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_symbol_id TEXT NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    to_repo_hash TEXT NOT NULL,
+    to_symbol_name TEXT NOT NULL,
+    to_symbol_file TEXT,
+    to_symbol_id TEXT,
+    edge_type TEXT NOT NULL,
+    at_file TEXT,
+    at_line INTEGER,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    resolution TEXT NOT NULL DEFAULT 'cross_repo_unresolved',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(from_symbol_id, to_repo_hash, to_symbol_name, edge_type)
+);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_edges_from ON cross_repo_edges(from_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_edges_to_repo ON cross_repo_edges(to_repo_hash);
+CREATE INDEX IF NOT EXISTS idx_cross_repo_edges_resolution ON cross_repo_edges(resolution);
 "#;

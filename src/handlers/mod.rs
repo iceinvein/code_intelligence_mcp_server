@@ -2597,6 +2597,141 @@ fn format_cross_repo_results(query: &str, repos_searched: usize, hits: &[CrossRe
     out
 }
 
+/// Handle explore_cross_repo_dependencies tool — query cross-repo edges for a symbol.
+///
+/// Standalone mode only. In embedded mode, `dispatch_tool_call` returns an error
+/// before this function is reached.
+pub fn handle_explore_cross_repo_dependencies(
+    state: &AppState,
+    resolver: &dyn crate::graph::CrossRepoResolver,
+    tool: ExploreCrossRepoDependenciesTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(20).clamp(1, 200) as usize;
+    let direction = tool.direction.as_deref().unwrap_or("both");
+
+    // Find the root symbol in this repo
+    let candidates = state.sqlite.search_symbols_by_exact_name(
+        &tool.symbol_name,
+        tool.file_path.as_deref(),
+        1,
+    )?;
+
+    let root = match candidates.into_iter().next() {
+        Some(s) => s,
+        None => {
+            return Ok(json!({
+                "error": "not_found",
+                "message": format!("Symbol '{}' not found in this repo", tool.symbol_name),
+            }));
+        }
+    };
+
+    let mut downstream_edges: Vec<serde_json::Value> = Vec::new();
+    let upstream_edges: Vec<serde_json::Value> = Vec::new();
+
+    // Downstream: edges FROM this symbol TO other repos
+    if direction == "downstream" || direction == "both" {
+        let edges = resolver.list_cross_repo_edges_from(&state.sqlite, &root.id, limit)?;
+        for edge in edges {
+            let repo_name = resolver
+                .repo_name_for_hash(&edge.to_repo_hash)?
+                .unwrap_or_else(|| edge.to_repo_hash.clone());
+
+            // Attempt lazy resolution if not yet resolved
+            let resolved_info = if edge.to_symbol_id.is_some() {
+                // Already resolved — try to get symbol details
+                if let Ok(Some((_store, sym))) = resolver.resolve_cross_repo_symbol(
+                    &edge.to_repo_hash,
+                    &edge.to_symbol_name,
+                    edge.to_symbol_file.as_deref(),
+                ) {
+                    Some(json!({
+                        "id": sym.id,
+                        "name": sym.name,
+                        "kind": sym.kind,
+                        "file_path": sym.file_path,
+                        "line_range": [sym.start_line, sym.end_line],
+                    }))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            downstream_edges.push(json!({
+                "from_symbol_id": edge.from_symbol_id,
+                "to_repo_hash": edge.to_repo_hash,
+                "to_repo_name": repo_name,
+                "to_symbol_name": edge.to_symbol_name,
+                "to_symbol_file": edge.to_symbol_file,
+                "edge_type": edge.edge_type,
+                "at_file": edge.at_file,
+                "at_line": edge.at_line,
+                "confidence": edge.confidence,
+                "resolution": edge.resolution,
+                "resolved_symbol": resolved_info,
+            }));
+        }
+    }
+
+    // Upstream: would require querying OTHER repos' cross_repo_edges tables
+    // for edges pointing to this repo. For now, we only support downstream.
+    if direction == "upstream" || direction == "both" {
+        // Upstream cross-repo discovery is not yet implemented.
+        // It would require iterating all loaded repos and checking their
+        // cross_repo_edges tables for to_repo_hash matching this repo.
+        // This is intentionally deferred — the schema and queries support it,
+        // but the cross-repo detection pipeline must be wired first.
+    }
+
+    // Build display
+    let mut display = format!(
+        "## Cross-Repo Dependencies: `{}`\n\nDirection: {direction}\n\n",
+        root.name
+    );
+
+    if downstream_edges.is_empty() && upstream_edges.is_empty() {
+        display.push_str("No cross-repo dependencies found for this symbol.\n");
+        display.push_str("Cross-repo edges are populated during indexing when references to other indexed repos are detected.\n");
+    } else {
+        if !downstream_edges.is_empty() {
+            display.push_str(&format!(
+                "### Downstream ({} edges)\n\n",
+                downstream_edges.len()
+            ));
+            for (i, edge) in downstream_edges.iter().enumerate() {
+                display.push_str(&format!(
+                    "{}. `{}` -> `{}` in **{}** ({})\n",
+                    i + 1,
+                    edge["from_symbol_id"].as_str().unwrap_or("?"),
+                    edge["to_symbol_name"].as_str().unwrap_or("?"),
+                    edge["to_repo_name"].as_str().unwrap_or("?"),
+                    edge["edge_type"].as_str().unwrap_or("?"),
+                ));
+            }
+        }
+        if !upstream_edges.is_empty() {
+            display.push_str(&format!(
+                "\n### Upstream ({} edges)\n\n",
+                upstream_edges.len()
+            ));
+            for (i, edge) in upstream_edges.iter().enumerate() {
+                display.push_str(&format!("{}. {}\n", i + 1, edge));
+            }
+        }
+    }
+
+    Ok(json!({
+        "symbol_name": root.name,
+        "symbol_id": root.id,
+        "direction": direction,
+        "downstream": downstream_edges,
+        "upstream": upstream_edges,
+        "display": display,
+    }))
+}
+
 /// Handle find_stale_descriptions tool
 pub fn handle_find_stale_descriptions(
     state: &AppState,

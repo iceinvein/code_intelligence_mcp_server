@@ -99,6 +99,16 @@ impl RepoRegistry {
         Ok(registry.repos.get(&hash).cloned())
     }
 
+    /// Reverse lookup: find a repository entry by its hash.
+    ///
+    /// This is used for cross-repo dependency resolution, where edges store
+    /// the target repo hash and we need to find the corresponding repo path
+    /// and data directory.
+    pub fn get_by_hash(&self, hash: &str) -> Result<Option<RepoEntry>> {
+        let registry = self.load()?;
+        Ok(registry.repos.get(hash).cloned())
+    }
+
     /// List all registered repositories, sorted by most recently accessed first
     pub fn list_all(&self) -> Result<Vec<RepoEntry>> {
         let registry = self.load()?;
@@ -233,6 +243,32 @@ mod tests {
         assert_eq!(all[0].name, "third");
         assert_eq!(all[1].name, "second");
         assert_eq!(all[2].name, "first");
+    }
+
+    #[test]
+    fn get_by_hash_returns_registered_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path =
+            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+
+        reg.register("/Users/dev/my-project").unwrap();
+        let hash = RepoRegistry::path_hash("/Users/dev/my-project");
+
+        let entry = reg.get_by_hash(&hash).unwrap();
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().name, "my-project");
+    }
+
+    #[test]
+    fn get_by_hash_returns_none_for_unknown_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path =
+            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+
+        let entry = reg.get_by_hash("0000000000000000").unwrap();
+        assert!(entry.is_none());
     }
 
     #[test]

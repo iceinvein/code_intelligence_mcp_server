@@ -21,6 +21,10 @@ use std::sync::Arc;
 pub const SEARCH_ACROSS_REPOS_EMBEDDED_MSG: &str =
     "search_across_repos is only available in standalone mode. Start the server with --standalone to use cross-repo search.";
 
+/// Error message returned when `explore_cross_repo_dependencies` is called in embedded (stdio) mode.
+pub const EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG: &str =
+    "explore_cross_repo_dependencies is only available in standalone mode. Start the server with --standalone to use cross-repo dependency exploration.";
+
 /// Build the `ServerTasks` capability block for MCP task-augmented tool calls.
 ///
 /// Used by both embedded and standalone server initialization so the capability
@@ -150,6 +154,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         FindDeadCodeTool::tool(),
         FindDuplicatesTool::tool(),
         SearchAcrossReposTool::tool(),
+        ExploreCrossRepoDependenciesTool::tool(),
         FindStaleDescriptionsTool::tool(),
         FindUndocumentedSymbolsTool::tool(),
     ]
@@ -458,6 +463,13 @@ pub async fn dispatch_tool_call(
             result.is_error = Some(true);
             Ok(result)
         }
+        "explore_cross_repo_dependencies" => {
+            let mut result = CallToolResult::text_content(vec![
+                EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.into(),
+            ]);
+            result.is_error = Some(true);
+            Ok(result)
+        }
         _ => Err(CallToolError::unknown_tool(params.name)),
     };
 
@@ -593,6 +605,60 @@ mod tests {
         assert!(
             standalone_source.contains("dispatch_task_augmented_call"),
             "StandaloneHandler must delegate to shared dispatch_task_augmented_call"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_explore_cross_repo_dependencies() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"explore_cross_repo_dependencies"),
+            "all_tools() must include 'explore_cross_repo_dependencies', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn explore_cross_repo_dependencies_tool_serializes_correctly() {
+        use crate::tools::ExploreCrossRepoDependenciesTool;
+
+        let tool = ExploreCrossRepoDependenciesTool {
+            symbol_name: "MyService".to_string(),
+            file_path: Some("src/service.rs".to_string()),
+            direction: Some("downstream".to_string()),
+            limit: Some(10),
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        let parsed: ExploreCrossRepoDependenciesTool = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.symbol_name, "MyService");
+        assert_eq!(parsed.file_path, Some("src/service.rs".to_string()));
+        assert_eq!(parsed.direction, Some("downstream".to_string()));
+        assert_eq!(parsed.limit, Some(10));
+
+        // Defaults when optional fields are absent
+        let minimal: ExploreCrossRepoDependenciesTool =
+            serde_json::from_str(r#"{"symbol_name":"foo"}"#).unwrap();
+        assert_eq!(minimal.symbol_name, "foo");
+        assert!(minimal.file_path.is_none());
+        assert!(minimal.direction.is_none());
+        assert!(minimal.limit.is_none());
+    }
+
+    #[test]
+    fn embedded_mode_explore_cross_repo_deps_returns_helpful_message() {
+        assert!(
+            EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.contains("standalone"),
+            "Message must mention standalone mode"
+        );
+        assert!(
+            EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.contains("explore_cross_repo_dependencies"),
+            "Message must mention the tool name"
+        );
+
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains("EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.into()"),
+            "dispatch_tool_call must use the EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG constant"
         );
     }
 

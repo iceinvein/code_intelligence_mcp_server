@@ -1,6 +1,7 @@
 pub mod affinity;
 pub mod cache;
 pub mod chat;
+pub mod cross_repo;
 pub mod decorators;
 pub mod descriptions;
 pub mod docstrings;

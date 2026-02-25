@@ -2,8 +2,36 @@
 
 pub mod pagerank;
 
-use crate::storage::sqlite::{SqliteStore, SymbolRow};
+use crate::storage::sqlite::{CrossRepoEdgeRow, SqliteStore, SymbolRow};
 use serde_json::json;
+use std::sync::Arc;
+
+/// Trait for resolving cross-repo symbol references.
+///
+/// Implementors provide access to other repos' SQLite stores and symbol data,
+/// enabling cross-repo dependency graph traversal in standalone mode.
+pub trait CrossRepoResolver: Send + Sync {
+    /// Look up a symbol in another repo by hash, name, and optional file path.
+    ///
+    /// Returns the target repo's SqliteStore and the resolved SymbolRow if found.
+    fn resolve_cross_repo_symbol(
+        &self,
+        to_repo_hash: &str,
+        to_symbol_name: &str,
+        to_symbol_file: Option<&str>,
+    ) -> anyhow::Result<Option<(Arc<SqliteStore>, SymbolRow)>>;
+
+    /// List cross-repo edges originating from a symbol in the given store.
+    fn list_cross_repo_edges_from(
+        &self,
+        sqlite: &SqliteStore,
+        from_symbol_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<CrossRepoEdgeRow>>;
+
+    /// Get the repo name for a given hash (for display purposes).
+    fn repo_name_for_hash(&self, repo_hash: &str) -> anyhow::Result<Option<String>>;
+}
 
 /// Build a dependency graph starting from a root symbol
 pub fn build_dependency_graph(

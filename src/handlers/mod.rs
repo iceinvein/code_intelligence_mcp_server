@@ -2296,13 +2296,6 @@ struct CrossRepoHit {
     snippet: String,
 }
 
-/// Handle search_across_repos tool — fans the query to all indexed repositories
-/// in parallel and merges results by score descending.
-///
-/// Only meaningful in standalone mode where a `SessionManager` holds multiple
-/// per-repo `AppState` instances.  The embedded-mode stub in
-/// `dispatch_tool_call` returns an informational error before this is ever
-/// reached from stdio transport.
 /// Handle find_duplicates tool - find groups of semantically similar symbols
 pub fn handle_find_duplicates(
     state: &AppState,
@@ -2359,10 +2352,15 @@ pub fn handle_find_duplicates(
             })
             .collect();
 
+        let kind_label = if filtered.iter().all(|m| m.kind == filtered[0].kind) {
+            format!("{}s", filtered[0].kind)
+        } else {
+            "symbols".to_string()
+        };
         let suggestion = format!(
-            "These {} {}s share the same embedding cluster, suggesting high semantic similarity. Consider consolidating.",
+            "These {} {} share the same embedding cluster, suggesting high semantic similarity. Consider consolidating.",
             filtered.len(),
-            filtered.first().map(|m| m.kind.as_str()).unwrap_or("symbol"),
+            kind_label,
         );
 
         groups.push(json!({
@@ -2425,6 +2423,13 @@ fn format_duplicates(groups: &[serde_json::Value], total_symbols: usize) -> Stri
     out
 }
 
+/// Handle search_across_repos tool — fans the query to all indexed repositories
+/// in parallel and merges results by score descending.
+///
+/// Only meaningful in standalone mode where a `SessionManager` holds multiple
+/// per-repo `AppState` instances.  The embedded-mode stub in
+/// `dispatch_tool_call` returns an informational error before this is ever
+/// reached from stdio transport.
 pub async fn handle_search_across_repos(
     session_manager: &crate::session::SessionManager,
     tool: SearchAcrossReposTool,

@@ -171,6 +171,7 @@ pub fn list_duplicate_clusters(
             r#"
 SELECT cluster_key, COUNT(*) as member_count
 FROM similarity_clusters
+WHERE cluster_key != '__skipped__'
 GROUP BY cluster_key
 HAVING COUNT(*) >= 2
 ORDER BY member_count DESC
@@ -374,5 +375,25 @@ mod tests {
         let conn = setup_test_db();
         let members = list_cluster_members_with_details(&conn, "nonexistent").unwrap();
         assert!(members.is_empty());
+    }
+
+    #[test]
+    fn list_duplicate_clusters_excludes_skipped() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "a", "src/a.rs", "function", "fn_a");
+        insert_symbol(&conn, "b", "src/b.rs", "function", "fn_b");
+        insert_symbol(&conn, "c", "src/c.rs", "file", "c.rs");
+        insert_symbol(&conn, "d", "src/d.rs", "file", "d.rs");
+
+        // Real cluster with 2 members
+        insert_cluster(&conn, "a", "real_cluster");
+        insert_cluster(&conn, "b", "real_cluster");
+        // __skipped__ cluster with 2 members — should be excluded
+        insert_cluster(&conn, "c", "__skipped__");
+        insert_cluster(&conn, "d", "__skipped__");
+
+        let clusters = list_duplicate_clusters(&conn, 100).unwrap();
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].0, "real_cluster");
     }
 }

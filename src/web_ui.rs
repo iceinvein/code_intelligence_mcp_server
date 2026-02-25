@@ -226,6 +226,7 @@ mod tests {
             index_node_modules: false,
             repo_roots: vec![base_utf8],
             // Reranker config (FNDN-03)
+            reranker_enabled: false,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: None,
@@ -271,6 +272,7 @@ mod tests {
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
+            embedding_truncate_dim: None,
         }
     }
 

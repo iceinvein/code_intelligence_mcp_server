@@ -1,10 +1,11 @@
 //! Cross-encoder reranking for improved search result precision
 
 pub mod cache;
+pub mod llamacpp;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::path::Utf8Path;
+use crate::path::{Utf8Path, Utf8PathBuf};
 use std::sync::Arc;
 
 /// Trait for reranking search results
@@ -28,12 +29,86 @@ pub struct RerankDocument {
 
 /// Create a reranker based on config.
 ///
-/// Currently always returns `None` — the reranker is not enabled.
-/// The trait and types are kept since they're referenced by the retrieval module.
+/// Returns `Ok(None)` when:
+/// - `enabled` is false
+/// - `model_path` is `None`
+/// - The model file does not exist and auto-download fails
+///
+/// When `enabled` is true and `model_path` is provided, creates a
+/// [`llamacpp::LlamaCppReranker`] wrapped in a [`cache::CachedReranker`].
+///
+/// # Arguments
+/// * `enabled` - Whether reranking is enabled (from `RERANKER_ENABLED` env var)
+/// * `model_path` - Optional explicit path to the `.gguf` model file
+/// * `cache_dir` - Optional directory for the caching wrapper (unused if
+///   `model_path` is `None`)
+/// * `top_k` - Maximum number of documents scored per rerank call
 pub fn create_reranker(
-    _model_path: Option<&Utf8Path>,
-    _cache_dir: Option<&Utf8Path>,
-    _top_k: usize,
+    enabled: bool,
+    model_path: Option<&Utf8Path>,
+    cache_dir: Option<&Utf8Path>,
+    top_k: usize,
 ) -> Result<Option<Arc<dyn Reranker>>> {
-    Ok(None)
+    if !enabled {
+        tracing::debug!("Reranker disabled (RERANKER_ENABLED=false)");
+        return Ok(None);
+    }
+
+    // Resolve the model file path: use explicit path or fall back to the
+    // default LLM model directory (same GGUF as description generation).
+    let resolved_model_path: Utf8PathBuf = match model_path {
+        Some(p) => p.to_owned(),
+        None => {
+            // Derive from the global data directory — same location as the
+            // Qwen2.5-Coder-1.5B model used for LLM descriptions.
+            let data_dir = crate::config::get_data_dir();
+            data_dir
+                .join("models/qwen2.5-coder-1.5b-gguf")
+                .join(llamacpp::HF_MODEL_FILE)
+        }
+    };
+
+    // Auto-download if model file not found
+    if !resolved_model_path.exists() {
+        let model_dir = resolved_model_path
+            .parent()
+            .map(|p| p.to_owned())
+            .unwrap_or_else(|| crate::config::get_data_dir().join("models/qwen2.5-coder-1.5b-gguf"));
+
+        tracing::info!(
+            model_path = %resolved_model_path,
+            "Reranker model not found, attempting auto-download"
+        );
+
+        match llamacpp::download_reranker_model(&model_dir) {
+            Ok(()) => {
+                tracing::info!("Reranker model downloaded successfully");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to download reranker model. Set RERANKER_ENABLED=false to suppress."
+                );
+                return Ok(None);
+            }
+        }
+    }
+
+    // Build the inner reranker
+    let inner = llamacpp::LlamaCppReranker::new(&resolved_model_path, top_k)?;
+
+    // Determine cache size: 256 entries by default, respecting cache_dir
+    // presence as an opt-in signal (the cache itself is in-memory).
+    let cache_size = if cache_dir.is_some() { 256 } else { 64 };
+
+    let cached = cache::CachedReranker::new(Box::new(inner), cache_size);
+
+    tracing::info!(
+        model_path = %resolved_model_path,
+        top_k,
+        cache_size,
+        "Reranker initialised"
+    );
+
+    Ok(Some(Arc::new(cached)))
 }

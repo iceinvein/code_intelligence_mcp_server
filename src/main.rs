@@ -500,8 +500,9 @@ async fn run_embedded() -> SdkResult<()> {
         None
     };
 
-    // Create reranker if model path is configured
+    // Create reranker when enabled and model is available
     let reranker = create_reranker(
+        config.reranker_enabled,
         config.reranker_model_path.as_deref(),
         config.reranker_cache_dir.as_deref(),
         config.reranker_top_k,

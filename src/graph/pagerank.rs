@@ -186,6 +186,7 @@ mod tests {
             max_context_bytes: 200_000,
             index_node_modules: false,
             repo_roots: vec!["/tmp/test".into()],
+            reranker_enabled: false,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: None,

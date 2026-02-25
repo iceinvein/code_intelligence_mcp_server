@@ -831,6 +831,7 @@ fn test_config(base_dir: &Path) -> Config {
         max_context_bytes: 200_000,
         index_node_modules: false,
         repo_roots: vec![base_dir_utf8],
+        reranker_enabled: false,
         reranker_model_path: None,
         reranker_top_k: 20,
         reranker_cache_dir: None,

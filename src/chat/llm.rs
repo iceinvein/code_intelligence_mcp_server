@@ -4,7 +4,7 @@
 //! offloading on Apple Silicon. Provides both streaming (token-by-token) and
 //! non-streaming generation interfaces for use in the RAG chatbot pipeline.
 //!
-//! The `LlamaContext` type is `!Send`, so each call to `generate_stream` or
+//! The `LlamaContext` type is `!Send`, so each call to `generate_to_sender` or
 //! `generate` creates a fresh context. Context creation is cheap relative to
 //! inference and amortises to nothing across a multi-turn conversation.
 
@@ -87,7 +87,7 @@ fn symlink_model(source: &std::path::Path, target: &std::path::Path) -> Result<(
 ///
 /// Owns the model weights (resident in Metal GPU VRAM) and borrows the
 /// process-wide `LlamaBackend` singleton. A fresh `LlamaContext` is created
-/// on every `generate` / `generate_stream` call because `LlamaContext` is
+/// on every `generate` / `generate_to_sender` call because `LlamaContext` is
 /// `!Send`. This is safe: the shared weights are never mutated after load,
 /// and each context holds only per-call KV-cache state.
 pub struct ChatLlm {
@@ -100,7 +100,7 @@ pub struct ChatLlm {
 // SAFETY: `LlamaModel` contains a raw pointer to immutable C++ model weights.
 // The weights are never mutated after `load_from_file` returns. All mutable
 // per-call state lives in `LlamaContext`, which is created and destroyed
-// within each `generate` / `generate_stream` call (never shared across
+// within each `generate` / `generate_to_sender` call (never shared across
 // threads). Therefore `ChatLlm` is safe to send across threads and to hold
 // behind a shared reference from multiple threads simultaneously.
 unsafe impl Send for ChatLlm {}
@@ -255,7 +255,7 @@ impl ChatLlm {
 
     /// Generate a complete response, returning the full output string.
     ///
-    /// Equivalent to collecting all tokens from [`generate_stream`] but
+    /// Equivalent to collecting all tokens from [`generate_to_sender`] but
     /// without channel overhead. Suitable for tool-call rounds where the
     /// full response must be parsed before acting.
     ///

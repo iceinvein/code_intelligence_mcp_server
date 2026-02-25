@@ -311,8 +311,9 @@ async fn chat_handler(
                 .filter(|m| m.role == "user")
                 .map(|m| {
                     let t = m.content.trim();
-                    if t.len() > 80 {
-                        format!("{}...", &t[..80])
+                    if t.chars().count() > 80 {
+                        let end = t.char_indices().nth(80).map(|(i, _)| i).unwrap_or(t.len());
+                        format!("{}...", &t[..end])
                     } else {
                         t.to_string()
                     }
@@ -337,6 +338,26 @@ async fn chat_handler(
             }
         }
     }
+
+    // Load existing session history from DB and prepend to messages.
+    // The client sends only the new user message; we reconstruct the full
+    // conversation from stored history so the agent has multi-turn context.
+    let messages = if let Some(ref sid) = session_id {
+        match chat_store.list_messages(sid) {
+            Ok(stored) if !stored.is_empty() => {
+                stored
+                    .into_iter()
+                    .map(|m| ChatMessage {
+                        role: m.role,
+                        content: m.content,
+                    })
+                    .collect()
+            }
+            _ => messages,
+        }
+    } else {
+        messages
+    };
 
     // Spawn agent loop in background
     tokio::spawn(async move {

@@ -8,11 +8,15 @@ use crate::indexer::extract::symbol::{TodoEntry, JSDocEntry};
 use crate::{
     config::Config,
     indexer::{
+        extract::csharp::extract_csharp_symbols,
         extract::go::extract_go_symbols,
         extract::java::extract_java_symbols,
         extract::javascript::extract_javascript_symbols,
+        extract::kotlin::extract_kotlin_symbols,
         extract::python::extract_python_symbols,
+        extract::ruby::extract_ruby_symbols,
         extract::rust::extract_rust_symbols,
+        extract::swift::extract_swift_symbols,
         extract::typescript::extract_typescript_symbols_with_path,
         extract::{c::extract_c_symbols, cpp::extract_cpp_symbols},
         parser::{language_id_for_path, LanguageId},
@@ -137,6 +141,10 @@ pub fn parse_single_file(
         LanguageId::Cpp => extract_cpp_symbols(&source),
         LanguageId::Java => extract_java_symbols(&source),
         LanguageId::Javascript => extract_javascript_symbols(&source),
+        LanguageId::Ruby => extract_ruby_symbols(&source),
+        LanguageId::Kotlin => extract_kotlin_symbols(&source),
+        LanguageId::CSharp => extract_csharp_symbols(&source),
+        LanguageId::Swift => extract_swift_symbols(&source),
     };
 
     let extracted = match extracted {

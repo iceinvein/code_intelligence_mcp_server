@@ -85,6 +85,10 @@ pub fn language_string(language_id: LanguageId) -> &'static str {
         LanguageId::Javascript => "javascript",
         LanguageId::C => "c",
         LanguageId::Cpp => "cpp",
+        LanguageId::Ruby => "ruby",
+        LanguageId::Kotlin => "kotlin",
+        LanguageId::CSharp => "csharp",
+        LanguageId::Swift => "swift",
     }
 }
 

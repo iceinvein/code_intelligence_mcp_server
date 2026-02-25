@@ -113,6 +113,10 @@ pub fn should_index_file(config: &Config, path: &Path) -> bool {
                 | LanguageId::Javascript
                 | LanguageId::C
                 | LanguageId::Cpp
+                | LanguageId::Ruby
+                | LanguageId::Kotlin
+                | LanguageId::CSharp
+                | LanguageId::Swift
         )
     )
 }

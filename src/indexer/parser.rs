@@ -13,6 +13,10 @@ pub enum LanguageId {
     Javascript,
     C,
     Cpp,
+    Ruby,
+    Kotlin,
+    CSharp,
+    Swift,
 }
 
 pub fn language_id_for_path(path: &Path) -> Option<LanguageId> {
@@ -26,6 +30,10 @@ pub fn language_id_for_path(path: &Path) -> Option<LanguageId> {
         Some("js") | Some("jsx") => Some(LanguageId::Javascript),
         Some("c") | Some("h") => Some(LanguageId::C),
         Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => Some(LanguageId::Cpp),
+        Some("rb") => Some(LanguageId::Ruby),
+        Some("kt") | Some("kts") => Some(LanguageId::Kotlin),
+        Some("cs") => Some(LanguageId::CSharp),
+        Some("swift") => Some(LanguageId::Swift),
         _ => None,
     }
 }
@@ -41,6 +49,10 @@ pub fn language_for_id(id: LanguageId) -> Language {
         LanguageId::Javascript => tree_sitter_javascript::LANGUAGE.into(),
         LanguageId::C => tree_sitter_c::LANGUAGE.into(),
         LanguageId::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        LanguageId::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+        LanguageId::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+        LanguageId::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+        LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
     }
 }
 
@@ -65,6 +77,10 @@ mod tests {
         let _ = parser_for_id(LanguageId::Javascript).unwrap();
         let _ = parser_for_id(LanguageId::C).unwrap();
         let _ = parser_for_id(LanguageId::Cpp).unwrap();
+        let _ = parser_for_id(LanguageId::Ruby).unwrap();
+        let _ = parser_for_id(LanguageId::Kotlin).unwrap();
+        let _ = parser_for_id(LanguageId::CSharp).unwrap();
+        let _ = parser_for_id(LanguageId::Swift).unwrap();
     }
 
     #[test]
@@ -102,6 +118,25 @@ mod tests {
             language_id_for_path(Path::new("x.cpp")),
             Some(LanguageId::Cpp)
         );
-        assert_eq!(language_id_for_path(Path::new("x.rb")), None);
+        assert_eq!(
+            language_id_for_path(Path::new("x.rb")),
+            Some(LanguageId::Ruby)
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("x.kt")),
+            Some(LanguageId::Kotlin)
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("x.kts")),
+            Some(LanguageId::Kotlin)
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("x.cs")),
+            Some(LanguageId::CSharp)
+        );
+        assert_eq!(
+            language_id_for_path(Path::new("x.swift")),
+            Some(LanguageId::Swift)
+        );
     }
 }

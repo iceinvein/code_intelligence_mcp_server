@@ -8,7 +8,7 @@ use std::sync::Arc;
 ///
 /// If the norm is zero (all-zeros vector) the vector is left unchanged
 /// to avoid a division-by-zero NaN.
-fn l2_normalize(v: &mut [f32]) {
+pub(crate) fn l2_normalize(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
         v.iter_mut().for_each(|x| *x /= norm);

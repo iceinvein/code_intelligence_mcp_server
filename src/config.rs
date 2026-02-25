@@ -248,8 +248,12 @@ impl StandaloneConfig {
             }
         }
         if let Ok(val) = std::env::var("EMBEDDING_TRUNCATE_DIM") {
-            if let Ok(dim) = val.parse::<usize>() {
-                config.embedding_truncate_dim = Some(dim);
+            match val.parse::<usize>() {
+                Ok(dim) => config.embedding_truncate_dim = Some(dim),
+                Err(_) => tracing::warn!(
+                    value = %val,
+                    "EMBEDDING_TRUNCATE_DIM is not a valid usize, ignoring"
+                ),
             }
         }
 
@@ -824,9 +828,19 @@ impl Config {
             .unwrap_or(30);
 
         // Matryoshka embedding truncation
-        let embedding_truncate_dim = std::env::var("EMBEDDING_TRUNCATE_DIM")
-            .ok()
-            .and_then(|s| s.parse().ok());
+        let embedding_truncate_dim = match std::env::var("EMBEDDING_TRUNCATE_DIM") {
+            Ok(val) => match val.parse::<usize>() {
+                Ok(dim) => Some(dim),
+                Err(_) => {
+                    tracing::warn!(
+                        value = %val,
+                        "EMBEDDING_TRUNCATE_DIM is not a valid usize, ignoring"
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        };
 
         Ok(Self {
             base_dir,

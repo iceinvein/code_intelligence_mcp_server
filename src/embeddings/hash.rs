@@ -38,18 +38,7 @@ fn tokenize(text: &str) -> impl Iterator<Item = &str> {
         .filter(|s| !s.is_empty())
 }
 
-fn normalize_l2(v: &mut [f32]) {
-    let mut sum = 0.0f32;
-    for x in v.iter() {
-        sum += x * x;
-    }
-    let norm = sum.sqrt();
-    if norm > 0.0 {
-        for x in v.iter_mut() {
-            *x /= norm;
-        }
-    }
-}
+use super::l2_normalize as normalize_l2;
 
 fn fnv1a_64(data: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf29ce484222325;

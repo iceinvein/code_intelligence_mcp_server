@@ -23,6 +23,17 @@ use code_intelligence_mcp_server::embeddings::{create_embedder, default_embeddin
 
 /// Type alias for the (embedder, optional-deferred-slot) pair returned by embedder creation.
 type EmbedderWithSlot = (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>);
+
+/// Optionally wrap an embedder with Matryoshka truncation.
+fn maybe_truncate(
+    embedder: Box<dyn Embedder + Send>,
+    truncate_dim: Option<usize>,
+) -> anyhow::Result<Box<dyn Embedder + Send>> {
+    match truncate_dim {
+        Some(dim) => Ok(Box::new(TruncatingEmbedder::new(embedder, dim)?)),
+        None => Ok(embedder),
+    }
+}
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::leader::{LeaderElection, Role};
@@ -159,11 +170,8 @@ async fn run_standalone(
                     standalone_config.embeddings_device,
                     standalone_config.hash_embedding_dim,
                 ).map_err(|e| McpSdkError::Internal { description: format!("Failed to create embedder: {}", e) })?;
-                let e: Box<dyn Embedder + Send> = if let Some(dim) = standalone_config.embedding_truncate_dim {
-                    Box::new(TruncatingEmbedder::new(base, dim).map_err(|e| McpSdkError::Internal { description: format!("Failed to create truncating embedder: {}", e) })?)
-                } else {
-                    base
-                };
+                let e = maybe_truncate(base, standalone_config.embedding_truncate_dim)
+                    .map_err(|e| McpSdkError::Internal { description: format!("Failed to create truncating embedder: {}", e) })?;
                 info!("Created hash embedder with dimension: {}", e.dim());
                 (e, None)
             }
@@ -256,11 +264,7 @@ async fn run_standalone(
                     device,
                     hash_dim,
                 )?;
-                let embedder: Box<dyn Embedder + Send> = if let Some(dim) = truncate_dim {
-                    Box::new(TruncatingEmbedder::new(base, dim)?)
-                } else {
-                    base
-                };
+                let embedder = maybe_truncate(base, truncate_dim)?;
                 Ok::<_, anyhow::Error>(embedder)
             }).await;
             match result {
@@ -390,13 +394,8 @@ async fn run_embedded() -> SdkResult<()> {
                 .map_err(|err| McpSdkError::Internal {
                     description: format!("Failed to create embedder: {}", err),
                 })?;
-                let e: Box<dyn Embedder + Send> = if let Some(dim) = config.embedding_truncate_dim {
-                    Box::new(TruncatingEmbedder::new(base, dim).map_err(|err| McpSdkError::Internal {
-                        description: format!("Failed to create truncating embedder: {}", err),
-                    })?)
-                } else {
-                    base
-                };
+                let e = maybe_truncate(base, config.embedding_truncate_dim)
+                    .map_err(|err| McpSdkError::Internal { description: format!("Failed to create truncating embedder: {}", err) })?;
                 info!("Created hash embedder with dimension: {}", e.dim());
                 (e, None)
             }
@@ -752,11 +751,7 @@ async fn run_embedded() -> SdkResult<()> {
                     device,
                     hash_dim,
                 )?;
-                let embedder: Box<dyn Embedder + Send> = if let Some(dim) = truncate_dim {
-                    Box::new(TruncatingEmbedder::new(base, dim)?)
-                } else {
-                    base
-                };
+                let embedder = maybe_truncate(base, truncate_dim)?;
                 Ok::<_, anyhow::Error>(embedder)
             }).await;
             match result {

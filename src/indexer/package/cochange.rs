@@ -22,7 +22,7 @@ pub struct CoChangeStats {
 /// 1. Open the git repository at `repo_path`
 /// 2. Walk the revision log (HEAD, topological sort) up to `max_commits`
 /// 3. For each commit, diff against parent to get changed files
-/// 4. Skip merge commits with >50 changed files
+/// 4. Skip commits with >50 changed files (merges or large refactors)
 /// 5. Build pairwise combinations of changed files
 /// 6. Track per-file total commit counts
 /// 7. Clear existing co_changes and bulk-insert all pairs
@@ -104,16 +104,20 @@ pub fn build_co_change_matrix(
         commits_walked += 1;
     }
 
-    // Clear existing co_changes and bulk-insert
-    sqlite.clear_co_changes()?;
-
+    // Clear existing co_changes and bulk-insert in a single transaction
     let pairs_recorded = pair_counts.len();
-
-    for ((file_a, file_b), co_count) in &pair_counts {
-        let total_a = *file_commit_counts.get(file_a).unwrap_or(&0);
-        let total_b = *file_commit_counts.get(file_b).unwrap_or(&0);
-
-        sqlite.upsert_co_change(file_a, file_b, *co_count, total_a, total_b)?;
+    {
+        let conn = sqlite.write()?;
+        conn.execute_batch("BEGIN")?;
+        crate::storage::sqlite::queries::cochange::clear_co_changes(&conn)?;
+        for ((file_a, file_b), co_count) in &pair_counts {
+            let total_a = *file_commit_counts.get(file_a).unwrap_or(&0);
+            let total_b = *file_commit_counts.get(file_b).unwrap_or(&0);
+            crate::storage::sqlite::queries::cochange::upsert_co_change(
+                &conn, file_a, file_b, *co_count, total_a, total_b,
+            )?;
+        }
+        conn.execute_batch("COMMIT")?;
     }
 
     Ok(CoChangeStats {

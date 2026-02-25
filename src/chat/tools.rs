@@ -344,6 +344,10 @@ pub fn tool_definitions() -> Vec<Value> {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "Which sections to include: definitions, call_chain, tests, similar, affected. Default: all."
+                        },
+                        "max_tokens": {
+                            "type": "integer",
+                            "description": "Maximum tokens for context output (default: unlimited)"
                         }
                     },
                     "required": ["task"]

@@ -2871,7 +2871,7 @@ pub fn handle_predict_impact(
     state: &AppState,
     tool: PredictImpactTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let limit = tool.limit.unwrap_or(20).clamp(1, 200) as usize;
     let include_tests = tool.include_tests.unwrap_or(false);
 
     let sqlite = &state.sqlite;

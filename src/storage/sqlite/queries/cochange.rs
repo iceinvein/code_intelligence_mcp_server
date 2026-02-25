@@ -15,7 +15,7 @@ pub fn upsert_co_change(
     total_b: u32,
 ) -> Result<()> {
     let min_total = total_a.min(total_b).max(1);
-    let confidence = co_change_count as f32 / min_total as f32;
+    let confidence = (co_change_count as f32 / min_total as f32).min(1.0);
 
     conn.execute(
         r#"

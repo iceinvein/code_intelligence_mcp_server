@@ -70,13 +70,7 @@ pub fn build_co_change_matrix(
             }
         };
 
-        // Skip merge commits with >50 changed files
-        if commit.parent_count() > 1 && changed_files.len() > 50 {
-            commits_skipped += 1;
-            continue;
-        }
-
-        // Skip commits with >50 files (likely large refactors/merges)
+        // Skip commits with >50 changed files (merges or large refactors)
         if changed_files.len() > 50 {
             commits_skipped += 1;
             commits_walked += 1;

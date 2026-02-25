@@ -189,6 +189,9 @@ impl ServerHandler for StandaloneHandler {
         let state = self.resolve_state(&runtime).await?;
         // Store the MCP runtime on first tool call so the description worker
         // can use it for sampling-based description generation.
+        // NOTE: Currently forward-looking plumbing — standalone mode does not
+        // yet spawn per-repo description workers. Once it does, this will
+        // enable MCP sampling for standalone repos.
         state
             .mcp_runtime
             .get_or_init(|| runtime.clone());

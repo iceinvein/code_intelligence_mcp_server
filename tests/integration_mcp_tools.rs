@@ -416,7 +416,7 @@ mod get_module_summary_tests {
             sqlite,
             is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
-        mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+            mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
         };
 
         (app_state, base_dir)

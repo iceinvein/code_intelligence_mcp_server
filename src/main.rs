@@ -536,28 +536,29 @@ async fn run_embedded() -> SdkResult<()> {
                 }
                 Ok(Ok(None)) => {
                     tracing::warn!(
-                        "HyDE local LLM not available (LLM_ENABLED=false or model not found). \
-                         HyDE will fall back to BM25+vector search without hypothetical documents."
+                        "HyDE local LLM not available (LLM_ENABLED=false or model not found). Disabling HyDE."
                     );
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(
-                        "Failed to create HyDE local LLM: {}. \
-                         HyDE will fall back to BM25+vector search without hypothetical documents.",
-                        e
+                        "Failed to create HyDE local LLM: {}. Disabling HyDE.", e
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "HyDE local LLM loading task panicked: {}. \
-                         HyDE will fall back to BM25+vector search without hypothetical documents.",
-                        e
+                        "HyDE local LLM loading task panicked: {}. Disabling HyDE.", e
                     );
                 }
             }
+            // If the local LLM wasn't attached, don't create a broken generator
+            if !gen.has_local_llm() {
+                None
+            } else {
+                Some(gen)
+            }
+        } else {
+            Some(gen)
         }
-
-        Some(gen)
     } else {
         None
     };

@@ -40,7 +40,7 @@ pub struct HypotheticalCodeGenerator {
     /// Wrapped in `Arc` so that `HypotheticalCodeGenerator` remains cheaply
     /// `Clone`-able — cloning increments the reference count rather than
     /// duplicating model weights.
-    pub local_llm: Option<Arc<dyn LlmGenerator>>,
+    local_llm: Option<Arc<dyn LlmGenerator>>,
 }
 
 impl HypotheticalCodeGenerator {
@@ -74,6 +74,11 @@ impl HypotheticalCodeGenerator {
     pub fn with_local_llm(mut self, llm: Arc<dyn LlmGenerator>) -> Self {
         self.local_llm = Some(llm);
         self
+    }
+
+    /// Returns `true` if a local LLM is attached for the `"local"` backend.
+    pub fn has_local_llm(&self) -> bool {
+        self.local_llm.is_some()
     }
 
     /// Generate hypothetical code for a query.

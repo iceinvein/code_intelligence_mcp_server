@@ -2597,6 +2597,133 @@ fn format_cross_repo_results(query: &str, repos_searched: usize, hits: &[CrossRe
     out
 }
 
+/// Handle find_stale_descriptions tool
+pub fn handle_find_stale_descriptions(
+    state: &AppState,
+    tool: FindStaleDescriptionsTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(100).max(1) as usize;
+    let sqlite = &state.sqlite;
+
+    let rows = sqlite.list_descriptions_with_symbol_data(
+        tool.file_path.as_deref(),
+        limit,
+    )?;
+
+    let mut stale_entries = Vec::new();
+    let mut checked = 0usize;
+
+    for row in &rows {
+        checked += 1;
+        let current_hash = crate::llm::compute_content_hash(&row.name, &row.kind, &row.text);
+        if current_hash != row.content_hash {
+            stale_entries.push(json!({
+                "symbol_id": row.symbol_id,
+                "name": row.name,
+                "kind": row.kind,
+                "file_path": row.file_path,
+                "stored_hash": row.content_hash,
+                "current_hash": current_hash,
+                "stale_description": row.description,
+            }));
+        }
+    }
+
+    // Build display
+    let mut display = String::from("# Stale Description Analysis\n\n");
+    display.push_str(&format!(
+        "**Checked:** {} descriptions | **Stale:** {}\n\n",
+        checked,
+        stale_entries.len()
+    ));
+    if stale_entries.is_empty() {
+        display.push_str("*All descriptions are up to date.*\n");
+    } else {
+        for (i, entry) in stale_entries.iter().enumerate() {
+            display.push_str(&format!(
+                "{}. **{}** `{}` — `{}`\n",
+                i + 1,
+                entry["name"].as_str().unwrap_or("?"),
+                entry["kind"].as_str().unwrap_or("?"),
+                entry["file_path"].as_str().unwrap_or("?"),
+            ));
+        }
+    }
+
+    Ok(json!({
+        "checked": checked,
+        "stale_count": stale_entries.len(),
+        "stale_symbols": stale_entries,
+        "display": display,
+    }))
+}
+
+/// Handle find_undocumented_symbols tool
+pub fn handle_find_undocumented_symbols(
+    state: &AppState,
+    tool: FindUndocumentedSymbolsTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(100).max(1) as usize;
+    let min_lines = tool.min_lines.unwrap_or(3);
+    let exported_only = tool.exported_only.unwrap_or(false);
+    let sqlite = &state.sqlite;
+
+    let symbols = sqlite.find_undocumented_symbols_filtered(
+        min_lines,
+        exported_only,
+        tool.file_path.as_deref(),
+        limit,
+    )?;
+
+    let mut entries = Vec::new();
+    for sym in &symbols {
+        entries.push(json!({
+            "symbol_id": sym.id,
+            "name": sym.name,
+            "kind": sym.kind,
+            "file_path": sym.file_path,
+            "exported": sym.exported,
+            "line_count": sym.line_count,
+        }));
+    }
+
+    // Build display
+    let mut display = String::from("# Undocumented Symbols\n\n");
+    display.push_str(&format!("**Found:** {} symbols without descriptions\n\n", entries.len()));
+    if entries.is_empty() {
+        display.push_str("*All symbols have descriptions.*\n");
+    } else {
+        let exported_count = symbols.iter().filter(|s| s.exported).count();
+        let private_count = symbols.len() - exported_count;
+        display.push_str(&format!(
+            "**Exported:** {} | **Private:** {}\n\n",
+            exported_count, private_count
+        ));
+        for (i, entry) in entries.iter().enumerate() {
+            let marker = if entry["exported"].as_bool().unwrap_or(false) {
+                "pub"
+            } else {
+                "priv"
+            };
+            display.push_str(&format!(
+                "{}. [{}] **{}** `{}` — `{}` ({} lines)\n",
+                i + 1,
+                marker,
+                entry["name"].as_str().unwrap_or("?"),
+                entry["kind"].as_str().unwrap_or("?"),
+                entry["file_path"].as_str().unwrap_or("?"),
+                entry["line_count"].as_u64().unwrap_or(0),
+            ));
+        }
+    }
+
+    Ok(json!({
+        "undocumented_count": entries.len(),
+        "symbols": entries,
+        "display": display,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

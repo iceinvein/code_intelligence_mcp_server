@@ -162,6 +162,32 @@ impl SqliteStore {
         queries::descriptions::count_undescribed_symbols(&conn)
     }
 
+    pub fn list_descriptions_with_symbol_data(
+        &self,
+        file_path: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<queries::descriptions::DescriptionWithSymbolData>> {
+        let conn = self.read()?;
+        queries::descriptions::list_descriptions_with_symbol_data(&conn, file_path, limit)
+    }
+
+    pub fn find_undocumented_symbols_filtered(
+        &self,
+        min_lines: u32,
+        exported_only: bool,
+        file_path: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<queries::descriptions::UndocumentedSymbol>> {
+        let conn = self.read()?;
+        queries::descriptions::find_undocumented_symbols_filtered(
+            &conn,
+            min_lines,
+            exported_only,
+            file_path,
+            limit,
+        )
+    }
+
     pub fn list_all_edges(&self) -> Result<Vec<(String, String)>> {
         let conn = self.read()?;
         queries::edges::list_all_edges(&conn)

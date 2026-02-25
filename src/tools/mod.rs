@@ -342,3 +342,31 @@ pub struct SearchAcrossReposTool {
     #[serde(default)]
     pub limit: Option<u32>,
 }
+
+#[macros::mcp_tool(
+    name = "find_stale_descriptions",
+    description = "Find symbols whose LLM-generated descriptions are stale (content hash mismatch). Returns symbols where the code has changed since the description was generated."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct FindStaleDescriptionsTool {
+    /// Filter to symbols in a specific file path
+    pub file_path: Option<String>,
+    /// Maximum number of results to return (default: 100)
+    pub limit: Option<u32>,
+}
+
+#[macros::mcp_tool(
+    name = "find_undocumented_symbols",
+    description = "Find symbols that don't have LLM-generated descriptions yet. Returns symbols ordered by importance (exported first, then by size)."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct FindUndocumentedSymbolsTool {
+    /// Filter to symbols in a specific file path
+    pub file_path: Option<String>,
+    /// Minimum line count to include (default: 3)
+    pub min_lines: Option<u32>,
+    /// Only include exported/public symbols
+    pub exported_only: Option<bool>,
+    /// Maximum number of results to return (default: 100)
+    pub limit: Option<u32>,
+}

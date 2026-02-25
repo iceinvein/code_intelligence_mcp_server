@@ -149,6 +149,8 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         FindDeadCodeTool::tool(),
         FindDuplicatesTool::tool(),
         SearchAcrossReposTool::tool(),
+        FindStaleDescriptionsTool::tool(),
+        FindUndocumentedSymbolsTool::tool(),
     ]
 }
 
@@ -421,6 +423,26 @@ pub async fn dispatch_tool_call(
         "find_duplicates" => {
             let tool: FindDuplicatesTool = parse_tool_args(&params)?;
             let result = handle_find_duplicates(state, tool)
+                .map_err(tool_internal_error)?;
+            Ok(CallToolResult::text_content(vec![
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_default()
+                    .into(),
+            ]))
+        }
+        "find_stale_descriptions" => {
+            let tool: FindStaleDescriptionsTool = parse_tool_args(&params)?;
+            let result = handle_find_stale_descriptions(state, tool)
+                .map_err(tool_internal_error)?;
+            Ok(CallToolResult::text_content(vec![
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_default()
+                    .into(),
+            ]))
+        }
+        "find_undocumented_symbols" => {
+            let tool: FindUndocumentedSymbolsTool = parse_tool_args(&params)?;
+            let result = handle_find_undocumented_symbols(state, tool)
                 .map_err(tool_internal_error)?;
             Ok(CallToolResult::text_content(vec![
                 serde_json::to_string_pretty(&result)

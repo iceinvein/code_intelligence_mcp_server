@@ -1,13 +1,10 @@
 //! Standalone mode MCP handler — routes sessions to per-repo AppState
 
-use crate::handlers::{
-    handle_refresh_index, handle_search_across_repos, parse_tool_args, tool_internal_error,
-    AppState,
-};
+use crate::handlers::{handle_search_across_repos, parse_tool_args, tool_internal_error, AppState};
 use crate::path::Utf8PathBuf;
 use crate::server::{all_tools, dispatch_tool_call};
 use crate::session::SessionManager;
-use crate::tools::{RefreshIndexTool, SearchAcrossReposTool};
+use crate::tools::SearchAcrossReposTool;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rust_mcp_sdk::{
@@ -164,59 +161,11 @@ impl ServerHandler for StandaloneHandler {
         task_creator: ServerTaskCreator,
         runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<CreateTaskResult, CallToolError> {
-        match params.name.as_str() {
-            "refresh_index" => {
-                let tool: RefreshIndexTool = parse_tool_args(&params)?;
-                let state = self.resolve_state(&runtime).await?;
-                let task = task_creator
-                    .create_task(rust_mcp_sdk::task_store::CreateTaskOptions {
-                        ttl: Some(300_000),
-                        poll_interval: Some(2_000),
-                        meta: None,
-                    })
-                    .await;
-                let task_id = task.task_id.clone();
-                let task_store = runtime
-                    .task_store()
-                    .expect("task_store must be configured when tasks capability is advertised");
-                tokio::spawn(async move {
-                    let result = handle_refresh_index(&state, tool).await;
-                    match result {
-                        Ok(value) => {
-                            task_store
-                                .store_task_result(
-                                    &task_id,
-                                    rust_mcp_sdk::schema::TaskStatus::Completed,
-                                    rust_mcp_sdk::schema::schema_utils::ResultFromServer::CallToolResult(
-                                        CallToolResult::text_content(vec![
-                                            serde_json::to_string_pretty(&value)
-                                                .unwrap_or_default()
-                                                .into(),
-                                        ]),
-                                    ),
-                                    None,
-                                )
-                                .await;
-                        }
-                        Err(e) => {
-                            task_store
-                                .update_task_status(
-                                    &task_id,
-                                    rust_mcp_sdk::schema::TaskStatus::Failed,
-                                    Some(e.to_string()),
-                                    None,
-                                )
-                                .await;
-                        }
-                    }
-                });
-                Ok(CreateTaskResult { meta: None, task })
-            }
-            _ => Err(CallToolError::from_message(format!(
-                "Tool '{}' does not support task-augmented execution",
-                params.name
-            ))),
-        }
+        // Resolve per-session state before creating the task so that
+        // failures (e.g., no repo bound) return immediately without
+        // creating an orphaned task.
+        let state = self.resolve_state(&runtime).await?;
+        crate::server::dispatch_task_augmented_call(state, params, task_creator, runtime).await
     }
 
     async fn handle_call_tool_request(

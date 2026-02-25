@@ -20,6 +20,105 @@ use std::sync::Arc;
 pub const SEARCH_ACROSS_REPOS_EMBEDDED_MSG: &str =
     "search_across_repos is only available in standalone mode. Start the server with --standalone to use cross-repo search.";
 
+/// Build the `ServerTasks` capability block for MCP task-augmented tool calls.
+///
+/// Used by both embedded and standalone server initialization so the capability
+/// advertisement stays in sync.
+pub fn task_capabilities() -> rust_mcp_sdk::schema::ServerTasks {
+    use rust_mcp_sdk::schema::{ServerTaskRequest, ServerTasks, ServerTaskTools};
+    ServerTasks {
+        cancel: Some(serde_json::Map::new()),
+        list: Some(serde_json::Map::new()),
+        requests: Some(ServerTaskRequest {
+            tools: Some(ServerTaskTools {
+                call: Some(serde_json::Map::new()),
+            }),
+        }),
+    }
+}
+
+/// Shared task-augmented tool dispatch — used by both embedded and standalone handlers.
+///
+/// Only `refresh_index` supports async task execution.  Other tools return
+/// an error; the SDK then falls back to synchronous `handle_call_tool_request`.
+pub(crate) async fn dispatch_task_augmented_call(
+    state: Arc<AppState>,
+    params: CallToolRequestParams,
+    task_creator: ServerTaskCreator,
+    runtime: Arc<dyn McpServer>,
+) -> std::result::Result<CreateTaskResult, CallToolError> {
+    match params.name.as_str() {
+        "refresh_index" => {
+            let tool: RefreshIndexTool = parse_tool_args(&params)?;
+            let task = task_creator
+                .create_task(rust_mcp_sdk::task_store::CreateTaskOptions {
+                    ttl: Some(300_000),
+                    poll_interval: Some(2_000),
+                    meta: None,
+                })
+                .await;
+            let task_id = task.task_id.clone();
+            let task_id_supervisor = task_id.clone();
+            let task_store = runtime.task_store().ok_or_else(|| {
+                CallToolError::from_message(
+                    "Internal error: task_store not configured".to_string(),
+                )
+            })?;
+            let task_store_supervisor = task_store.clone();
+            let handle = tokio::spawn(async move {
+                let result = handle_refresh_index(&state, tool).await;
+                match result {
+                    Ok(value) => {
+                        task_store
+                            .store_task_result(
+                                &task_id,
+                                rust_mcp_sdk::schema::TaskStatus::Completed,
+                                rust_mcp_sdk::schema::schema_utils::ResultFromServer::CallToolResult(
+                                    CallToolResult::text_content(vec![
+                                        serde_json::to_string_pretty(&value)
+                                            .unwrap_or_else(|_| "{\"ok\":true}".to_string())
+                                            .into(),
+                                    ]),
+                                ),
+                                None,
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        task_store
+                            .update_task_status(
+                                &task_id,
+                                rust_mcp_sdk::schema::TaskStatus::Failed,
+                                Some(e.to_string()),
+                                None,
+                            )
+                            .await;
+                    }
+                }
+            });
+            // Supervisor: if the spawned task panics, mark the MCP task as failed
+            // so clients don't poll indefinitely until TTL expiry.
+            tokio::spawn(async move {
+                if let Err(join_err) = handle.await {
+                    task_store_supervisor
+                        .update_task_status(
+                            &task_id_supervisor,
+                            rust_mcp_sdk::schema::TaskStatus::Failed,
+                            Some(format!("Internal error: {join_err}")),
+                            None,
+                        )
+                        .await;
+                }
+            });
+            Ok(CreateTaskResult { meta: None, task })
+        }
+        _ => Err(CallToolError::from_message(format!(
+            "Tool '{}' does not support task-augmented execution",
+            params.name
+        ))),
+    }
+}
+
 /// All tools advertised by both embedded and standalone handlers
 pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
     vec![
@@ -365,59 +464,7 @@ impl ServerHandler for CodeIntelligenceHandler {
         task_creator: ServerTaskCreator,
         runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<CreateTaskResult, CallToolError> {
-        match params.name.as_str() {
-            "refresh_index" => {
-                let tool: RefreshIndexTool = parse_tool_args(&params)?;
-                let task = task_creator
-                    .create_task(rust_mcp_sdk::task_store::CreateTaskOptions {
-                        ttl: Some(300_000),
-                        poll_interval: Some(2_000),
-                        meta: None,
-                    })
-                    .await;
-                let task_id = task.task_id.clone();
-                let state = self.state.clone();
-                let task_store = runtime
-                    .task_store()
-                    .expect("task_store must be configured when tasks capability is advertised");
-                tokio::spawn(async move {
-                    let result = handle_refresh_index(&state, tool).await;
-                    match result {
-                        Ok(value) => {
-                            task_store
-                                .store_task_result(
-                                    &task_id,
-                                    rust_mcp_sdk::schema::TaskStatus::Completed,
-                                    rust_mcp_sdk::schema::schema_utils::ResultFromServer::CallToolResult(
-                                        CallToolResult::text_content(vec![
-                                            serde_json::to_string_pretty(&value)
-                                                .unwrap_or_default()
-                                                .into(),
-                                        ]),
-                                    ),
-                                    None,
-                                )
-                                .await;
-                        }
-                        Err(e) => {
-                            task_store
-                                .update_task_status(
-                                    &task_id,
-                                    rust_mcp_sdk::schema::TaskStatus::Failed,
-                                    Some(e.to_string()),
-                                    None,
-                                )
-                                .await;
-                        }
-                    }
-                });
-                Ok(CreateTaskResult { meta: None, task })
-            }
-            _ => Err(CallToolError::from_message(format!(
-                "Tool '{}' does not support task-augmented execution",
-                params.name
-            ))),
-        }
+        dispatch_task_augmented_call(self.state.clone(), params, task_creator, runtime).await
     }
 
     async fn handle_call_tool_request(
@@ -435,26 +482,15 @@ mod tests {
 
     #[test]
     fn capabilities_advertise_task_support() {
-        use rust_mcp_sdk::schema::{
-            ServerCapabilities, ServerCapabilitiesTools, ServerTaskRequest, ServerTasks,
-            ServerTaskTools,
-        };
+        use rust_mcp_sdk::schema::{ServerCapabilities, ServerCapabilitiesTools};
         let caps = ServerCapabilities {
             tools: Some(ServerCapabilitiesTools { list_changed: None }),
-            tasks: Some(ServerTasks {
-                cancel: Some(serde_json::Map::new()),
-                list: Some(serde_json::Map::new()),
-                requests: Some(ServerTaskRequest {
-                    tools: Some(ServerTaskTools {
-                        call: Some(serde_json::Map::new()),
-                    }),
-                }),
-            }),
+            tasks: Some(task_capabilities()),
             ..Default::default()
         };
         assert!(
             caps.can_run_task_augmented_tools(),
-            "ServerCapabilities with tasks.requests.tools.call must advertise task-augmented tool support"
+            "task_capabilities() must produce a ServerTasks that advertises task-augmented tool support"
         );
     }
 
@@ -499,40 +535,25 @@ mod tests {
     }
 
     #[test]
-    fn task_augmented_error_message_includes_tool_name() {
-        // The `handle_task_augmented_tool_call` match arm for unknown tools returns
-        // an error message containing the tool name.  Verify the format is correct
-        // by checking the source code pattern (the actual dispatch requires a full
-        // MCP runtime + task store, which is not available in unit tests).
+    fn task_augmented_error_message_and_routing_in_shared_dispatch() {
+        // The shared `dispatch_task_augmented_call` function handles all task routing.
+        // Verify via source inspection that it matches refresh_index and rejects
+        // unsupported tools.  Full runtime testing requires a running MCP server
+        // and task store (integration test territory).
         let source = include_str!("mod.rs");
         assert!(
             source.contains("does not support task-augmented execution"),
-            "Unsupported tool error message must be present in source"
+            "Unsupported tool error message must be present in dispatch_task_augmented_call"
         );
-        // Also verify both handlers (embedded + standalone) have the implementation
-        let standalone_source = include_str!("standalone.rs");
-        assert!(
-            standalone_source.contains("does not support task-augmented execution"),
-            "StandaloneHandler must also implement task-augmented tool call rejection"
-        );
-    }
-
-    #[test]
-    fn task_augmented_only_supports_refresh_index() {
-        // Verify via source inspection that only "refresh_index" is matched
-        // in handle_task_augmented_tool_call.  Other tools fall through to the
-        // error arm.  Full runtime testing requires integration tests with a
-        // running MCP server and task store.
-        let source = include_str!("mod.rs");
         assert!(
             source.contains(r#""refresh_index" =>"#),
-            "handle_task_augmented_tool_call must match refresh_index"
+            "dispatch_task_augmented_call must match refresh_index"
         );
-        // Verify standalone has the same routing
+        // Verify standalone delegates to the shared function
         let standalone_source = include_str!("standalone.rs");
         assert!(
-            standalone_source.contains(r#""refresh_index" =>"#),
-            "StandaloneHandler task-augmented call must also match refresh_index"
+            standalone_source.contains("dispatch_task_augmented_call"),
+            "StandaloneHandler must delegate to shared dispatch_task_augmented_call"
         );
     }
 

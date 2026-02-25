@@ -7,7 +7,7 @@ use rust_mcp_sdk::{
     mcp_server::{server_runtime, McpServerOptions, ToMcpServerHandler},
     schema::{
         Implementation, InitializeResult, ProtocolVersion, ServerCapabilities,
-        ServerCapabilitiesTools, ServerTaskRequest, ServerTasks, ServerTaskTools,
+        ServerCapabilitiesTools,
     },
     McpServer, StdioTransport, TransportOptions,
 };
@@ -196,15 +196,7 @@ async fn run_standalone(
         },
         capabilities: ServerCapabilities {
             tools: Some(ServerCapabilitiesTools { list_changed: None }),
-            tasks: Some(ServerTasks {
-                cancel: Some(serde_json::Map::new()),
-                list: Some(serde_json::Map::new()),
-                requests: Some(ServerTaskRequest {
-                    tools: Some(ServerTaskTools {
-                        call: Some(serde_json::Map::new()),
-                    }),
-                }),
-            }),
+            tasks: Some(code_intelligence_mcp_server::server::task_capabilities()),
             ..Default::default()
         },
         protocol_version: ProtocolVersion::V2025_11_25.into(),
@@ -774,15 +766,7 @@ async fn run_embedded() -> SdkResult<()> {
         },
         capabilities: ServerCapabilities {
             tools: Some(ServerCapabilitiesTools { list_changed: None }),
-            tasks: Some(ServerTasks {
-                cancel: Some(serde_json::Map::new()),
-                list: Some(serde_json::Map::new()),
-                requests: Some(ServerTaskRequest {
-                    tools: Some(ServerTaskTools {
-                        call: Some(serde_json::Map::new()),
-                    }),
-                }),
-            }),
+            tasks: Some(code_intelligence_mcp_server::server::task_capabilities()),
             ..Default::default()
         },
         protocol_version: ProtocolVersion::V2025_11_25.into(),

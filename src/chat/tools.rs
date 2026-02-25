@@ -25,7 +25,7 @@ pub struct ToolCall {
 ///
 /// ```
 /// let defs = code_intelligence_mcp_server::chat::tools::tool_definitions();
-/// assert_eq!(defs.len(), 10);
+/// assert_eq!(defs.len(), 11);
 /// assert_eq!(defs[0]["function"]["name"], "search_code");
 /// ```
 pub fn tool_definitions() -> Vec<Value> {
@@ -327,6 +327,29 @@ pub fn tool_definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "get_context_bundle",
+                "description": "Get a pre-assembled context bundle for a task. Returns definitions, \
+                    call chains, tests, similar code, and affected code in one call.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "Description of the task to gather context for"
+                        },
+                        "sections": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Which sections to include: definitions, call_chain, tests, similar, affected. Default: all."
+                        }
+                    },
+                    "required": ["task"]
+                }
+            }
+        }),
     ]
 }
 
@@ -465,6 +488,29 @@ pub async fn execute_tool(state: &AppState, tool_call: &ToolCall) -> Result<Stri
             };
             handle_summarize_file(state, tool)?
         }
+        "get_context_bundle" => {
+            let tool = GetContextBundleTool {
+                task: args.get("task").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                max_tokens: args.get("max_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+                sections: args.get("sections").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                }),
+                seed_limit: args.get("seed_limit").and_then(|v| v.as_u64()).map(|v| v as u32),
+            };
+            let result = handle_get_context_bundle(state, tool).await?;
+            // Return the context field directly for chat (more compact)
+            let result_str = serde_json::to_string_pretty(&result)?;
+            if result_str.len() > 4000 {
+                return Ok(format!(
+                    "{}... [truncated, {} bytes total]",
+                    &result_str[..4000],
+                    result_str.len()
+                ));
+            }
+            return Ok(result_str);
+        }
         unknown => json!({"error": format!("Unknown tool: {}", unknown)}),
     };
 
@@ -488,9 +534,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_returns_ten_tools() {
+    fn tool_definitions_returns_eleven_tools() {
         let defs = tool_definitions();
-        assert_eq!(defs.len(), 10);
+        assert_eq!(defs.len(), 11);
     }
 
     #[test]
@@ -531,6 +577,7 @@ mod tests {
         assert!(names.contains(&"find_affected_code"));
         assert!(names.contains(&"trace_data_flow"));
         assert!(names.contains(&"summarize_file"));
+        assert!(names.contains(&"get_context_bundle"));
     }
 
     #[test]

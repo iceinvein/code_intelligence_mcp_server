@@ -3169,6 +3169,298 @@ fn format_predict_impact(
     lines.join("\n")
 }
 
+/// Handle get_context_bundle tool — assembles a multi-section context bundle for a task description.
+///
+/// Pipeline:
+/// 1. `search_code(task)` → seed symbols (top N, default 3)
+/// 2. For each seed: get_definition, get_call_hierarchy, find_tests_for_symbol,
+///    find_similar_code, find_affected_code
+/// 3. Assemble into unified markdown context with token budget
+pub async fn handle_get_context_bundle(
+    state: &AppState,
+    tool: GetContextBundleTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let start = std::time::Instant::now();
+    let seed_limit = tool.seed_limit.unwrap_or(3).max(1).min(10) as usize;
+    let max_tokens = tool.max_tokens;
+
+    // Determine which sections to include
+    let all_sections = vec![
+        "definitions".to_string(),
+        "call_chain".to_string(),
+        "tests".to_string(),
+        "similar".to_string(),
+        "affected".to_string(),
+    ];
+    let sections = tool.sections.unwrap_or(all_sections);
+    let include_definitions = sections.iter().any(|s| s == "definitions");
+    let include_call_chain = sections.iter().any(|s| s == "call_chain");
+    let include_tests = sections.iter().any(|s| s == "tests");
+    let include_similar = sections.iter().any(|s| s == "similar");
+    let include_affected = sections.iter().any(|s| s == "affected");
+
+    // Step 1: Search for seed symbols
+    let search_result = handle_search_code(
+        &state.retriever,
+        SearchCodeTool {
+            query: tool.task.clone(),
+            limit: Some(seed_limit as u32),
+            exported_only: None,
+        },
+    )
+    .await?;
+
+    // Extract seed symbol names from search results
+    let seed_symbols: Vec<String> = search_result
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| r.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Also extract file paths for disambiguation
+    let seed_files: Vec<Option<String>> = search_result
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|r| {
+                    r.get("file_path")
+                        .and_then(|f| f.as_str())
+                        .map(String::from)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Step 2: Gather sections for each seed symbol
+    let mut definitions_section = Vec::new();
+    let mut call_chain_section = Vec::new();
+    let mut tests_section = Vec::new();
+    let mut similar_section = Vec::new();
+    let mut affected_section = Vec::new();
+
+    for (i, symbol_name) in seed_symbols.iter().enumerate() {
+        let file_hint = seed_files.get(i).and_then(|f| f.clone());
+
+        // Definitions
+        if include_definitions {
+            let def_result = handle_get_definition(
+                state,
+                GetDefinitionTool {
+                    symbol_name: symbol_name.clone(),
+                    file: file_hint.clone(),
+                    limit: Some(1),
+                },
+            )
+            .await;
+            if let Ok(val) = def_result {
+                definitions_section.push(val);
+            }
+        }
+
+        // Call hierarchy
+        if include_call_chain {
+            let call_result = handle_get_call_hierarchy(
+                state,
+                GetCallHierarchyTool {
+                    symbol_name: symbol_name.clone(),
+                    direction: Some("both".to_string()),
+                    depth: Some(2),
+                    limit: Some(20),
+                },
+            );
+            if let Ok(val) = call_result {
+                call_chain_section.push(val);
+            }
+        }
+
+        // Tests
+        if include_tests {
+            let tests_result = handle_find_tests_for_symbol(
+                state,
+                FindTestsForSymbolTool {
+                    symbol_name: symbol_name.clone(),
+                    file_path: file_hint.clone(),
+                    limit: Some(5),
+                },
+            );
+            if let Ok(val) = tests_result {
+                tests_section.push(val);
+            }
+        }
+
+        // Similar code
+        if include_similar {
+            let similar_result = handle_find_similar_code(
+                state,
+                FindSimilarCodeTool {
+                    symbol_name: Some(symbol_name.clone()),
+                    code_snippet: None,
+                    file_path: file_hint.clone(),
+                    limit: Some(5),
+                    threshold: None,
+                },
+            )
+            .await;
+            if let Ok(val) = similar_result {
+                similar_section.push(val);
+            }
+        }
+
+        // Affected code
+        if include_affected {
+            let affected_result = handle_find_affected_code(
+                state,
+                FindAffectedCodeTool {
+                    symbol_name: symbol_name.clone(),
+                    file_path: file_hint,
+                    depth: Some(2),
+                    limit: Some(10),
+                    include_tests: Some(false),
+                    edge_types: None,
+                },
+            );
+            if let Ok(val) = affected_result {
+                affected_section.push(val);
+            }
+        }
+    }
+
+    // Step 3: Assemble context markdown string
+    let mut context = String::new();
+
+    if include_definitions && !definitions_section.is_empty() {
+        context.push_str("## Definitions\n\n");
+        for def in &definitions_section {
+            if let Some(ctx) = def.get("context").and_then(|v| v.as_str()) {
+                context.push_str(ctx);
+                context.push_str("\n\n");
+            }
+        }
+    }
+
+    if include_call_chain && !call_chain_section.is_empty() {
+        context.push_str("## Call Chain\n\n");
+        for call in &call_chain_section {
+            let sym = call
+                .get("symbol_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            context.push_str(&format!("### {}\n\n", sym));
+
+            if let Some(nodes) = call.get("nodes").and_then(|v| v.as_array()) {
+                for node in nodes.iter().take(10) {
+                    let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                    let file = node.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+                    context.push_str(&format!("- `{}` ({}) in `{}`\n", name, kind, file));
+                }
+            }
+            context.push('\n');
+        }
+    }
+
+    if include_tests && !tests_section.is_empty() {
+        context.push_str("## Tests\n\n");
+        for test in &tests_section {
+            if let Some(display) = test.get("display").and_then(|v| v.as_str()) {
+                context.push_str(display);
+                context.push_str("\n\n");
+            }
+        }
+    }
+
+    if include_similar && !similar_section.is_empty() {
+        context.push_str("## Similar Code\n\n");
+        for sim in &similar_section {
+            let query_desc = sim
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            context.push_str(&format!("### Similar to: {}\n\n", query_desc));
+
+            if let Some(results) = sim.get("results").and_then(|v| v.as_array()) {
+                for r in results.iter().take(5) {
+                    let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let file = r.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+                    let score = r
+                        .get("similarity")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    context.push_str(&format!(
+                        "- `{}` in `{}` (similarity: {:.2})\n",
+                        name, file, score
+                    ));
+                }
+            }
+            context.push('\n');
+        }
+    }
+
+    if include_affected && !affected_section.is_empty() {
+        context.push_str("## Affected Code\n\n");
+        for aff in &affected_section {
+            let sym = aff
+                .get("symbol_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            context.push_str(&format!("### Affected by changes to: {}\n\n", sym));
+
+            if let Some(affected) = aff.get("affected").and_then(|v| v.as_array()) {
+                for a in affected.iter().take(10) {
+                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+                    context.push_str(&format!("- `{}` in `{}`\n", name, file));
+                }
+            }
+            context.push('\n');
+        }
+    }
+
+    // Apply max_tokens truncation (estimate: 1 token ~= 4 chars)
+    if let Some(max_tok) = max_tokens {
+        let max_chars = (max_tok as usize) * 4;
+        if context.len() > max_chars {
+            context.truncate(max_chars);
+            context.push_str("\n\n... [truncated to token budget]");
+        }
+    }
+
+    let token_count = context.len() / 4;
+    let assembly_ms = start.elapsed().as_millis() as u64;
+
+    // Build sections object
+    let mut sections_obj = serde_json::Map::new();
+    if include_definitions {
+        sections_obj.insert("definitions".to_string(), json!(definitions_section));
+    }
+    if include_call_chain {
+        sections_obj.insert("call_chain".to_string(), json!(call_chain_section));
+    }
+    if include_tests {
+        sections_obj.insert("tests".to_string(), json!(tests_section));
+    }
+    if include_similar {
+        sections_obj.insert("similar".to_string(), json!(similar_section));
+    }
+    if include_affected {
+        sections_obj.insert("affected".to_string(), json!(affected_section));
+    }
+
+    Ok(json!({
+        "task": tool.task,
+        "seed_symbols": seed_symbols,
+        "sections": sections_obj,
+        "context": context,
+        "token_count": token_count,
+        "assembly_ms": assembly_ms,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

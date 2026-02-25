@@ -402,3 +402,19 @@ pub struct PredictImpactTool {
     /// Include test files in predictions (default: false)
     pub include_tests: Option<bool>,
 }
+
+#[macros::mcp_tool(
+    name = "get_context_bundle",
+    description = "Accept a task description and return a pre-assembled context bundle with relevant definitions, call chains, test coverage, and similar code in one call."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct GetContextBundleTool {
+    /// Description of the task to gather context for
+    pub task: String,
+    /// Maximum tokens for the context string (estimated as chars/4)
+    pub max_tokens: Option<u32>,
+    /// Which sections to include: definitions, call_chain, tests, similar, affected. Default: all.
+    pub sections: Option<Vec<String>>,
+    /// Number of seed symbols from initial search (default: 3)
+    pub seed_limit: Option<u32>,
+}

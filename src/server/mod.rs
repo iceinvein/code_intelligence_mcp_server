@@ -158,6 +158,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         FindStaleDescriptionsTool::tool(),
         FindUndocumentedSymbolsTool::tool(),
         PredictImpactTool::tool(),
+        GetContextBundleTool::tool(),
     ]
 }
 
@@ -467,6 +468,17 @@ pub async fn dispatch_tool_call(
                     .into(),
             ]))
         }
+        "get_context_bundle" => {
+            let tool: GetContextBundleTool = parse_tool_args(&params)?;
+            let result = handle_get_context_bundle(state, tool)
+                .await
+                .map_err(tool_internal_error)?;
+            Ok(CallToolResult::text_content(vec![
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_default()
+                    .into(),
+            ]))
+        }
         "search_across_repos" => {
             let mut result = CallToolResult::text_content(vec![
                 SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into(),
@@ -670,6 +682,55 @@ mod tests {
         assert!(
             source.contains("EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.into()"),
             "dispatch_tool_call must use the EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG constant"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_get_context_bundle() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"get_context_bundle"),
+            "all_tools() must include 'get_context_bundle', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn get_context_bundle_tool_serializes_correctly() {
+        use crate::tools::GetContextBundleTool;
+
+        // Full round-trip
+        let tool = GetContextBundleTool {
+            task: "fix auth bug".to_string(),
+            max_tokens: Some(4096),
+            sections: Some(vec!["definitions".to_string(), "tests".to_string()]),
+            seed_limit: Some(5),
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        let parsed: GetContextBundleTool = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.task, "fix auth bug");
+        assert_eq!(parsed.max_tokens, Some(4096));
+        assert_eq!(parsed.seed_limit, Some(5));
+        assert_eq!(
+            parsed.sections,
+            Some(vec!["definitions".to_string(), "tests".to_string()])
+        );
+
+        // Minimal (only required field)
+        let minimal: GetContextBundleTool =
+            serde_json::from_str(r#"{"task":"hello"}"#).unwrap();
+        assert_eq!(minimal.task, "hello");
+        assert!(minimal.max_tokens.is_none());
+        assert!(minimal.sections.is_none());
+        assert!(minimal.seed_limit.is_none());
+    }
+
+    #[test]
+    fn dispatch_routes_get_context_bundle() {
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains(r#""get_context_bundle" =>"#),
+            "dispatch_tool_call must route get_context_bundle"
         );
     }
 

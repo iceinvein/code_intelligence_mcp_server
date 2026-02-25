@@ -96,7 +96,7 @@ impl Reranker for CachedReranker {
         // Cache result
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if cache.entries.len() >= cache.max_size {
-            // Evict oldest entry (simple FIFO)
+            // Evict an arbitrary entry (HashMap has no ordering guarantee)
             if let Some(key) = cache.entries.keys().next().cloned() {
                 cache.entries.remove(&key);
             }

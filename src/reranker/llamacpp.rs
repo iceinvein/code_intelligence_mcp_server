@@ -273,8 +273,16 @@ impl Reranker for LlamaCppReranker {
             let mut scores = Vec::with_capacity(docs_to_score.len());
             for doc in &docs_to_score {
                 let text = format!("{}: {}", doc.name, doc.text);
-                let score = Self::score_pair(backend, &model, &query_owned, &text)
-                    .unwrap_or(FALLBACK_SCORE);
+                let score = match Self::score_pair(backend, &model, &query_owned, &text) {
+                    Ok(s) => {
+                        tracing::debug!(doc_name = %doc.name, score = s, "Reranker scored document");
+                        s
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, doc_name = %doc.name, "Reranker scoring failed, using fallback");
+                        FALLBACK_SCORE
+                    }
+                };
                 scores.push(score);
             }
             scores

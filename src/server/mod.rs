@@ -318,9 +318,11 @@ pub async fn dispatch_tool_call(
             ]))
         }
         "search_across_repos" => {
-            Ok(CallToolResult::text_content(vec![
+            let mut result = CallToolResult::text_content(vec![
                 SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into(),
-            ]))
+            ]);
+            result.is_error = Some(true);
+            Ok(result)
         }
         _ => Err(CallToolError::unknown_tool(params.name)),
     };

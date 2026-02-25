@@ -1150,6 +1150,7 @@ mod tests {
             "INDEX_NODE_MODULES",
             "REPO_ROOTS",
             // Reranker config (FNDN-03)
+            "RERANKER_ENABLED",
             "RERANKER_MODEL_PATH",
             "RERANKER_TOP_K",
             "RERANKER_CACHE_DIR",

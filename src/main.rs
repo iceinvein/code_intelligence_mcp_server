@@ -19,7 +19,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::config::Config;
-use code_intelligence_mcp_server::embeddings::{create_embedder, default_embedding_dim, DeferredEmbedder, Embedder};
+use code_intelligence_mcp_server::embeddings::{create_embedder, default_embedding_dim, DeferredEmbedder, Embedder, TruncatingEmbedder};
 
 /// Type alias for the (embedder, optional-deferred-slot) pair returned by embedder creation.
 type EmbedderWithSlot = (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>);
@@ -153,17 +153,23 @@ async fn run_standalone(
     let (embedder, standalone_deferred_slot): EmbedderWithSlot =
         match standalone_config.embeddings_backend {
             code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
-                let e = create_embedder(
+                let base = create_embedder(
                     standalone_config.embeddings_backend,
                     standalone_config.embeddings_model_dir.as_deref(),
                     standalone_config.embeddings_device,
                     standalone_config.hash_embedding_dim,
                 ).map_err(|e| McpSdkError::Internal { description: format!("Failed to create embedder: {}", e) })?;
+                let e: Box<dyn Embedder + Send> = if let Some(dim) = standalone_config.embedding_truncate_dim {
+                    Box::new(TruncatingEmbedder::new(base, dim).map_err(|e| McpSdkError::Internal { description: format!("Failed to create truncating embedder: {}", e) })?)
+                } else {
+                    base
+                };
                 info!("Created hash embedder with dimension: {}", e.dim());
                 (e, None)
             }
             code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
-                let dim = default_embedding_dim(standalone_config.embeddings_backend, standalone_config.hash_embedding_dim);
+                let full_dim = default_embedding_dim(standalone_config.embeddings_backend, standalone_config.hash_embedding_dim);
+                let dim = standalone_config.embedding_truncate_dim.unwrap_or(full_dim);
                 let deferred = DeferredEmbedder::new(dim);
                 let slot = deferred.inner_slot();
                 info!(dim, "Created deferred embedder — model will load in background");
@@ -241,15 +247,22 @@ async fn run_standalone(
         let model_dir = standalone_config.embeddings_model_dir.clone();
         let device = standalone_config.embeddings_device;
         let hash_dim = standalone_config.hash_embedding_dim;
+        let truncate_dim = standalone_config.embedding_truncate_dim;
         tokio::spawn(async move {
             info!("Starting background embedding model download/load (standalone)...");
             let result = tokio::task::spawn_blocking(move || {
-                create_embedder(
+                let base = create_embedder(
                     code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp,
                     model_dir.as_deref(),
                     device,
                     hash_dim,
-                )
+                )?;
+                let embedder: Box<dyn Embedder + Send> = if let Some(dim) = truncate_dim {
+                    Box::new(TruncatingEmbedder::new(base, dim)?)
+                } else {
+                    base
+                };
+                Ok::<_, anyhow::Error>(embedder)
             }).await;
             match result {
                 Ok(Ok(real_embedder)) => {
@@ -369,7 +382,7 @@ async fn run_embedded() -> SdkResult<()> {
     let (embedder, deferred_slot): EmbedderWithSlot =
         match config.embeddings_backend {
             code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
-                let e = create_embedder(
+                let base = create_embedder(
                     config.embeddings_backend,
                     config.embeddings_model_dir.as_deref(),
                     config.embeddings_device,
@@ -378,11 +391,19 @@ async fn run_embedded() -> SdkResult<()> {
                 .map_err(|err| McpSdkError::Internal {
                     description: format!("Failed to create embedder: {}", err),
                 })?;
+                let e: Box<dyn Embedder + Send> = if let Some(dim) = config.embedding_truncate_dim {
+                    Box::new(TruncatingEmbedder::new(base, dim).map_err(|err| McpSdkError::Internal {
+                        description: format!("Failed to create truncating embedder: {}", err),
+                    })?)
+                } else {
+                    base
+                };
                 info!("Created hash embedder with dimension: {}", e.dim());
                 (e, None)
             }
             code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
-                let dim = default_embedding_dim(config.embeddings_backend, config.hash_embedding_dim);
+                let full_dim = default_embedding_dim(config.embeddings_backend, config.hash_embedding_dim);
+                let dim = config.embedding_truncate_dim.unwrap_or(full_dim);
                 let deferred = DeferredEmbedder::new(dim);
                 let slot = deferred.inner_slot();
                 info!(dim, "Created deferred embedder — model will load in background");
@@ -723,15 +744,22 @@ async fn run_embedded() -> SdkResult<()> {
         let model_dir = config.embeddings_model_dir.clone();
         let device = config.embeddings_device;
         let hash_dim = config.hash_embedding_dim;
+        let truncate_dim = config.embedding_truncate_dim;
         tokio::spawn(async move {
             info!("Starting background embedding model download/load...");
             let result = tokio::task::spawn_blocking(move || {
-                create_embedder(
+                let base = create_embedder(
                     code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp,
                     model_dir.as_deref(),
                     device,
                     hash_dim,
-                )
+                )?;
+                let embedder: Box<dyn Embedder + Send> = if let Some(dim) = truncate_dim {
+                    Box::new(TruncatingEmbedder::new(base, dim)?)
+                } else {
+                    base
+                };
+                Ok::<_, anyhow::Error>(embedder)
             }).await;
             match result {
                 Ok(Ok(real_embedder)) => {

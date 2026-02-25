@@ -498,6 +498,7 @@ mod tests {
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
+            embedding_truncate_dim: None,
         };
 
         // Parse file
@@ -630,6 +631,7 @@ mod tests {
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
+            embedding_truncate_dim: None,
         };
 
         // Parse file (should be unchanged)
@@ -724,6 +726,7 @@ mod tests {
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
+            embedding_truncate_dim: None,
         };
 
         // Parse file (should be skipped)

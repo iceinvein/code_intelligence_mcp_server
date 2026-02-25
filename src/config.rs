@@ -117,6 +117,8 @@ pub struct StandaloneConfig {
     pub default_index_patterns: Vec<String>,
     pub default_exclude_patterns: Vec<String>,
     pub default_watch_mode: bool,
+    /// Matryoshka truncation dimension passed through to per-repo configs.
+    pub embedding_truncate_dim: Option<usize>,
 }
 
 impl Default for StandaloneConfig {
@@ -155,6 +157,7 @@ impl Default for StandaloneConfig {
                 "**/*.test.*".to_string(),
             ],
             default_watch_mode: true,
+            embedding_truncate_dim: None,
         }
     }
 }
@@ -244,6 +247,11 @@ impl StandaloneConfig {
                 config.hash_embedding_dim = dim;
             }
         }
+        if let Ok(val) = std::env::var("EMBEDDING_TRUNCATE_DIM") {
+            if let Ok(dim) = val.parse::<usize>() {
+                config.embedding_truncate_dim = Some(dim);
+            }
+        }
 
         // Apply CLI overrides (highest priority)
         if let Some(host) = cli_host {
@@ -331,6 +339,7 @@ impl StandaloneConfig {
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
+            embedding_truncate_dim: self.embedding_truncate_dim,
         }
     }
 }
@@ -422,6 +431,11 @@ pub struct Config {
     pub leader_election_enabled: bool,
     pub leader_heartbeat_interval_ms: u64,
     pub leader_ttl_seconds: u64,
+
+    // Matryoshka embedding truncation
+    /// Truncate full-dimension embeddings to this size after L2 re-normalization.
+    /// `None` means use the model's native dimension (default).
+    pub embedding_truncate_dim: Option<usize>,
 }
 
 impl Config {
@@ -809,6 +823,11 @@ impl Config {
             .transpose()?
             .unwrap_or(30);
 
+        // Matryoshka embedding truncation
+        let embedding_truncate_dim = std::env::var("EMBEDDING_TRUNCATE_DIM")
+            .ok()
+            .and_then(|s| s.parse().ok());
+
         Ok(Self {
             base_dir,
             db_path,
@@ -895,6 +914,9 @@ impl Config {
             leader_election_enabled,
             leader_heartbeat_interval_ms,
             leader_ttl_seconds,
+
+            // Matryoshka embedding truncation
+            embedding_truncate_dim,
         })
     }
 

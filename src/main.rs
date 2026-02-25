@@ -134,6 +134,7 @@ async fn main() -> SdkResult<()> {
             cli_args.port,
             cli_args.chat,
             cli_args.chat_port,
+            cli_args.discovery_port,
         ).await;
     }
 
@@ -149,8 +150,9 @@ async fn run_standalone(
     port: Option<u16>,
     chat_enabled: bool,
     chat_port: Option<u16>,
+    discovery_port: Option<u16>,
 ) -> SdkResult<()> {
-    let standalone_config = code_intelligence_mcp_server::config::StandaloneConfig::load(host, port)
+    let standalone_config = code_intelligence_mcp_server::config::StandaloneConfig::load(host, port, discovery_port)
         .map_err(|e| McpSdkError::Internal { description: e.to_string() })?;
 
     // Ensure data directories exist
@@ -282,6 +284,22 @@ async fn run_standalone(
                 }
             }
         });
+    }
+
+    // Spawn discovery endpoint (always in standalone mode)
+    {
+        let discovery_port = standalone_config
+            .discovery_port
+            .unwrap_or(bind_port.saturating_add(1));
+        if let Err(e) = code_intelligence_mcp_server::server::discovery::spawn_discovery_server(
+            &bind_host,
+            bind_port,
+            discovery_port,
+        )
+        .await
+        {
+            error!("Failed to start discovery server: {}. Discovery endpoint will not be available.", e);
+        }
     }
 
     // Spawn chat server if --chat flag is set

@@ -119,6 +119,9 @@ pub struct StandaloneConfig {
     pub default_watch_mode: bool,
     /// Matryoshka truncation dimension passed through to per-repo configs.
     pub embedding_truncate_dim: Option<usize>,
+    /// Port for the .well-known/mcp discovery endpoint.
+    /// Defaults to `port + 1` when not set.
+    pub discovery_port: Option<u16>,
 }
 
 impl Default for StandaloneConfig {
@@ -158,6 +161,7 @@ impl Default for StandaloneConfig {
             ],
             default_watch_mode: true,
             embedding_truncate_dim: None,
+            discovery_port: None,
         }
     }
 }
@@ -214,7 +218,7 @@ impl StandaloneConfig {
     /// Load standalone config from ~/.code-intelligence/server.toml with env var and CLI overrides
     ///
     /// Priority: CLI args > env vars > server.toml > defaults
-    pub fn load(cli_host: Option<&str>, cli_port: Option<u16>) -> Result<Self> {
+    pub fn load(cli_host: Option<&str>, cli_port: Option<u16>, cli_discovery_port: Option<u16>) -> Result<Self> {
         let mut config = Self::default();
 
         // Try to load from server.toml
@@ -257,12 +261,22 @@ impl StandaloneConfig {
             }
         }
 
+        // Apply env var for discovery port
+        if let Ok(val) = std::env::var("CIMCP_DISCOVERY_PORT") {
+            if let Ok(port) = val.parse::<u16>() {
+                config.discovery_port = Some(port);
+            }
+        }
+
         // Apply CLI overrides (highest priority)
         if let Some(host) = cli_host {
             config.host = host.to_string();
         }
         if let Some(port) = cli_port {
             config.port = port;
+        }
+        if let Some(dp) = cli_discovery_port {
+            config.discovery_port = Some(dp);
         }
 
         Ok(config)

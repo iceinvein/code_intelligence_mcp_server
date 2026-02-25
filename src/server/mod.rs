@@ -1,5 +1,6 @@
 //! MCP server setup and handler implementation
 
+pub mod discovery;
 pub mod standalone;
 
 use crate::handlers::*;

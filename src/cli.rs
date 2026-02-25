@@ -11,6 +11,7 @@ pub struct CliArgs {
     pub port: Option<u16>,
     pub chat: bool,
     pub chat_port: Option<u16>,
+    pub discovery_port: Option<u16>,
 }
 
 pub fn parse_args(args: &[String]) -> CliArgs {
@@ -22,6 +23,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         port: None,
         chat: false,
         chat_port: None,
+        discovery_port: None,
     };
 
     // Check for standalone mode via env var
@@ -72,6 +74,14 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     i += 1;
                 }
             }
+            "--discovery-port" => {
+                if i + 1 < args.len() {
+                    if let Ok(port) = args[i + 1].parse::<u16>() {
+                        cli.discovery_port = Some(port);
+                    }
+                    i += 1;
+                }
+            }
             _ => {} // Ignore unknown args
         }
         i += 1;
@@ -103,6 +113,7 @@ pub fn print_help() {
     println!("  --port PORT             Override listen port (standalone only)");
     println!("  --chat                  Enable chat UI (standalone only)");
     println!("  --chat-port PORT        Chat UI port (default: 3334)");
+    println!("  --discovery-port PORT   Discovery endpoint port (default: MCP port + 1)");
     println!();
     println!("Embedded mode (default):");
     println!("  Required env:");
@@ -214,6 +225,7 @@ mod tests {
         assert!(cli.port.is_none());
         assert!(!cli.chat);
         assert!(cli.chat_port.is_none());
+        assert!(cli.discovery_port.is_none());
     }
 
     #[test]
@@ -241,5 +253,17 @@ mod tests {
         ]);
         assert!(cli.chat);
         assert_eq!(cli.chat_port, Some(4000));
+    }
+
+    #[test]
+    fn parse_args_parses_discovery_port() {
+        let cli = parse_args(&[
+            "bin".to_string(),
+            "--standalone".to_string(),
+            "--discovery-port".to_string(),
+            "5000".to_string(),
+        ]);
+        assert!(cli.standalone);
+        assert_eq!(cli.discovery_port, Some(5000));
     }
 }

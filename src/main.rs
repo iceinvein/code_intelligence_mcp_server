@@ -40,6 +40,7 @@ use code_intelligence_mcp_server::leader::{LeaderElection, Role};
 use code_intelligence_mcp_server::metrics::{spawn_metrics_server, MetricsRegistry};
 use code_intelligence_mcp_server::path::Utf8Path;
 use code_intelligence_mcp_server::reranker::create_reranker;
+use code_intelligence_mcp_server::llm::create_llm_generator;
 use code_intelligence_mcp_server::retrieval::hyde::HypotheticalCodeGenerator;
 use code_intelligence_mcp_server::retrieval::Retriever;
 use code_intelligence_mcp_server::server::CodeIntelligenceHandler;
@@ -511,13 +512,52 @@ async fn run_embedded() -> SdkResult<()> {
         description: format!("Failed to create reranker: {}", err),
     })?;
 
-    // Create HyDE generator if enabled
+    // Create HyDE generator if enabled.
+    //
+    // For the "local" backend we load the same Qwen2.5-Coder-1.5B model used
+    // by the description worker. Model loading is blocking (~1-2 s on warm
+    // cache; downloads ~1.1 GB on first run), so we hand it off to
+    // `spawn_blocking`. A failure to load the model is non-fatal: the server
+    // starts normally and HyDE searches silently degrade to BM25+vector without
+    // the hypothetical-document step.
     let hyde_generator = if config.hyde_enabled {
-        Some(HypotheticalCodeGenerator::new(
+        let mut gen = HypotheticalCodeGenerator::new(
             config.hyde_llm_backend.clone(),
             config.hyde_api_key.clone(),
             config.hyde_max_tokens,
-        ))
+        );
+
+        if config.hyde_llm_backend == "local" {
+            let llm_config = config.clone();
+            match tokio::task::spawn_blocking(move || create_llm_generator(&llm_config)).await {
+                Ok(Ok(Some(llm))) => {
+                    tracing::info!("HyDE local LLM loaded — on-device hypothetical code generation enabled");
+                    gen = gen.with_local_llm(llm);
+                }
+                Ok(Ok(None)) => {
+                    tracing::warn!(
+                        "HyDE local LLM not available (LLM_ENABLED=false or model not found). \
+                         HyDE will fall back to BM25+vector search without hypothetical documents."
+                    );
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "Failed to create HyDE local LLM: {}. \
+                         HyDE will fall back to BM25+vector search without hypothetical documents.",
+                        e
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "HyDE local LLM loading task panicked: {}. \
+                         HyDE will fall back to BM25+vector search without hypothetical documents.",
+                        e
+                    );
+                }
+            }
+        }
+
+        Some(gen)
     } else {
         None
     };

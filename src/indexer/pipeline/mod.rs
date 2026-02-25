@@ -504,7 +504,7 @@ impl IndexPipeline {
 
         tokio::spawn(async move {
             if let Err(e) = describe::run_description_worker(
-                db, tantivy, llm, max_tokens, batch_size, cancel,
+                db, tantivy, llm, max_tokens, batch_size, cancel, false,
             ).await {
                 tracing::error!("Description worker failed: {}", e);
             }

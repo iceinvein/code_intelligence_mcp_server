@@ -29,6 +29,7 @@ pub async fn run_description_worker(
     max_tokens: u32,
     batch_commit_size: usize,
     cancel: CancellationToken,
+    one_shot: bool,
 ) -> Result<()> {
     /// How long to sleep between idle checks for new undescribed symbols.
     /// Handles the startup race (worker starts before indexing completes)
@@ -63,6 +64,10 @@ pub async fn run_description_worker(
         };
 
         if total == 0 {
+            if one_shot {
+                tracing::debug!("Description worker: one-shot mode, no pending symbols, exiting");
+                break;
+            }
             idle_cycles += 1;
             if idle_cycles >= MAX_IDLE_CYCLES {
                 tracing::info!("Description worker: idle for {}s, exiting", IDLE_POLL_INTERVAL.as_secs() * MAX_IDLE_CYCLES as u64);
@@ -277,7 +282,7 @@ mod tests {
         let llm: Arc<dyn LlmGenerator> = Arc::new(MockLlmGenerator);
         let cancel = CancellationToken::new();
 
-        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel)
+        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel, true)
             .await
             .unwrap();
 
@@ -302,7 +307,7 @@ mod tests {
         let llm: Arc<dyn LlmGenerator> = Arc::new(MockLlmGenerator);
         let cancel = CancellationToken::new();
 
-        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel)
+        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel, true)
             .await
             .unwrap();
 
@@ -320,7 +325,7 @@ mod tests {
         let llm: Arc<dyn LlmGenerator> = Arc::new(MockLlmGenerator);
         let cancel = CancellationToken::new();
 
-        run_description_worker(db, tantivy, llm, 30, 10, cancel)
+        run_description_worker(db, tantivy, llm, 30, 10, cancel, true)
             .await
             .unwrap();
         // Should complete without error
@@ -337,7 +342,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel(); // Cancel immediately
 
-        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel)
+        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel, true)
             .await
             .unwrap();
 
@@ -364,7 +369,7 @@ mod tests {
         let llm: Arc<dyn LlmGenerator> = Arc::new(FailingLlmGenerator);
         let cancel = CancellationToken::new();
 
-        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel)
+        run_description_worker(db.clone(), tantivy, llm, 30, 10, cancel, true)
             .await
             .unwrap();
 

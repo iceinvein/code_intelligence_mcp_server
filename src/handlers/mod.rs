@@ -3181,7 +3181,7 @@ pub async fn handle_get_context_bundle(
     tool: GetContextBundleTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let start = std::time::Instant::now();
-    let seed_limit = tool.seed_limit.unwrap_or(3).max(1).min(10) as usize;
+    let seed_limit = tool.seed_limit.unwrap_or(3).clamp(1, 10) as usize;
     let max_tokens = tool.max_tokens;
 
     // Determine which sections to include
@@ -3257,8 +3257,9 @@ pub async fn handle_get_context_bundle(
                 },
             )
             .await;
-            if let Ok(val) = def_result {
-                definitions_section.push(val);
+            match def_result {
+                Ok(val) => definitions_section.push(val),
+                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: definition lookup failed"),
             }
         }
 
@@ -3273,8 +3274,9 @@ pub async fn handle_get_context_bundle(
                     limit: Some(20),
                 },
             );
-            if let Ok(val) = call_result {
-                call_chain_section.push(val);
+            match call_result {
+                Ok(val) => call_chain_section.push(val),
+                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: call hierarchy failed"),
             }
         }
 
@@ -3288,8 +3290,9 @@ pub async fn handle_get_context_bundle(
                     limit: Some(5),
                 },
             );
-            if let Ok(val) = tests_result {
-                tests_section.push(val);
+            match tests_result {
+                Ok(val) => tests_section.push(val),
+                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: test lookup failed"),
             }
         }
 
@@ -3306,8 +3309,9 @@ pub async fn handle_get_context_bundle(
                 },
             )
             .await;
-            if let Ok(val) = similar_result {
-                similar_section.push(val);
+            match similar_result {
+                Ok(val) => similar_section.push(val),
+                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: similar code failed"),
             }
         }
 
@@ -3324,8 +3328,9 @@ pub async fn handle_get_context_bundle(
                     edge_types: None,
                 },
             );
-            if let Ok(val) = affected_result {
-                affected_section.push(val);
+            match affected_result {
+                Ok(val) => affected_section.push(val),
+                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: affected code failed"),
             }
         }
     }
@@ -3425,7 +3430,14 @@ pub async fn handle_get_context_bundle(
     if let Some(max_tok) = max_tokens {
         let max_chars = (max_tok as usize) * 4;
         if context.len() > max_chars {
-            context.truncate(max_chars);
+            // Find a safe UTF-8 char boundary at or before max_chars
+            let safe_boundary = context
+                .char_indices()
+                .take_while(|(i, _)| *i <= max_chars)
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            context.truncate(safe_boundary);
             context.push_str("\n\n... [truncated to token budget]");
         }
     }

@@ -2411,8 +2411,16 @@ fn extract_context_snippet(context: &str, name: &str, file_path: &str) -> String
     // that mention the symbol name.
     let mut in_file_block = false;
     for (i, line) in lines.iter().enumerate() {
+        // Detect file section headers (e.g., "--- src/foo.rs ---" or "// file: src/foo.rs")
+        // Reset in_file_block when we enter a different file's section.
         if line.contains(file_stem) {
             in_file_block = true;
+        } else if (line.starts_with("---") || line.starts_with("// file:") || line.starts_with("```"))
+            && !line.trim().is_empty()
+            && line.contains('/')
+            && !line.contains(file_stem)
+        {
+            in_file_block = false;
         }
         if in_file_block && line.contains(name) {
             let end = (i + 3).min(lines.len());

@@ -15,6 +15,10 @@ use rust_mcp_sdk::{
 };
 use std::sync::Arc;
 
+/// Error message returned when `search_across_repos` is called in embedded (stdio) mode.
+pub const SEARCH_ACROSS_REPOS_EMBEDDED_MSG: &str =
+    "search_across_repos is only available in standalone mode. Start the server with --standalone to use cross-repo search.";
+
 /// All tools advertised by both embedded and standalone handlers
 pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
     vec![
@@ -315,7 +319,7 @@ pub async fn dispatch_tool_call(
         }
         "search_across_repos" => {
             Ok(CallToolResult::text_content(vec![
-                "search_across_repos is only available in standalone mode. Start the server with --standalone to use cross-repo search.".into(),
+                SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into(),
             ]))
         }
         _ => Err(CallToolError::unknown_tool(params.name)),
@@ -407,16 +411,25 @@ mod tests {
 
     #[test]
     fn embedded_mode_search_across_repos_returns_helpful_message() {
-        // The dispatch_tool_call match arm for "search_across_repos" returns
-        // a text message rather than an unknown-tool error.
-        // We exercise the match arm by constructing a bare CallToolResult text pattern
-        // to ensure the message text is correct at the source level.
-        //
-        // Full integration via dispatch_tool_call requires an AppState, so we
-        // just assert that the tool name is registered and the stub message
-        // is present as a literal in the source (compile-time guarantee).
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"search_across_repos"));
+        // Verify that the constant message is informative and mentions
+        // both the tool name and the --standalone flag so users know how
+        // to enable cross-repo search.
+        assert!(
+            SEARCH_ACROSS_REPOS_EMBEDDED_MSG.contains("standalone"),
+            "Message must mention standalone mode"
+        );
+        assert!(
+            SEARCH_ACROSS_REPOS_EMBEDDED_MSG.contains("search_across_repos"),
+            "Message must mention the tool name"
+        );
+
+        // Verify that `dispatch_tool_call` uses this constant by checking
+        // the source code references it (compile-time guarantee via the
+        // constant being used in the match arm above).
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains("SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into()"),
+            "dispatch_tool_call must use the SEARCH_ACROSS_REPOS_EMBEDDED_MSG constant"
+        );
     }
 }

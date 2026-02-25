@@ -225,6 +225,7 @@ mod tests {
             llm_model_dir: None,
             llm_max_tokens: 30,
             llm_batch_commit: 10,
+            sampling_descriptions_enabled: true,
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,

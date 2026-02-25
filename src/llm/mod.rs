@@ -12,6 +12,7 @@ use crate::path::Utf8Path;
 use llama_cpp_2::llama_backend::LlamaBackend;
 
 pub mod llamacpp;
+pub mod sampling;
 
 /// Process-wide singleton for the llama.cpp backend.
 ///

@@ -504,8 +504,13 @@ impl ServerHandler for CodeIntelligenceHandler {
     async fn handle_call_tool_request(
         &self,
         params: CallToolRequestParams,
-        _runtime: Arc<dyn McpServer>,
+        runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<CallToolResult, CallToolError> {
+        // Store the MCP runtime on first tool call so the description worker
+        // can use it for sampling-based description generation.
+        self.state
+            .mcp_runtime
+            .get_or_init(|| runtime.clone());
         dispatch_tool_call(&self.state, params).await
     }
 }

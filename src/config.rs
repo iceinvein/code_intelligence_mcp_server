@@ -396,6 +396,7 @@ impl StandaloneConfig {
             llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
             llm_max_tokens: 30,
             llm_batch_commit: 10,
+            sampling_descriptions_enabled: true,
             // Standalone mode has SessionManager for coordination — no need for flock
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
@@ -488,6 +489,11 @@ pub struct Config {
     pub llm_model_dir: Option<Utf8PathBuf>,
     pub llm_max_tokens: u32,
     pub llm_batch_commit: usize,
+
+    // MCP sampling-based descriptions
+    /// When true, attempt to use the MCP client's LLM (via sampling/createMessage)
+    /// for symbol descriptions before falling back to the local 1.5B model.
+    pub sampling_descriptions_enabled: bool,
 
     // Leader election config
     pub leader_election_enabled: bool,
@@ -873,6 +879,13 @@ impl Config {
             .transpose()?
             .unwrap_or(10);
 
+        // MCP sampling-based descriptions (uses client's LLM via sampling/createMessage)
+        let sampling_descriptions_enabled = optional_env("SAMPLING_DESCRIPTIONS_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(true); // Default enabled — falls back to local if unavailable
+
         // Leader election config
         let leader_election_enabled = optional_env("LEADER_ELECTION")
             .as_deref()
@@ -987,6 +1000,9 @@ impl Config {
             llm_model_dir,
             llm_max_tokens,
             llm_batch_commit,
+
+            // MCP sampling-based descriptions
+            sampling_descriptions_enabled,
 
             // Leader election
             leader_election_enabled,
@@ -1248,6 +1264,7 @@ mod tests {
             "LLM_MODEL_DIR",
             "LLM_MAX_TOKENS",
             "LLM_BATCH_COMMIT",
+            "SAMPLING_DESCRIPTIONS_ENABLED",
             // Leader election config
             "LEADER_ELECTION",
             "LEADER_HEARTBEAT_MS",
@@ -1440,6 +1457,7 @@ mod tests {
         assert!(cfg.llm_model_dir.is_some());
         assert_eq!(cfg.llm_max_tokens, 30);
         assert_eq!(cfg.llm_batch_commit, 10);
+        assert!(cfg.sampling_descriptions_enabled);
     }
 
     #[test]

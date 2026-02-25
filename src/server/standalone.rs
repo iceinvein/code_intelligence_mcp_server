@@ -187,6 +187,11 @@ impl ServerHandler for StandaloneHandler {
         }
 
         let state = self.resolve_state(&runtime).await?;
+        // Store the MCP runtime on first tool call so the description worker
+        // can use it for sampling-based description generation.
+        state
+            .mcp_runtime
+            .get_or_init(|| runtime.clone());
         dispatch_tool_call(&state, params).await
     }
 }

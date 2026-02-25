@@ -268,6 +268,7 @@ mod tests {
             llm_model_dir: None,
             llm_max_tokens: 30,
             llm_batch_commit: 10,
+            sampling_descriptions_enabled: true,
             // Leader election config
             leader_election_enabled: false,
             leader_heartbeat_interval_ms: 10_000,
@@ -318,10 +319,19 @@ export function beta() { return alpha() }
 
         indexer.index_all().await.unwrap();
 
+        // Create in-memory SQLite for tests
+        let sqlite = Arc::new(
+            code_intelligence_mcp_server::storage::sqlite::SqliteStore::open_in_memory().unwrap(),
+        );
+
         Arc::new(AppState {
             config,
             indexer,
             retriever,
+            sqlite,
+            is_leader: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+            mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
         })
     }
 

@@ -620,6 +620,7 @@ async fn run_embedded() -> SdkResult<()> {
         sqlite: Arc::new(sqlite),
         is_leader: is_leader_flag.clone(),
         role_rx,
+        mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
     });
 
     // Trigger automatic re-index if vector dimension migration occurred
@@ -691,8 +692,10 @@ async fn run_embedded() -> SdkResult<()> {
         if config.llm_enabled {
             let llm_config = config.clone();
             let llm_indexer = state.indexer.clone();
+            let sampling_enabled = config.sampling_descriptions_enabled;
+            let mcp_runtime_cell = state.mcp_runtime.clone();
             tokio::spawn(async move {
-                let generator = match tokio::task::spawn_blocking(move || {
+                let local_generator = match tokio::task::spawn_blocking(move || {
                     code_intelligence_mcp_server::llm::create_llm_generator(&llm_config)
                 }).await {
                     Ok(Ok(Some(llm))) => llm,
@@ -709,6 +712,31 @@ async fn run_embedded() -> SdkResult<()> {
                         return;
                     }
                 };
+
+                // Wrap in FallbackLlmGenerator if sampling is enabled.
+                // The mcp_runtime may not be set yet (it's populated on the
+                // first tool call from the client). FallbackLlmGenerator
+                // checks the OnceCell on each generate() call.
+                let generator: std::sync::Arc<dyn code_intelligence_mcp_server::llm::LlmGenerator> = if sampling_enabled {
+                    let runtime = mcp_runtime_cell.get().cloned();
+                    if runtime.is_some() {
+                        tracing::info!("MCP sampling available, using FallbackLlmGenerator");
+                    } else {
+                        tracing::info!(
+                            "MCP runtime not yet available, FallbackLlmGenerator will use local until first tool call"
+                        );
+                    }
+                    std::sync::Arc::new(
+                        code_intelligence_mcp_server::llm::sampling::FallbackLlmGenerator::new(
+                            runtime,
+                            local_generator,
+                        ),
+                    )
+                } else {
+                    tracing::info!("MCP sampling descriptions disabled, using local LLM only");
+                    local_generator
+                };
+
                 let desc_cancel = tokio_util::sync::CancellationToken::new();
                 let _desc_handle = llm_indexer.spawn_description_worker(generator, desc_cancel);
                 tracing::info!("LLM description worker spawned");

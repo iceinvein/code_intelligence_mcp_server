@@ -145,6 +145,7 @@ async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp
         sqlite,
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+        mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
     }
 }
 
@@ -415,6 +416,7 @@ mod get_module_summary_tests {
             sqlite,
             is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+        mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
         };
 
         (app_state, base_dir)
@@ -863,6 +865,7 @@ fn test_config(base_dir: &Path) -> Config {
         llm_model_dir: None,
         llm_max_tokens: 30,
         llm_batch_commit: 10,
+        sampling_descriptions_enabled: true,
         leader_election_enabled: false,
         leader_heartbeat_interval_ms: 10_000,
         leader_ttl_seconds: 30,
@@ -1039,6 +1042,7 @@ async fn test_find_similar_code_by_symbol_name() {
         sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+        mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
     };
 
     // The handler might fail if embedding isn't found, so check both success and error cases
@@ -1119,6 +1123,7 @@ async fn test_find_similar_code_by_code_snippet() {
         sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+        mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();
@@ -1179,6 +1184,7 @@ async fn test_find_similar_code_not_found() {
         sqlite: Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap()),
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+        mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();

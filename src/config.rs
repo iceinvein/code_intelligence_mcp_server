@@ -134,7 +134,18 @@ impl Default for StandaloneConfig {
             default_index_patterns: vec![
                 "**/*.ts".to_string(),
                 "**/*.tsx".to_string(),
+                "**/*.js".to_string(),
+                "**/*.jsx".to_string(),
                 "**/*.rs".to_string(),
+                "**/*.py".to_string(),
+                "**/*.go".to_string(),
+                "**/*.java".to_string(),
+                "**/*.c".to_string(),
+                "**/*.h".to_string(),
+                "**/*.cpp".to_string(),
+                "**/*.cc".to_string(),
+                "**/*.cxx".to_string(),
+                "**/*.hpp".to_string(),
             ],
             default_exclude_patterns: vec![
                 "**/node_modules/**".to_string(),
@@ -538,7 +549,22 @@ impl Config {
 
         let index_patterns = parse_csv_or_default(
             optional_env("INDEX_PATTERNS").as_deref(),
-            &["**/*.ts", "**/*.tsx", "**/*.rs"],
+            &[
+                "**/*.ts",
+                "**/*.tsx",
+                "**/*.js",
+                "**/*.jsx",
+                "**/*.rs",
+                "**/*.py",
+                "**/*.go",
+                "**/*.java",
+                "**/*.c",
+                "**/*.h",
+                "**/*.cpp",
+                "**/*.cc",
+                "**/*.cxx",
+                "**/*.hpp",
+            ],
         );
 
         let exclude_patterns = parse_csv_or_default(
@@ -1381,5 +1407,61 @@ warm_ttl_seconds = 600
         assert_eq!(cfg.exclude_patterns, standalone.default_exclude_patterns);
         assert_eq!(cfg.watch_mode, standalone.default_watch_mode);
         assert_eq!(cfg.hash_embedding_dim, standalone.hash_embedding_dim);
+    }
+
+    /// Verify that the default INDEX_PATTERNS cover every extension that
+    /// `language_id_for_path` (in `src/indexer/parser.rs`) recognises.
+    ///
+    /// Supported extensions and the glob pattern that should cover them:
+    ///   .ts   → **/*.ts          .tsx  → **/*.tsx
+    ///   .js   → **/*.js          .jsx  → **/*.jsx
+    ///   .rs   → **/*.rs
+    ///   .py   → **/*.py
+    ///   .go   → **/*.go
+    ///   .java → **/*.java
+    ///   .c    → **/*.c           .h    → **/*.h
+    ///   .cpp  → **/*.cpp         .cc   → **/*.cc
+    ///   .cxx  → **/*.cxx         .hpp  → **/*.hpp
+    #[test]
+    fn default_index_patterns_cover_all_supported_languages() {
+        // All extensions that `language_id_for_path` handles
+        let required_extensions = [
+            "ts", "tsx", "js", "jsx", "rs", "py", "go", "java", "c", "h",
+            "cpp", "cc", "cxx", "hpp",
+        ];
+
+        // ── Config::from_env defaults ────────────────────────────────────────
+        let env_defaults =
+            parse_csv_or_default(None, &["**/*.ts", "**/*.tsx", "**/*.rs"]);
+        // (We read the actual default by calling parse_csv_or_default with None
+        //  so this test stays in sync with the real code path.)
+        let from_env_defaults: Vec<String> = {
+            let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            clear_env();
+            // Minimal required env — Config::from_env needs BASE_DIR
+            std::env::set_var("BASE_DIR", "/tmp");
+            let cfg = Config::from_env().expect("from_env must succeed");
+            cfg.index_patterns
+        };
+        for ext in &required_extensions {
+            let pattern = format!("**/*.{ext}");
+            assert!(
+                from_env_defaults.contains(&pattern),
+                "Config::from_env default index_patterns is missing pattern '{pattern}' \
+                 (extension .{ext} is supported by language_id_for_path but not indexed by default)"
+            );
+        }
+        drop(env_defaults); // silence unused-variable warning
+
+        // ── StandaloneConfig::default patterns ──────────────────────────────
+        let standalone_defaults = StandaloneConfig::default().default_index_patterns;
+        for ext in &required_extensions {
+            let pattern = format!("**/*.{ext}");
+            assert!(
+                standalone_defaults.contains(&pattern),
+                "StandaloneConfig::default().default_index_patterns is missing pattern '{pattern}' \
+                 (extension .{ext} is supported by language_id_for_path but not indexed by default)"
+            );
+        }
     }
 }

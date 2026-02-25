@@ -7,7 +7,7 @@ use rust_mcp_sdk::{
     mcp_server::{server_runtime, McpServerOptions, ToMcpServerHandler},
     schema::{
         Implementation, InitializeResult, ProtocolVersion, ServerCapabilities,
-        ServerCapabilitiesTools,
+        ServerCapabilitiesTools, ServerTaskRequest, ServerTasks, ServerTaskTools,
     },
     McpServer, StdioTransport, TransportOptions,
 };
@@ -196,6 +196,15 @@ async fn run_standalone(
         },
         capabilities: ServerCapabilities {
             tools: Some(ServerCapabilitiesTools { list_changed: None }),
+            tasks: Some(ServerTasks {
+                cancel: Some(serde_json::Map::new()),
+                list: Some(serde_json::Map::new()),
+                requests: Some(ServerTaskRequest {
+                    tools: Some(ServerTaskTools {
+                        call: Some(serde_json::Map::new()),
+                    }),
+                }),
+            }),
             ..Default::default()
         },
         protocol_version: ProtocolVersion::V2025_11_25.into(),
@@ -224,6 +233,13 @@ async fn run_standalone(
         HyperServerOptions {
             host: bind_host.clone(),
             port: bind_port,
+            task_store: Some(Arc::new(
+                rust_mcp_sdk::task_store::InMemoryTaskStore::<
+                    rust_mcp_sdk::schema::schema_utils::ClientJsonrpcRequest,
+                    rust_mcp_sdk::schema::schema_utils::ResultFromServer,
+                >::new(None),
+            )),
+            client_task_store: None,
             ..Default::default()
         },
     );
@@ -758,6 +774,15 @@ async fn run_embedded() -> SdkResult<()> {
         },
         capabilities: ServerCapabilities {
             tools: Some(ServerCapabilitiesTools { list_changed: None }),
+            tasks: Some(ServerTasks {
+                cancel: Some(serde_json::Map::new()),
+                list: Some(serde_json::Map::new()),
+                requests: Some(ServerTaskRequest {
+                    tools: Some(ServerTaskTools {
+                        call: Some(serde_json::Map::new()),
+                    }),
+                }),
+            }),
             ..Default::default()
         },
         protocol_version: ProtocolVersion::V2025_11_25.into(),
@@ -772,7 +797,12 @@ async fn run_embedded() -> SdkResult<()> {
         server_details,
         transport,
         handler,
-        task_store: None,
+        task_store: Some(Arc::new(
+            rust_mcp_sdk::task_store::InMemoryTaskStore::<
+                rust_mcp_sdk::schema::schema_utils::ClientJsonrpcRequest,
+                rust_mcp_sdk::schema::schema_utils::ResultFromServer,
+            >::new(None),
+        )),
         client_task_store: None,
     });
 

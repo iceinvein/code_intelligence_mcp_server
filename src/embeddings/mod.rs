@@ -32,10 +32,21 @@ pub trait Embedder {
 const JINA_CODE_DIM: usize = 1536;
 
 /// Returns the embedding dimension for a given backend without loading the model.
-pub fn default_embedding_dim(backend: crate::config::EmbeddingsBackend, hash_dim: usize) -> usize {
-    match backend {
+///
+/// If `truncate_dim` is `Some(d)`, the returned dimension is capped at `d`
+/// (Matryoshka truncation).
+pub fn default_embedding_dim(
+    backend: crate::config::EmbeddingsBackend,
+    hash_dim: usize,
+    truncate_dim: Option<usize>,
+) -> usize {
+    let full = match backend {
         crate::config::EmbeddingsBackend::LlamaCpp => JINA_CODE_DIM,
         crate::config::EmbeddingsBackend::Hash => hash_dim,
+    };
+    match truncate_dim {
+        Some(d) if d < full => d,
+        _ => full,
     }
 }
 

@@ -1,9 +1,10 @@
 //! Standalone mode MCP handler — routes sessions to per-repo AppState
 
-use crate::handlers::AppState;
+use crate::handlers::{handle_search_across_repos, parse_tool_args, tool_internal_error, AppState};
 use crate::path::Utf8PathBuf;
 use crate::server::{all_tools, dispatch_tool_call};
 use crate::session::SessionManager;
+use crate::tools::SearchAcrossReposTool;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rust_mcp_sdk::{
@@ -158,6 +159,19 @@ impl ServerHandler for StandaloneHandler {
         params: CallToolRequestParams,
         runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<CallToolResult, CallToolError> {
+        // Cross-repo search bypasses single-repo resolution — handle before resolve_state()
+        if params.name == "search_across_repos" {
+            let tool: SearchAcrossReposTool = parse_tool_args(&params)?;
+            let result = handle_search_across_repos(&self.session_manager, tool)
+                .await
+                .map_err(tool_internal_error)?;
+            return Ok(CallToolResult::text_content(vec![
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| "{}".to_string())
+                    .into(),
+            ]));
+        }
+
         let state = self.resolve_state(&runtime).await?;
         dispatch_tool_call(&state, params).await
     }

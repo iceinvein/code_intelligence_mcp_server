@@ -315,3 +315,16 @@ pub struct FindDeadCodeTool {
     /// Maximum number of results (default 50)
     pub limit: Option<u32>,
 }
+
+#[macros::mcp_tool(
+    name = "search_across_repos",
+    description = "Search across all indexed repositories. Returns results merged by score. Standalone mode only."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct SearchAcrossReposTool {
+    /// Search query (natural language or code pattern)
+    pub query: String,
+    /// Maximum total results to return (default: 10)
+    #[serde(default)]
+    pub limit: Option<u32>,
+}

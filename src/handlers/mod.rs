@@ -2285,6 +2285,188 @@ fn format_dead_code(
     out
 }
 
+/// Handle search_across_repos tool — fans the query to all indexed repositories
+/// in parallel and merges results by score descending.
+///
+/// Only meaningful in standalone mode where a `SessionManager` holds multiple
+/// per-repo `AppState` instances.  The embedded-mode stub in
+/// `dispatch_tool_call` returns an informational error before this is ever
+/// reached from stdio transport.
+pub async fn handle_search_across_repos(
+    session_manager: &crate::session::SessionManager,
+    tool: SearchAcrossReposTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(10).max(1) as usize;
+
+    // Gather all repos currently registered
+    let entries = session_manager.registry.list_all()?;
+    let total_repos = entries.len();
+
+    if total_repos == 0 {
+        return Ok(json!({
+            "query": tool.query,
+            "total_repos_searched": 0,
+            "results": [],
+            "display": format!("## Cross-Repo Search: \"{}\"\n\nNo repositories are indexed yet.", tool.query),
+        }));
+    }
+
+    // Initialise (or retrieve cached) AppState for every registered repo, then
+    // search them all in parallel.
+    let query = tool.query.clone();
+    let mut search_futures = Vec::with_capacity(total_repos);
+
+    for entry in &entries {
+        let repo_path = crate::path::Utf8PathBuf::from(entry.path.clone());
+        let entry_path = entry.path.clone();
+        let query_clone = query.clone();
+        let sm = session_manager;
+        search_futures.push(async move {
+            let state = sm.get_or_create_repo(&repo_path).await?;
+            let result = state.retriever.search(&query_clone, limit, false).await?;
+            Ok::<(String, crate::retrieval::SearchResponse), anyhow::Error>((
+                entry_path,
+                result.response,
+            ))
+        });
+    }
+
+    let outcomes = futures::future::join_all(search_futures).await;
+
+    // Collect hits from all repos; tag each with its repo path
+    #[derive(serde::Serialize)]
+    struct CrossRepoHit {
+        repo: String,
+        name: String,
+        kind: String,
+        file_path: String,
+        score: f32,
+        snippet: String,
+    }
+
+    let mut all_hits: Vec<CrossRepoHit> = Vec::new();
+    let mut repos_searched: usize = 0;
+
+    for outcome in outcomes {
+        match outcome {
+            Ok((repo_path, response)) => {
+                repos_searched += 1;
+                for hit in response.hits {
+                    // Extract a brief snippet from the context block for this hit
+                    let snippet =
+                        extract_context_snippet(&response.context, &hit.name, &hit.file_path);
+                    all_hits.push(CrossRepoHit {
+                        repo: repo_path.clone(),
+                        name: hit.name,
+                        kind: hit.kind,
+                        file_path: hit.file_path,
+                        score: hit.score,
+                        snippet,
+                    });
+                }
+            }
+            Err(err) => {
+                // Log the failure but continue — partial results are better than none
+                tracing::warn!(
+                    error = %err,
+                    "search_across_repos: skipping repo due to search error"
+                );
+            }
+        }
+    }
+
+    // Sort by score descending, then take the top `limit` overall
+    all_hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    all_hits.truncate(limit);
+
+    // Build the human-readable display string
+    let display = format_cross_repo_results(&tool.query, repos_searched, &all_hits);
+
+    Ok(json!({
+        "query": tool.query,
+        "total_repos_searched": repos_searched,
+        "results": all_hits,
+        "display": display,
+    }))
+}
+
+/// Extract a short snippet for a named symbol from the assembled context string.
+///
+/// The context string produced by `ContextAssembler` uses fenced code blocks;
+/// we look for a line that mentions both the symbol name and file path, then
+/// grab the surrounding few lines.  Falls back to an empty string when nothing
+/// useful is found.
+fn extract_context_snippet(context: &str, name: &str, file_path: &str) -> String {
+    let lines: Vec<&str> = context.lines().collect();
+    let file_stem = std::path::Path::new(file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(file_path);
+
+    // Walk lines looking for the file marker, then capture up to 3 lines after
+    // that mention the symbol name.
+    let mut in_file_block = false;
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains(file_stem) {
+            in_file_block = true;
+        }
+        if in_file_block && line.contains(name) {
+            let end = (i + 3).min(lines.len());
+            let snip: String = lines[i..end]
+                .iter()
+                .map(|l| l.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if snip.len() > 200 {
+                return format!("{}…", &snip[..200]);
+            }
+            return snip;
+        }
+    }
+    String::new()
+}
+
+/// Format cross-repo search results as a Markdown string.
+fn format_cross_repo_results(query: &str, repos_searched: usize, hits: &[impl serde::Serialize]) -> String {
+    let hits_json: Vec<serde_json::Value> = hits
+        .iter()
+        .filter_map(|h| serde_json::to_value(h).ok())
+        .collect();
+
+    let mut out = format!(
+        "## Cross-Repo Search: \"{query}\"\n\nSearched {repos_searched} repos, found {} results\n\n",
+        hits_json.len()
+    );
+
+    for (i, hit) in hits_json.iter().enumerate() {
+        let repo = hit["repo"].as_str().unwrap_or("?");
+        let name = hit["name"].as_str().unwrap_or("?");
+        let kind = hit["kind"].as_str().unwrap_or("?");
+        let file = hit["file_path"].as_str().unwrap_or("?");
+        let score = hit["score"].as_f64().unwrap_or(0.0);
+        let snippet = hit["snippet"].as_str().unwrap_or("").trim();
+
+        let repo_label = std::path::Path::new(repo)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(repo);
+
+        out.push_str(&format!(
+            "{}. **{name}** `{kind}` — `{file}` [repo: {repo_label}] *(score: {score:.2})*\n",
+            i + 1
+        ));
+        if !snippet.is_empty() {
+            out.push_str(&format!("   > {snippet}\n"));
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

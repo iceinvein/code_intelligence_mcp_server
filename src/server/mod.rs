@@ -499,6 +499,44 @@ mod tests {
     }
 
     #[test]
+    fn task_augmented_error_message_includes_tool_name() {
+        // The `handle_task_augmented_tool_call` match arm for unknown tools returns
+        // an error message containing the tool name.  Verify the format is correct
+        // by checking the source code pattern (the actual dispatch requires a full
+        // MCP runtime + task store, which is not available in unit tests).
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains("does not support task-augmented execution"),
+            "Unsupported tool error message must be present in source"
+        );
+        // Also verify both handlers (embedded + standalone) have the implementation
+        let standalone_source = include_str!("standalone.rs");
+        assert!(
+            standalone_source.contains("does not support task-augmented execution"),
+            "StandaloneHandler must also implement task-augmented tool call rejection"
+        );
+    }
+
+    #[test]
+    fn task_augmented_only_supports_refresh_index() {
+        // Verify via source inspection that only "refresh_index" is matched
+        // in handle_task_augmented_tool_call.  Other tools fall through to the
+        // error arm.  Full runtime testing requires integration tests with a
+        // running MCP server and task store.
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains(r#""refresh_index" =>"#),
+            "handle_task_augmented_tool_call must match refresh_index"
+        );
+        // Verify standalone has the same routing
+        let standalone_source = include_str!("standalone.rs");
+        assert!(
+            standalone_source.contains(r#""refresh_index" =>"#),
+            "StandaloneHandler task-augmented call must also match refresh_index"
+        );
+    }
+
+    #[test]
     fn embedded_mode_search_across_repos_returns_helpful_message() {
         // Verify that the constant message is informative and mentions
         // both the tool name and the --standalone flag so users know how

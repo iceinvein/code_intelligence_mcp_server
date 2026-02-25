@@ -27,8 +27,8 @@ const HF_REPO: &str = "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF";
 /// so no separate download is required.
 const HF_MODEL_FILE: &str = "qwen2.5-coder-14b-instruct-q4_k_m.gguf";
 
-/// Context window size in tokens.
-const CTX_SIZE: u32 = 8192;
+/// Default context window size in tokens.
+pub const DEFAULT_CTX_SIZE: u32 = 8192;
 
 
 /// Download the Qwen2.5-Coder-14B-Instruct GGUF model from HuggingFace.
@@ -93,6 +93,8 @@ fn symlink_model(source: &std::path::Path, target: &std::path::Path) -> Result<(
 pub struct ChatLlm {
     backend: &'static LlamaBackend,
     model: LlamaModel,
+    /// Context window size in tokens (default: [`DEFAULT_CTX_SIZE`]).
+    pub ctx_size: u32,
 }
 
 // SAFETY: `LlamaModel` contains a raw pointer to immutable C++ model weights.
@@ -109,11 +111,12 @@ impl ChatLlm {
     ///
     /// # Arguments
     /// * `model_path` - Path to the `.gguf` model file
+    /// * `ctx_size` - Context window size in tokens (use [`DEFAULT_CTX_SIZE`] for the default)
     ///
     /// # Errors
     /// Returns an error if the backend cannot be initialised or the model
     /// file cannot be loaded (e.g. file not found, corrupt GGUF).
-    pub fn new(model_path: &Utf8Path) -> Result<Self> {
+    pub fn new(model_path: &Utf8Path, ctx_size: u32) -> Result<Self> {
         tracing::info!("Loading chat LLM from: {}", model_path);
 
         let backend = crate::llm::get_or_init_backend()?;
@@ -127,20 +130,25 @@ impl ChatLlm {
                 .map_err(|e| anyhow!("Failed to load chat GGUF model: {:?}", e))?;
 
         tracing::info!(
-            "Chat LLM loaded (vocab={}, params={}, ctx_train={})",
+            "Chat LLM loaded (vocab={}, params={}, ctx_train={}, ctx_size={})",
             model.n_vocab(),
             model.n_params(),
             model.n_ctx_train(),
+            ctx_size,
         );
 
-        Ok(Self { backend, model })
+        Ok(Self { backend, model, ctx_size })
     }
 
-    /// Stream generated tokens to a channel, one decoded string per token.
+    /// Generate tokens and send each one to the provided channel sender.
     ///
-    /// This method runs synchronously and is intended to be called from a
-    /// `tokio::task::spawn_blocking` context. Tokens are sent via the returned
-    /// [`mpsc::Receiver`] as soon as they are sampled. Generation stops when:
+    /// This method runs **synchronously** and **must** be called from a
+    /// `tokio::task::spawn_blocking` context (or a dedicated OS thread).
+    /// Tokens are sent via [`mpsc::Sender::blocking_send`] as they are
+    /// sampled; the caller is responsible for draining the corresponding
+    /// receiver concurrently (e.g. from an async task).
+    ///
+    /// Generation stops when:
     /// - An end-of-generation token is produced, or
     /// - `max_tokens` tokens have been generated, or
     /// - The receiver is dropped (client disconnected).
@@ -148,40 +156,37 @@ impl ChatLlm {
     /// # Arguments
     /// * `prompt` - Full formatted prompt (including chat template markers)
     /// * `max_tokens` - Upper bound on generated tokens
-    ///
-    /// # Returns
-    /// A receiver that yields token strings in order.
+    /// * `tx` - Channel sender to which decoded token strings are pushed
     ///
     /// # Errors
     /// Returns an error if tokenisation or context creation fails.
-    pub fn generate_stream(
+    pub fn generate_to_sender(
         &self,
         prompt: &str,
         max_tokens: u32,
-    ) -> Result<mpsc::Receiver<String>> {
-        let (tx, rx) = mpsc::channel::<String>(64);
-
+        tx: mpsc::Sender<String>,
+    ) -> Result<()> {
         let tokens = self
             .model
             .str_to_token(prompt, AddBos::Never)
             .map_err(|e| anyhow!("Tokenisation failed: {:?}", e))?;
 
         if tokens.is_empty() {
-            return Ok(rx);
+            return Ok(());
         }
 
         let n_prompt = tokens.len();
 
         // Context window must hold prompt + generated tokens.
         let ctx_params =
-            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(CTX_SIZE));
+            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(self.ctx_size));
         let mut ctx = self
             .model
             .new_context(self.backend, ctx_params)
             .map_err(|e| anyhow!("Failed to create llama context: {:?}", e))?;
 
         // Fill batch with prompt tokens; request logits only for the last one.
-        let mut batch = LlamaBatch::new(CTX_SIZE as usize, 1);
+        let mut batch = LlamaBatch::new(self.ctx_size as usize, 1);
         for (i, token) in tokens.iter().enumerate() {
             let is_last = i == n_prompt - 1;
             batch
@@ -202,7 +207,7 @@ impl ChatLlm {
         sampler.accept(new_token);
 
         if self.model.is_eog_token(new_token) {
-            return Ok(rx);
+            return Ok(());
         }
 
         // Send first token; return early if receiver already dropped
@@ -211,7 +216,7 @@ impl ChatLlm {
             .token_to_str(new_token, Special::Tokenize)
             .unwrap_or_default();
         if tx.blocking_send(token_str).is_err() {
-            return Ok(rx);
+            return Ok(());
         }
 
         let mut pos = n_prompt as i32;
@@ -245,7 +250,7 @@ impl ChatLlm {
             }
         }
 
-        Ok(rx)
+        Ok(())
     }
 
     /// Generate a complete response, returning the full output string.
@@ -276,13 +281,13 @@ impl ChatLlm {
         let n_prompt = tokens.len();
 
         let ctx_params =
-            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(CTX_SIZE));
+            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(self.ctx_size));
         let mut ctx = self
             .model
             .new_context(self.backend, ctx_params)
             .map_err(|e| anyhow!("Failed to create llama context: {:?}", e))?;
 
-        let mut batch = LlamaBatch::new(CTX_SIZE as usize, 1);
+        let mut batch = LlamaBatch::new(self.ctx_size as usize, 1);
         for (i, token) in tokens.iter().enumerate() {
             let is_last = i == n_prompt - 1;
             batch
@@ -399,6 +404,6 @@ mod tests {
     fn test_chat_llm_constants() {
         assert_eq!(HF_REPO, "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF");
         assert_eq!(HF_MODEL_FILE, "qwen2.5-coder-14b-instruct-q4_k_m.gguf");
-        assert_eq!(CTX_SIZE, 8192);
+        assert_eq!(DEFAULT_CTX_SIZE, 8192);
     }
 }

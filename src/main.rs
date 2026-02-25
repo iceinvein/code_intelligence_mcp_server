@@ -310,32 +310,47 @@ async fn run_standalone(
 
         let chat_model_dir = standalone_config.data_dir.join("models/qwen2.5-coder-14b-gguf");
 
-        // Load chat LLM in background
-        tokio::spawn(async move {
-            info!("Starting chat model download/load in background...");
-            let result = tokio::task::spawn_blocking(move || {
-                let model_path = code_intelligence_mcp_server::chat::llm::download_chat_model(&chat_model_dir)?;
-                code_intelligence_mcp_server::chat::llm::ChatLlm::new(&model_path)
-            }).await;
+        // Load ChatConfig from env vars
+        let chat_config = code_intelligence_mcp_server::config::ChatConfig::from_env();
+        let chat_ctx_size = chat_config.ctx_size;
 
-            match result {
-                Ok(Ok(llm)) => {
-                    let llm = Arc::new(llm);
-                    info!("Chat model loaded successfully");
-                    if let Err(e) = code_intelligence_mcp_server::chat::spawn(
-                        chat_sm, llm, chat_port,
-                    ).await {
-                        error!("Failed to start chat server: {}", e);
+        // Create ChatStore with shared DB at ~/.code-intelligence/chat.db
+        let chat_db_path = standalone_config.data_dir.join("chat.db");
+        match code_intelligence_mcp_server::chat::store::ChatStore::open(&chat_db_path) {
+            Ok(store) => {
+                let chat_store = Arc::new(store);
+
+                // Load chat LLM in background
+                tokio::spawn(async move {
+                    info!("Starting chat model download/load in background...");
+                    let result = tokio::task::spawn_blocking(move || {
+                        let model_path = code_intelligence_mcp_server::chat::llm::download_chat_model(&chat_model_dir)?;
+                        code_intelligence_mcp_server::chat::llm::ChatLlm::new(&model_path, chat_ctx_size)
+                    }).await;
+
+                    match result {
+                        Ok(Ok(llm)) => {
+                            let llm = Arc::new(llm);
+                            info!("Chat model loaded successfully");
+                            if let Err(e) = code_intelligence_mcp_server::chat::spawn(
+                                chat_sm, llm, chat_store, chat_config, chat_port,
+                            ).await {
+                                error!("Failed to start chat server: {}", e);
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            error!("Failed to load chat model: {}. Chat UI will not be available.", e);
+                        }
+                        Err(e) => {
+                            error!("Chat model loading panicked: {}. Chat UI will not be available.", e);
+                        }
                     }
-                }
-                Ok(Err(e)) => {
-                    error!("Failed to load chat model: {}. Chat UI will not be available.", e);
-                }
-                Err(e) => {
-                    error!("Chat model loading panicked: {}. Chat UI will not be available.", e);
-                }
+                });
             }
-        });
+            Err(e) => {
+                error!("Failed to open chat database at {}: {}. Chat UI will not be available.", chat_db_path, e);
+            }
+        }
     }
 
     info!(

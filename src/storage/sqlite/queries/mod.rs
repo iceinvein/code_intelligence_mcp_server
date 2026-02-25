@@ -1,5 +1,6 @@
 pub mod affinity;
 pub mod cache;
+pub mod chat;
 pub mod decorators;
 pub mod descriptions;
 pub mod docstrings;

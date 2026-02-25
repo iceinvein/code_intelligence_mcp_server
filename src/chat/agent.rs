@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::handlers::AppState;
@@ -14,8 +15,8 @@ use crate::handlers::AppState;
 use super::llm::ChatLlm;
 use super::tools::{self, ToolCall};
 
-/// Maximum number of tool-call rounds before forcing a final streaming response.
-const MAX_TOOL_ROUNDS: usize = 3;
+/// Default maximum number of tool-call rounds before forcing a final streaming response.
+pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 3;
 
 /// A chat message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,45 +246,58 @@ pub fn extract_text_outside_tool_calls(output: &str) -> String {
 
 /// Run the multi-round chat agent loop.
 ///
-/// Iterates up to [`MAX_TOOL_ROUNDS`] times.  Each round:
+/// Iterates up to `max_tool_rounds` times.  Each round:
 /// 1. Builds the full Qwen2.5 chat-template prompt from `messages`.
-/// 2. Calls [`ChatLlm::generate`] (blocking, synchronous) to get the full output.
-/// 3. If the output contains no tool calls, switches to [`ChatLlm::generate_stream`]
-///    and forwards every token as a [`ChatEvent::Token`], then breaks.
+/// 2. Runs [`ChatLlm::generate`] on a blocking thread to get the full output.
+/// 3. If the output contains no tool calls, switches to streaming via
+///    [`ChatLlm::generate_to_sender`] and forwards every token as a
+///    [`ChatEvent::Token`], then breaks.
 /// 4. If the output contains tool calls, executes each one in sequence, emitting
 ///    [`ChatEvent::ToolCallStart`] before and [`ChatEvent::ToolResult`] after each,
 ///    and appending the results to `messages` for the next round.
-/// 5. On the final round (round `MAX_TOOL_ROUNDS`), forces a streaming response
+/// 5. On the final round (round `max_tool_rounds`), forces a streaming response
 ///    regardless of whether tool calls were present.
 ///
 /// Always sends [`ChatEvent::Done`] as the last event before returning.
-///
-/// # Notes
-/// `generate` and `generate_stream` are synchronous blocking calls.  The caller
-/// is expected to wrap this function in `tokio::task::spawn_blocking`; `async` is
-/// needed here only for `execute_tool` (which is `async`) and `event_tx.send().await`.
 pub async fn run_agent(
-    llm: &ChatLlm,
+    llm: Arc<ChatLlm>,
     state: &AppState,
     mut messages: Vec<ChatMessage>,
     repo_name: &str,
     repo_path: &str,
     event_tx: mpsc::Sender<ChatEvent>,
+    max_tool_rounds: usize,
 ) {
-    for round in 0..MAX_TOOL_ROUNDS {
-        let is_last_round = round == MAX_TOOL_ROUNDS - 1;
+    for round in 0..max_tool_rounds {
+        let is_last_round = round == max_tool_rounds - 1;
 
         let prompt = build_prompt(&messages, repo_name, repo_path);
 
         // On the last round we always stream, so skip the non-streaming pass.
         if !is_last_round {
             // Non-streaming generation so we can inspect for tool calls.
-            let output = match llm.generate(&prompt, 2048) {
-                Ok(o) => o,
-                Err(e) => {
+            // Run on a blocking thread to avoid starving the tokio runtime.
+            let llm_clone = llm.clone();
+            let prompt_clone = prompt.clone();
+            let output = match tokio::task::spawn_blocking(move || {
+                llm_clone.generate(&prompt_clone, 2048)
+            })
+            .await
+            {
+                Ok(Ok(o)) => o,
+                Ok(Err(e)) => {
                     let _ = event_tx
                         .send(ChatEvent::Error {
                             message: e.to_string(),
+                        })
+                        .await;
+                    let _ = event_tx.send(ChatEvent::Done).await;
+                    return;
+                }
+                Err(e) => {
+                    let _ = event_tx
+                        .send(ChatEvent::Error {
+                            message: format!("Generation task failed: {}", e),
                         })
                         .await;
                     let _ = event_tx.send(ChatEvent::Done).await;
@@ -293,7 +307,7 @@ pub async fn run_agent(
 
             if !has_tool_calls(&output) {
                 // No tool calls — stream the final response from scratch.
-                stream_response(llm, &prompt, &event_tx).await;
+                stream_response(llm.clone(), &prompt, &event_tx).await;
                 let _ = event_tx.send(ChatEvent::Done).await;
                 return;
             }
@@ -350,7 +364,7 @@ pub async fn run_agent(
             // Continue to the next round.
         } else {
             // Final round: always stream.
-            stream_response(llm, &prompt, &event_tx).await;
+            stream_response(llm.clone(), &prompt, &event_tx).await;
             let _ = event_tx.send(ChatEvent::Done).await;
             return;
         }
@@ -363,20 +377,28 @@ pub async fn run_agent(
 
 /// Generate a streaming response and forward each token as a [`ChatEvent::Token`].
 ///
-/// This is the final step in every agent round that yields a user-visible reply.
-async fn stream_response(llm: &ChatLlm, prompt: &str, event_tx: &mpsc::Sender<ChatEvent>) {
-    let mut rx = match llm.generate_stream(prompt, 2048) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = event_tx
-                .send(ChatEvent::Error {
-                    message: e.to_string(),
-                })
-                .await;
-            return;
-        }
-    };
+/// Spawns the synchronous LLM generation on a blocking thread via
+/// [`tokio::task::spawn_blocking`], then drains the token channel
+/// asynchronously and forwards each token to the client.
+async fn stream_response(
+    llm: Arc<ChatLlm>,
+    prompt: &str,
+    event_tx: &mpsc::Sender<ChatEvent>,
+) {
+    let (tx, mut rx) = mpsc::channel::<String>(64);
+    let prompt_owned = prompt.to_owned();
 
+    // Spawn generation on a dedicated blocking thread.
+    // `blocking_send` is safe here because `spawn_blocking` runs on
+    // a thread outside the async runtime.
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = llm.generate_to_sender(&prompt_owned, 2048, tx) {
+            tracing::error!("Streaming generation failed: {}", e);
+        }
+        // `tx` is dropped here, closing the channel and ending the recv loop below.
+    });
+
+    // Forward tokens to the client as they arrive in real-time.
     while let Some(token) = rx.recv().await {
         if event_tx
             .send(ChatEvent::Token { content: token })

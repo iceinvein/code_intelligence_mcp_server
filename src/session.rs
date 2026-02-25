@@ -17,16 +17,20 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use dashmap::DashMap;
-use std::sync::Arc;
+use std::{sync::Arc, time::{Duration, Instant}};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 pub struct SessionManager {
     pub standalone_config: Arc<StandaloneConfig>,
     pub registry: Arc<RepoRegistry>,
     embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
-    repos: DashMap<String, Arc<AppState>>,  // keyed by canonical repo path string
+    /// Keyed by canonical repo path string. Value is (AppState, watcher cancel token).
+    repos: DashMap<String, (Arc<AppState>, CancellationToken)>,
     /// Per-key init locks to prevent TOCTOU races when two sessions init the same repo
     init_locks: DashMap<String, Arc<Mutex<()>>>,
+    /// Tracks the last time each repo was accessed, for TTL-based eviction
+    last_accessed: DashMap<String, Instant>,
     metrics: Arc<MetricsRegistry>,
 }
 
@@ -45,6 +49,7 @@ impl SessionManager {
             embedder: Arc::new(Mutex::new(embedder)),
             repos: DashMap::new(),
             init_locks: DashMap::new(),
+            last_accessed: DashMap::new(),
             metrics,
         })
     }
@@ -53,9 +58,10 @@ impl SessionManager {
         let canonical = repo_path.as_str().to_string();
 
         // Fast path: check if already exists (no lock needed)
-        if let Some(state) = self.repos.get(&canonical) {
+        if let Some(entry) = self.repos.get(&canonical) {
             let _ = self.registry.touch(&canonical);
-            return Ok(state.clone());
+            self.last_accessed.insert(canonical, Instant::now());
+            return Ok(entry.0.clone());
         }
 
         // Slow path: acquire per-key init lock to prevent TOCTOU race
@@ -67,24 +73,79 @@ impl SessionManager {
         let _guard = lock.lock().await;
 
         // Re-check after acquiring lock (another task may have initialized it)
-        if let Some(state) = self.repos.get(&canonical) {
+        if let Some(entry) = self.repos.get(&canonical) {
             let _ = self.registry.touch(&canonical);
-            return Ok(state.clone());
+            self.last_accessed.insert(canonical, Instant::now());
+            return Ok(entry.0.clone());
         }
 
-        let entry = self.registry.register(&canonical)
+        let repo_entry = self.registry.register(&canonical)
             .context("Failed to register repository")?;
 
-        let state = self.init_repo_state(repo_path.clone(), &entry).await
+        let (state, watch_cancel) = self.init_repo_state(repo_path.clone(), &repo_entry).await
             .context("Failed to initialize repository state")?;
 
         let state_arc = Arc::new(state);
-        self.repos.insert(canonical, state_arc.clone());
+        self.repos.insert(canonical.clone(), (state_arc.clone(), watch_cancel));
+        self.last_accessed.insert(canonical, Instant::now());
 
         Ok(state_arc)
     }
 
-    async fn init_repo_state(&self, repo_path: Utf8PathBuf, entry: &RepoEntry) -> Result<AppState> {
+    /// Evict repos that have not been accessed within `warm_ttl_seconds`.
+    ///
+    /// A TTL of `0` is treated as "never evict" (infinite lifetime).
+    pub async fn evict_idle_repos(&self) {
+        let ttl_secs = self.standalone_config.warm_ttl_seconds;
+        if ttl_secs == 0 {
+            return;
+        }
+        let ttl = Duration::from_secs(ttl_secs);
+
+        // Collect keys to evict without holding DashMap shard locks during async work.
+        let to_evict: Vec<String> = self
+            .last_accessed
+            .iter()
+            .filter(|entry| entry.value().elapsed() > ttl)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for key in to_evict {
+            // Cancel the watcher before dropping the AppState.
+            if let Some((_, (_, cancel))) = self.repos.remove(&key) {
+                cancel.cancel();
+            }
+            self.last_accessed.remove(&key);
+            self.init_locks.remove(&key);
+
+            tracing::info!(
+                repo = %key,
+                ttl_secs,
+                "Evicted idle repo from session cache"
+            );
+        }
+    }
+
+    /// Spawn a background task that calls [`evict_idle_repos`] every 60 seconds.
+    ///
+    /// The loop runs for the lifetime of the process — no cancellation is provided
+    /// because the process owns the SessionManager and both die together.
+    pub fn spawn_eviction_loop(self: &Arc<Self>) {
+        let session = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                session.evict_idle_repos().await;
+            }
+        });
+    }
+
+    async fn init_repo_state(
+        &self,
+        repo_path: Utf8PathBuf,
+        entry: &RepoEntry,
+    ) -> Result<(AppState, CancellationToken)> {
         // Build per-repo config
         let config = self.standalone_config.repo_config(repo_path, &entry.data_dir);
         let config_arc = Arc::new(config);
@@ -157,13 +218,14 @@ impl SessionManager {
             role_rx: tokio::sync::watch::channel(crate::leader::Role::Leader).1,
         };
 
-        // Start file watcher for auto-reindexing
+        // Start file watcher for auto-reindexing.
+        // Store the cancel token so we can stop the watcher on eviction.
+        let watch_cancel = CancellationToken::new();
         if state.config.watch_mode {
-            let watch_cancel = tokio_util::sync::CancellationToken::new();
-            state.indexer.spawn_watch_loop(watch_cancel);
+            state.indexer.spawn_watch_loop(watch_cancel.clone());
         }
 
-        Ok(state)
+        Ok((state, watch_cancel))
     }
 
     #[cfg(test)]
@@ -188,26 +250,184 @@ impl SessionManager {
             .await
             .expect("Failed to create test SessionManager")
     }
+
+    /// Build a test SessionManager with a custom TTL.
+    #[cfg(test)]
+    pub async fn new_for_test_with_ttl(data_dir: Utf8PathBuf, warm_ttl_seconds: u64) -> Self {
+        use crate::config::EmbeddingsBackend;
+        use crate::embeddings::hash::HashEmbedder;
+
+        let standalone_config = StandaloneConfig {
+            embeddings_backend: EmbeddingsBackend::Hash,
+            hash_embedding_dim: 64,
+            warm_ttl_seconds,
+            ..StandaloneConfig::default()
+        };
+
+        let registry = RepoRegistry::new(
+            data_dir.join("registry.json"),
+            data_dir.join("repos"),
+        );
+
+        let embedder = Box::new(HashEmbedder::new(64));
+
+        Self::new(standalone_config, registry, embedder)
+            .await
+            .expect("Failed to create test SessionManager")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ─── helpers ────────────────────────────────────────────────────────────────
+
+    /// Create a temporary directory that persists until the returned `TempDir` is dropped.
+    fn temp_data_dir() -> (tempfile::TempDir, Utf8PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        (dir, path)
+    }
+
+    fn temp_repo_dir() -> (tempfile::TempDir, Utf8PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        (dir, path)
+    }
+
+    // ─── existing tests ──────────────────────────────────────────────────────────
+
     #[tokio::test]
     async fn get_or_create_returns_same_state_for_same_repo() {
-        let dir = tempfile::tempdir().unwrap();
-        let data_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_data, data_dir) = temp_data_dir();
         let manager = SessionManager::new_for_test(data_dir).await;
 
-        // Create a temp repo dir
-        let repo_dir = tempfile::tempdir().unwrap();
-        let repo_path = Utf8PathBuf::from_path_buf(repo_dir.path().to_path_buf()).unwrap();
+        let (_repo, repo_path) = temp_repo_dir();
 
         let state1 = manager.get_or_create_repo(&repo_path).await.unwrap();
         let state2 = manager.get_or_create_repo(&repo_path).await.unwrap();
 
         // Same Arc — not recreated
         assert!(Arc::ptr_eq(&state1.config, &state2.config));
+    }
+
+    // ─── last_accessed tracking ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn last_accessed_populated_after_get_or_create() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        assert!(manager.last_accessed.is_empty(), "no entries before first access");
+
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+
+        let key = repo_path.as_str().to_string();
+        assert!(
+            manager.last_accessed.contains_key(&key),
+            "last_accessed should have an entry after get_or_create"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_accessed_updated_on_fast_path() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        // First call — slow path (initialisation)
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+
+        let key = repo_path.as_str().to_string();
+        let first_ts = *manager.last_accessed.get(&key).unwrap();
+
+        // Sleep briefly so the two Instants differ
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // Second call — fast path (repo already in map)
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+
+        let second_ts = *manager.last_accessed.get(&key).unwrap();
+        assert!(
+            second_ts >= first_ts,
+            "last_accessed should be refreshed on fast-path hit"
+        );
+    }
+
+    // ─── eviction ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn evict_idle_repos_removes_expired_entries() {
+        let (_data, data_dir) = temp_data_dir();
+        // TTL of 1 second
+        let manager = SessionManager::new_for_test_with_ttl(data_dir, 1).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+        let key = repo_path.as_str().to_string();
+
+        // Overwrite last_accessed with a timestamp far in the past
+        manager.last_accessed.insert(key.clone(), Instant::now() - Duration::from_secs(10));
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            !manager.repos.contains_key(&key),
+            "expired repo should be evicted from repos"
+        );
+        assert!(
+            !manager.last_accessed.contains_key(&key),
+            "expired repo should be evicted from last_accessed"
+        );
+        assert!(
+            !manager.init_locks.contains_key(&key),
+            "expired repo should be evicted from init_locks"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_idle_repos_preserves_recently_accessed() {
+        let (_data, data_dir) = temp_data_dir();
+        // TTL of 300 seconds (default)
+        let manager = SessionManager::new_for_test_with_ttl(data_dir, 300).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+        let key = repo_path.as_str().to_string();
+
+        // last_accessed is "just now" — should NOT be evicted
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.repos.contains_key(&key),
+            "recently accessed repo must NOT be evicted"
+        );
+        assert!(
+            manager.last_accessed.contains_key(&key),
+            "last_accessed entry must survive for recent repos"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_idle_repos_zero_ttl_never_evicts() {
+        let (_data, data_dir) = temp_data_dir();
+        // TTL of 0 means infinite — never evict
+        let manager = SessionManager::new_for_test_with_ttl(data_dir, 0).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+        let key = repo_path.as_str().to_string();
+
+        // Backdate to look very old
+        manager.last_accessed.insert(key.clone(), Instant::now() - Duration::from_secs(86400));
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.repos.contains_key(&key),
+            "TTL=0 must never evict any repo"
+        );
     }
 }

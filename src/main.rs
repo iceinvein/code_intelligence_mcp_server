@@ -183,6 +183,7 @@ async fn run_standalone(
     .await
     .map_err(|e| McpSdkError::Internal { description: e.to_string() })?;
     let session_manager = Arc::new(session_manager);
+    session_manager.spawn_eviction_loop();
 
     let server_details = InitializeResult {
         server_info: Implementation {

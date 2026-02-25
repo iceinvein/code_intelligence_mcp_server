@@ -386,3 +386,19 @@ pub struct FindUndocumentedSymbolsTool {
     /// Maximum number of results to return (default: 100)
     pub limit: Option<u32>,
 }
+
+#[macros::mcp_tool(
+    name = "predict_impact",
+    description = "Predict what code would be affected by changing a symbol, combining structural dependency analysis with git co-change history."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct PredictImpactTool {
+    /// The symbol name to predict impact for
+    pub symbol_name: String,
+    /// Optional file path to disambiguate
+    pub file_path: Option<String>,
+    /// Maximum number of predictions to return (default: 20)
+    pub limit: Option<u32>,
+    /// Include test files in predictions (default: false)
+    pub include_tests: Option<bool>,
+}

@@ -2859,6 +2859,308 @@ pub fn handle_find_undocumented_symbols(
     }))
 }
 
+pub fn handle_predict_impact(
+    state: &AppState,
+    tool: PredictImpactTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let include_tests = tool.include_tests.unwrap_or(false);
+
+    let sqlite = &state.sqlite;
+
+    // Find the root symbol
+    let roots =
+        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file_path.as_deref(), 1)?;
+    let Some(root) = roots.first() else {
+        return Ok(json!({
+            "symbol_name": tool.symbol_name,
+            "error": "SYMBOL_NOT_FOUND",
+            "message": format!("Symbol '{}' not found", tool.symbol_name),
+            "predictions": [],
+        }));
+    };
+
+    // --- Phase 1: Structural impact (reuse find_affected_code logic) ---
+    let graph_result = build_dependency_graph(sqlite, root, "upstream", 3, limit * 2, None);
+
+    let mut structural_impacts: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+
+    if let Ok(graph) = graph_result {
+        let empty_nodes: Vec<serde_json::Value> = vec![];
+        let nodes = graph
+            .get("nodes")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty_nodes);
+
+        for node in nodes {
+            let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if id == root.id {
+                continue;
+            }
+
+            let file_path = node.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+            let exported = node
+                .get("exported")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if !include_tests && is_test_file_for_affected(file_path) {
+                continue;
+            }
+
+            // Severity scoring (same as find_affected_code)
+            let in_degree = sqlite.count_incoming_edges(id).unwrap_or(0);
+            let depth_score = 8.0_f64;
+            let export_score = if exported { 10.0 } else { 4.0 };
+            let indegree_score =
+                ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+
+            let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
+                as u8)
+                .clamp(1, 10);
+
+            // Normalize structural score to 0.0-1.0 range
+            let structural_score = severity as f64 / 10.0;
+
+            structural_impacts.insert(
+                id.to_string(),
+                json!({
+                    "symbol_id": id,
+                    "symbol_name": node.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "kind": node.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                    "file_path": file_path,
+                    "exported": exported,
+                    "structural_score": structural_score,
+                    "in_degree": in_degree,
+                }),
+            );
+        }
+    }
+
+    // --- Phase 2: Co-change impact ---
+    // Build co-change matrix on the fly for the current repo
+    let co_change_result = crate::indexer::package::cochange::build_co_change_matrix(
+        &state.config.base_dir,
+        sqlite,
+        500,
+    );
+
+    let co_change_stats = match &co_change_result {
+        Ok(stats) => Some(json!({
+            "commits_walked": stats.commits_walked,
+            "commits_skipped": stats.commits_skipped,
+            "pairs_recorded": stats.pairs_recorded,
+        })),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to build co-change matrix");
+            None
+        }
+    };
+
+    // Look up co-changes for the file containing the target symbol
+    let mut cochange_impacts: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
+
+    if co_change_result.is_ok() {
+        if let Ok(co_changes) = sqlite.get_co_changes_for_file(&root.file_path, limit * 2) {
+            for cc in &co_changes {
+                // Get the "other" file (the one that isn't the root symbol's file)
+                let other_file = if cc.file_a == root.file_path {
+                    &cc.file_b
+                } else {
+                    &cc.file_a
+                };
+
+                if !include_tests && is_test_file_for_affected(other_file) {
+                    continue;
+                }
+
+                // Use file path as key for co-change impacts
+                let entry = cochange_impacts
+                    .entry(other_file.to_string())
+                    .or_insert(0.0);
+                if (cc.confidence as f64) > *entry {
+                    *entry = cc.confidence as f64;
+                }
+            }
+        }
+    }
+
+    // --- Phase 3: Merge structural + co-change scores ---
+    let mut merged: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+
+    // Add structural impacts
+    for (id, val) in &structural_impacts {
+        let file_path = val
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let structural_score = val
+            .get("structural_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let cochange_confidence = cochange_impacts.get(file_path).copied().unwrap_or(0.0);
+
+        let merged_score = structural_score * 0.6 + cochange_confidence * 0.4;
+        let source = if cochange_confidence > 0.0 {
+            "both"
+        } else {
+            "structural"
+        };
+
+        merged.insert(
+            id.clone(),
+            json!({
+                "symbol_id": val.get("symbol_id"),
+                "symbol_name": val.get("symbol_name"),
+                "kind": val.get("kind"),
+                "file_path": file_path,
+                "exported": val.get("exported"),
+                "structural_score": structural_score,
+                "cochange_confidence": cochange_confidence,
+                "merged_score": merged_score,
+                "source": source,
+                "in_degree": val.get("in_degree"),
+            }),
+        );
+    }
+
+    // Add co-change-only impacts (files not found via structural analysis)
+    for (file_path, confidence) in &cochange_impacts {
+        // Check if already covered by a structural impact
+        let already_covered = merged.values().any(|v| {
+            v.get("file_path").and_then(|p| p.as_str()) == Some(file_path.as_str())
+        });
+
+        if !already_covered {
+            let merged_score = confidence * 0.4; // No structural component
+            let key = format!("cochange:{}", file_path);
+            merged.insert(
+                key,
+                json!({
+                    "symbol_id": null,
+                    "symbol_name": null,
+                    "kind": null,
+                    "file_path": file_path,
+                    "exported": null,
+                    "structural_score": 0.0,
+                    "cochange_confidence": confidence,
+                    "merged_score": merged_score,
+                    "source": "cochange",
+                    "in_degree": null,
+                }),
+            );
+        }
+    }
+
+    // Sort by merged_score descending
+    let mut predictions: Vec<serde_json::Value> = merged.into_values().collect();
+    predictions.sort_by(|a, b| {
+        let sa = a
+            .get("merged_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let sb = b
+            .get("merged_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Truncate to limit
+    predictions.truncate(limit);
+
+    // Build summary
+    let structural_count = predictions
+        .iter()
+        .filter(|p| p.get("source").and_then(|v| v.as_str()) == Some("structural"))
+        .count();
+    let cochange_count = predictions
+        .iter()
+        .filter(|p| p.get("source").and_then(|v| v.as_str()) == Some("cochange"))
+        .count();
+    let both_count = predictions
+        .iter()
+        .filter(|p| p.get("source").and_then(|v| v.as_str()) == Some("both"))
+        .count();
+
+    let affected_files: std::collections::HashSet<&str> = predictions
+        .iter()
+        .filter_map(|p| p.get("file_path").and_then(|v| v.as_str()))
+        .collect();
+
+    // Build display text
+    let display = format_predict_impact(root, &predictions, affected_files.len());
+
+    Ok(json!({
+        "symbol_name": root.name,
+        "symbol_kind": root.kind,
+        "file_path": root.file_path,
+        "prediction_count": predictions.len(),
+        "affected_files": affected_files.len(),
+        "source_breakdown": {
+            "structural": structural_count,
+            "cochange": cochange_count,
+            "both": both_count,
+        },
+        "co_change_stats": co_change_stats,
+        "predictions": predictions,
+        "display": display,
+    }))
+}
+
+fn format_predict_impact(
+    root: &SymbolRow,
+    predictions: &[serde_json::Value],
+    affected_files: usize,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "# Impact Prediction: {} ({})",
+        root.name, root.kind
+    ));
+    lines.push(format!("File: {}", root.file_path));
+    lines.push(format!(
+        "Predictions: {} | Affected files: {}",
+        predictions.len(),
+        affected_files
+    ));
+    lines.push(String::new());
+
+    for (i, pred) in predictions.iter().enumerate() {
+        let name = pred
+            .get("symbol_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(file-level)");
+        let file = pred
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let score = pred
+            .get("merged_score")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let source = pred
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+
+        lines.push(format!(
+            "{}. {} ({}) — score: {:.2} [{}]",
+            i + 1,
+            name,
+            file,
+            score,
+            source,
+        ));
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

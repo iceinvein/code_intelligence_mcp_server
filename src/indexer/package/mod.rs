@@ -4,6 +4,7 @@
 //! within a workspace. It handles manifest file discovery, parsing, and
 //! repository detection using git roots.
 
+pub mod cochange;
 pub mod detector;
 pub mod git;
 pub mod parsers;

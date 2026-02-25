@@ -207,6 +207,17 @@ pub struct CrossRepoEdgeRow {
     pub resolution: String,
 }
 
+/// Co-change row for git co-change analysis (change impact prediction)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CoChangeRow {
+    pub file_a: String,
+    pub file_b: String,
+    pub co_change_count: u32,
+    pub total_commits_a: u32,
+    pub total_commits_b: u32,
+    pub confidence: f32,
+}
+
 /// Framework pattern row for Elysia/Hono/Express route and plugin metadata
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameworkPatternRow {
@@ -520,4 +531,18 @@ CREATE TABLE IF NOT EXISTS cross_repo_edges (
 CREATE INDEX IF NOT EXISTS idx_cross_repo_edges_from ON cross_repo_edges(from_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_cross_repo_edges_to_repo ON cross_repo_edges(to_repo_hash);
 CREATE INDEX IF NOT EXISTS idx_cross_repo_edges_resolution ON cross_repo_edges(resolution);
+
+-- Co-change matrix for change impact prediction
+CREATE TABLE IF NOT EXISTS co_changes (
+  file_a TEXT NOT NULL,
+  file_b TEXT NOT NULL,
+  co_change_count INTEGER NOT NULL DEFAULT 1,
+  total_commits_a INTEGER NOT NULL DEFAULT 0,
+  total_commits_b INTEGER NOT NULL DEFAULT 0,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  PRIMARY KEY (file_a, file_b)
+);
+CREATE INDEX IF NOT EXISTS idx_co_changes_file_a ON co_changes(file_a);
+CREATE INDEX IF NOT EXISTS idx_co_changes_file_b ON co_changes(file_b);
+CREATE INDEX IF NOT EXISTS idx_co_changes_confidence ON co_changes(confidence);
 "#;

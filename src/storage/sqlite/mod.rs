@@ -644,6 +644,38 @@ impl SqliteStore {
         queries::cross_repo::count_cross_repo_edges(&conn)
     }
 
+    // Co-change operations (change impact prediction)
+    pub fn upsert_co_change(
+        &self,
+        file_a: &str,
+        file_b: &str,
+        co_change_count: u32,
+        total_a: u32,
+        total_b: u32,
+    ) -> Result<()> {
+        let conn = self.write()?;
+        queries::cochange::upsert_co_change(&conn, file_a, file_b, co_change_count, total_a, total_b)
+    }
+
+    pub fn get_co_changes_for_file(
+        &self,
+        file_path: &str,
+        limit: usize,
+    ) -> Result<Vec<CoChangeRow>> {
+        let conn = self.read()?;
+        queries::cochange::get_co_changes_for_file(&conn, file_path, limit)
+    }
+
+    pub fn clear_co_changes(&self) -> Result<u64> {
+        let conn = self.write()?;
+        queries::cochange::clear_co_changes(&conn)
+    }
+
+    pub fn count_co_changes(&self) -> Result<u64> {
+        let conn = self.read()?;
+        queries::cochange::count_co_changes(&conn)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn search_framework_patterns(
         &self,

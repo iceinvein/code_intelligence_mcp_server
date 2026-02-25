@@ -25,6 +25,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         GetFileSymbolsTool::tool(),
         GetCallHierarchyTool::tool(),
         ExploreDependencyGraphTool::tool(),
+        GetSimilarityClusterTool::tool(),
         GetTypeGraphTool::tool(),
         GetUsageExamplesTool::tool(),
         GetIndexStatsTool::tool(),
@@ -351,5 +352,20 @@ impl ServerHandler for CodeIntelligenceHandler {
         _runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<CallToolResult, CallToolError> {
         dispatch_tool_call(&self.state, params).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_tools_contains_get_similarity_cluster() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"get_similarity_cluster"),
+            "all_tools() must include 'get_similarity_cluster', but only found: {names:?}"
+        );
     }
 }

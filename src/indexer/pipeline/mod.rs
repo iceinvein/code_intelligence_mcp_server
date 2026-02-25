@@ -103,7 +103,7 @@ impl IndexPipeline {
         // Initialize cache
         let sqlite = SqliteStore::open(&db_path).expect("Failed to open SQLite database");
         let model_name = match config.embeddings_backend {
-            crate::config::EmbeddingsBackend::LlamaCpp => "jinaai/jina-code-embeddings-0.5b",
+            crate::config::EmbeddingsBackend::LlamaCpp => "jinaai/jina-code-embeddings-1.5b",
             crate::config::EmbeddingsBackend::Hash => "hash",
         };
         let cache = Arc::new(EmbeddingCache::new(

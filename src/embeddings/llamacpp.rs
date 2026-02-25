@@ -1,4 +1,4 @@
-//! llama.cpp embedding backend (jina-code-embeddings-0.5b via GGUF)
+//! llama.cpp embedding backend (jina-code-embeddings-1.5b via GGUF)
 //!
 //! Uses llama-cpp-2 Rust bindings with Metal GPU acceleration on Apple Silicon.
 //! Shares the process-wide `LlamaBackend` singleton with the LLM generator.
@@ -16,10 +16,10 @@ use crate::embeddings::Embedder;
 use crate::path::Utf8Path;
 
 /// Maximum tokens per text before truncation.
-/// jina-code-0.5b supports 32K but code symbols rarely exceed 8K tokens.
+/// jina-code-1.5b supports 32K but code symbols rarely exceed 8K tokens.
 const MAX_TOKENS: usize = 8192;
 
-/// llama.cpp-based embedder for jina-code-embeddings-0.5b.
+/// llama.cpp-based embedder for jina-code-embeddings-1.5b.
 ///
 /// Shares the `&'static LlamaBackend` singleton with `LlamaCppGenerator`.
 /// Owns its own `LlamaModel` (loaded into GPU memory). A fresh `LlamaContext`
@@ -67,9 +67,9 @@ impl LlamaCppEmbedder {
     const SUB_BATCH_MAX_TOKENS: usize = 4096;
 
     /// Maximum sequences per sub-batch. With n_seq_max sequences, the KV cache
-    /// grows proportionally. 32 keeps GPU memory bounded while still giving
-    /// ~10-20x speedup over single-sequence embedding.
-    const SUB_BATCH_MAX_SEQS: usize = 32;
+    /// grows proportionally. 16 keeps GPU memory bounded for the larger 1.5b
+    /// model while still giving ~8-16x speedup over single-sequence embedding.
+    const SUB_BATCH_MAX_SEQS: usize = 16;
 
     /// Embed a single text and return the L2-normalized vector.
     /// Used as fallback for texts that exceed SUB_BATCH_MAX_TOKENS alone.
@@ -94,7 +94,7 @@ impl LlamaCppEmbedder {
         };
 
         // Create a fresh context with embeddings enabled.
-        // jina-code-0.5b uses last-token (EOS) pooling.
+        // jina-code-1.5b uses last-token (EOS) pooling.
         let n_ctx = (tokens.len() as u32).max(64);
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(n_ctx))
@@ -297,7 +297,7 @@ impl Embedder for LlamaCppEmbedder {
     }
 
     // query_embed() uses the default impl (calls embed()).
-    // jina-code-0.5b uses symmetric embeddings — no query prefix needed.
+    // jina-code-1.5b uses symmetric embeddings — no query prefix needed.
 }
 
 /// L2 normalize a vector in place.
@@ -317,14 +317,14 @@ mod tests {
     /// Verify that multi-sequence batch embedding produces the same vectors
     /// as single-sequence embedding (within floating-point tolerance).
     ///
-    /// Requires the real embedding model (~531MB). Run with:
+    /// Requires the real embedding model (~1.6 GB). Run with:
     ///   cargo test --lib embeddings::llamacpp::tests::batch_matches_single -- --ignored
     #[test]
     #[ignore]
     fn batch_matches_single() {
         let home = std::env::var("HOME").expect("HOME not set");
         let model_path = crate::path::Utf8PathBuf::from(format!(
-            "{}/.code-intelligence/models/jina-code-embeddings-0.5b-gguf/jina-code-embeddings-0.5b-Q8_0.gguf",
+            "{}/.code-intelligence/models/jina-code-embeddings-1.5b-gguf/jina-code-embeddings-1.5b-Q8_0.gguf",
             home
         ));
         if !model_path.exists() {

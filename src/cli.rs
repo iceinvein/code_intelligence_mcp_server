@@ -109,7 +109,7 @@ pub fn print_help() {
     println!("    BASE_DIR=/absolute/path/to/repo");
     println!();
     println!("  Common env (defaults shown):");
-    println!("    EMBEDDINGS_MODEL_DIR=/path/to/cache   (default: ~/.code-intelligence/models/jina-code-embeddings-0.5b-gguf)");
+    println!("    EMBEDDINGS_MODEL_DIR=/path/to/cache   (default: ~/.code-intelligence/models/jina-code-embeddings-1.5b-gguf)");
     println!("    EMBEDDINGS_BACKEND=llamacpp|hash      (default: llamacpp)");
     println!("    EMBEDDINGS_DEVICE=cpu|metal           (default: metal)");
     println!("    EMBEDDING_BATCH_SIZE=32");

@@ -129,7 +129,7 @@ impl Default for StandaloneConfig {
             warm_ttl_seconds: 300,
             embeddings_backend: EmbeddingsBackend::LlamaCpp,
             embeddings_device: EmbeddingsDevice::Metal,
-            embeddings_model_dir: Some(data_dir.join("models/jina-code-embeddings-0.5b-gguf")),
+            embeddings_model_dir: Some(data_dir.join("models/jina-code-embeddings-1.5b-gguf")),
             hash_embedding_dim: 64,
             default_index_patterns: vec![
                 "**/*.ts".to_string(),
@@ -441,18 +441,18 @@ impl Config {
                     Some(raw) => Some(to_utf8_pathbuf(Path::new(raw))?),
                     None => {
                         let data_dir = get_data_dir();
-                        Some(data_dir.join("models/jina-code-embeddings-0.5b-gguf"))
+                        Some(data_dir.join("models/jina-code-embeddings-1.5b-gguf"))
                     }
                 };
                 (EmbeddingsBackend::LlamaCpp, embeddings_model_dir)
             }
             Some(EmbeddingsBackend::Hash) => (EmbeddingsBackend::Hash, None),
             None => {
-                // Default to LlamaCpp with jina-code-0.5b GGUF
+                // Default to LlamaCpp with jina-code-1.5b GGUF
                 let data_dir = get_data_dir();
                 (
                     EmbeddingsBackend::LlamaCpp,
-                    Some(data_dir.join("models/jina-code-embeddings-0.5b-gguf")),
+                    Some(data_dir.join("models/jina-code-embeddings-1.5b-gguf")),
                 )
             }
         };
@@ -1200,7 +1200,7 @@ mod tests {
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::LlamaCpp);
         assert_eq!(
             cfg.embeddings_model_dir,
-            Some(home.join(".code-intelligence/models/jina-code-embeddings-0.5b-gguf"))
+            Some(home.join(".code-intelligence/models/jina-code-embeddings-1.5b-gguf"))
         );
     }
 

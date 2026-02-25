@@ -10,15 +10,15 @@ pub trait Embedder {
 
     /// Embed query texts with model-specific instruction prefix for retrieval.
     ///
-    /// jina-code-0.5b uses symmetric embeddings, so queries and documents share
+    /// jina-code-1.5b uses symmetric embeddings, so queries and documents share
     /// the same embedding space. Default implementation falls back to `embed()`.
     fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.embed(texts)
     }
 }
 
-/// Known embedding dimension for jina-code-0.5b (the LlamaCpp backend model).
-const JINA_CODE_DIM: usize = 896;
+/// Known embedding dimension for jina-code-1.5b (the LlamaCpp backend model).
+const JINA_CODE_DIM: usize = 1536;
 
 /// Returns the embedding dimension for a given backend without loading the model.
 pub fn default_embedding_dim(backend: crate::config::EmbeddingsBackend, hash_dim: usize) -> usize {
@@ -88,10 +88,10 @@ impl Embedder for DeferredEmbedder {
 }
 
 /// HuggingFace repository for the GGUF-format jina-code embedding model.
-const EMBEDDING_HF_REPO: &str = "jinaai/jina-code-embeddings-0.5b-GGUF";
-/// Q8_0 quantized GGUF file (~531 MB). Higher precision than Q4 because
+const EMBEDDING_HF_REPO: &str = "jinaai/jina-code-embeddings-1.5b-GGUF";
+/// Q8_0 quantized GGUF file (~1.6 GB). Higher precision than Q4 because
 /// embedding quality degrades more from quantization than generation quality.
-const EMBEDDING_HF_MODEL_FILE: &str = "jina-code-embeddings-0.5b-Q8_0.gguf";
+const EMBEDDING_HF_MODEL_FILE: &str = "jina-code-embeddings-1.5b-Q8_0.gguf";
 
 /// Factory function to create an embedder based on the backend configuration.
 ///
@@ -128,9 +128,9 @@ pub fn create_embedder(
     }
 }
 
-/// Download the jina-code-embeddings-0.5b GGUF model from HuggingFace.
+/// Download the jina-code-embeddings-1.5b GGUF model from HuggingFace.
 ///
-/// Downloads a single GGUF file (~531 MB) into the HuggingFace cache,
+/// Downloads a single GGUF file (~1.6 GB) into the HuggingFace cache,
 /// then creates a symlink in `target_dir`. Uses the same pattern as
 /// the LLM model download in `src/llm/mod.rs`.
 fn download_embedding_model(target_dir: &crate::path::Utf8Path) -> Result<()> {
@@ -146,7 +146,7 @@ fn download_embedding_model(target_dir: &crate::path::Utf8Path) -> Result<()> {
     let repo = api.model(EMBEDDING_HF_REPO.to_string());
 
     tracing::info!(
-        "Downloading {} (~531 MB, this may take a few minutes)...",
+        "Downloading {} (~1.6 GB, this may take a few minutes)...",
         EMBEDDING_HF_MODEL_FILE
     );
     let model_cached = repo

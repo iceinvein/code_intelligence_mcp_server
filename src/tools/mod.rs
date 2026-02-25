@@ -345,7 +345,7 @@ pub struct SearchAcrossReposTool {
 
 #[macros::mcp_tool(
     name = "explore_cross_repo_dependencies",
-    description = "Explore cross-repo dependency edges for a symbol. Shows references from this repo's symbols to symbols in other indexed repos. Standalone mode only."
+    description = "Explore cross-repo dependency edges for a symbol. Shows references from this repo's symbols to symbols in other indexed repos. Currently only downstream direction is implemented; upstream is planned. Standalone mode only."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExploreCrossRepoDependenciesTool {
@@ -353,7 +353,7 @@ pub struct ExploreCrossRepoDependenciesTool {
     pub symbol_name: String,
     /// Optional file path to disambiguate when multiple symbols share the same name
     pub file_path: Option<String>,
-    /// Direction: "downstream" (what this symbol references in other repos), "upstream" (what references this symbol from other repos), or "both" (default)
+    /// Direction: "downstream" (what this symbol references in other repos). "upstream" and "both" are accepted but upstream is not yet implemented.
     pub direction: Option<String>,
     /// Maximum number of cross-repo edges to return (default: 20)
     pub limit: Option<u32>,

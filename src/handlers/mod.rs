@@ -2609,6 +2609,14 @@ pub fn handle_explore_cross_repo_dependencies(
     let limit = tool.limit.unwrap_or(20).clamp(1, 200) as usize;
     let direction = tool.direction.as_deref().unwrap_or("both");
 
+    // Validate direction
+    if !matches!(direction, "downstream" | "upstream" | "both") {
+        return Ok(json!({
+            "error": "invalid_direction",
+            "message": format!("Invalid direction '{}'. Use 'downstream', 'upstream', or 'both'.", direction),
+        }));
+    }
+
     // Find the root symbol in this repo
     let candidates = state.sqlite.search_symbols_by_exact_name(
         &tool.symbol_name,

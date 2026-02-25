@@ -19,6 +19,7 @@ use super::symbol::{
 /// # Examples
 ///
 /// ```
+/// use code_intelligence_mcp_server::indexer::extract::ruby::extract_ruby_symbols;
 /// let src = "class Greeter; def greet; end; end";
 /// let file = extract_ruby_symbols(src).unwrap();
 /// assert!(file.symbols.iter().any(|s| s.name == "Greeter"));

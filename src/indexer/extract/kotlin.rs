@@ -19,6 +19,7 @@ use super::symbol::{
 /// # Examples
 ///
 /// ```
+/// use code_intelligence_mcp_server::indexer::extract::kotlin::extract_kotlin_symbols;
 /// let src = "class Hello { fun greet() = \"hi\" }";
 /// let file = extract_kotlin_symbols(src).unwrap();
 /// assert!(file.symbols.iter().any(|s| s.name == "Hello"));

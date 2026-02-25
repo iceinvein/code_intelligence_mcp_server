@@ -24,6 +24,7 @@ use super::symbol::{
 /// # Examples
 ///
 /// ```
+/// use code_intelligence_mcp_server::indexer::extract::swift::extract_swift_symbols;
 /// let src = "class Greeter { func greet() {} }";
 /// let file = extract_swift_symbols(src).unwrap();
 /// assert!(file.symbols.iter().any(|s| s.name == "Greeter"));

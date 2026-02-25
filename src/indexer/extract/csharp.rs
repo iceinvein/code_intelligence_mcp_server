@@ -19,6 +19,7 @@ use super::symbol::{
 /// # Examples
 ///
 /// ```
+/// use code_intelligence_mcp_server::indexer::extract::csharp::extract_csharp_symbols;
 /// let src = "namespace App { public class Greeter { public void Greet() {} } }";
 /// let file = extract_csharp_symbols(src).unwrap();
 /// assert!(file.symbols.iter().any(|s| s.name == "Greeter"));

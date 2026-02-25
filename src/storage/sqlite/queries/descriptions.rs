@@ -182,7 +182,7 @@ pub fn list_descriptions_with_symbol_data(
          FROM descriptions d
          JOIN symbols s ON s.id = d.symbol_id
          ORDER BY s.file_path ASC, s.name ASC
-         LIMIT ?2"
+         LIMIT ?1"
     };
 
     let mut stmt = conn.prepare(sql)?;
@@ -204,7 +204,7 @@ pub fn list_descriptions_with_symbol_data(
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("Failed to list descriptions with symbol data")
     } else {
-        stmt.query_map(params!["", limit], map_row)?
+        stmt.query_map(params![limit], map_row)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("Failed to list descriptions with symbol data")
     }

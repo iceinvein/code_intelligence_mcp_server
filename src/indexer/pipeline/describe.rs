@@ -22,6 +22,9 @@ use crate::storage::tantivy::TantivyIndex;
 /// symbol text strings are freed before the next page is fetched.
 /// The LLM model (~1.1 GB GPU) is explicitly dropped after all
 /// descriptions are generated.
+///
+/// If `one_shot` is true, exits immediately when no pending symbols remain
+/// (used in tests). Otherwise loops with an idle timeout checking for new work.
 pub async fn run_description_worker(
     db: Arc<SqliteStore>,
     tantivy: Arc<TantivyIndex>,

@@ -27,13 +27,16 @@ pub async fn spawn_discovery_server(
         }),
     );
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], discovery_port));
+    let addr: SocketAddr = format!("{}:{}", mcp_host, discovery_port)
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid discovery address {}:{}: {}", mcp_host, discovery_port, e))?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!(
         discovery_port = discovery_port,
         mcp_url = %format!("http://{}:{}/mcp", mcp_host, mcp_port),
-        "Discovery endpoint available at http://127.0.0.1:{}/.well-known/mcp",
+        "Discovery endpoint available at http://{}:{}/.well-known/mcp",
+        mcp_host,
         discovery_port,
     );
 

@@ -306,7 +306,7 @@ async fn run_standalone(
     if let Some(chat_sm) = chat_session_manager {
         let chat_port = chat_port
             .or_else(|| std::env::var("CIMCP_CHAT_PORT").ok().and_then(|v| v.parse().ok()))
-            .unwrap_or(3334);
+            .unwrap_or(bind_port.saturating_add(2));
 
         let chat_model_dir = standalone_config.data_dir.join("models/qwen2.5-coder-14b-gguf");
 

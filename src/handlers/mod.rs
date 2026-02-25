@@ -2303,6 +2303,128 @@ struct CrossRepoHit {
 /// per-repo `AppState` instances.  The embedded-mode stub in
 /// `dispatch_tool_call` returns an informational error before this is ever
 /// reached from stdio transport.
+/// Handle find_duplicates tool - find groups of semantically similar symbols
+pub fn handle_find_duplicates(
+    state: &AppState,
+    tool: FindDuplicatesTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let sqlite = &state.sqlite;
+
+    let clusters = sqlite.list_duplicate_clusters(limit)?;
+
+    let mut groups = Vec::new();
+    let mut total_symbols = 0usize;
+
+    for (cluster_key, _member_count) in &clusters {
+        let members = sqlite.list_cluster_members_with_details(cluster_key)?;
+
+        // Apply filters
+        let filtered: Vec<_> = members
+            .into_iter()
+            .filter(|m| {
+                if let Some(ref kind_filter) = tool.kind {
+                    if !m.kind.eq_ignore_ascii_case(kind_filter) {
+                        return false;
+                    }
+                }
+                if let Some(ref path_filter) = tool.file_path {
+                    if !m.file_path.contains(path_filter.as_str()) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        // After filtering, skip clusters with fewer than 2 members
+        if filtered.len() < 2 {
+            continue;
+        }
+
+        total_symbols += filtered.len();
+
+        let member_entries: Vec<serde_json::Value> = filtered
+            .iter()
+            .map(|m| {
+                json!({
+                    "name": m.name,
+                    "file_path": m.file_path,
+                    "kind": m.kind,
+                    "start_line": m.start_line,
+                    "end_line": m.end_line,
+                    "exported": m.exported,
+                    "symbol_id": m.symbol_id,
+                })
+            })
+            .collect();
+
+        let suggestion = format!(
+            "These {} {}s share the same embedding cluster, suggesting high semantic similarity. Consider consolidating.",
+            filtered.len(),
+            filtered.first().map(|m| m.kind.as_str()).unwrap_or("symbol"),
+        );
+
+        groups.push(json!({
+            "cluster_key": cluster_key,
+            "member_count": filtered.len(),
+            "members": member_entries,
+            "suggestion": suggestion,
+        }));
+    }
+
+    // Build display
+    let display = format_duplicates(&groups, total_symbols);
+
+    Ok(json!({
+        "duplicate_group_count": groups.len(),
+        "total_duplicate_symbols": total_symbols,
+        "groups": groups,
+        "display": display,
+    }))
+}
+
+/// Format duplicate detection results as markdown
+fn format_duplicates(groups: &[serde_json::Value], total_symbols: usize) -> String {
+    let mut out = String::from("# Semantic Duplicate Detection\n\n");
+    out.push_str(&format!(
+        "**Found {} duplicate groups ({} total symbols)**\n\n",
+        groups.len(),
+        total_symbols,
+    ));
+
+    if groups.is_empty() {
+        out.push_str("*No semantic duplicates found*\n");
+        return out;
+    }
+
+    for (i, group) in groups.iter().enumerate().take(30) {
+        let member_count = group.get("member_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        out.push_str(&format!("## Group {} ({} members)\n\n", i + 1, member_count));
+
+        if let Some(members) = group.get("members").and_then(|v| v.as_array()) {
+            for m in members {
+                let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let kind = m.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let file = m.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                let file_short = file.split('/').next_back().unwrap_or(file);
+                let line = m.get("start_line").and_then(|v| v.as_u64()).unwrap_or(0);
+                out.push_str(&format!(
+                    "- **{}** ({}) - `{}`:{}\n",
+                    name, kind, file_short, line
+                ));
+            }
+        }
+
+        if let Some(suggestion) = group.get("suggestion").and_then(|v| v.as_str()) {
+            out.push_str(&format!("\n> {}\n", suggestion));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
 pub async fn handle_search_across_repos(
     session_manager: &crate::session::SessionManager,
     tool: SearchAcrossReposTool,

@@ -254,6 +254,22 @@ impl SqliteStore {
         queries::misc::list_symbols_without_similarity_clusters(&conn, limit)
     }
 
+    pub fn list_duplicate_clusters(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, usize)>> {
+        let conn = self.read()?;
+        queries::misc::list_duplicate_clusters(&conn, limit)
+    }
+
+    pub fn list_cluster_members_with_details(
+        &self,
+        cluster_key: &str,
+    ) -> Result<Vec<queries::misc::ClusterMemberRow>> {
+        let conn = self.read()?;
+        queries::misc::list_cluster_members_with_details(&conn, cluster_key)
+    }
+
     pub fn delete_usage_examples_by_file(&self, file_path: &str) -> Result<()> {
         let conn = self.write()?;
         queries::misc::delete_usage_examples_by_file(&conn, file_path)

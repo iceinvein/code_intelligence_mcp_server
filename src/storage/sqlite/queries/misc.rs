@@ -149,6 +149,77 @@ LIMIT ?2
     Ok(out)
 }
 
+/// A cluster member with symbol details, used by `list_cluster_members_with_details`.
+#[derive(Debug, Clone)]
+pub struct ClusterMemberRow {
+    pub symbol_id: String,
+    pub name: String,
+    pub file_path: String,
+    pub kind: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub exported: bool,
+}
+
+/// List cluster keys that have 2+ members, ordered by member count descending.
+pub fn list_duplicate_clusters(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(String, usize)>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT cluster_key, COUNT(*) as member_count
+FROM similarity_clusters
+GROUP BY cluster_key
+HAVING COUNT(*) >= 2
+ORDER BY member_count DESC
+LIMIT ?1
+"#,
+        )
+        .context("Failed to prepare list_duplicate_clusters")?;
+    let mut rows = stmt.query(params![limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let key: String = row.get(0)?;
+        let count: i64 = row.get(1)?;
+        out.push((key, count as usize));
+    }
+    Ok(out)
+}
+
+/// List members of a specific cluster with full symbol details.
+pub fn list_cluster_members_with_details(
+    conn: &Connection,
+    cluster_key: &str,
+) -> Result<Vec<ClusterMemberRow>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT s.id, s.name, s.file_path, s.kind, s.start_line, s.end_line, s.exported
+FROM similarity_clusters c
+JOIN symbols s ON s.id = c.symbol_id
+WHERE c.cluster_key = ?1
+ORDER BY s.file_path ASC, s.name ASC
+"#,
+        )
+        .context("Failed to prepare list_cluster_members_with_details")?;
+    let mut rows = stmt.query(params![cluster_key])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(ClusterMemberRow {
+            symbol_id: row.get(0)?,
+            name: row.get(1)?,
+            file_path: row.get(2)?,
+            kind: row.get(3)?,
+            start_line: row.get(4)?,
+            end_line: row.get(5)?,
+            exported: row.get::<_, i64>(6)? != 0,
+        });
+    }
+    Ok(out)
+}
+
 /// List symbols that don't have similarity clusters (i.e., no embeddings generated yet)
 ///
 /// This is used to find symbols that need embeddings after parallel indexing.
@@ -190,4 +261,118 @@ LIMIT ?1
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::storage::sqlite::schema::SCHEMA_SQL)
+            .unwrap();
+        conn
+    }
+
+    fn insert_symbol(conn: &Connection, id: &str, file_path: &str, kind: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO symbols (id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text)
+             VALUES (?1, ?2, 'rust', ?3, ?4, 1, 0, 100, 1, 10, '')",
+            params![id, file_path, kind, name],
+        )
+        .unwrap();
+    }
+
+    fn insert_cluster(conn: &Connection, symbol_id: &str, cluster_key: &str) {
+        upsert_similarity_cluster(
+            conn,
+            &SimilarityClusterRow {
+                symbol_id: symbol_id.to_string(),
+                cluster_key: cluster_key.to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn list_duplicate_clusters_returns_only_multi_member() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "a", "src/a.rs", "function", "parse_config");
+        insert_symbol(&conn, "b", "src/b.rs", "function", "parse_settings");
+        insert_symbol(&conn, "c", "src/c.rs", "function", "lonely_func");
+
+        insert_cluster(&conn, "a", "cluster_1");
+        insert_cluster(&conn, "b", "cluster_1");
+        insert_cluster(&conn, "c", "cluster_2"); // singleton
+
+        let clusters = list_duplicate_clusters(&conn, 100).unwrap();
+        assert_eq!(clusters.len(), 1, "Only clusters with 2+ members");
+        assert_eq!(clusters[0].0, "cluster_1");
+        assert_eq!(clusters[0].1, 2);
+    }
+
+    #[test]
+    fn list_duplicate_clusters_orders_by_count_desc() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "a", "src/a.rs", "function", "fn_a");
+        insert_symbol(&conn, "b", "src/b.rs", "function", "fn_b");
+        insert_symbol(&conn, "c", "src/c.rs", "function", "fn_c");
+        insert_symbol(&conn, "d", "src/d.rs", "function", "fn_d");
+        insert_symbol(&conn, "e", "src/e.rs", "function", "fn_e");
+
+        insert_cluster(&conn, "a", "small_cluster");
+        insert_cluster(&conn, "b", "small_cluster");
+        insert_cluster(&conn, "c", "big_cluster");
+        insert_cluster(&conn, "d", "big_cluster");
+        insert_cluster(&conn, "e", "big_cluster");
+
+        let clusters = list_duplicate_clusters(&conn, 100).unwrap();
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].0, "big_cluster");
+        assert_eq!(clusters[0].1, 3);
+        assert_eq!(clusters[1].0, "small_cluster");
+        assert_eq!(clusters[1].1, 2);
+    }
+
+    #[test]
+    fn list_duplicate_clusters_respects_limit() {
+        let conn = setup_test_db();
+        for i in 0..6 {
+            let id = format!("s{}", i);
+            let cluster = format!("c{}", i / 2);
+            insert_symbol(&conn, &id, &format!("src/{}.rs", id), "function", &id);
+            insert_cluster(&conn, &id, &cluster);
+        }
+
+        let clusters = list_duplicate_clusters(&conn, 1).unwrap();
+        assert_eq!(clusters.len(), 1);
+    }
+
+    #[test]
+    fn list_cluster_members_with_details_returns_symbol_info() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "a", "src/a.rs", "function", "parse_config");
+        insert_symbol(&conn, "b", "src/b.rs", "function", "parse_settings");
+
+        insert_cluster(&conn, "a", "cluster_1");
+        insert_cluster(&conn, "b", "cluster_1");
+
+        let members = list_cluster_members_with_details(&conn, "cluster_1").unwrap();
+        assert_eq!(members.len(), 2);
+
+        // Ordered by file_path ASC, name ASC
+        assert_eq!(members[0].name, "parse_config");
+        assert_eq!(members[0].file_path, "src/a.rs");
+        assert_eq!(members[0].kind, "function");
+        assert_eq!(members[1].name, "parse_settings");
+        assert_eq!(members[1].file_path, "src/b.rs");
+    }
+
+    #[test]
+    fn list_cluster_members_empty_for_unknown_key() {
+        let conn = setup_test_db();
+        let members = list_cluster_members_with_details(&conn, "nonexistent").unwrap();
+        assert!(members.is_empty());
+    }
 }

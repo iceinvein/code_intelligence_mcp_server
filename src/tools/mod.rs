@@ -317,6 +317,20 @@ pub struct FindDeadCodeTool {
 }
 
 #[macros::mcp_tool(
+    name = "find_duplicates",
+    description = "Find groups of semantically similar symbols (potential duplicates) based on embedding clusters. Returns symbol groups that share the same embedding cluster, suggesting high semantic similarity."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct FindDuplicatesTool {
+    /// Filter to symbols in a specific file path
+    pub file_path: Option<String>,
+    /// Filter by symbol kind (e.g., "function", "class", "struct")
+    pub kind: Option<String>,
+    /// Maximum number of duplicate groups to return (default: 50)
+    pub limit: Option<u32>,
+}
+
+#[macros::mcp_tool(
     name = "search_across_repos",
     description = "Search across all indexed repositories. Returns results merged by score. Standalone mode only."
 )]

@@ -714,21 +714,17 @@ async fn run_embedded() -> SdkResult<()> {
                 };
 
                 // Wrap in FallbackLlmGenerator if sampling is enabled.
-                // The mcp_runtime may not be set yet (it's populated on the
-                // first tool call from the client). FallbackLlmGenerator
-                // checks the OnceCell on each generate() call.
+                // The mcp_runtime OnceCell may not be set yet (it's populated on the
+                // first tool call from the client). FallbackLlmGenerator stores the
+                // Arc<OnceCell<...>> and checks it on each generate() call, so once
+                // the runtime becomes available, subsequent descriptions use sampling.
                 let generator: std::sync::Arc<dyn code_intelligence_mcp_server::llm::LlmGenerator> = if sampling_enabled {
-                    let runtime = mcp_runtime_cell.get().cloned();
-                    if runtime.is_some() {
-                        tracing::info!("MCP sampling available, using FallbackLlmGenerator");
-                    } else {
-                        tracing::info!(
-                            "MCP runtime not yet available, FallbackLlmGenerator will use local until first tool call"
-                        );
-                    }
+                    tracing::info!(
+                        "MCP sampling enabled, FallbackLlmGenerator will use sampling once client connects"
+                    );
                     std::sync::Arc::new(
                         code_intelligence_mcp_server::llm::sampling::FallbackLlmGenerator::new(
-                            runtime,
+                            mcp_runtime_cell,
                             local_generator,
                         ),
                     )

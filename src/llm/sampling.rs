@@ -5,6 +5,7 @@
 //! local llama.cpp inference when sampling is unavailable.
 
 use anyhow::{anyhow, Result};
+use once_cell::sync::OnceCell;
 use rust_mcp_sdk::{
     schema::{
         CreateMessageContent, CreateMessageRequestParams, Role, SamplingMessage,
@@ -105,18 +106,23 @@ impl LlmGenerator for SamplingLlmGenerator {
 /// Tries MCP sampling first, falls back to local LLM generator.
 ///
 /// The MCP runtime may not be available at server startup (it's set on the
-/// first tool call from the client). Until then, all descriptions use the
-/// local generator. Once the runtime is available and the client supports
-/// sampling, subsequent descriptions use the client's LLM.
+/// first tool call from the client). The `OnceCell` is checked on each
+/// `generate()` call so that once the runtime becomes available, subsequent
+/// descriptions use the client's LLM. Until then, all descriptions use the
+/// local generator.
 pub struct FallbackLlmGenerator {
-    /// MCP runtime, set lazily on first tool call. `None` at startup.
-    mcp_runtime: Option<Arc<dyn McpServer>>,
+    /// MCP runtime cell, populated lazily on first tool call from the client.
+    /// Checked on every `generate()` call so new availability is picked up.
+    mcp_runtime: Arc<OnceCell<Arc<dyn McpServer + 'static>>>,
     /// Local llama.cpp generator (always available).
     local: Arc<dyn LlmGenerator>,
 }
 
 impl FallbackLlmGenerator {
-    pub fn new(mcp_runtime: Option<Arc<dyn McpServer>>, local: Arc<dyn LlmGenerator>) -> Self {
+    pub fn new(
+        mcp_runtime: Arc<OnceCell<Arc<dyn McpServer + 'static>>>,
+        local: Arc<dyn LlmGenerator>,
+    ) -> Self {
         Self {
             mcp_runtime,
             local,
@@ -126,8 +132,10 @@ impl FallbackLlmGenerator {
 
 impl LlmGenerator for FallbackLlmGenerator {
     fn generate(&self, prompt: &str, max_tokens: u32) -> Result<String> {
-        // Try sampling if we have an MCP runtime
-        if let Some(ref runtime) = self.mcp_runtime {
+        // Check the OnceCell on each call — the runtime is set lazily on the
+        // first tool call from the client, which typically arrives after the
+        // description worker has already started.
+        if let Some(runtime) = self.mcp_runtime.get() {
             let sampling = SamplingLlmGenerator::new(runtime.clone());
             match sampling.generate(prompt, max_tokens) {
                 Ok(text) => {
@@ -357,8 +365,10 @@ mod tests {
 
     #[test]
     fn test_fallback_generator_no_runtime_uses_local() {
+        // OnceCell is empty — no runtime has been set yet (server just started)
+        let cell = Arc::new(OnceCell::new());
         let local = Arc::new(MockLlmGenerator) as Arc<dyn LlmGenerator>;
-        let fallback = FallbackLlmGenerator::new(None, local);
+        let fallback = FallbackLlmGenerator::new(cell, local);
 
         let prompt = crate::llm::build_description_prompt(
             "test_func",
@@ -378,9 +388,10 @@ mod tests {
     fn test_fallback_generator_sampling_not_supported_uses_local() {
         // Client that does NOT support sampling
         let mock_server = Arc::new(MockSamplingServer::new(false));
+        let cell: Arc<OnceCell<Arc<dyn McpServer + 'static>>> = Arc::new(OnceCell::new());
+        cell.set(mock_server as Arc<dyn McpServer>).ok();
         let local = Arc::new(MockLlmGenerator) as Arc<dyn LlmGenerator>;
-        let fallback =
-            FallbackLlmGenerator::new(Some(mock_server as Arc<dyn McpServer>), local);
+        let fallback = FallbackLlmGenerator::new(cell, local);
 
         let prompt = crate::llm::build_description_prompt(
             "test_func",
@@ -447,9 +458,10 @@ mod tests {
     async fn test_fallback_generator_falls_back_on_sampling_failure() {
         // Client that supports sampling but whose send() returns None (causing request to fail)
         let mock_server = Arc::new(MockSamplingServer::new(true));
+        let cell: Arc<OnceCell<Arc<dyn McpServer + 'static>>> = Arc::new(OnceCell::new());
+        cell.set(mock_server as Arc<dyn McpServer>).ok();
         let local = Arc::new(MockLlmGenerator) as Arc<dyn LlmGenerator>;
-        let fallback =
-            FallbackLlmGenerator::new(Some(mock_server as Arc<dyn McpServer>), local);
+        let fallback = FallbackLlmGenerator::new(cell, local);
 
         let prompt = crate::llm::build_description_prompt(
             "test_func",
@@ -469,6 +481,39 @@ mod tests {
             text.contains("Mock description"),
             "Should fall back to local after sampling failure; got: {}",
             text
+        );
+    }
+
+    #[test]
+    fn test_fallback_generator_picks_up_runtime_dynamically() {
+        // Simulate the real startup sequence: FallbackLlmGenerator is created
+        // before the first tool call, so the OnceCell is empty. Later, a tool
+        // call populates it. The next generate() should attempt sampling.
+        let cell: Arc<OnceCell<Arc<dyn McpServer + 'static>>> = Arc::new(OnceCell::new());
+        let local = Arc::new(MockLlmGenerator) as Arc<dyn LlmGenerator>;
+        let fallback = FallbackLlmGenerator::new(cell.clone(), local);
+
+        let prompt = crate::llm::build_description_prompt(
+            "test_func",
+            "function",
+            "src/lib.rs",
+            "fn test_func() {}",
+        );
+
+        // First call: no runtime yet — uses local
+        let result1 = fallback.generate(&prompt, 50).unwrap();
+        assert!(result1.contains("Mock description"), "Should use local when OnceCell is empty");
+
+        // Simulate first tool call populating the runtime
+        let mock_server = Arc::new(MockSamplingServer::new(false));
+        cell.set(mock_server as Arc<dyn McpServer>).ok();
+
+        // Second call: runtime is now available (but doesn't support sampling),
+        // so it tries sampling, fails, falls back to local
+        let result2 = fallback.generate(&prompt, 50).unwrap();
+        assert!(
+            result2.contains("Mock description"),
+            "Should attempt sampling then fall back to local"
         );
     }
 }

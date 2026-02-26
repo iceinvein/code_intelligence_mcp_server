@@ -9,22 +9,13 @@ permissions:
   contents: write
 
 jobs:
-  ci-check:
-    name: Verify CI passed
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wait for CI to pass
-        uses: lewagon/wait-on-check-action@v1.3.4
-        with:
-          ref: ${{ github.sha }}
-          check-name: "Test (macOS)"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 15
-          allowed-conclusions: success
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
 
   build:
     name: Build (macOS Silicon)
-    needs: [ci-check]
+    needs: [ci]
     runs-on: macos-latest
 
     steps:

@@ -623,7 +623,10 @@ async fn run_embedded() -> SdkResult<()> {
         mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
     });
 
-    // Trigger automatic re-index if vector dimension migration occurred
+    // Trigger automatic re-index if vector dimension migration occurred.
+    // Runs in background so the MCP server starts immediately — large repos
+    // (500+ files) can take 60+ seconds to re-index, which would exceed
+    // Claude Code's MCP connection timeout if done synchronously.
     if needs_reindex {
         tracing::info!(
             "Vector table migration completed. Clearing fingerprints and similarity clusters to force full re-index..."
@@ -636,21 +639,25 @@ async fn run_embedded() -> SdkResult<()> {
         if let Err(e) = state.sqlite.clear_similarity_clusters() {
             tracing::error!("Failed to clear similarity clusters after vector migration: {}", e);
         }
-        match state.indexer.index_all().await {
-            Ok(stats) => {
-                tracing::info!(
-                    "Automatic re-index completed successfully: indexed {} symbols from {} files",
-                    stats.symbols_indexed,
-                    stats.files_indexed
-                );
+        let reindex_state = state.clone();
+        tokio::spawn(async move {
+            tracing::info!("Starting background re-index after vector dimension migration...");
+            match reindex_state.indexer.index_all().await {
+                Ok(stats) => {
+                    tracing::info!(
+                        "Automatic re-index completed successfully: indexed {} symbols from {} files",
+                        stats.symbols_indexed,
+                        stats.files_indexed
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "Automatic re-index failed: {}. Please run 'refresh_index' manually.",
+                        err
+                    );
+                }
             }
-            Err(err) => {
-                tracing::error!(
-                    "Automatic re-index failed: {}. Please run 'refresh_index' manually.",
-                    err
-                );
-            }
-        }
+        });
     }
 
     // Recovery: regenerate vectors for orphaned symbols (e.g. after LanceDB data loss).

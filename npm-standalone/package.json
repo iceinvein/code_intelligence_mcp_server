@@ -1,6 +1,6 @@
 {
   "name": "@iceinvein/code-intelligence-mcp-standalone",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Code Intelligence MCP Server - Standalone HTTP mode for multi-client setups",
   "bin": {
     "code-intelligence-mcp-standalone": "bin/run.js"

@@ -103,48 +103,6 @@ struct ServerTomlLifecycle {
     warm_ttl_seconds: Option<u64>,
 }
 
-/// Configuration for the chat subsystem (LLM context, tool rounds).
-///
-/// Loaded from environment variables:
-/// - `CIMCP_CHAT_CTX_SIZE` (default: 8192)
-/// - `CIMCP_CHAT_MAX_TOOL_ROUNDS` (default: 3)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatConfig {
-    /// Context window size in tokens for the chat LLM.
-    pub ctx_size: u32,
-    /// Maximum number of tool-calling rounds per agent turn.
-    pub max_tool_rounds: usize,
-}
-
-impl Default for ChatConfig {
-    fn default() -> Self {
-        Self {
-            ctx_size: crate::chat::llm::DEFAULT_CTX_SIZE,
-            max_tool_rounds: crate::chat::agent::DEFAULT_MAX_TOOL_ROUNDS,
-        }
-    }
-}
-
-impl ChatConfig {
-    /// Load chat configuration from environment variables, falling back to defaults.
-    pub fn from_env() -> Self {
-        let ctx_size = env::var("CIMCP_CHAT_CTX_SIZE")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(crate::chat::llm::DEFAULT_CTX_SIZE);
-
-        let max_tool_rounds = env::var("CIMCP_CHAT_MAX_TOOL_ROUNDS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(crate::chat::agent::DEFAULT_MAX_TOOL_ROUNDS);
-
-        Self {
-            ctx_size,
-            max_tool_rounds,
-        }
-    }
-}
-
 /// Configuration for standalone HTTP server mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StandaloneConfig {

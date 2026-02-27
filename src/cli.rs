@@ -9,8 +9,6 @@ pub struct CliArgs {
     pub standalone: bool,
     pub host: Option<String>,
     pub port: Option<u16>,
-    pub chat: bool,
-    pub chat_port: Option<u16>,
     pub discovery_port: Option<u16>,
 }
 
@@ -21,8 +19,6 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         standalone: false,
         host: None,
         port: None,
-        chat: false,
-        chat_port: None,
         discovery_port: None,
     };
 
@@ -33,15 +29,6 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         .unwrap_or(false)
     {
         cli.standalone = true;
-    }
-
-    // Check for chat mode via env var
-    if env::var("CIMCP_CHAT")
-        .ok()
-        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
-    {
-        cli.chat = true;
     }
 
     let mut i = 1; // Skip program name at index 0
@@ -63,15 +50,6 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         cli.port = Some(port);
                     }
                     i += 1; // Skip the value
-                }
-            }
-            "--chat" => cli.chat = true,
-            "--chat-port" => {
-                if i + 1 < args.len() {
-                    if let Ok(port) = args[i + 1].parse::<u16>() {
-                        cli.chat_port = Some(port);
-                    }
-                    i += 1;
                 }
             }
             "--discovery-port" => {
@@ -111,8 +89,6 @@ pub fn print_help() {
     println!("  --standalone            Run in standalone HTTP mode");
     println!("  --host HOST             Override listen address (standalone only)");
     println!("  --port PORT             Override listen port (standalone only)");
-    println!("  --chat                  Enable chat UI (standalone only)");
-    println!("  --chat-port PORT        Chat UI port (default: 3334)");
     println!("  --discovery-port PORT   Discovery endpoint port (default: MCP port + 1)");
     println!();
     println!("Embedded mode (default):");
@@ -143,12 +119,6 @@ pub fn print_help() {
     println!("  Default host: 127.0.0.1");
     println!("  Default port: 3333");
     println!("  Per-repo data stored in: ~/.code-intelligence/repos/<repo-id>/");
-    println!();
-    println!("Chat mode (requires --standalone --chat):");
-    println!("  Starts a ChatGPT-style web UI for codebase Q&A.");
-    println!("  Downloads Qwen2.5-Coder-14B (~9GB) on first launch.");
-    println!("  Default chat port: 3334");
-    println!("  Env vars: CIMCP_CHAT=true, CIMCP_CHAT_PORT=4000");
     println!();
     println!("Tools:");
     println!("  search_code, refresh_index, get_definition, find_references, get_file_symbols,");
@@ -223,8 +193,6 @@ mod tests {
         assert!(!cli.standalone);
         assert!(cli.host.is_none());
         assert!(cli.port.is_none());
-        assert!(!cli.chat);
-        assert!(cli.chat_port.is_none());
         assert!(cli.discovery_port.is_none());
     }
 
@@ -234,25 +202,6 @@ mod tests {
         assert!(!cli.help);
         assert!(!cli.version);
         assert!(!cli.standalone);
-    }
-
-    #[test]
-    fn parse_args_detects_chat_flag() {
-        let cli = parse_args(&["bin".to_string(), "--chat".to_string()]);
-        assert!(cli.chat);
-        assert!(cli.chat_port.is_none());
-    }
-
-    #[test]
-    fn parse_args_parses_chat_port() {
-        let cli = parse_args(&[
-            "bin".to_string(),
-            "--chat".to_string(),
-            "--chat-port".to_string(),
-            "4000".to_string(),
-        ]);
-        assert!(cli.chat);
-        assert_eq!(cli.chat_port, Some(4000));
     }
 
     #[test]

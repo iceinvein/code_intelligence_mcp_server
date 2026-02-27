@@ -1,6 +1,5 @@
 pub mod affinity;
 pub mod cache;
-pub mod chat;
 pub mod cochange;
 pub mod cross_repo;
 pub mod decorators;

@@ -132,8 +132,6 @@ async fn main() -> SdkResult<()> {
         return run_standalone(
             cli_args.host.as_deref(),
             cli_args.port,
-            cli_args.chat,
-            cli_args.chat_port,
             cli_args.discovery_port,
         ).await;
     }
@@ -148,8 +146,6 @@ async fn main() -> SdkResult<()> {
 async fn run_standalone(
     host: Option<&str>,
     port: Option<u16>,
-    chat_enabled: bool,
-    chat_port: Option<u16>,
     discovery_port: Option<u16>,
 ) -> SdkResult<()> {
     let standalone_config = code_intelligence_mcp_server::config::StandaloneConfig::load(host, port, discovery_port)
@@ -218,13 +214,6 @@ async fn run_standalone(
         protocol_version: ProtocolVersion::V2025_11_25.into(),
         instructions: None,
         meta: None,
-    };
-
-    // Clone session_manager for chat before it's moved into StandaloneHandler
-    let chat_session_manager = if chat_enabled {
-        Some(session_manager.clone())
-    } else {
-        None
     };
 
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
@@ -299,57 +288,6 @@ async fn run_standalone(
         .await
         {
             error!("Failed to start discovery server: {}. Discovery endpoint will not be available.", e);
-        }
-    }
-
-    // Spawn chat server if --chat flag is set
-    if let Some(chat_sm) = chat_session_manager {
-        let chat_port = chat_port
-            .or_else(|| std::env::var("CIMCP_CHAT_PORT").ok().and_then(|v| v.parse().ok()))
-            .unwrap_or(bind_port.saturating_add(2));
-
-        let chat_model_dir = standalone_config.data_dir.join("models/qwen2.5-coder-14b-gguf");
-
-        // Load ChatConfig from env vars
-        let chat_config = code_intelligence_mcp_server::config::ChatConfig::from_env();
-        let chat_ctx_size = chat_config.ctx_size;
-
-        // Create ChatStore with shared DB at ~/.code-intelligence/chat.db
-        let chat_db_path = standalone_config.data_dir.join("chat.db");
-        match code_intelligence_mcp_server::chat::store::ChatStore::open(&chat_db_path) {
-            Ok(store) => {
-                let chat_store = Arc::new(store);
-
-                // Load chat LLM in background
-                tokio::spawn(async move {
-                    info!("Starting chat model download/load in background...");
-                    let result = tokio::task::spawn_blocking(move || {
-                        let model_path = code_intelligence_mcp_server::chat::llm::download_chat_model(&chat_model_dir)?;
-                        code_intelligence_mcp_server::chat::llm::ChatLlm::new(&model_path, chat_ctx_size)
-                    }).await;
-
-                    match result {
-                        Ok(Ok(llm)) => {
-                            let llm = Arc::new(llm);
-                            info!("Chat model loaded successfully");
-                            if let Err(e) = code_intelligence_mcp_server::chat::spawn(
-                                chat_sm, llm, chat_store, chat_config, chat_port,
-                            ).await {
-                                error!("Failed to start chat server: {}", e);
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            error!("Failed to load chat model: {}. Chat UI will not be available.", e);
-                        }
-                        Err(e) => {
-                            error!("Chat model loading panicked: {}. Chat UI will not be available.", e);
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                error!("Failed to open chat database at {}: {}. Chat UI will not be available.", chat_db_path, e);
-            }
         }
     }
 

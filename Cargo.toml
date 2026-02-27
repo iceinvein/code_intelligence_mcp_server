@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-async-stream = "0.3"
 async-trait = "0.1"
 rust-mcp-sdk = { version = "0.8.1", features = ["macros", "server", "stdio", "hyper-server", "streamable-http"] }
 serde = { version = "1", features = ["derive"] }
@@ -78,9 +77,6 @@ llama-cpp-2 = { version = "0.1", features = ["metal"] }
 
 # Cross-platform flock() for leader election
 fs2 = "0.4"
-
-# UUID generation for chat session IDs
-uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 bytes = "1"

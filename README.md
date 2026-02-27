@@ -22,7 +22,6 @@ Unlike basic text search, this server builds a local knowledge graph to understa
 * **Production First**: Multi-layer test detection (file paths, symbol names, and AST-level `#[test]`/`mod tests` analysis) ensures implementation code ranks above test helpers.
 * **Multi-Repo Support**: Index and search across multiple repositories/monorepos simultaneously.
 * **OS-Native File Watching**: Uses the `notify` crate with macOS FSEvents for instant re-indexing on file changes.
-* **Built-in Chat UI**: Optional ChatGPT-style web interface powered by a local **Qwen2.5-Coder-14B** model. Ask questions about your codebase in the browser with live tool-call visibility and streaming responses.
 * **Fast & Local**: Written in **Rust** with Metal GPU acceleration on Apple Silicon. Parallel indexing with persistent caching.
 
 ---
@@ -219,156 +218,6 @@ warm_ttl_seconds = 300      # How long idle repos stay in memory
 | `EMBEDDINGS_BACKEND` | `hash` | Override embedding backend (`llamacpp` or `hash`) |
 | `EMBEDDINGS_DEVICE` | `metal` | Override device (cpu/metal) |
 | `EMBEDDINGS_MODEL_DIR` | `/path/to/model` | Override model directory |
-
----
-
-## Chat Mode (Experimental)
-
-Chat mode adds a **ChatGPT-style web UI** for asking questions about your codebase directly in the browser. It runs a local **Qwen2.5-Coder-14B** model with full Metal GPU acceleration and uses the same search and navigation tools that MCP clients get — meaning search quality improvements automatically benefit the chat experience.
-
-Chat mode requires standalone mode and Apple Silicon with at least 16GB of unified memory.
-
-### Quick Start
-
-```bash
-# Start standalone server with chat enabled
-npx @iceinvein/code-intelligence-mcp-standalone --chat
-
-# Or from source
-./target/release/code-intelligence-mcp-server --standalone --chat
-
-# Custom ports
-./target/release/code-intelligence-mcp-server --standalone --port 3333 --chat --chat-port 4000
-
-# Via environment variables
-CIMCP_MODE=standalone CIMCP_CHAT=true ./target/release/code-intelligence-mcp-server
-```
-
-Once started, open **http://127.0.0.1:3334** in your browser.
-
-On first launch, the 14B model (~9GB) is downloaded from HuggingFace and cached at `~/.code-intelligence/models/qwen2.5-coder-14b-gguf/`. The MCP server starts immediately — the model loads in the background and the chat UI becomes available once loading completes (typically 2-5 minutes on first run, seconds on subsequent launches).
-
-### How It Works
-
-```mermaid
-sequenceDiagram
-    participant Browser as Web UI
-    participant Chat as Chat Server (:3334)
-    participant Agent as Agent Loop
-    participant LLM as Qwen2.5-14B (Metal GPU)
-    participant Tools as MCP Tool Handlers
-
-    Browser->>Chat: POST /api/chat (messages + repo_path)
-    Chat-->>Browser: SSE stream opened
-
-    loop Up to 3 tool rounds
-        Agent->>LLM: Generate (full prompt)
-        LLM-->>Agent: Response with <tool_call> blocks
-        Agent-->>Browser: SSE: tool_call (tool name + args)
-        Agent->>Tools: Execute tool (search_code, get_definition, etc.)
-        Tools-->>Agent: Tool results (JSON)
-        Agent-->>Browser: SSE: tool_result (summary)
-        Note over Agent: Append results to conversation, next round
-    end
-
-    Agent->>LLM: Generate stream (final response)
-    LLM-->>Agent: Tokens (one at a time)
-    Agent-->>Browser: SSE: token (streamed)
-    Agent-->>Browser: SSE: done
-```
-
-The agent uses up to **3 rounds** of tool calling before producing a final streamed response. Each round, the LLM can invoke any combination of 10 code intelligence tools to gather context before answering.
-
-### Available Tools
-
-The chat agent has access to a curated subset of the full MCP tool suite:
-
-| Tool | Purpose |
-| :--- | :------ |
-| `search_code` | Hybrid semantic + keyword search |
-| `get_definition` | Jump to symbol source code |
-| `find_references` | Find all usages of a symbol |
-| `get_call_hierarchy` | Navigate callers and callees |
-| `get_type_graph` | Explore type inheritance |
-| `explore_dependency_graph` | Trace module imports/exports |
-| `get_file_symbols` | List all symbols in a file |
-| `find_affected_code` | Impact analysis (reverse dependencies) |
-| `trace_data_flow` | Follow variable reads and writes |
-| `summarize_file` | Structural file overview |
-
-### Web UI Features
-
-- **Live token streaming** — responses appear word-by-word as the model generates
-- **Tool call visibility** — see which tools the model invokes and their results in real-time
-- **Multi-turn conversation** — full chat history maintained across turns
-- **Markdown rendering** — code blocks with syntax highlighting (via highlight.js)
-- **Dark/light theme** — toggle between themes with the header button
-- **Repo selector** — specify the repository path to query against
-- **Keyboard shortcuts** — Enter to send, Shift+Enter for newline
-
-### Configuration
-
-| Setting | CLI Flag | Env Var | Default | Description |
-| :------ | :------- | :------ | :------ | :---------- |
-| Enable chat | `--chat` | `CIMCP_CHAT=true` | off | Activate chat mode |
-| Chat port | `--chat-port PORT` | `CIMCP_CHAT_PORT=PORT` | `3334` | HTTP port for the chat UI |
-
-**Priority:** CLI flags > Environment variables > Defaults
-
-### API Reference
-
-The chat server exposes three HTTP endpoints:
-
-**`GET /`** — Serves the web UI (single-page HTML with embedded CSS/JS).
-
-**`GET /api/status`** — Returns model loading status.
-```json
-{"model_loaded": true, "model_name": "Qwen2.5-Coder-14B-Instruct"}
-```
-
-**`POST /api/chat`** — Starts a streaming chat session. Returns an SSE event stream.
-
-Request body:
-```json
-{
-  "messages": [
-    {"role": "user", "content": "How does the ranking system work?"}
-  ],
-  "repo_path": "/absolute/path/to/your/repo"
-}
-```
-
-SSE event types:
-
-| Event | Data | Description |
-| :---- | :--- | :---------- |
-| `token` | `{"type":"token","content":"The "}` | A generated text token |
-| `tool_call` | `{"type":"tool_call","tool":"search_code","args":{...}}` | Tool invocation started |
-| `tool_result` | `{"type":"tool_result","tool":"search_code","summary":"..."}` | Tool execution completed |
-| `error` | `{"type":"error","message":"..."}` | Non-recoverable error |
-| `done` | `{"type":"done"}` | Stream complete |
-
-### Model Details
-
-| Property | Value |
-| :------- | :---- |
-| Model | Qwen2.5-Coder-14B-Instruct |
-| Format | GGUF Q4_K_M (~9 GB) |
-| Context window | 8,192 tokens |
-| Max generation | 2,048 tokens per response |
-| GPU offloading | All layers via Metal |
-| Sampling | Temperature 0.7 |
-| HuggingFace repo | `Qwen/Qwen2.5-Coder-14B-Instruct-GGUF` |
-| Cache location | `~/.code-intelligence/models/qwen2.5-coder-14b-gguf/` |
-
-### Limitations
-
-- **Standalone-only** — chat is not available in embedded (stdio) mode since it requires a persistent HTTP server
-- **Apple Silicon required** — the 14B model needs Metal GPU acceleration; 16GB+ unified memory recommended
-- **Context budget** — the 8K token context window is shared between conversation history, tool definitions, and tool results; long conversations may lose early context
-- **Tool result truncation** — individual tool results are capped at 4,000 characters to preserve context budget
-- **No authentication** — the chat server binds to localhost only; do not expose to the network without adding an auth layer
-- **Single-threaded generation** — one chat request is processed at a time; concurrent requests queue
 
 ---
 
@@ -574,18 +423,10 @@ Works without configuration by default. You can customize behavior via environme
 ```mermaid
 flowchart LR
   Client[MCP Client] <==> Tools
-  Browser[Chat Web UI] <==> ChatServer
 
   subgraph Server [Code Intelligence Server]
     direction TB
     Tools[Tool Router]
-
-    subgraph Chat [Chat Mode]
-      direction TB
-      ChatServer[Axum HTTP + SSE] --> Agent[Agent Loop]
-      Agent --> ChatLLM["Qwen2.5-Coder-14B<br/>(Metal GPU)"]
-      Agent -- "tool calls" --> Handlers
-    end
 
     subgraph Indexer [Indexing Pipeline]
       direction TB
@@ -652,12 +493,6 @@ EMBEDDINGS_BACKEND=hash BASE_DIR=/path/to/repo ./target/release/code-intelligenc
 
 ```text
 src/
-├── chat/              # Chat mode (--chat flag, standalone only)
-│   ├── mod.rs         # Axum HTTP server, SSE streaming, routes
-│   ├── agent.rs       # Multi-round agent loop, prompt building, tool call parsing
-│   ├── llm.rs         # ChatLlm (Qwen2.5-Coder-14B via llama.cpp, Metal GPU)
-│   ├── tools.rs       # Tool definitions (JSON) + dispatch to handlers
-│   └── ui.html        # Single-file web UI (vanilla JS, marked.js, highlight.js)
 ├── indexer/
 │   ├── extract/       # Language-specific symbol extractors (Rust, TS, Python, Go, Java, C, C++)
 │   ├── pipeline/      # Indexing pipeline stages (scan, parse, embed, watch, describe)
@@ -674,7 +509,7 @@ src/
 │   ├── hybrid.rs      # Hybrid BM25 + vector scoring loop
 │   └── postprocess.rs # Final enforcement, vector promotion
 ├── graph/             # PageRank, call hierarchy, type graphs
-├── handlers/          # MCP tool handlers (shared by MCP server + chat agent)
+├── handlers/          # MCP tool handlers
 ├── server/            # MCP protocol routing (embedded + standalone)
 │   ├── mod.rs         # Shared tool dispatch, embedded handler
 │   └── standalone.rs  # Standalone HTTP handler with session routing

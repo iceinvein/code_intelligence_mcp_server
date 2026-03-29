@@ -430,7 +430,7 @@ impl Retriever {
                 // Use the first sub-query for reranking (or original query)
                 let rerank_query = &sub_queries[0];
                 if let Ok(rerank_scores) = reranker.rerank(rerank_query, &docs).await {
-                    apply_reranker_scores(&hits, &rerank_scores, 0.5) // 50% cross-encoder weight (trained relevance judgments > BM25 for semantic queries)
+                    apply_reranker_scores(&hits, &rerank_scores, 0.6) // 60% cross-encoder weight — must overcome vec=0 base score gap for keyword-only matches like Q7 websocket
                 } else {
                     hits
                 }

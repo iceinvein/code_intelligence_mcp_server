@@ -136,7 +136,10 @@ pub fn expand_with_edges(
                         // that shouldn't surface just because their caller matched.
                         // E.g., repo_name (5-line private fn) called by
                         // generate_embeddings_for_parallel_indexed_files.
-                        if si < -1.0 {
+                        // Exempt exported symbols — they represent the API surface
+                        // and should survive regardless of size (Q13: PathNormalizer::new
+                        // is 3 lines but IS the constructor).
+                        if si < -1.0 && !row.exported {
                             continue;
                         }
                         let evidence_boost =
@@ -188,7 +191,7 @@ pub fn expand_with_edges(
                         }
                         let line_count = row.end_line.saturating_sub(row.start_line) + 1;
                         let si = symbol_importance_adjustment(line_count, row.exported);
-                        if si < -1.0 {
+                        if si < -1.0 && !row.exported {
                             continue;
                         }
                         let evidence_boost =

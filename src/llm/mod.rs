@@ -115,14 +115,15 @@ pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &
         }
     };
 
-    // Build Qwen2.5 chat template with an enhanced system prompt that requests
-    // domain-specific vocabulary and technology names. The generic "Describe what
-    // this code does" prompt produced descriptions like "This function ranks hits
-    // based on signals" — missing "scoring", "BM25", "search ranking" etc.
+    // Build Qwen2.5 chat template. Generates discriminating search keywords
+    // instead of prose descriptions. Prior experiments (R50) showed one-sentence
+    // descriptions had ZERO measurable BM25 impact because terms like "function",
+    // "parses", "code" get near-zero IDF. Keyword tags like "BM25, reciprocal
+    // rank fusion, hybrid search" are high-IDF and directly bridge vocabulary gaps.
     format!(
-        "<|im_start|>system\nDescribe this code in one sentence. \
-         Name specific libraries, technologies, and domain concepts. \
-         Use terms a developer would search for.<|im_end|>\n\
+        "<|im_start|>system\nList 5-10 specific search terms for this code, comma-separated. \
+         Include: domain concepts, algorithms, design patterns, libraries, and alternative names. \
+         Do NOT include generic terms like function, code, error, return, data, handle.<|im_end|>\n\
          <|im_start|>user\n{} {} in {}:\n{}<|im_end|>\n\
          <|im_start|>assistant\n",
         kind, name, module_path, truncated_body
@@ -145,8 +146,8 @@ pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &
 pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
     // Bump when prompt format changes to invalidate cached descriptions.
     // v2: Enhanced system prompt + full module path (was filename-only).
-    // v3: Switched to 3B model (was 1.5B) for more discriminating descriptions.
-    const PROMPT_VERSION: &str = "v2";
+    // v3: Keyword tags instead of prose descriptions (R50: prose had zero BM25 impact).
+    const PROMPT_VERSION: &str = "v3";
 
     let truncated_body: String = body
         .lines()
@@ -271,8 +272,8 @@ mod tests {
 
         // Check structure
         assert!(prompt.contains("<|im_start|>system\n"));
-        assert!(prompt.contains("Describe this code in one sentence."));
-        assert!(prompt.contains("Name specific libraries"));
+        assert!(prompt.contains("List 5-10 specific search terms"));
+        assert!(prompt.contains("domain concepts"));
         assert!(prompt.contains("<|im_end|>\n<|im_start|>user\n"));
         // Uses full module path (strip "src/" prefix)
         assert!(prompt.contains("struct PathNormalizer in path/mod.rs:"));

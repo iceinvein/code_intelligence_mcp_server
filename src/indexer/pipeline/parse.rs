@@ -509,6 +509,7 @@ mod tests {
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
             embedding_truncate_dim: None,
+            embedding_dim_override: None,
         };
 
         // Parse file
@@ -644,6 +645,7 @@ mod tests {
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
             embedding_truncate_dim: None,
+            embedding_dim_override: None,
         };
 
         // Parse file (should be unchanged)
@@ -741,6 +743,7 @@ mod tests {
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
             embedding_truncate_dim: None,
+            embedding_dim_override: None,
         };
 
         // Parse file (should be skipped)

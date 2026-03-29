@@ -870,6 +870,7 @@ fn test_config(base_dir: &Path) -> Config {
         leader_heartbeat_interval_ms: 10_000,
         leader_ttl_seconds: 30,
         embedding_truncate_dim: None,
+            embedding_dim_override: None,
     }
 }
 

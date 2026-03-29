@@ -146,6 +146,7 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         leader_heartbeat_interval_ms: 10_000,
         leader_ttl_seconds: 30,
         embedding_truncate_dim: None,
+            embedding_dim_override: None,
     }
 }
 

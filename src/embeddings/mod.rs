@@ -33,16 +33,23 @@ const JINA_CODE_DIM: usize = 1536;
 
 /// Returns the embedding dimension for a given backend without loading the model.
 ///
+/// Priority: `dim_override` > `truncate_dim` cap > backend default.
+/// Set `dim_override` via `EMBEDDING_DIM` when evaluating a model with a
+/// different native dimension than jina-code-1.5b (1536).
 /// If `truncate_dim` is `Some(d)`, the returned dimension is capped at `d`
 /// (Matryoshka truncation).
 pub fn default_embedding_dim(
     backend: crate::config::EmbeddingsBackend,
     hash_dim: usize,
     truncate_dim: Option<usize>,
+    dim_override: Option<usize>,
 ) -> usize {
-    let full = match backend {
-        crate::config::EmbeddingsBackend::LlamaCpp => JINA_CODE_DIM,
-        crate::config::EmbeddingsBackend::Hash => hash_dim,
+    let full = match dim_override {
+        Some(d) => d,
+        None => match backend {
+            crate::config::EmbeddingsBackend::LlamaCpp => JINA_CODE_DIM,
+            crate::config::EmbeddingsBackend::Hash => hash_dim,
+        },
     };
     match truncate_dim {
         Some(d) if d < full => d,

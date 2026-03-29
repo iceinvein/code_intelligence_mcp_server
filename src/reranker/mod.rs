@@ -34,8 +34,8 @@ pub struct RerankDocument {
 /// - `model_path` is `None`
 /// - The model file does not exist and auto-download fails
 ///
-/// When `enabled` is true and `model_path` is provided, creates a
-/// [`llamacpp::LlamaCppReranker`] wrapped in a [`cache::CachedReranker`].
+/// When `enabled` is true, creates a [`llamacpp::LlamaCppReranker`]
+/// (bge-reranker-v2-m3 BERT cross-encoder) wrapped in a [`cache::CachedReranker`].
 ///
 /// # Arguments
 /// * `enabled` - Whether reranking is enabled (from `RERANKER_ENABLED` env var)
@@ -55,15 +55,14 @@ pub fn create_reranker(
     }
 
     // Resolve the model file path: use explicit path or fall back to the
-    // default LLM model directory (same GGUF as description generation).
+    // default reranker model directory (bge-reranker-v2-m3, separate from
+    // the LLM description model).
     let resolved_model_path: Utf8PathBuf = match model_path {
         Some(p) => p.to_owned(),
         None => {
-            // Derive from the global data directory — same location as the
-            // Qwen2.5-Coder-1.5B model used for LLM descriptions.
             let data_dir = crate::config::get_data_dir();
             data_dir
-                .join("models/qwen2.5-coder-1.5b-gguf")
+                .join("models/bge-reranker-v2-m3-gguf")
                 .join(llamacpp::HF_MODEL_FILE)
         }
     };
@@ -73,7 +72,7 @@ pub fn create_reranker(
         let model_dir = resolved_model_path
             .parent()
             .map(|p| p.to_owned())
-            .unwrap_or_else(|| crate::config::get_data_dir().join("models/qwen2.5-coder-1.5b-gguf"));
+            .unwrap_or_else(|| crate::config::get_data_dir().join("models/bge-reranker-v2-m3-gguf"));
 
         tracing::info!(
             model_path = %resolved_model_path,

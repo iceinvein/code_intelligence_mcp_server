@@ -163,9 +163,9 @@ impl LlmGenerator for FallbackLlmGenerator {
 /// <|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n
 /// ```
 fn parse_qwen_prompt(prompt: &str) -> (String, String) {
-    let system_default = "Describe this code in one sentence. \
-        Name specific libraries, technologies, and domain concepts. \
-        Use terms a developer would search for."
+    let system_default = "List 5-10 specific search terms for this code, comma-separated. \
+        Include: domain concepts, algorithms, design patterns, libraries, and alternative names. \
+        Do NOT include generic terms like function, code, error, return, data, handle."
         .to_string();
 
     // Extract system prompt
@@ -338,16 +338,16 @@ mod tests {
 
     #[test]
     fn test_parse_qwen_prompt() {
-        let prompt = "<|im_start|>system\nDescribe this code in one sentence. \
-            Name specific libraries, technologies, and domain concepts. \
-            Use terms a developer would search for.<|im_end|>\n\
+        let prompt = "<|im_start|>system\nList 5-10 specific search terms for this code, comma-separated. \
+            Include: domain concepts, algorithms, design patterns, libraries, and alternative names. \
+            Do NOT include generic terms like function, code, error, return, data, handle.<|im_end|>\n\
             <|im_start|>user\nfunction foo in lib.rs:\nfn foo() {}<|im_end|>\n\
             <|im_start|>assistant\n";
 
         let (system, user) = parse_qwen_prompt(prompt);
 
-        assert!(system.contains("Describe this code in one sentence"));
-        assert!(system.contains("Name specific libraries"));
+        assert!(system.contains("List 5-10 specific search terms"));
+        assert!(system.contains("domain concepts"));
         assert!(user.contains("function foo in lib.rs:"));
         assert!(user.contains("fn foo() {}"));
     }
@@ -357,8 +357,8 @@ mod tests {
         let prompt = "Just a plain prompt with no template markers";
         let (system, user) = parse_qwen_prompt(prompt);
 
-        // System should be the default
-        assert!(system.contains("Describe this code"));
+        // System should be the default (keyword prompt)
+        assert!(system.contains("search terms"));
         // User should be the entire prompt
         assert_eq!(user, prompt);
     }

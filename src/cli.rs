@@ -111,7 +111,7 @@ pub fn print_help() {
     println!("    LLM_ENABLED=true|false               (default: true)");
     println!("    LLM_DEVICE=cpu|metal                  (default: cpu)");
     println!("    LLM_MODEL_DIR=/path/to/model          (default: ~/.code-intelligence/models/qwen2.5-coder-1.5b-gguf)");
-    println!("    LLM_MAX_TOKENS=30                     (default: 30)");
+    println!("    LLM_MAX_TOKENS=50                     (default: 50)");
     println!("    LLM_BATCH_COMMIT=10                   (default: 10)");
     println!();
     println!("Standalone mode:");

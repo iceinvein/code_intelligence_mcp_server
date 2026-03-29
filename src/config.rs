@@ -342,8 +342,8 @@ impl StandaloneConfig {
             rrf_keyword_weight: 1.0,
             rrf_vector_weight: 1.0,
             rrf_graph_weight: 0.5,
-            hyde_enabled: false,
-            hyde_llm_backend: "openai".to_string(),
+            hyde_enabled: true,
+            hyde_llm_backend: "local".to_string(),
             hyde_api_key: None,
             hyde_max_tokens: 512,
             metrics_enabled: true,
@@ -352,7 +352,7 @@ impl StandaloneConfig {
             llm_enabled: true,
             llm_device: EmbeddingsDevice::Cpu,
             llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
-            llm_max_tokens: 30,
+            llm_max_tokens: 50,
             llm_batch_commit: 10,
             sampling_descriptions_enabled: true,
             // Standalone mode has SessionManager for coordination — no need for flock
@@ -360,6 +360,7 @@ impl StandaloneConfig {
             leader_heartbeat_interval_ms: 10_000,
             leader_ttl_seconds: 30,
             embedding_truncate_dim: self.embedding_truncate_dim,
+            embedding_dim_override: None,
         }
     }
 }
@@ -462,6 +463,13 @@ pub struct Config {
     /// Truncate full-dimension embeddings to this size after L2 re-normalization.
     /// `None` means use the model's native dimension (default).
     pub embedding_truncate_dim: Option<usize>,
+
+    // Embedding model evaluation
+    /// Override the full (pre-truncation) embedding dimension used to pre-allocate
+    /// vector storage before the model loads. Set via `EMBEDDING_DIM` when
+    /// evaluating a model with a different native dimension than jina-code-1.5b (1536).
+    /// `None` uses the default for the backend.
+    pub embedding_dim_override: Option<usize>,
 }
 
 impl Config {
@@ -779,13 +787,17 @@ impl Config {
             .unwrap_or(0.5); // Lower weight for graph
 
         // HyDE config (RETR-06, RETR-07)
+        // Enabled by default — uses local Qwen2.5-Coder-1.5B to generate
+        // hypothetical code, bridging vocabulary gaps in vector search.
+        // Cross-encoder reranker filters false positives. Disable with
+        // HYDE_ENABLED=false if it degrades specific queries.
         let hyde_enabled = optional_env("HYDE_ENABLED")
             .as_deref()
             .map(parse_bool)
             .transpose()?
-            .unwrap_or(false); // Default disabled (requires LLM)
+            .unwrap_or(true);
         let hyde_llm_backend =
-            optional_env("HYDE_LLM_BACKEND").unwrap_or_else(|| "openai".to_string());
+            optional_env("HYDE_LLM_BACKEND").unwrap_or_else(|| "local".to_string());
         let hyde_api_key = optional_env("HYDE_API_KEY");
         let hyde_max_tokens = optional_env("HYDE_MAX_TOKENS")
             .as_deref()
@@ -830,7 +842,7 @@ impl Config {
         let llm_max_tokens: u32 = optional_env("LLM_MAX_TOKENS")
             .as_deref()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(30);
+            .unwrap_or(50);
         let llm_batch_commit = optional_env("LLM_BATCH_COMMIT")
             .as_deref()
             .map(parse_usize)
@@ -875,6 +887,12 @@ impl Config {
             },
             Err(_) => None,
         };
+
+        // Override full embedding dimension (for evaluating non-default models)
+        let embedding_dim_override = optional_env("EMBEDDING_DIM")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?;
 
         Ok(Self {
             base_dir,
@@ -969,6 +987,9 @@ impl Config {
 
             // Matryoshka embedding truncation
             embedding_truncate_dim,
+
+            // Embedding model evaluation
+            embedding_dim_override,
         })
     }
 
@@ -1413,7 +1434,7 @@ mod tests {
         assert!(cfg.llm_enabled);
         assert_eq!(cfg.llm_device, EmbeddingsDevice::Cpu);
         assert!(cfg.llm_model_dir.is_some());
-        assert_eq!(cfg.llm_max_tokens, 30);
+        assert_eq!(cfg.llm_max_tokens, 50);
         assert_eq!(cfg.llm_batch_commit, 10);
         assert!(cfg.sampling_descriptions_enabled);
     }

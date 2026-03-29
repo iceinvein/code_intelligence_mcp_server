@@ -175,7 +175,7 @@ async fn run_standalone(
                 (e, None)
             }
             code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
-                let dim = default_embedding_dim(standalone_config.embeddings_backend, standalone_config.hash_embedding_dim, standalone_config.embedding_truncate_dim);
+                let dim = default_embedding_dim(standalone_config.embeddings_backend, standalone_config.hash_embedding_dim, standalone_config.embedding_truncate_dim, None);
                 let deferred = DeferredEmbedder::new(dim);
                 let slot = deferred.inner_slot();
                 info!(dim, "Created deferred embedder — model will load in background");
@@ -372,7 +372,7 @@ async fn run_embedded() -> SdkResult<()> {
                 (e, None)
             }
             code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
-                let dim = default_embedding_dim(config.embeddings_backend, config.hash_embedding_dim, config.embedding_truncate_dim);
+                let dim = default_embedding_dim(config.embeddings_backend, config.hash_embedding_dim, config.embedding_truncate_dim, config.embedding_dim_override);
                 let deferred = DeferredEmbedder::new(dim);
                 let slot = deferred.inner_slot();
                 info!(dim, "Created deferred embedder — model will load in background");

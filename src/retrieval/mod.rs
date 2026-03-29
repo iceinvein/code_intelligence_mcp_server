@@ -430,7 +430,7 @@ impl Retriever {
                 // Use the first sub-query for reranking (or original query)
                 let rerank_query = &sub_queries[0];
                 if let Ok(rerank_scores) = reranker.rerank(rerank_query, &docs).await {
-                    apply_reranker_scores(&hits, &rerank_scores, 0.3) // 30% reranker weight
+                    apply_reranker_scores(&hits, &rerank_scores, 0.5) // 50% cross-encoder weight (trained relevance judgments > BM25 for semantic queries)
                 } else {
                     hits
                 }

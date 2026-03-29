@@ -15,7 +15,7 @@ use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
-const TANTIVY_SCHEMA_VERSION: &str = "18";
+const TANTIVY_SCHEMA_VERSION: &str = "19";
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
@@ -37,6 +37,9 @@ struct Fields {
     exported: Field,
     text: Field,
     text_ngram: Field,
+    /// LLM-generated keyword descriptions in a separate field to prevent IDF
+    /// dilution of the main text field. Queried alongside text with its own boost.
+    description: Field,
 }
 
 pub struct TantivyIndex {
@@ -240,6 +243,9 @@ impl TantivyIndex {
             text_ngram: schema
                 .get_field("text_ngram")
                 .context("Missing tantivy field: text_ngram")?,
+            description: schema
+                .get_field("description")
+                .context("Missing tantivy field: description")?,
         };
 
         let reader = index
@@ -294,6 +300,7 @@ impl TantivyIndex {
             exported: schema.get_field("exported").context("Missing tantivy field: exported")?,
             text: schema.get_field("text").context("Missing tantivy field: text")?,
             text_ngram: schema.get_field("text_ngram").context("Missing tantivy field: text_ngram")?,
+            description: schema.get_field("description").context("Missing tantivy field: description")?,
         };
 
         let reader = index
@@ -372,6 +379,9 @@ impl TantivyIndex {
             symbol.name.clone()
         };
 
+        // LLM description goes into a separate field to prevent IDF dilution.
+        let description_text = llm_description.unwrap_or("");
+
         writer.add_document(doc!(
             self.fields.id => symbol.id.as_str(),
             self.fields.name => enriched_name.as_str(),
@@ -381,6 +391,7 @@ impl TantivyIndex {
             self.fields.exported => if symbol.exported { 1u64 } else { 0u64 },
             self.fields.text => expanded_text.as_str(),
             self.fields.text_ngram => expanded_text.as_str(),
+            self.fields.description => description_text,
         ))
         .with_context(|| {
             format!(
@@ -435,15 +446,15 @@ impl TantivyIndex {
         // 3-tier field boosts based on query length:
         // - 1 word: Likely a symbol lookup → favor name field
         // - 2 words: Short phrase → balanced with slight text preference
-        // - 3+ words: NL query → strongly favor body text to avoid
-        //   false positives from partial symbol name matches
+        // - 3+ words: NL query → strongly favor body text, with description
+        //   field providing vocabulary-gap bridging without IDF dilution
         let words = query.split_whitespace().count();
         let field_boosts: &[(Field, f32)] = if words >= 3 {
-            &[(self.fields.name, 0.2), (self.fields.text, 3.0)]
+            &[(self.fields.name, 0.2), (self.fields.text, 3.0), (self.fields.description, 1.5)]
         } else if words == 2 {
-            &[(self.fields.name, 0.5), (self.fields.text, 2.0)]
+            &[(self.fields.name, 0.5), (self.fields.text, 2.0), (self.fields.description, 1.0)]
         } else {
-            &[(self.fields.name, 1.5), (self.fields.text, 1.0)]
+            &[(self.fields.name, 1.5), (self.fields.text, 1.0), (self.fields.description, 0.5)]
         };
 
         let mut out = self.search_in_fields(
@@ -451,7 +462,7 @@ impl TantivyIndex {
             query,
             limit,
             1.0,
-            &[self.fields.name, self.fields.text],
+            &[self.fields.name, self.fields.text, self.fields.description],
             field_boosts,
         )?;
 
@@ -578,8 +589,13 @@ fn build_schema() -> tantivy::schema::Schema {
     builder.add_text_field("file_path", STRING | STORED);
     builder.add_text_field("kind", STRING | STORED);
     builder.add_u64_field("exported", INDEXED | STORED);
-    builder.add_text_field("text", text_options);
+    builder.add_text_field("text", text_options.clone());
     builder.add_text_field("text_ngram", ngram_options);
+    // Separate field for LLM-generated keyword descriptions.
+    // Isolated from the main text field to prevent IDF dilution —
+    // adding high-IDF terms like "BM25, hybrid search" to the text field
+    // shifts IDF statistics for ALL other terms corpus-wide.
+    builder.add_text_field("description", text_options);
 
     builder.build()
 }
@@ -735,14 +751,11 @@ fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import
         result.push_str(&nl_description);
     }
 
-    // Append LLM-generated semantic description if available.
-    // Bridges the gap between code terms and natural language queries —
-    // e.g., "Spawns a file watcher loop" matches "file watcher" queries
-    // even when the function name is spawn_watch_loop.
-    if let Some(desc) = llm_description {
-        result.push(' ');
-        result.push_str(desc);
-    }
+    // LLM descriptions are now indexed in a separate "description" field
+    // to prevent IDF dilution of the main text field. The description field
+    // is queried alongside text with its own boost weight.
+    // (Previously appended here — moved to upsert_symbol doc! macro.)
+    let _ = llm_description; // consumed by caller, not appended to text
 
     result
 }

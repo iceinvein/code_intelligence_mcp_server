@@ -146,9 +146,12 @@ impl LlamaCppReranker {
 
         // Create context with rank pooling (classification head on [CLS])
         let n_ctx = (tokens.len() as u32).max(64);
+        // BERT encoder models process the entire sequence in one forward pass,
+        // so n_ubatch must be >= total tokens (unlike decoder models).
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(NonZeroU32::new(n_ctx))
             .with_n_batch(n_ctx)
+            .with_n_ubatch(n_ctx)
             .with_embeddings(true)
             .with_pooling_type(LlamaPoolingType::Rank);
 

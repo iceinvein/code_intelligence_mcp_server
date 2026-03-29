@@ -224,7 +224,12 @@ pub fn extract_usage_line(text: &str, needle: &str) -> Option<String> {
 pub fn trim_snippet(s: &str, max_len: usize) -> String {
     let mut out = s.trim().to_string();
     if out.len() > max_len {
-        out.truncate(max_len);
+        // Find the last char boundary at or before max_len to avoid panic
+        let mut end = max_len;
+        while end > 0 && !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
     }
     out
 }

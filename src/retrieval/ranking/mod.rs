@@ -15,5 +15,6 @@ pub use score::{
     apply_popularity_boost_with_signals, apply_selection_boost_with_signals,
     rank_hits_with_signals,
 };
-pub(crate) use score::{definition_bias, intent_adjustment, is_test_file, structural_adjustment, symbol_importance_adjustment, term_coverage_adjustment, test_symbol_penalty};
+pub(crate) use crate::classify::is_test_file;
+pub(crate) use score::{definition_bias, intent_adjustment, structural_adjustment, symbol_importance_adjustment, term_coverage_adjustment, test_symbol_penalty};
 

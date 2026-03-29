@@ -15,46 +15,9 @@ pub enum SymbolKind {
     Module,
 }
 
-/// TODO/FIXME comment kind for technical debt tracking (LANG-03)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoKind {
-    Todo,
-    Fixme,
-}
-
-/// TODO/FIXME comment entry extracted from source code (LANG-03)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TodoEntry {
-    pub kind: TodoKind,
-    pub text: String,
-    pub file_path: String,
-    pub line: u32,
-    pub associated_symbol: Option<String>, // Symbol immediately following the TODO
-}
-
-/// JSDoc comment entry for TypeScript/JavaScript documentation (LANG-01)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JSDocEntry {
-    pub symbol_id: String,
-    pub raw_text: String,
-    pub summary: Option<String>,
-    pub params: Vec<JSDocParam>,
-    pub returns: Option<String>,
-    pub examples: Vec<String>,
-    pub deprecated: bool,
-    pub throws: Vec<String>,
-    pub see_also: Vec<String>,
-    pub since: Option<String>,
-}
-
-/// JSDoc parameter documentation (LANG-01)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JSDocParam {
-    pub name: String,
-    pub type_annotation: Option<String>,
-    pub description: Option<String>,
-}
+// TodoKind, TodoEntry, JSDocEntry, JSDocParam moved to crate::storage::sqlite::schema
+// Re-exported here for backward compatibility with extractors.
+pub use crate::storage::sqlite::schema::{JSDocEntry, JSDocParam, TodoEntry, TodoKind};
 
 /// TypeScript/JavaScript decorator entry for framework metadata (LANG-02)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

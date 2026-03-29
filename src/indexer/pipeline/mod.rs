@@ -61,10 +61,10 @@ pub(crate) fn should_generate_embedding(
     if !exported && line_count < 3 {
         return false;
     }
-    if crate::retrieval::ranking::score::is_test_file(file_path) {
+    if crate::classify::is_test_file(file_path) {
         return false;
     }
-    if crate::retrieval::ranking::score::is_test_symbol(name) {
+    if crate::classify::is_test_symbol(name) {
         return false;
     }
     true

@@ -6,24 +6,11 @@ use crate::storage::sqlite::schema::TestLinkRow;
 /// `(symbol_id, symbol_name, file_path, start_line, edge_type)` for a test caller.
 pub type TestCallerRow = (String, String, String, u32, String);
 
-/// Determine if a file path is a test file
+/// Determine if a file path is a test file.
+///
+/// Delegates to the canonical implementation in `crate::classify`.
 pub fn is_test_file(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.contains(".test.")
-        || lower.contains(".spec.")
-        || lower.ends_with("_test.rs")
-        || lower.ends_with("_test.ts")
-        || lower.ends_with("_test.tsx")
-        || lower.ends_with("_test.js")
-        || lower.contains("/test/")
-        || lower.contains("/tests/")
-        || lower.contains("/__tests__/")
-        || lower.contains("/spec/")
-        // Mock/fixture/helper files
-        || lower.contains("mock")
-        || lower.contains("__fixtures__")
-        || lower.contains("/fixtures/")
-        || lower.contains("test-helper")
+    crate::classify::is_test_file(path)
 }
 
 /// Infer source file path from test file path

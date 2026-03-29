@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::indexer::extract::symbol::JSDocEntry;
+use crate::storage::sqlite::schema::JSDocEntry;
 use crate::storage::sqlite::schema::DocstringRow;
 
 pub fn upsert_docstring(conn: &Connection, docstring: &DocstringRow) -> Result<()> {

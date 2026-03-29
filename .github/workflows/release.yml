@@ -9,13 +9,53 @@ permissions:
   contents: write
 
 jobs:
+  version-check:
+    name: Validate tag matches package versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check versions match tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(sed -n '3s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          NPM_VERSION=$(node -p "require('./npm/package.json').version")
+          NPM_STANDALONE_VERSION=$(node -p "require('./npm-standalone/package.json').version")
+
+          echo "Tag version:           $TAG_VERSION"
+          echo "Cargo.toml:            $CARGO_VERSION"
+          echo "npm/package.json:      $NPM_VERSION"
+          echo "npm-standalone:        $NPM_STANDALONE_VERSION"
+
+          FAILED=0
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
+            FAILED=1
+          fi
+          if [ "$NPM_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::npm/package.json version ($NPM_VERSION) does not match tag ($TAG_VERSION)"
+            FAILED=1
+          fi
+          if [ "$NPM_STANDALONE_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::npm-standalone/package.json version ($NPM_STANDALONE_VERSION) does not match tag ($TAG_VERSION)"
+            FAILED=1
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "Run ./scripts/release.sh $TAG_VERSION to update all version files before tagging."
+            exit 1
+          fi
+
+          echo "All versions match tag v$TAG_VERSION"
+
   ci:
     name: CI
     uses: ./.github/workflows/ci.yml
 
   build:
     name: Build (macOS Silicon)
-    needs: [ci]
+    needs: [version-check, ci]
     runs-on: macos-latest
 
     steps:

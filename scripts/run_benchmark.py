@@ -496,6 +496,24 @@ def main():
                 call_tool(client, "refresh_index", {}, 51, timeout=30)
                 symbol_count = wait_for_indexing(client, start_msg_id=100, stable_seconds=15)
             print(f"Index ready: {symbol_count} symbols", flush=True)
+
+            # Wait for embedding model to load (DeferredEmbedder loads async).
+            # Poll with a test query until vector scores are non-zero.
+            print("Waiting for embedding model...", flush=True)
+            for attempt in range(30):  # up to 30s
+                test_result = call_tool(
+                    client, "explain_search",
+                    {"query": "test", "limit": 1, "verbose": True},
+                    msg_id=60 + attempt, timeout=10,
+                )
+                if test_result:
+                    results = test_result.get("results", [])
+                    if results and results[0].get("score_breakdown", {}).get("vector_score", 0) > 0:
+                        print(f"  Embedding model ready (attempt {attempt + 1})", flush=True)
+                        break
+                time.sleep(1)
+            else:
+                print("  WARNING: Embedding model not ready after 30s, proceeding with BM25-only", flush=True)
         else:
             # Fresh mode: trigger full indexing
             print("Triggering refresh_index...", flush=True)

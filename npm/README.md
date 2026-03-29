@@ -1,38 +1,28 @@
 # Code Intelligence MCP Server
 
-> **Semantic search and code navigation for LLM agents.**
+> **Give your AI coding agent a deep understanding of your codebase.**
 
 [![NPM Version](https://img.shields.io/npm/v/@iceinvein/code-intelligence-mcp?style=flat-square&color=blue)](https://www.npmjs.com/package/@iceinvein/code-intelligence-mcp)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-Enabled-orange?style=flat-square)](https://modelcontextprotocol.io)
+[![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey?style=flat-square)]()
+
+A local code indexing engine that gives LLM agents like **Claude Code**, **Cursor**, **Trae**, and **OpenCode** semantic search, call graphs, type hierarchies, and impact analysis across your codebase. Written in Rust with Metal GPU acceleration.
+
+**Zero config. Runs via `npx`. Indexes in the background.**
 
 ---
 
-This server indexes your codebase locally to provide **fast, semantic, and structure-aware** code navigation to tools like Claude Code, OpenCode, Trae, and Cursor.
-
-## Why Use This Server?
-
-Unlike basic text search, this server builds a local knowledge graph to understand your code.
-
-* **Advanced Hybrid Search**: Combines keyword search ([BM25](#glossary) via Tantivy) with semantic vector search (via LanceDB + jina-code-embeddings-0.5b) using [Reciprocal Rank Fusion (RRF)](#glossary) — a technique that merges ranked results from different search systems by position rather than raw score.
-* **Smart Context Assembly**: Token-aware budgeting with query-aware truncation that keeps relevant lines within context limits.
-* **On-Device LLM Descriptions**: Automatically generates natural-language descriptions for every symbol using a local **Qwen2.5-Coder-1.5B** model (llama.cpp with Metal GPU), enriching search with human-readable summaries. This bridges the vocabulary gap between how developers search ("auth handler") and how code is named (`authenticate_request`).
-* **PageRank Scoring**: Graph-based symbol importance scoring (similar to Google's original algorithm) that identifies central, heavily-used components by analyzing call graphs and type relationships.
-* **Learns from Feedback**: Optional learning system that adapts to user selections over time.
-* **Production First**: Multi-layer test detection (file paths, symbol names, and AST-level `#[test]`/`mod tests` analysis) ensures implementation code ranks above test helpers.
-* **Multi-Repo Support**: Index and search across multiple repositories/monorepos simultaneously.
-* **OS-Native File Watching**: Uses the `notify` crate with macOS FSEvents for instant re-indexing on file changes.
-* **Fast & Local**: Written in **Rust** with Metal GPU acceleration on Apple Silicon. Parallel indexing with persistent caching.
-
----
-
-## Quick Start
-
-Runs directly via `npx` without requiring a local Rust toolchain.
+## Install
 
 ### Claude Code
 
-Add to your MCP settings (global `~/.claude.json` or project-level `.mcp.json`):
+```bash
+claude mcp add code-intelligence -- npx -y @iceinvein/code-intelligence-mcp
+```
+
+<details>
+<summary>Or add manually to <code>~/.claude.json</code></summary>
 
 ```json
 {
@@ -45,18 +35,26 @@ Add to your MCP settings (global `~/.claude.json` or project-level `.mcp.json`):
   }
 }
 ```
+</details>
 
-Or install via the CLI:
+### Cursor
 
-```bash
-claude mcp add code-intelligence -- npx -y @iceinvein/code-intelligence-mcp
+Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "code-intelligence": {
+      "command": "npx",
+      "args": ["-y", "@iceinvein/code-intelligence-mcp"]
+    }
+  }
+}
 ```
-
-Once connected, Claude Code gains 23 MCP tools for semantic search (`search_code`), symbol navigation (`get_definition`, `find_references`), call/type graphs (`get_call_hierarchy`, `get_type_graph`), impact analysis (`find_affected_code`, `trace_data_flow`), and more. The server auto-detects the working directory and begins indexing in the background.
 
 ### OpenCode / Trae
 
-Add to your `opencode.json` (or global config):
+Add to `opencode.json`:
 
 ```json
 {
@@ -70,55 +68,114 @@ Add to your `opencode.json` (or global config):
 }
 ```
 
-*The server will automatically download the embedding model (~531MB) and LLM (~1.1GB) on first launch, then index your project in the background.*
+> On first launch, the server downloads the embedding model (~531 MB) and LLM (~1.1 GB), then indexes your project in the background. Models are cached in `~/.code-intelligence/models/`.
 
 ---
 
-## Standalone Server Mode
+## What It Does
 
-By default, each MCP client spawns its own server process (stdio transport). If you run multiple clients against the same repo, a per-repo leader lock (`flock()`) ensures only one instance performs indexing, file watching, and LLM description generation. The leader loads the LLM (~1.1GB) during indexing and automatically frees it once descriptions are complete. Follower instances never load the LLM — they open the search index read-only and pick up the leader's changes. All instances load their own copy of the embedding model (~531MB) for query-time vector search.
+Unlike basic text search (grep/ripgrep), this server builds a **local knowledge graph** of your code and exposes it through 23 MCP tools.
 
-**Standalone mode** runs a single long-lived HTTP server that all clients share. The main advantage is cross-repo deduplication — in stdio mode, each instance loads its own embedding model regardless of which repo it's on. With 5 instances across 3 repos, that's 5 copies (~2.6GB). Standalone loads the models once and shares them across all repos and clients.
+| Capability | How It Works |
+|---|---|
+| **Hybrid search** | BM25 keyword search (Tantivy) + semantic vector search (LanceDB) merged via Reciprocal Rank Fusion |
+| **On-device LLM descriptions** | Qwen2.5-Coder-1.5B generates natural-language summaries for every symbol, bridging the gap between how you search ("auth handler") and how code is named (`authenticate_request`) |
+| **Graph intelligence** | Call hierarchies, type graphs, dependency trees, and PageRank-based importance scoring |
+| **Impact analysis** | Find all code affected by a change before you make it |
+| **Smart ranking** | Test detection, export boosting, directory semantics, intent detection, edge expansion, and score-gap filtering |
+| **Multi-repo** | Index and search across multiple repositories simultaneously |
+| **Auto-reindex** | OS-native file watching (FSEvents) keeps the index fresh as you code |
 
-### Starting the Server
+---
+
+## Tools (23)
+
+### Search & Navigation
+
+| Tool | What It Does |
+|---|---|
+| `search_code` | Semantic + keyword hybrid search. Handles natural language ("how does auth work?") and structural queries ("class User") |
+| `get_definition` | Jump to a symbol's full definition |
+| `find_references` | Find all usages of a function, class, or variable |
+| `get_call_hierarchy` | Upstream callers and downstream callees |
+| `get_type_graph` | Inheritance chains, type aliases, implements relationships |
+| `explore_dependency_graph` | Module-level import/export dependencies |
+| `get_file_symbols` | All symbols defined in a file |
+| `get_usage_examples` | Real-world usage examples from the codebase |
+
+### Analysis
+
+| Tool | What It Does |
+|---|---|
+| `find_affected_code` | Reverse dependency analysis — what breaks if this changes? |
+| `trace_data_flow` | Follow variable reads and writes through the code |
+| `find_similar_code` | Semantically similar code to a given symbol |
+| `get_similarity_cluster` | Symbols in the same semantic cluster |
+| `explain_search` | Scoring breakdown explaining why results ranked as they did |
+| `summarize_file` | File summary with symbol counts and key exports |
+| `get_module_summary` | All exported symbols from a module with signatures |
+
+### Testing, Frameworks & Discovery
+
+| Tool | What It Does |
+|---|---|
+| `find_tests_for_symbol` | Find tests that cover a given symbol |
+| `search_todos` | Search TODO/FIXME comments |
+| `search_decorators` | Find TypeScript/JavaScript decorators |
+| `search_framework_patterns` | Find framework-specific patterns (routes, middleware, WebSocket handlers) |
+
+### Index Management
+
+| Tool | What It Does |
+|---|---|
+| `hydrate_symbols` | Load full context for a set of symbol IDs |
+| `report_selection` | Feedback loop — tell the server which result was useful |
+| `refresh_index` | Manually trigger re-indexing |
+| `get_index_stats` | Index statistics (files, symbols, edges, last updated) |
+
+---
+
+## Supported Languages
+
+Rust, TypeScript/TSX, JavaScript, Python, Go, Java, C, C++
+
+---
+
+## Standalone Mode (Multi-Client)
+
+By default each MCP client spawns its own server process. If you run multiple clients (e.g. 5 Claude Code sessions across 3 repos), standalone mode loads the models **once** and shares them:
 
 ```bash
-# Default: localhost:3333
 npx @iceinvein/code-intelligence-mcp-standalone
-
-# Custom host/port
-npx @iceinvein/code-intelligence-mcp-standalone --port 4444 --host 0.0.0.0
-
-# From source
-./target/release/code-intelligence-mcp-server --standalone
-./target/release/code-intelligence-mcp-server --standalone --port 4444
-
-# Via environment variable
-CIMCP_MODE=standalone ./target/release/code-intelligence-mcp-server
 ```
 
-### Connecting MCP Clients
+Then point all clients to `http://localhost:3333/mcp`:
 
-Point your MCP clients to the standalone server using Streamable HTTP transport:
+<details>
+<summary>Claude Code</summary>
 
-**Claude Code** (`~/.claude.json` or project-level `.mcp.json`):
+```bash
+claude mcp add --transport http code-intelligence http://localhost:3333/mcp
+```
+</details>
+
+<details>
+<summary>Cursor</summary>
+
 ```json
 {
   "mcpServers": {
     "code-intelligence": {
-      "type": "streamable-http",
       "url": "http://localhost:3333/mcp"
     }
   }
 }
 ```
+</details>
 
-Or via the CLI:
-```bash
-claude mcp add --transport http code-intelligence http://localhost:3333/mcp
-```
+<details>
+<summary>OpenCode</summary>
 
-**OpenCode** (`opencode.json`):
 ```json
 {
   "mcp": {
@@ -130,67 +187,79 @@ claude mcp add --transport http code-intelligence http://localhost:3333/mcp
   }
 }
 ```
+</details>
 
-**Cursor** (`.cursor/mcp.json`):
-```json
-{
-  "mcpServers": {
-    "code-intelligence": {
-      "url": "http://localhost:3333/mcp"
-    }
-  }
-}
+The server auto-detects each client's workspace via the MCP `roots` capability. Separate indexes are maintained per repo, models are shared.
+
+```
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│ Claude A  │  │ Cursor B │  │  Trae C  │
+└─────┬─────┘  └─────┬─────┘  └─────┬─────┘
+      │              │              │
+      └──────── POST /mcp ─────────┘
+                     │
+        ┌────────────┴────────────┐
+        │   Standalone Server     │
+        │  (shared models, once)  │
+        ├─────────────────────────┤
+        │ Repo A   Repo B  Repo C│
+        │ indexes  indexes indexes│
+        └─────────────────────────┘
 ```
 
-The server auto-detects each client's workspace root via the MCP `roots` capability — no `BASE_DIR` needed.
+---
 
-### How It Works
+## Configuration
 
-```mermaid
-flowchart TB
-  A[Claude Code - Session A] & B[Cursor - Session B] & C[Trae - Session C]
-  A & B & C -- "POST /mcp (Streamable HTTP)" --> Server
+Works out of the box with no configuration. All settings are optional environment variables.
 
-  Server["Standalone MCP Server<br/>(single process, shared embedding model)"]
+<details>
+<summary><strong>Environment variables</strong></summary>
 
-  Server --> RA["Repo A indexes<br/>SQLite + Tantivy + LanceDB"]
-  Server --> RB["Repo B indexes<br/>SQLite + Tantivy + LanceDB"]
-  Server --> RC["Repo C indexes<br/>SQLite + Tantivy + LanceDB"]
-```
+**Core:**
 
-Each client session is bound to its workspace root. The server maintains separate indexes per repo but shares the embedding model across all of them.
+| Variable | Default | Description |
+|---|---|---|
+| `WATCH_MODE` | `true` | Auto-reindex on file changes |
+| `INDEX_PATTERNS` | `**/*.ts,**/*.rs,...` | Glob patterns to index |
+| `EXCLUDE_PATTERNS` | `**/node_modules/**,...` | Glob patterns to exclude |
+| `REPO_ROOTS` | — | Comma-separated paths for multi-repo |
 
-### Data Storage
+**Embeddings:**
 
-Both embedded (stdio) and standalone (HTTP) modes store all data in `~/.code-intelligence/`:
+| Variable | Default | Description |
+|---|---|---|
+| `EMBEDDINGS_BACKEND` | `llamacpp` | `llamacpp` or `hash` (fast testing, no model download) |
+| `EMBEDDINGS_DEVICE` | `metal` | `metal` (GPU) or `cpu` |
 
-```text
-~/.code-intelligence/
-├── server.toml              # Optional config file (standalone only)
-├── models/                  # Shared models (loaded once, shared across repos)
-│   ├── jina-code-embeddings-0.5b-gguf/  # Embedding model (~531MB, GGUF via llama.cpp)
-│   └── qwen2.5-coder-1.5b-gguf/  # LLM model (~1.1GB)
-├── logs/
-│   └── server.log
-└── repos/
-    ├── registry.json        # Tracks all known repos
-    ├── a1b2c3d4e5f6a7b8/   # Per-repo data (SHA256 hash of repo path)
-    │   ├── code-intelligence.db
-    │   ├── tantivy-index/
-    │   └── vectors/
-    └── f8e7d6c5b4a3f2e1/
-        └── ...
-```
+**Ranking:**
 
-The same repo always maps to the same hash regardless of mode, so embedded and standalone can share the same index data.
+| Variable | Default | Description |
+|---|---|---|
+| `HYBRID_ALPHA` | `0.7` | Vector vs keyword weight (0 = all keyword, 1 = all vector) |
+| `RANK_EXPORTED_BOOST` | `1.0` | Boost for exported/public symbols |
+| `RANK_TEST_PENALTY` | `0.1` | Penalty multiplier for test files |
+| `RANK_POPULARITY_WEIGHT` | `0.05` | PageRank influence on ranking |
 
-### Configuration
+**Context:**
 
-Standalone mode is configured via `~/.code-intelligence/server.toml` (created on first run with defaults). Environment variables and CLI flags override TOML settings.
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_CONTEXT_TOKENS` | `8192` | Token budget for assembled context |
+| `MAX_CONTEXT_BYTES` | `200000` | Byte-based fallback limit |
 
-**Priority:** CLI flags > Environment variables > `server.toml` > Defaults
+**Learning (off by default):**
 
-**Example `server.toml`:**
+| Variable | Default | Description |
+|---|---|---|
+| `LEARNING_ENABLED` | `false` | Track user selections to personalize results |
+| `LEARNING_SELECTION_BOOST` | `0.1` | Max boost from selection history |
+| `LEARNING_FILE_AFFINITY_BOOST` | `0.05` | Max boost from file access frequency |
+
+</details>
+
+<details>
+<summary><strong>Standalone server config (<code>~/.code-intelligence/server.toml</code>)</strong></summary>
 
 ```toml
 [server]
@@ -198,332 +267,91 @@ host = "127.0.0.1"
 port = 3333
 
 [embeddings]
-backend = "llamacpp"        # llamacpp (default) or hash (testing)
-device = "metal"            # cpu or metal (macOS GPU)
+backend = "llamacpp"
+device = "metal"
 
 [repos.defaults]
 index_patterns = "**/*.ts,**/*.tsx,**/*.rs,**/*.py,**/*.go"
 exclude_patterns = "**/node_modules/**,**/dist/**,**/.git/**"
-watch_mode = true           # Auto-reindex on file changes
+watch_mode = true
 
 [lifecycle]
 warm_ttl_seconds = 300      # How long idle repos stay in memory
 ```
 
-**Environment variable overrides (same as embedded mode):**
+Priority: CLI flags > Environment variables > `server.toml` > Defaults
 
-| Variable | Example | Description |
-| -------- | ------- | ----------- |
-| `CIMCP_MODE` | `standalone` | Alternative to `--standalone` flag |
-| `EMBEDDINGS_BACKEND` | `hash` | Override embedding backend (`llamacpp` or `hash`) |
-| `EMBEDDINGS_DEVICE` | `metal` | Override device (cpu/metal) |
-| `EMBEDDINGS_MODEL_DIR` | `/path/to/model` | Override model directory |
+</details>
 
 ---
 
-## Capabilities
+## How Ranking Works
 
-Available tools for the agent (23 tools total):
+The search pipeline runs keyword search (BM25) and semantic vector search in parallel, merges them with Reciprocal Rank Fusion, then applies structural signals:
 
-### Core Search & Navigation
+- **Intent detection** — "struct User" boosts definitions, "who calls login" triggers graph lookup, "User schema" boosts models 50-75x
+- **Query decomposition** — "authentication and authorization" automatically splits into sub-queries
+- **LLM-enriched index** — on-device Qwen2.5-Coder generates descriptions bridging vocabulary gaps
+- **PageRank** — graph-based importance scoring identifies central, heavily-used symbols
+- **Morphological expansion** — `watch` matches `watcher`, `index` matches `reindex`
+- **Multi-layer test detection** — file paths, symbol names, and AST-level analysis (`#[test]`, `mod tests`)
+- **Edge expansion** — high-ranking symbols pull in structurally related code (callers, type members)
+- **Export boost** — public API surface ranks above private helpers
+- **Score-gap detection** — drops trailing results that fall off a relevance cliff
+- **Token-aware truncation** — context assembly keeps query-relevant lines within token budgets
 
-| Tool                       | Description                                                                                                                                                             |
-| :------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_code`              | **Primary Search.** Finds code by meaning ("how does auth work?") or structure ("class User"). Supports query decomposition (e.g., "authentication and authorization"). |
-| `get_definition`           | Retrieves the full definition of a specific symbol with disambiguation support.                                                                                         |
-| `find_references`          | Finds all usages of a function, class, or variable.                                                                                                                     |
-| `get_call_hierarchy`       | Specifies upstream callers and downstream callees.                                                                                                                      |
-| `get_type_graph`           | Explores inheritance (extends/implements) and type aliases.                                                                                                             |
-| `explore_dependency_graph` | Explores module-level dependencies upstream or downstream.                                                                                                              |
-| `get_file_symbols`         | Lists all symbols defined in a specific file.                                                                                                                           |
-| `get_usage_examples`       | Returns real-world examples of how a symbol is used in the codebase.                                                                                                    |
-
-### Advanced Analysis
-
-| Tool                     | Description                                                                               |
-| :----------------------- | :---------------------------------------------------------------------------------------- |
-| `explain_search`         | Returns detailed scoring breakdown to understand why results ranked as they did.          |
-| `find_similar_code`      | Finds code semantically similar to a given symbol or code snippet.                        |
-| `trace_data_flow`        | Traces variable reads and writes through the codebase to understand data flow.            |
-| `find_affected_code`     | Finds code that would be affected if a symbol changes (reverse dependencies).             |
-| `get_similarity_cluster` | Returns symbols in the same semantic similarity cluster as a given symbol.                |
-| `summarize_file`         | Generates a summary of file contents including symbol counts, structure, and key exports. |
-| `get_module_summary`     | Lists all exported symbols from a module/file with their signatures.                      |
-
-### Testing, Frameworks & Documentation
-
-| Tool                       | Description                                                                                                               |
-| :------------------------- | :------------------------------------------------------------------------------------------------------------------------ |
-| `search_todos`             | Searches for TODO and FIXME comments to track technical debt.                                                             |
-| `find_tests_for_symbol`    | Finds test files that test a given symbol or source file.                                                                 |
-| `search_decorators`        | Searches for TypeScript/JavaScript decorators (@Component, @Controller, @Get, @Post, etc.).                               |
-| `search_framework_patterns`| Searches for framework-specific patterns (e.g., Elysia routes, WebSocket handlers, middleware) with method/path filtering.|
-
-### Context & Learning
-
-| Tool               | Description                                                                     |
-| :----------------- | :------------------------------------------------------------------------------ |
-| `hydrate_symbols`  | Hydrates full context for a set of symbol IDs.                                  |
-| `report_selection` | Records user selection feedback for learning (call when user selects a result). |
-| `refresh_index`    | Manually triggers a re-index of the codebase.                                   |
-| `get_index_stats`  | Returns index statistics (files, symbols, edges, last updated).                 |
+For the full deep dive, see [System Architecture](SYSTEM_ARCHITECTURE.md).
 
 ---
 
-## Supported Languages
+## Data Storage
 
-The server supports semantic navigation and symbol extraction for the following languages:
+All data lives in `~/.code-intelligence/`:
 
-* **Rust**
-* **TypeScript / TSX**
-* **JavaScript**
-* **Python**
-* **Go**
-* **Java**
-* **C**
-* **C++**
-
----
-
-## Smart Ranking & Context Enhancement
-
-The search pipeline runs two parallel searches — keyword (BM25 via Tantivy) and semantic (vector embeddings via LanceDB) — then merges them using Reciprocal Rank Fusion (RRF). On top of this hybrid base, the ranking engine applies structural signals to optimize for relevance:
-
-1. **PageRank Symbol Importance**: Graph-based scoring that identifies central, heavily-used components (similar to Google's PageRank).
-2. **Reciprocal Rank Fusion (RRF)**: Combines keyword, vector, and graph search results using statistically optimal rank fusion.
-3. **Query Decomposition**: Complex queries ("X and Y") are automatically split into sub-queries for better coverage.
-4. **Token-Aware Truncation**: Context assembly keeps query-relevant lines within token budgets using BM25-style relevance scoring.
-5. **LLM-Enriched Indexing**: On-device Qwen2.5-Coder generates natural-language descriptions for each symbol, bridging the vocabulary gap between how developers search and how code is named.
-6. **Morphological Variants**: Function names are expanded with stems and derivations (e.g., `watch` → `watcher`, `index` → `reindex`) to improve recall for natural-language queries.
-7. **Multi-Layer Test Detection**: Three mechanisms — file path patterns (`*.test.ts`), symbol name heuristics (`test_*`), and SQL-based AST analysis (`#[test]`, `mod tests`) — with a final enforcement pass that prevents test code from escaping via edge expansion.
-8. **Edge Expansion**: High-ranking symbols pull in structurally related code (callers, type members) with importance filtering to avoid noise from private helpers.
-9. **Directory Semantics**: Implementation directories (`src`, `lib`, `app`) are boosted, while build artifacts (`dist`, `build`) and `node_modules` are penalized.
-10. **Exported Symbol Boost**: Exported/public symbols receive a ranking boost as they represent the primary API surface.
-11. **Glue Code Filtering**: Re-export files (e.g., `index.ts`) are deprioritized in favor of the actual implementation.
-12. **JSDoc Boost**: Symbols with documentation receive a ranking boost, and examples are included in search results.
-13. **Learning from Feedback** (optional): Tracks user selections to personalize future search results.
-14. **Package-Aware Scoring** (multi-repo): Boosts results from the same package when working in monorepos.
-
-### Intent Detection
-
-The system detects query intent and adjusts ranking accordingly:
-
-| Query Pattern     | Intent                    | Effect                                  |
-| ----------------- | ------------------------- | --------------------------------------- |
-| "struct User"     | Definition                | Boosts type definitions (1.5x)          |
-| "who calls login" | Callers                   | Triggers graph lookup                   |
-| "verify login"    | Testing                   | Boosts test files                       |
-| "User schema"     | Schema/Model              | Boosts schema/model files (50-75x)      |
-| "auth and authz"  | Multi-query decomposition | Splits into sub-queries, merges via RRF |
-
-For a deep dive into the system's design, see [System Architecture](SYSTEM_ARCHITECTURE.md).
-
----
-
-## Glossary
-
-Key terms used throughout this documentation:
-
-| Term | Full Name | What It Means |
-|------|-----------|---------------|
-| **MCP** | Model Context Protocol | An open protocol for connecting LLM-based tools (like Claude Code, Cursor, OpenCode) to external data sources and capabilities. This server implements MCP to expose code search and navigation tools. |
-| **BM25** | Best Matching 25 | A probabilistic text search algorithm (used by Tantivy). Ranks results by how often your search terms appear in a document (term frequency) weighted by how rare those terms are across all documents (inverse document frequency / IDF). The standard algorithm behind most full-text search engines. |
-| **IDF** | Inverse Document Frequency | A component of BM25 that measures how rare a term is. A term like `authenticate` appearing in only 3 files has high IDF (very discriminating), while `error` appearing in 200 files has low IDF (less useful for ranking). |
-| **RRF** | Reciprocal Rank Fusion | A technique for merging ranked result lists from different search systems. Instead of comparing raw scores (which have different scales), RRF uses rank positions: a result ranked #1 in keyword search and #3 in vector search gets a combined score based on those positions. This makes it robust when combining fundamentally different search approaches. |
-| **GGUF** | GGML Unified Format | A binary format for storing quantized (compressed) neural network weights. Used by llama.cpp to run both the embedding model and the LLM efficiently on consumer hardware. Q4_K_M quantization reduces the 1.5B parameter model from ~3GB to ~1.1GB with minimal quality loss. |
-| **LLM** | Large Language Model | In this project, a local Qwen2.5-Coder-1.5B model that generates one-sentence natural-language descriptions for each code symbol (function, class, type). These descriptions are indexed alongside the code, helping BM25 match natural-language queries to technically-named code. |
-| **PageRank** | — | A graph algorithm (originally from Google Search) adapted here to score symbol importance. Symbols that are called/referenced by many other symbols get higher PageRank scores, indicating they are central to the codebase. |
-| **Tree-Sitter** | — | A parser generator that builds concrete syntax trees (CSTs) for source code. Used to extract symbols (functions, classes, types), their relationships (calls, imports, type hierarchies), and structural information from 8 supported languages. |
-
----
-
-## Configuration (Optional)
-
-Works without configuration by default. You can customize behavior via environment variables:
-
-### Core Settings
-
-```json
-"env": {
-  "BASE_DIR": "/path/to/repo",           // Required: Repository root
-  "WATCH_MODE": "true",                  // Watch for file changes (Default: true)
-  "INDEX_PATTERNS": "**/*.ts,**/*.go",   // File patterns to index
-  "EXCLUDE_PATTERNS": "**/node_modules/**",
-  "REPO_ROOTS": "/path/to/repo1,/path/to/repo2"  // Multi-repo support
-}
 ```
-
-### Embedding Model
-
-```json
-"env": {
-  "EMBEDDINGS_BACKEND": "llamacpp",      // llamacpp (default) or hash (testing)
-  "EMBEDDINGS_DEVICE": "cpu",            // cpu or metal (macOS GPU)
-  "EMBEDDING_BATCH_SIZE": "32"
-}
-```
-
-### Context Assembly
-
-```json
-"env": {
-  "MAX_CONTEXT_TOKENS": "8192",          // Token budget for context (default: 8192)
-  "TOKEN_ENCODING": "o200k_base",        // tiktoken encoding model
-  "MAX_CONTEXT_BYTES": "200000"          // Legacy byte-based limit (fallback)
-}
-```
-
-### Ranking & Retrieval
-
-```json
-"env": {
-  "RANK_EXPORTED_BOOST": "1.0",          // Boost for exported symbols
-  "RANK_TEST_PENALTY": "0.1",            // Penalty for test files
-  "RANK_POPULARITY_WEIGHT": "0.05",      // PageRank influence
-  "RRF_ENABLED": "true",                 // Enable Reciprocal Rank Fusion
-  "HYBRID_ALPHA": "0.7"                  // Vector vs keyword weight (0-1)
-}
-```
-
-### Learning System (Optional)
-
-```json
-"env": {
-  "LEARNING_ENABLED": "false",           // Enable selection tracking (default: false)
-  "LEARNING_SELECTION_BOOST": "0.1",     // Boost for previously selected symbols
-  "LEARNING_FILE_AFFINITY_BOOST": "0.05" // Boost for frequently accessed files
-}
-```
-
-### Performance
-
-```json
-"env": {
-  "PARALLEL_WORKERS": "1",               // Indexing parallelism (default: 1 for SQLite)
-  "EMBEDDING_CACHE_ENABLED": "true",     // Persistent embedding cache
-  "PAGERANK_ITERATIONS": "20",           // PageRank computation iterations
-  "METRICS_ENABLED": "true",             // Prometheus metrics
-  "METRICS_PORT": "9090"
-}
-```
-
-### Query Expansion
-
-```json
-"env": {
-  "SYNONYM_EXPANSION_ENABLED": "true",   // Expand "auth" → "authentication"
-  "ACRONYM_EXPANSION_ENABLED": "true"    // Expand "db" → "database"
-}
-```
-
----
-
-## Architecture
-
-```mermaid
-flowchart LR
-  Client[MCP Client] <==> Tools
-
-  subgraph Server [Code Intelligence Server]
-    direction TB
-    Tools[Tool Router]
-
-    subgraph Indexer [Indexing Pipeline]
-      direction TB
-      Watch[OS-Native File Watcher] --> Scan[File Scan]
-      Scan --> Parse[Tree-Sitter]
-      Parse --> Extract[Symbol Extraction]
-      Extract --> PageRank[PageRank Compute]
-      Extract --> Embed[jina-code-0.5b Embeddings - llama.cpp]
-      Extract --> LLMDesc[LLM Descriptions - Qwen2.5-Coder]
-      Extract --> JSDoc[JSDoc/Decorator/TODO Extract]
-    end
-
-    subgraph Storage [Storage Engine]
-      direction TB
-      SQLite[(SQLite)]
-      Tantivy[(Tantivy)]
-      Lance[(LanceDB)]
-      Cache[(Embedding Cache)]
-    end
-
-    subgraph Retrieval [Retrieval Engine]
-      direction TB
-      QueryExpand[Query Expansion]
-      Hybrid[Hybrid Search RRF]
-      Signals[Ranking Signals]
-      Context[Token-Aware Assembly]
-    end
-
-    Handlers[Tool Handlers]
-    Tools --> Handlers
-    Handlers -- Index --> Watch
-    PageRank --> SQLite
-    Embed --> Lance
-    Embed --> Cache
-    LLMDesc --> SQLite
-    JSDoc --> SQLite
-
-    Handlers -- Query --> QueryExpand
-    QueryExpand --> Hybrid
-    Hybrid --> Signals
-    Signals --> Context
-    Context --> Handlers
-  end
+~/.code-intelligence/
+├── models/                     # Shared (embedding ~531 MB, LLM ~1.1 GB)
+├── repos/
+│   ├── registry.json           # Tracks all known repos
+│   └── <hash>/                 # Per-repo (SHA256 of repo path)
+│       ├── code-intelligence.db   # SQLite (symbols, edges, metadata)
+│       ├── tantivy-index/         # BM25 full-text search
+│       └── vectors/               # LanceDB vector embeddings
+├── logs/
+└── server.toml                 # Standalone config (optional)
 ```
 
 ---
 
 ## Development
 
-1. **Prerequisites**: Rust (stable), `protobuf`.
-2. **Build**: `cargo build --release`
-3. **Run**: `./scripts/start_mcp.sh`
-4. **Test**: `cargo test` or `EMBEDDINGS_BACKEND=hash cargo test` (faster, skips model download)
-
-### Quick Testing with Hash Backend
-
-For faster development iteration, use the hash embedding backend which skips model downloads:
-
 ```bash
-EMBEDDINGS_BACKEND=hash BASE_DIR=/path/to/repo ./target/release/code-intelligence-mcp-server
+cargo build --release
+cargo test                                        # Full test suite
+EMBEDDINGS_BACKEND=hash cargo test                # Fast (no model download)
+./scripts/start_mcp.sh                            # Start MCP server
 ```
 
-### Project Structure
+<details>
+<summary>Project structure</summary>
 
-```text
+```
 src/
-├── indexer/
-│   ├── extract/       # Language-specific symbol extractors (Rust, TS, Python, Go, Java, C, C++)
-│   ├── pipeline/      # Indexing pipeline stages (scan, parse, embed, watch, describe)
-│   └── package/       # Package detection (npm, Cargo, Go, Python)
-├── storage/
-│   ├── sqlite/        # SQLite schema, queries, operations
-│   ├── tantivy.rs     # BM25 full-text search with n-gram tokenization
-│   └── vector.rs      # LanceDB vector embeddings
-├── retrieval/
-│   ├── ranking/       # Scoring signals, RRF, diversity, edge expansion, reranker
-│   ├── assembler/     # Token-aware context assembly and formatting
-│   ├── hyde/          # Hypothetical document expansion
-│   ├── mod.rs         # Search pipeline orchestrator
-│   ├── hybrid.rs      # Hybrid BM25 + vector scoring loop
-│   └── postprocess.rs # Final enforcement, vector promotion
-├── graph/             # PageRank, call hierarchy, type graphs
-├── handlers/          # MCP tool handlers
-├── server/            # MCP protocol routing (embedded + standalone)
-│   ├── mod.rs         # Shared tool dispatch, embedded handler
-│   └── standalone.rs  # Standalone HTTP handler with session routing
-├── tools/             # Tool definitions (23 MCP tools)
-├── embeddings/        # jina-code-0.5b embedding model (GGUF via llama.cpp)
-├── llm/               # On-device LLM (Qwen2.5-Coder-1.5B via llama.cpp, for descriptions)
-├── reranker/          # Reranker trait and cache (currently disabled)
-├── path/              # Cross-platform path normalization (camino)
-├── text.rs            # Text processing (synonym expansion, morphological variants)
-├── metrics/           # Prometheus metrics
-├── config.rs          # Configuration (embedded + standalone)
-├── session.rs         # Multi-repo session management (standalone)
-└── registry.rs        # Repo registry with path hashing (standalone)
+├── indexer/          # File scanning, Tree-Sitter parsing, symbol extraction, embeddings, LLM descriptions
+├── storage/          # SQLite, Tantivy (BM25), LanceDB (vectors)
+├── retrieval/        # Hybrid search, ranking signals, RRF, context assembly, reranker
+├── graph/            # PageRank, call hierarchy, type graphs
+├── handlers/         # MCP tool implementations
+├── server/           # MCP protocol routing (embedded + standalone)
+├── tools/            # Tool definitions (23 MCP tools)
+├── embeddings/       # jina-code-0.5b (GGUF via llama.cpp)
+├── llm/              # Qwen2.5-Coder-1.5B (GGUF via llama.cpp)
+├── reranker/         # Cross-encoder reranker
+└── path/             # UTF-8 path normalization (camino)
 ```
+</details>
+
+---
 
 ## License
 

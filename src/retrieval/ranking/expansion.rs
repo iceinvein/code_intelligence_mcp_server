@@ -122,58 +122,58 @@ pub fn expand_with_edges(
                 if edge.edge_type != "call" {
                     continue;
                 }
-                if seen.insert(edge.to_symbol_id.clone()) {
-                    if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
-                        // Skip test symbols/files — they were already penalized and
-                        // truncated by the scoring pipeline. Re-adding them via edge
-                        // expansion would bypass intent penalties.
-                        if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
-                            continue;
+                {
+                    let is_new = seen.insert(edge.to_symbol_id.clone());
+                    let evidence_boost =
+                        (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
+                    let resolution_multiplier = match edge.resolution.as_str() {
+                        "local" => 1.0,
+                        "import" => 0.9,
+                        "heuristic" => 0.75,
+                        _ => 0.8,
+                    };
+                    let expansion_score = base_score * 0.8 * edge.confidence * evidence_boost * resolution_multiplier;
+
+                    if is_new {
+                        if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
+                            if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
+                                continue;
+                            }
+                            let line_count = row.end_line.saturating_sub(row.start_line) + 1;
+                            let si = symbol_importance_adjustment(line_count, row.exported);
+                            if si < -1.0 && !row.exported {
+                                continue;
+                            }
+                            let lv_disc = local_variable_discount(&row.kind, &row.name);
+                            let qr_disc = query_relevance_discount(&row.name, &row.file_path, &query_terms);
+                            out.push(RankedHit {
+                                id: row.id.clone(),
+                                score: expansion_score * lv_disc * qr_disc,
+                                name: row.name,
+                                kind: row.kind,
+                                file_path: row.file_path,
+                                exported: row.exported,
+                                language: row.language,
+                            });
+                            expanded_ids.insert(row.id);
                         }
-                        let line_count = row.end_line.saturating_sub(row.start_line) + 1;
-                        let si = symbol_importance_adjustment(line_count, row.exported);
-                        // Skip small private helpers — they are implementation details
-                        // that shouldn't surface just because their caller matched.
-                        // E.g., repo_name (5-line private fn) called by
-                        // generate_embeddings_for_parallel_indexed_files.
-                        // Exempt exported symbols — they represent the API surface
-                        // and should survive regardless of size (Q13: PathNormalizer::new
-                        // is 3 lines but IS the constructor).
-                        if si < -1.0 && !row.exported {
-                            continue;
+                    } else {
+                        // Boost existing pool member if expansion score is higher
+                        if let Some(existing) = out.iter_mut().find(|h| h.id == edge.to_symbol_id) {
+                            if expansion_score > existing.score {
+                                existing.score = expansion_score;
+                            }
                         }
-                        let evidence_boost =
-                            (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
-                        let resolution_multiplier = match edge.resolution.as_str() {
-                            "local" => 1.0,
-                            "import" => 0.9,
-                            "heuristic" => 0.75,
-                            _ => 0.8,
-                        };
-                        let lv_disc = local_variable_discount(&row.kind, &row.name);
-                        let qr_disc = query_relevance_discount(&row.name, &row.file_path, &query_terms);
-                        out.push(RankedHit {
-                            id: row.id.clone(),
-                            score: base_score
-                                * 0.8
-                                * edge.confidence
-                                * evidence_boost
-                                * resolution_multiplier
-                                * lv_disc
-                                * qr_disc,
-                            name: row.name,
-                            kind: row.kind,
-                            file_path: row.file_path,
-                            exported: row.exported,
-                            language: row.language,
-                        });
-                        expanded_ids.insert(row.id);
                     }
                 }
             }
         } else if is_type {
-            // Find usages (references TO this symbol)
-            let edges = sqlite.list_edges_to(&h.id, 5)?;
+            // Find usages (references TO this symbol).
+            // Use a higher limit than function expansion because struct/enum types
+            // often have many test references that consume the window before
+            // reaching non-test usages like impl blocks. Sorted alphabetically
+            // by from_symbol_id, test IDs often sort before impl IDs.
+            let edges = sqlite.list_edges_to(&h.id, 15)?;
             for edge in edges {
                 if edge.edge_type != "reference"
                     && edge.edge_type != "type"
@@ -183,17 +183,9 @@ pub fn expand_with_edges(
                 {
                     continue;
                 }
-                if seen.insert(edge.from_symbol_id.clone()) {
-                    if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
-                        // Skip test symbols/files — same rationale as above
-                        if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
-                            continue;
-                        }
-                        let line_count = row.end_line.saturating_sub(row.start_line) + 1;
-                        let si = symbol_importance_adjustment(line_count, row.exported);
-                        if si < -1.0 && !row.exported {
-                            continue;
-                        }
+                {
+                    let is_new = seen.insert(edge.from_symbol_id.clone());
+                    let expansion_score = {
                         let evidence_boost =
                             (1.0 + (edge.evidence_count as f32).ln_1p() * 0.25).clamp(1.0, 1.75);
                         let resolution_multiplier = match edge.resolution.as_str() {
@@ -202,24 +194,40 @@ pub fn expand_with_edges(
                             "heuristic" => 0.75,
                             _ => 0.8,
                         };
-                        let lv_disc = local_variable_discount(&row.kind, &row.name);
-                        let qr_disc = query_relevance_discount(&row.name, &row.file_path, &query_terms);
-                        out.push(RankedHit {
-                            id: row.id.clone(),
-                            score: base_score
-                                * 0.8
-                                * edge.confidence
-                                * evidence_boost
-                                * resolution_multiplier
-                                * lv_disc
-                                * qr_disc,
-                            name: row.name,
-                            kind: row.kind,
-                            file_path: row.file_path,
-                            exported: row.exported,
-                            language: row.language,
-                        });
-                        expanded_ids.insert(row.id);
+                        base_score * 0.8 * edge.confidence * evidence_boost * resolution_multiplier
+                    };
+
+                    if is_new {
+                        if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
+                            if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
+                                continue;
+                            }
+                            let line_count = row.end_line.saturating_sub(row.start_line) + 1;
+                            let si = symbol_importance_adjustment(line_count, row.exported);
+                            if si < -1.0 && !row.exported {
+                                continue;
+                            }
+                            let lv_disc = local_variable_discount(&row.kind, &row.name);
+                            let qr_disc = query_relevance_discount(&row.name, &row.file_path, &query_terms);
+                            out.push(RankedHit {
+                                id: row.id.clone(),
+                                score: expansion_score * lv_disc * qr_disc,
+                                name: row.name,
+                                kind: row.kind,
+                                file_path: row.file_path,
+                                exported: row.exported,
+                                language: row.language,
+                            });
+                            expanded_ids.insert(row.id);
+                        }
+                    } else {
+                        // Symbol already in pool — boost its score if expansion
+                        // derives a higher score from the parent relationship.
+                        if let Some(existing) = out.iter_mut().find(|h| h.id == edge.from_symbol_id) {
+                            if expansion_score > existing.score {
+                                existing.score = expansion_score;
+                            }
+                        }
                     }
                 }
             }

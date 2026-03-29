@@ -1,6 +1,7 @@
 use crate::retrieval::RankedHit;
 use crate::retrieval::query::Intent;
-use crate::retrieval::ranking::score::{intent_adjustment, is_test_file, is_test_symbol, symbol_importance_adjustment};
+use crate::classify::{is_test_file, is_test_symbol};
+use crate::retrieval::ranking::score::{intent_adjustment, symbol_importance_adjustment};
 use crate::storage::sqlite::SqliteStore;
 use crate::text;
 use anyhow::Result;

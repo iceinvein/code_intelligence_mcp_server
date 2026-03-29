@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::indexer::extract::symbol::{TodoEntry, TodoKind};
+use crate::storage::sqlite::schema::{TodoEntry, TodoKind};
 use crate::storage::sqlite::schema::TodoRow;
 
 /// Upsert a single TODO entry

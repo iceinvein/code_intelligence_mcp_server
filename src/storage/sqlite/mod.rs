@@ -9,7 +9,7 @@ pub use operations::SqliteStore;
 pub use schema::*;
 
 // Re-export types used in the API
-pub use crate::indexer::extract::symbol::TodoEntry;
+pub use schema::{TodoEntry, TodoKind};
 
 impl SqliteStore {
     pub fn upsert_symbol(&self, symbol: &SymbolRow) -> Result<()> {
@@ -415,7 +415,7 @@ impl SqliteStore {
 
     pub fn batch_upsert_docstrings(
         &self,
-        entries: &[crate::indexer::extract::symbol::JSDocEntry],
+        entries: &[schema::JSDocEntry],
     ) -> Result<()> {
         let conn = self.write()?;
         queries::docstrings::batch_upsert_docstrings(&conn, entries)

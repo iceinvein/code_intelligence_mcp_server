@@ -1,3 +1,4 @@
+use crate::classify::{is_test_file, is_test_symbol};
 use crate::config::Config;
 use crate::retrieval::query::Intent;
 use crate::retrieval::{HitSignals, RankedHit};
@@ -1046,49 +1047,7 @@ pub(crate) fn structural_adjustment(
     score
 }
 
-pub(crate) fn is_test_file(file_path: &str) -> bool {
-    let path_lower = file_path.to_lowercase();
-    file_path.contains(".test.")
-        || file_path.contains(".spec.")
-        || file_path.contains("/__tests__/")
-        || file_path.contains("/tests/")
-        || file_path.starts_with("tests/")
-        || file_path.ends_with("_test.rs")
-        || file_path.ends_with("_test.go")
-        || file_path.ends_with("_test.py")
-        || file_path.ends_with("_test.ts")
-        || file_path.ends_with("_test.tsx")
-        || file_path.ends_with("_test.js")
-        || file_path.ends_with("_test.jsx")
-        || file_path.contains("/test_")
-        || file_path.contains("/conftest")
-        // Mock/fixture/helper files (e.g., test.mocks.ts, __mocks__/, fixtures/)
-        || path_lower.contains("mock")
-        || path_lower.contains("__fixtures__")
-        || path_lower.contains("/fixtures/")
-        // Test helper patterns (e.g., test-helpers.ts, admin-test-helpers.ts)
-        || path_lower.contains("test-helper")
-}
-
-/// Check if a symbol name looks like a test function/helper
-pub(crate) fn is_test_symbol(name: &str) -> bool {
-    let n = name.to_lowercase();
-    n.starts_with("test_")
-        || n.starts_with("create_test_")
-        || n.starts_with("make_test_")
-        || n.starts_with("setup_test")
-        || n.starts_with("mock_")
-        || n == "setup"
-        || n == "teardown"
-        || n == "tests"
-        || (n.starts_with("test") && n.len() > 4 && n.as_bytes()[4].is_ascii_uppercase())
-        // Mock patterns: MockTransaction, createMockDb, txMock, fakeFoo, stubBar
-        || name.starts_with("Mock")
-        || name.ends_with("Mock")
-        || name.contains("Mock")
-        || n.starts_with("fake")
-        || n.starts_with("stub")
-}
+// is_test_file and is_test_symbol moved to crate::classify
 
 pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, _exported: bool, name: &str) -> f32 {
     // Test Penalty (0.01x multiplier): aggressively suppress test code in non-test queries.

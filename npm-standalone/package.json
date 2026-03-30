@@ -12,6 +12,22 @@
     "type": "git",
     "url": "git+https://github.com/iceinvein/code_intelligence_mcp_server.git"
   },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-intelligence",
+    "code-search",
+    "semantic-search",
+    "code-navigation",
+    "llm",
+    "ai-coding",
+    "tree-sitter",
+    "code-indexer",
+    "claude",
+    "cursor",
+    "opencode",
+    "standalone"
+  ],
   "author": "iceinvein",
   "license": "MIT",
   "dependencies": {

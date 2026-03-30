@@ -178,12 +178,18 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     framework_patterns.extend(extract_fastapi_patterns(root, source));
     framework_patterns.extend(extract_django_patterns(root, source));
 
+    // Extract TODO/FIXME from Python # comments
+    let todo_cursor = root.walk();
+    let todos = super::comments::extract_todo_from_tree(
+        todo_cursor, source, "", &["comment"],
+    );
+
     Ok(ExtractedFile {
         symbols,
         imports,
         type_edges,
         dataflow_edges,
-        todos: Vec::new(),
+        todos,
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
         framework_patterns,

@@ -92,9 +92,9 @@ impl RetrieverCaches {
         Self {
             last_symbol_update_unix_s: None,
             last_index_run_started_at_unix_s: None,
-            responses: LruCache::new(64, None),
-            embeddings: LruCache::new(256, Some(4 * 1024 * 1024)),
-            contexts: LruCache::new(64, Some(8 * 1024 * 1024)),
+            responses: LruCache::new(128, None),
+            embeddings: LruCache::new(2048, Some(32 * 1024 * 1024)),
+            contexts: LruCache::new(128, Some(16 * 1024 * 1024)),
         }
     }
 }

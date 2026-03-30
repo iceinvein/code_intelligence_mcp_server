@@ -65,13 +65,16 @@ pub struct GetFileSymbolsTool {
 
 #[macros::mcp_tool(
     name = "get_call_hierarchy",
-    description = "Return a best-effort call hierarchy rooted at a symbol."
+    description = "Return a best-effort call hierarchy rooted at a symbol. Shows what a function calls (callees) or what calls it (callers)."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetCallHierarchyTool {
     pub symbol_name: String,
+    /// Direction: \"callees\" (what this calls), \"callers\" (what calls this), or \"both\" (default)
     pub direction: Option<String>,
+    /// Traversal depth (default: 3, max: 10)
     pub depth: Option<u32>,
+    /// Maximum number of nodes to return (default: 50)
     pub limit: Option<u32>,
 }
 
@@ -119,21 +122,24 @@ pub struct ExploreDependencyGraphTool {
 
 #[macros::mcp_tool(
     name = "get_similarity_cluster",
-    description = "Return symbols in the same similarity cluster as the given symbol."
+    description = "Return symbols that share the same embedding cluster as the given symbol — i.e., semantically similar code. Small symbols (< 3 lines) or test helpers are skipped during clustering and will return empty results. For arbitrary code snippet similarity, use find_similar_code instead."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetSimilarityClusterTool {
     pub symbol_name: String,
+    /// Maximum number of cluster members to return (default: 20)
     pub limit: Option<u32>,
 }
 
 #[macros::mcp_tool(
     name = "hydrate_symbols",
-    description = "Hydrate full context for a set of symbol ids."
+    description = "Hydrate full source code and context for a set of symbol IDs (from search_code hits or find_references results). Returns the actual code text for each symbol. Use mode \"full\" to include surrounding context (callers, type hierarchy), or omit for code-only output."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct HydrateSymbolsTool {
+    /// Symbol IDs to hydrate (from search_code, find_references, etc.)
     pub ids: Vec<String>,
+    /// Output mode: \"full\" includes surrounding context (callers, types), omit for code-only (default)
     pub mode: Option<String>,
 }
 
@@ -162,13 +168,14 @@ pub struct ReportFileAccessTool {
 
 #[macros::mcp_tool(
     name = "explain_search",
-    description = "Return detailed scoring breakdown for search results to understand why results ranked the way they did."
+    description = "Return detailed scoring breakdown for search results — shows keyword/vector/RRF scores, intent multipliers, and structural adjustments for each hit. Use verbose=true to include per-signal details (term_coverage, popularity_boost, etc.). Useful for debugging why a symbol ranks higher or lower than expected."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExplainSearchTool {
     pub query: String,
     pub limit: Option<u32>,
     pub exported_only: Option<bool>,
+    /// When true, includes per-signal breakdown (term_coverage, popularity_boost, definition_bias, symbol_importance, test_penalty) for each result
     pub verbose: Option<bool>,
 }
 
@@ -187,33 +194,38 @@ pub struct FindSimilarCodeTool {
 
 #[macros::mcp_tool(
     name = "trace_data_flow",
-    description = "Trace variable reads and writes through the codebase to understand data flow."
+    description = "Trace where a variable/field is read and written across the codebase. Shows data flow edges (reads/writes) from the symbol's function scope. Use inter_procedural=true to expand 1 level into called functions, revealing cross-function data flow."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct TraceDataFlowTool {
     pub symbol_name: String,
     pub file_path: Option<String>,
+    /// Direction: \"forward\" (where data flows to), \"backward\" (where data comes from), or \"both\" (default)
     pub direction: Option<String>,
+    /// Graph traversal depth (default: 3, max: 10)
     pub depth: Option<u32>,
     pub limit: Option<u32>,
-    /// Enable 1-level inter-procedural expansion into called functions (default false)
+    /// Expand 1 level into called functions to trace cross-function data flow (default: false)
     pub inter_procedural: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "summarize_file",
-    description = "Generate a summary of file contents including symbol counts, structure overview, and key exports."
+    description = "Generate a structural summary of an indexed file: symbol counts by kind (functions, structs, etc.), key exports, and dependency overview. This is a symbol-level summary from the index, not a line-by-line file read. Use include_signatures=true to show function/method signatures."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SummarizeFileTool {
+    /// File path relative to repo root (e.g., \"src/auth.ts\")
     pub file_path: String,
+    /// Include function/method signatures in the summary (default: false)
     pub include_signatures: Option<bool>,
+    /// Include additional detail: import/export counts, edge statistics (default: false)
     pub verbose: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_affected_code",
-    description = "Find code that would be affected if the given symbol changes (reverse dependencies)."
+    description = "Find code that would be affected if the given symbol changes, using the structural dependency graph (callers, importers, type implementors). Returns reverse dependencies with severity ratings. For impact analysis that also considers git co-change history, use predict_impact instead."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindAffectedCodeTool {
@@ -389,7 +401,7 @@ pub struct FindUndocumentedSymbolsTool {
 
 #[macros::mcp_tool(
     name = "predict_impact",
-    description = "Predict what code would be affected by changing a symbol, combining structural dependency analysis with git co-change history."
+    description = "Predict what code would be affected by changing a symbol. Combines structural dependencies (call graph, type hierarchy) with git co-change history (files that historically change together). Returns a ranked list with confidence scores. Unlike find_affected_code (which only uses the dependency graph), this also considers statistical co-change patterns from git log."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct PredictImpactTool {

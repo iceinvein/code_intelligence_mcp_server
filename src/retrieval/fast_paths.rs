@@ -74,6 +74,10 @@ pub(super) fn handle_id_lookup(
         query_limit: limit as u64,
         exported_only,
         result_count: hits.len() as u64,
+        embedding_ms: 0,
+        reranker_ms: 0,
+        scoring_ms: 0,
+        assembly_ms: 0,
     };
     let _ = sqlite.insert_search_run(&run);
 
@@ -168,6 +172,10 @@ pub(super) fn handle_callers_intent(
         query_limit: limit as u64,
         exported_only,
         result_count: hits.len() as u64,
+        embedding_ms: 0,
+        reranker_ms: 0,
+        scoring_ms: 0,
+        assembly_ms: 0,
     };
     let _ = sqlite.insert_search_run(&run);
 

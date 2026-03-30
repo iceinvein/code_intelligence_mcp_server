@@ -154,9 +154,14 @@ pub async fn handle_find_similar_code(
         .search(&query_vector, limit * 2)
         .await?;
 
-    // Filter by threshold and fetch symbol details
+    // Filter by threshold and fetch symbol details (dedup by ID — LanceDB may
+    // contain duplicate records if concurrent embedding generation raced).
+    let mut seen_ids = std::collections::HashSet::new();
     let mut results = Vec::new();
     for hit in similar.into_iter().take(limit * 2) {
+        if !seen_ids.insert(hit.id.clone()) {
+            continue;
+        }
         let distance = hit.distance.unwrap_or(1.0);
         let similarity = 1.0 / (1.0 + distance); // Convert distance to similarity
 

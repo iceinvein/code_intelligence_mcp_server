@@ -106,6 +106,8 @@ impl SqliteStore {
                 .with_context(|| "Failed to run migration: migrate_add_edges_evidence_count_column")?;
             migrate_add_edges_resolution_columns(&conn)
                 .with_context(|| "Failed to run migration: migrate_add_edges_resolution_columns")?;
+            migrate_add_search_runs_timing_columns(&conn)
+                .with_context(|| "Failed to run migration: migrate_add_search_runs_timing_columns")?;
         }
         Ok(())
     }
@@ -174,6 +176,26 @@ fn migrate_add_edges_resolution_columns(conn: &Connection) -> Result<()> {
     );
     let _ = conn.execute(
         "ALTER TABLE edges ADD COLUMN resolution_rank INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    Ok(())
+}
+
+fn migrate_add_search_runs_timing_columns(conn: &Connection) -> Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE search_runs ADD COLUMN embedding_ms INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE search_runs ADD COLUMN reranker_ms INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE search_runs ADD COLUMN scoring_ms INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE search_runs ADD COLUMN assembly_ms INTEGER NOT NULL DEFAULT 0",
         [],
     );
     Ok(())

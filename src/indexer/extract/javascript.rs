@@ -79,12 +79,17 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     framework_patterns.extend(extract_fastify_patterns(root, source));
     framework_patterns.extend(extract_trpc_patterns(root, source));
 
+    let todo_cursor = root.walk();
+    let todos = super::comments::extract_todo_from_tree(
+        todo_cursor, source, "", &["comment", "block_comment"],
+    );
+
     Ok(ExtractedFile {
         symbols,
         imports,
         type_edges: Vec::new(),
         dataflow_edges: Vec::new(),
-        todos: Vec::new(),
+        todos,
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
         framework_patterns,

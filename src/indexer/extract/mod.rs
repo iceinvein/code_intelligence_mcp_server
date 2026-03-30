@@ -1,6 +1,7 @@
 pub mod actix;
 pub mod axum;
 pub mod c;
+pub mod comments;
 pub mod convex;
 pub mod cpp;
 pub mod csharp;

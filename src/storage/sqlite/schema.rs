@@ -91,6 +91,14 @@ pub struct SearchRunRow {
     pub query_limit: u64,
     pub exported_only: bool,
     pub result_count: u64,
+    /// Time to generate query embedding(s) via llama.cpp (subset of vector_ms)
+    pub embedding_ms: u64,
+    /// Time for cross-encoder reranking (0 if disabled)
+    pub reranker_ms: u64,
+    /// Time for scoring adjustments + edge expansion + diversity
+    pub scoring_ms: u64,
+    /// Time for context assembly (text reads, token counting, formatting)
+    pub assembly_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,7 +399,11 @@ CREATE TABLE IF NOT EXISTS search_runs (
   query TEXT NOT NULL,
   query_limit INTEGER NOT NULL,
   exported_only INTEGER NOT NULL,
-  result_count INTEGER NOT NULL
+  result_count INTEGER NOT NULL,
+  embedding_ms INTEGER NOT NULL DEFAULT 0,
+  reranker_ms INTEGER NOT NULL DEFAULT 0,
+  scoring_ms INTEGER NOT NULL DEFAULT 0,
+  assembly_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_search_runs_started_at ON search_runs(started_at);
 

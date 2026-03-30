@@ -80,6 +80,9 @@ pub struct IndexPipeline {
     cache: Arc<EmbeddingCache>,
     metrics: Arc<MetricsRegistry>,
     repo_logger: Option<Arc<RepoLogger>>,
+    /// Guard to prevent concurrent `generate_embeddings_for_orphaned_symbols` runs
+    /// (background startup recovery vs post-indexing can race, duplicating LanceDB records).
+    embedding_generation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl IndexPipeline {
@@ -127,6 +130,7 @@ impl IndexPipeline {
             cache,
             metrics,
             repo_logger,
+            embedding_generation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -741,6 +745,10 @@ impl IndexPipeline {
     /// I/O is pipelined: while embedding batch N, batch N-1's vectors are
     /// written to LanceDB in a background task, overlapping compute and I/O.
     pub async fn generate_embeddings_for_orphaned_symbols(&self) -> Result<()> {
+        // Acquire lock to prevent concurrent runs (background startup recovery
+        // vs post-indexing can race, duplicating LanceDB records).
+        let _guard = self.embedding_generation_lock.lock().await;
+
         use crate::storage::sqlite::schema::SymbolRow;
 
         const BATCH_SIZE: usize = 200;

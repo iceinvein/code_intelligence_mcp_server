@@ -15,6 +15,8 @@ pub(super) struct HybridSearchResult {
     pub vector_ranked_for_promotion: Vec<RankedHit>,
     pub keyword_ms: u64,
     pub vector_ms: u64,
+    /// Time to generate query embedding(s) via llama.cpp (subset of vector_ms)
+    pub embedding_ms: u64,
 }
 
 /// Execute hybrid search across keyword (Tantivy) and vector (LanceDB) backends.
@@ -87,9 +89,12 @@ async fn execute_single_query_search(
     // helps BM25 (more tokens) but hurts embeddings (noisy average of concepts).
     // The embedding model already captures synonyms through its training.
     let vector_query = query_without_controls;
-    let (vector_hits, _vector_degraded) =
+    let embed_t = Instant::now();
+    let (vector_hits, _vector_degraded, embedding_ms) =
         match retriever.get_query_vector_cached(vector_query).await {
-            Ok(query_vector) => match retriever.vectors.search(&query_vector, k).await {
+            Ok(query_vector) => {
+            let emb_ms = embed_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            match retriever.vectors.search(&query_vector, k).await {
                 Ok(mut hits) => {
                     // HyDE: Add hypothetical document retrieval (best-effort)
                     if retriever.config.hyde_enabled {
@@ -114,7 +119,7 @@ async fn execute_single_query_search(
                             // HyDE failures are silently ignored - it's a best-effort enhancement
                         }
                     }
-                    (hits, false)
+                    (hits, false, emb_ms)
                 }
                 Err(e) => {
                     // Vector search failed - degrade gracefully
@@ -124,9 +129,9 @@ async fn execute_single_query_search(
                         "LanceDB vector search failed, degrading to keyword-only search"
                     );
                     retriever.metrics.search_errors_total.inc();
-                    (Vec::new(), true)
+                    (Vec::new(), true, emb_ms)
                 }
-            },
+            }},
             Err(e) => {
                 // Embedding generation failed - degrade gracefully
                 tracing::warn!(
@@ -135,7 +140,7 @@ async fn execute_single_query_search(
                     "Query embedding generation failed, degrading to keyword-only search"
                 );
                 retriever.metrics.search_errors_total.inc();
-                (Vec::new(), true)
+                (Vec::new(), true, 0)
             }
         };
 
@@ -156,8 +161,12 @@ async fn execute_single_query_search(
             })
             .collect();
 
+        // Dedup vector hits by ID — LanceDB append-only storage can have
+        // duplicate records from concurrent embedding generation races.
+        let mut vec_seen = std::collections::HashSet::new();
         let vector_ranked: Vec<RankedHit> = vector_hits
             .iter()
+            .filter(|h| vec_seen.insert(h.id.clone()))
             .map(|h| RankedHit {
                 id: h.id.clone(),
                 score: 1.0 / (1.0 + h.distance.unwrap_or(1.0).max(0.0)),
@@ -218,6 +227,7 @@ async fn execute_single_query_search(
             vector_ranked_for_promotion: vector_ranked,
             keyword_ms,
             vector_ms,
+            embedding_ms,
         })
     } else {
         // Use existing score fusion (no vector promotion in non-RRF path)
@@ -234,6 +244,7 @@ async fn execute_single_query_search(
             vector_ranked_for_promotion: Vec::new(),
             keyword_ms,
             vector_ms,
+            embedding_ms,
         })
     }
 }
@@ -405,6 +416,7 @@ async fn execute_multi_query_search(
         vector_ranked_for_promotion: vector_ranked,
         keyword_ms: 0,
         vector_ms: 0,
+        embedding_ms: 0, // multi-query path doesn't track individual timings yet
     })
 }
 

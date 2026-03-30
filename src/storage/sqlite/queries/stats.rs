@@ -31,9 +31,10 @@ pub fn insert_search_run(conn: &Connection, run: &SearchRunRow) -> Result<()> {
     conn.execute(
         r#"
 INSERT INTO search_runs(
-  started_at, duration_ms, keyword_ms, vector_ms, merge_ms, query, query_limit, exported_only, result_count
+  started_at, duration_ms, keyword_ms, vector_ms, merge_ms, query, query_limit, exported_only, result_count,
+  embedding_ms, reranker_ms, scoring_ms, assembly_ms
 )
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
 "#,
         params![
             run.started_at_unix_s,
@@ -44,7 +45,11 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             run.query,
             run.query_limit as i64,
             if run.exported_only { 1 } else { 0 },
-            run.result_count as i64
+            run.result_count as i64,
+            run.embedding_ms as i64,
+            run.reranker_ms as i64,
+            run.scoring_ms as i64,
+            run.assembly_ms as i64,
         ],
     )
     .context("Failed to insert search run")?;
@@ -83,7 +88,8 @@ pub fn latest_search_run(conn: &Connection) -> Result<Option<SearchRunRow>> {
     conn.query_row(
         r#"
 SELECT
-  started_at, duration_ms, keyword_ms, vector_ms, merge_ms, query, query_limit, exported_only, result_count
+  started_at, duration_ms, keyword_ms, vector_ms, merge_ms, query, query_limit, exported_only, result_count,
+  embedding_ms, reranker_ms, scoring_ms, assembly_ms
 FROM search_runs
 ORDER BY started_at DESC, id DESC
 LIMIT 1
@@ -101,6 +107,10 @@ LIMIT 1
                 query_limit: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
                 exported_only: exported_only != 0,
                 result_count: u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
+                embedding_ms: u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                reranker_ms: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                scoring_ms: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                assembly_ms: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
             })
         },
     )

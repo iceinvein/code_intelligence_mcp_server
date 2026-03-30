@@ -232,12 +232,18 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     let framework_patterns = extract_spring_patterns(root, source);
 
+    // Extract TODO/FIXME from Java line and block comments
+    let todo_cursor = root.walk();
+    let todos = super::comments::extract_todo_from_tree(
+        todo_cursor, source, "", &["line_comment", "block_comment"],
+    );
+
     Ok(ExtractedFile {
         symbols,
         imports,
         type_edges,
         dataflow_edges,
-        todos: Vec::new(),
+        todos,
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
         framework_patterns,

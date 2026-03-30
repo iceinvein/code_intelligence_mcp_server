@@ -377,6 +377,7 @@ impl Retriever {
         let vector_ranked_for_promotion = hybrid_result.vector_ranked_for_promotion;
         let keyword_ms = hybrid_result.keyword_ms;
         let vector_ms = hybrid_result.vector_ms;
+        let embedding_ms = hybrid_result.embedding_ms;
 
         let merge_t = Instant::now();
 
@@ -416,6 +417,7 @@ impl Retriever {
         )?;
 
         // Apply cross-encoder reranking if available
+        let rerank_t = Instant::now();
         let mut hits = if let Some(reranker) = &self.reranker {
             if should_rerank(hits.len(), 3) {
                 // Collect symbol texts for reranking
@@ -440,7 +442,9 @@ impl Retriever {
         } else {
             hits
         };
+        let reranker_ms = rerank_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
+        let scoring_t = Instant::now();
         // R30v2: Gentle diversity — truncate to a larger pool so that
         // diversify_by_file has room to promote diverse results, but doesn't
         // aggressively displace relevant same-file results the way pre-truncation
@@ -963,8 +967,12 @@ impl Retriever {
             }
         }
 
+        let scoring_ms = scoring_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+
+        let assembly_t = Instant::now();
         let (context, _context_items) =
             self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?;
+        let assembly_ms = assembly_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -979,6 +987,10 @@ impl Retriever {
             query_limit: limit as u64,
             exported_only,
             result_count: hits.len() as u64,
+            embedding_ms,
+            reranker_ms,
+            scoring_ms,
+            assembly_ms,
         };
         let _ = sqlite.insert_search_run(&run);
 

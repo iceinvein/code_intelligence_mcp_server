@@ -65,12 +65,17 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     symbols.sort_by_key(|s| s.bytes.start);
 
+    let todo_cursor = root.walk();
+    let todos = super::comments::extract_todo_from_tree(
+        todo_cursor, source, "", &["line_comment", "multiline_comment"],
+    );
+
     Ok(ExtractedFile {
         symbols,
         imports,
         type_edges,
         dataflow_edges: Vec::<DataFlowEdge>::new(),
-        todos: Vec::new(),
+        todos,
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
         framework_patterns: Vec::new(),

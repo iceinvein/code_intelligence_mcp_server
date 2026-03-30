@@ -6,7 +6,8 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::{
-    query::{ExecutableQuery, QueryBase},
+    index::Index,
+    query::{ExecutableQuery, QueryBase, Select},
     table::OptimizeAction,
     Connection,
 };
@@ -273,6 +274,14 @@ impl LanceVectorTable {
             ));
         }
 
+        // Select only metadata columns — skip the large vector column (896 floats × 4 bytes)
+        // to reduce I/O. LanceDB reads entire column groups; excluding vectors avoids
+        // reading ~10MB of vector data for a 2700-symbol table.
+        let result_columns = Select::Columns(vec![
+            "id".into(), "name".into(), "kind".into(),
+            "file_path".into(), "exported".into(), "language".into(),
+        ]);
+
         let stream = self
             .table
             .query()
@@ -284,6 +293,7 @@ impl LanceVectorTable {
                     limit
                 )
             })?
+            .select(result_columns)
             .limit(limit)
             .execute()
             .await
@@ -497,6 +507,24 @@ impl LanceVectorTable {
             );
         }
 
+        // Build/rebuild vector index for ANN search.
+        // Without an index, every search brute-force scans all vectors (~920ms for 2700 vectors).
+        // Index::Auto lets LanceDB choose the best index type for the data size.
+        // For <10K vectors it typically picks IVF-Flat; for larger tables, IVF-PQ.
+        // This is idempotent — rebuilding replaces the existing index.
+        match self
+            .table
+            .create_index(&["vector"], Index::Auto)
+            .execute()
+            .await
+        {
+            Ok(_) => tracing::info!("LanceDB vector index created/rebuilt"),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "LanceDB vector index creation failed (non-fatal, brute-force search still works)"
+            ),
+        }
+
         Ok(())
     }
 
@@ -518,6 +546,11 @@ impl LanceVectorTable {
             ));
         }
 
+        let result_columns = Select::Columns(vec![
+            "id".into(), "name".into(), "kind".into(),
+            "file_path".into(), "exported".into(), "language".into(),
+        ]);
+
         let stream = self
             .table
             .query()
@@ -530,6 +563,7 @@ impl LanceVectorTable {
                     filter
                 )
             })?
+            .select(result_columns)
             .only_if(filter)
             .limit(limit)
             .execute()

@@ -405,7 +405,7 @@ impl Retriever {
         // Use simple normalized query (lowercase+trim, no synonym/stem expansion)
         // for selection boost lookup — must match the key stored by report_selection.
         let original_query_normalized = query_without_controls.to_lowercase();
-        let hits = postprocess::filter_and_boost(
+        let mut hits = postprocess::filter_and_boost(
             &sqlite,
             uniq,
             &mut hit_signals,
@@ -416,33 +416,10 @@ impl Retriever {
             &self.config,
         )?;
 
-        // Apply cross-encoder reranking if available
         let rerank_t = Instant::now();
-        let mut hits = if let Some(reranker) = &self.reranker {
-            if should_rerank(hits.len(), 3) {
-                // Collect symbol texts for reranking
-                let mut texts = HashMap::new();
-                for hit in &hits {
-                    if let Some(row) = sqlite.get_symbol_by_id(&hit.id).ok().flatten() {
-                        texts.insert(hit.id.clone(), row.text);
-                    }
-                }
-
-                let docs = prepare_rerank_docs(&hits, &texts);
-                // Use the first sub-query for reranking (or original query)
-                let rerank_query = &sub_queries[0];
-                if let Ok(rerank_scores) = reranker.rerank(rerank_query, &docs).await {
-                    apply_reranker_scores(&hits, &rerank_scores, 0.6) // 60% cross-encoder weight — must overcome vec=0 base score gap for keyword-only matches like Q7 websocket
-                } else {
-                    hits
-                }
-            } else {
-                hits
-            }
-        } else {
-            hits
-        };
-        let reranker_ms = rerank_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        // Reranker is applied later (after final intent enforcement) so that
+        // test penalties and meta-match suppression can't be overridden.
+        let reranker_ms; // measured below
 
         let scoring_t = Instant::now();
         // R30v2: Gentle diversity — truncate to a larger pool so that
@@ -546,6 +523,34 @@ impl Retriever {
         hits.retain(|h| {
             h.score >= 0.5 && (is_test_intent || !ranking::is_test_file(&h.file_path))
         });
+
+        // Apply cross-encoder reranking AFTER intent enforcement + score filtering.
+        // This placement ensures test penalties and meta-match suppression are baked
+        // into scores before the reranker sees them. The reranker acts as a tiebreaker
+        // (weight=0.2) that can reorder similarly-scored results but can't override
+        // large score differences from structural signals.
+        hits = if let Some(reranker) = &self.reranker {
+            if should_rerank(hits.len(), 3) {
+                let mut texts = HashMap::new();
+                for hit in &hits {
+                    if let Some(row) = sqlite.get_symbol_by_id(&hit.id).ok().flatten() {
+                        texts.insert(hit.id.clone(), row.text);
+                    }
+                }
+                let docs = prepare_rerank_docs(&hits, &texts);
+                let rerank_query = &sub_queries[0];
+                if let Ok(rerank_scores) = reranker.rerank(rerank_query, &docs).await {
+                    apply_reranker_scores(&hits, &rerank_scores, 0.2)
+                } else {
+                    hits
+                }
+            } else {
+                hits
+            }
+        } else {
+            hits
+        };
+        reranker_ms = rerank_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         // Post-pipeline gap fill: if fewer than `limit` results survived
         // enforcement + min-score filtering, backfill from the pre-expansion pool.

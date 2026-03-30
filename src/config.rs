@@ -319,7 +319,7 @@ impl StandaloneConfig {
             max_context_bytes: 200_000,
             index_node_modules: false,
             repo_roots: vec![repo_path],
-            reranker_enabled: false,
+            reranker_enabled: true,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: Some(global_dir.join("reranker-cache")),
@@ -677,7 +677,7 @@ impl Config {
             .as_deref()
             .map(parse_bool)
             .transpose()?
-            .unwrap_or(false);
+            .unwrap_or(true);
         let reranker_model_path = optional_env("RERANKER_MODEL_PATH")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?;
@@ -1404,7 +1404,7 @@ mod tests {
         let cfg = Config::from_env().unwrap();
 
         // Reranker defaults
-        assert!(!cfg.reranker_enabled);
+        assert!(cfg.reranker_enabled);
         assert!(cfg.reranker_model_path.is_none());
         assert_eq!(cfg.reranker_top_k, 20);
         assert!(cfg.reranker_cache_dir.is_some());

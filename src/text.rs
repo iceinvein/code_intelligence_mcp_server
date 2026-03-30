@@ -878,6 +878,32 @@ pub fn extract_concept_tags(text: &str) -> String {
     // These fired on ~80% of files (map_err, Err(e), unwrap_or, bail!, .context(), etc.)
     // giving near-zero BM25 IDF — confirmed zero discrimination in R33 benchmarks.
 
+    // --- Async / Concurrency / Parallelism (Q11) ---
+    // Only rare primitives (< 2% of corpus). Skipped: async fn (7.3%), Mutex (2.2%).
+    if text.contains("tokio::spawn") || text.contains("task::spawn") {
+        tags.insert("async");
+        tags.insert("concurrency");
+    }
+    if text.contains("spawn_blocking") {
+        tags.insert("async");
+        tags.insert("concurrency");
+    }
+    if text.contains("rayon") || text.contains("par_iter") || text.contains("par_bridge") {
+        tags.insert("parallel");
+        tags.insert("concurrency");
+    }
+    if text.contains("Semaphore") {
+        tags.insert("concurrency");
+    }
+    if text.contains("join!") || text.contains("select!") {
+        tags.insert("async");
+        tags.insert("concurrency");
+    }
+    if text.contains("CancellationToken") {
+        tags.insert("async");
+        tags.insert("concurrency");
+    }
+
     // Build output with both raw and split forms
     let mut parts = Vec::new();
     for tag in &tags {
@@ -1193,6 +1219,22 @@ use super::Bar;
         let tags = extract_concept_tags(text);
         assert!(tags.contains("websocket"), "WebSocket should trigger websocket: {tags}");
         assert!(tags.contains("realtime"), "WebSocket should trigger realtime: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_async_concurrency() {
+        let text = "tokio::spawn(async move { process_batch().await })";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("async"), "tokio::spawn should trigger async: {tags}");
+        assert!(tags.contains("concurrency"), "tokio::spawn should trigger concurrency: {tags}");
+    }
+
+    #[test]
+    fn test_concept_tags_parallel() {
+        let text = "items.par_iter().map(|x| process(x)).collect()";
+        let tags = extract_concept_tags(text);
+        assert!(tags.contains("parallel"), "par_iter should trigger parallel: {tags}");
+        assert!(tags.contains("concurrency"), "par_iter should trigger concurrency: {tags}");
     }
 
     // R34: Removed tests for error_handling, fallback, graceful_degradation, serde —

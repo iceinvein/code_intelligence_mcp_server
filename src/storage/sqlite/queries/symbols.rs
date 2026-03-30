@@ -589,6 +589,47 @@ WHERE s.id IN ({placeholders})
     Ok(out)
 }
 
+/// Check which symbol IDs exist in the symbols table.
+/// Returns the subset of `symbol_ids` that have matching rows.
+/// Used to filter stale Tantivy/LanceDB entries whose symbols were re-indexed.
+pub fn batch_check_symbol_ids_exist(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> Result<std::collections::HashSet<String>> {
+    if symbol_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let placeholders = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let query = format!(
+        "SELECT id FROM symbols WHERE id IN ({})",
+        placeholders
+    );
+
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_check_symbol_ids_exist")?;
+
+    let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut out = std::collections::HashSet::new();
+    let mut rows = stmt.query(params.as_slice())?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        out.insert(id);
+    }
+    Ok(out)
+}
+
 pub fn search_symbols_by_name_substr(
     conn: &Connection,
     needle: &str,

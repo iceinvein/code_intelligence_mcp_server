@@ -389,6 +389,18 @@ impl Retriever {
             }
         }
 
+        // Filter out stale IDs — symbols that exist in Tantivy/LanceDB but
+        // were re-indexed in SQLite (getting new content-hash IDs). Stale IDs
+        // bypass SQL-based test detection, causing test functions to rank
+        // alongside production code.
+        {
+            let ids: Vec<String> = uniq.iter().map(|h| h.id.clone()).collect();
+            let valid_ids = sqlite.batch_check_symbol_ids_exist(&ids).unwrap_or_default();
+            if valid_ids.len() < ids.len() {
+                uniq.retain(|h| valid_ids.contains(&h.id));
+            }
+        }
+
         // Inject framework pattern matches for NL queries
         let fw_injection_count = if is_nl_query {
             framework_patterns::inject_framework_patterns(

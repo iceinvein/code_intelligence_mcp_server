@@ -357,6 +357,14 @@ impl SqliteStore {
         queries::symbols::batch_check_test_symbols(&conn, symbol_ids)
     }
 
+    pub fn batch_check_symbol_ids_exist(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashSet<String>> {
+        let conn = self.read()?;
+        queries::symbols::batch_check_symbol_ids_exist(&conn, symbol_ids)
+    }
+
     pub fn insert_query_selection(
         &self,
         query_text: &str,

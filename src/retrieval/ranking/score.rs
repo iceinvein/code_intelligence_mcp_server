@@ -1755,6 +1755,21 @@ mod tests {
         assert!(!stems_match("rank", "file")); // unrelated
     }
 
+    #[test]
+    fn term_coverage_synonym_stem_matching() {
+        // "concurrency" should match "concurrent" (value under "async" key) via stem
+        let query = "Async concurrency and parallel processing";
+
+        // "parallel" in name → 1.5, "async" via synonym → 0.25, "concurrency" via stem synonym → 0.25
+        let tc = term_coverage_adjustment(query, "parallel", "pipeline/mod.rs", None);
+        assert!(tc > -1.0, "stem synonym matching should improve coverage, got {tc}");
+
+        // Body containing "async" keyword should get body-match credit
+        let body = "pub fn spawn_description_worker() -> tokio::task::JoinHandle<()> { tokio::spawn(async move { run().await }) }";
+        let tc = term_coverage_adjustment(query, "IndexPipeline::spawn_description_worker", "pipeline/mod.rs", Some(body));
+        assert!(tc > -2.5, "async body match should improve tc, got {tc}");
+    }
+
     // ── symbol_importance_adjustment tests ──
 
     #[test]

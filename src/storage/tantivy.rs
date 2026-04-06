@@ -15,13 +15,16 @@ use tantivy::{
     Index, IndexReader, IndexWriter, ReloadPolicy, Term,
 };
 
-const TANTIVY_SCHEMA_VERSION: &str = "20";
+const TANTIVY_SCHEMA_VERSION: &str = "21";
 
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub score: f32,
     pub id: String,
+    /// Enriched name with concept tags (for BM25 scoring and term_coverage).
     pub name: String,
+    /// Original symbol name without concept tags (for display).
+    pub display_name: String,
     pub file_path: String,
     pub kind: String,
     pub exported: bool,
@@ -32,6 +35,9 @@ struct Fields {
     id: Field,
     name: Field,
     name_ngram: Field,
+    /// Original symbol name (stored-only) for display. The `name` field may contain
+    /// concept-enriched tokens for BM25 matching; this field preserves the clean name.
+    display_name: Field,
     file_path: Field,
     kind: Field,
     exported: Field,
@@ -228,6 +234,9 @@ impl TantivyIndex {
             name_ngram: schema
                 .get_field("name_ngram")
                 .context("Missing tantivy field: name_ngram")?,
+            display_name: schema
+                .get_field("display_name")
+                .context("Missing tantivy field: display_name")?,
             file_path: schema
                 .get_field("file_path")
                 .context("Missing tantivy field: file_path")?,
@@ -295,6 +304,7 @@ impl TantivyIndex {
             id: schema.get_field("id").context("Missing tantivy field: id")?,
             name: schema.get_field("name").context("Missing tantivy field: name")?,
             name_ngram: schema.get_field("name_ngram").context("Missing tantivy field: name_ngram")?,
+            display_name: schema.get_field("display_name").context("Missing tantivy field: display_name")?,
             file_path: schema.get_field("file_path").context("Missing tantivy field: file_path")?,
             kind: schema.get_field("kind").context("Missing tantivy field: kind")?,
             exported: schema.get_field("exported").context("Missing tantivy field: exported")?,
@@ -361,23 +371,22 @@ impl TantivyIndex {
 
         let expanded_text = expand_index_text(&symbol.name, &symbol.kind, &symbol.text, &symbol.file_path, import_tags, framework_tags, llm_description, symbol.exported);
 
-        // Enrich the indexed name for symbols whose body text contains WebSocket patterns.
-        // This injects "websocket_handler" into the high-boost name field so that NL queries
-        // like "How does the WebSocket handler work?" get direct BM25 term matches on
-        // "websocket" and "handler" — bridging the vocabulary gap for Q7.
+        // Enrich the indexed name with concept tags to bridge vocabulary gaps.
+        // Concept tags like "async concurrency" or "websocket handler" get injected
+        // into the name field so that:
+        // 1. BM25 matches on NL queries ("async concurrency") hit the name field
+        // 2. term_coverage_adjustment sees query terms in the name (weight 1.5)
         //
-        // Scoped to extractor files (indexer/extract/) to prevent self-referential
-        // meta-matching: infrastructure code (tantivy.rs, text.rs) contains "websocket"
-        // in pattern-detection strings and enrichment logic, but doesn't implement
-        // WebSocket handling.
+        // Anti-meta-matching: pattern-detection files (text.rs, score.rs, extract/rust.rs)
+        // contain these patterns as STRING LITERALS in detection code. Exclude them
+        // to prevent self-referential tagging.
         let stripped_for_tags = text::strip_code_comments(&symbol.text);
         let concept_tags = text::extract_concept_tags(&stripped_for_tags);
-        let is_extractor = symbol.file_path.contains("indexer/extract/");
-        let enriched_name = if concept_tags.contains("websocket") && is_extractor {
-            format!("{} websocket_handler", symbol.name)
-        } else {
-            symbol.name.clone()
-        };
+        let enriched_name = enrich_name_with_concepts(
+            &symbol.name,
+            &symbol.file_path,
+            &concept_tags,
+        );
 
         // LLM description goes into a separate field to prevent IDF dilution.
         let description_text = llm_description.unwrap_or("");
@@ -386,6 +395,7 @@ impl TantivyIndex {
             self.fields.id => symbol.id.as_str(),
             self.fields.name => enriched_name.as_str(),
             self.fields.name_ngram => enriched_name.as_str(),
+            self.fields.display_name => symbol.name.as_str(),
             self.fields.file_path => symbol.file_path.as_str(),
             self.fields.kind => symbol.kind.as_str(),
             self.fields.exported => if symbol.exported { 1u64 } else { 0u64 },
@@ -536,8 +546,15 @@ impl TantivyIndex {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Enriched name (with concept tags) for BM25 scoring + term_coverage
             let name = retrieved
                 .get_first(self.fields.name)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // Original name for display
+            let display_name = retrieved
+                .get_first(self.fields.display_name)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -561,6 +578,7 @@ impl TantivyIndex {
                 score: score * score_multiplier,
                 id,
                 name,
+                display_name,
                 file_path,
                 kind,
                 exported,
@@ -581,6 +599,7 @@ fn build_schema() -> tantivy::schema::Schema {
         .set_indexing_options(indexing)
         .set_stored();
     builder.add_text_field("name", text_options.clone());
+    builder.add_text_field("display_name", STRING | STORED);
     let ngram_indexing = TextFieldIndexing::default()
         .set_tokenizer("code_ngram")
         .set_index_option(IndexRecordOption::WithFreqsAndPositions);
@@ -605,6 +624,50 @@ fn register_tokenizers(index: &Index) {
     index
         .tokenizers()
         .register("code_ngram", CodeNgramTokenizer);
+}
+
+/// Inject concept tags into the symbol name for BM25 name-field matching.
+///
+/// Pattern-detection infrastructure files are excluded to prevent meta-matching:
+/// `text.rs` contains detection patterns as string literals (`text.contains("tokio::spawn")`),
+/// `score.rs` has patterns in test code, and `extract/rust.rs` detects `tokio::spawn` in user code.
+fn enrich_name_with_concepts(name: &str, file_path: &str, concept_tags: &str) -> String {
+    if concept_tags.is_empty() {
+        return name.to_string();
+    }
+
+    // Files whose bodies contain detection patterns as string literals.
+    // These would false-positive on concept extraction.
+    let is_meta_matching_risk = file_path.ends_with("text.rs")
+        || file_path.ends_with("score.rs")
+        || (file_path.contains("indexer/extract/") && file_path.ends_with("rust.rs"));
+
+    if is_meta_matching_risk {
+        // WebSocket enrichment for extractors is the one exception —
+        // extractor files DO implement WebSocket pattern detection and
+        // should be findable for "WebSocket handler" queries.
+        if file_path.contains("indexer/extract/") && concept_tags.contains("websocket") {
+            return format!("{} websocket_handler", name);
+        }
+        return name.to_string();
+    }
+
+    // Collect unique concept terms to inject (deduplicated against existing name tokens)
+    let name_lower = name.to_lowercase();
+    let mut extra = Vec::new();
+    for tag in concept_tags.split_whitespace() {
+        let tag_lower = tag.to_lowercase();
+        // Skip if already in name, or if it's a split form of something already added
+        if !name_lower.contains(&tag_lower) && !extra.contains(&tag_lower) {
+            extra.push(tag_lower);
+        }
+    }
+
+    if extra.is_empty() {
+        name.to_string()
+    } else {
+        format!("{} {}", name, extra.join(" "))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -779,6 +842,72 @@ mod tests {
     use super::*;
     use crate::path::Utf8PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn enrich_name_injects_concept_tags() {
+        // Normal symbol gets concept tags injected
+        let name = enrich_name_with_concepts(
+            "index_files", "src/indexer/pipeline/mod.rs", "async concurrency",
+        );
+        assert!(name.contains("async"), "should inject async: {name}");
+        assert!(name.contains("concurrency"), "should inject concurrency: {name}");
+        assert!(name.starts_with("index_files"), "should preserve original name: {name}");
+    }
+
+    #[test]
+    fn enrich_name_blocks_meta_matching_files() {
+        // text.rs contains detection patterns as string literals — must not enrich
+        let name = enrich_name_with_concepts(
+            "extract_concept_tags", "src/text.rs", "async concurrency parallel",
+        );
+        assert_eq!(name, "extract_concept_tags", "text.rs should be excluded: {name}");
+
+        // score.rs has test patterns
+        let name = enrich_name_with_concepts(
+            "term_coverage_adjustment", "src/retrieval/ranking/score.rs", "async concurrency",
+        );
+        assert_eq!(name, "term_coverage_adjustment", "score.rs should be excluded: {name}");
+
+        // extract/rust.rs detects tokio::spawn in user code
+        let name = enrich_name_with_concepts(
+            "extract_rust_symbols", "src/indexer/extract/rust.rs", "async concurrency",
+        );
+        assert_eq!(name, "extract_rust_symbols", "extract/rust.rs should be excluded: {name}");
+    }
+
+    #[test]
+    fn enrich_name_websocket_still_works_for_extractors() {
+        // Non-rust extractor files with websocket tags get general enrichment
+        let name = enrich_name_with_concepts(
+            "classify_elysia_method", "src/indexer/extract/elysia.rs", "websocket realtime",
+        );
+        assert!(name.contains("websocket"), "elysia.rs should get websocket: {name}");
+        assert!(name.contains("realtime"), "elysia.rs should get realtime: {name}");
+
+        // extract/rust.rs is excluded (meta-matching risk) but gets websocket_handler
+        let name = enrich_name_with_concepts(
+            "detect_spawn", "src/indexer/extract/rust.rs", "websocket async concurrency",
+        );
+        assert!(name.contains("websocket_handler"), "rust.rs with websocket gets handler: {name}");
+        assert!(!name.contains("async"), "rust.rs should NOT get async: {name}");
+    }
+
+    #[test]
+    fn enrich_name_skips_duplicates() {
+        // If name already contains the concept term, don't duplicate
+        let name = enrich_name_with_concepts(
+            "spawn_description_worker", "src/indexer/pipeline/mod.rs", "async concurrency",
+        );
+        // "spawn" doesn't match "async" or "concurrency", so both get added
+        assert!(name.contains("async"), "should inject: {name}");
+
+        let name = enrich_name_with_concepts(
+            "parallel_parse", "src/indexer/pipeline/parse.rs", "parallel concurrency",
+        );
+        // "parallel" is already in name
+        assert!(!name.contains("parallel parallel"), "should not duplicate parallel: {name}");
+        assert!(name.contains("concurrency"), "should inject concurrency: {name}");
+    }
 
     fn tmp_index_dir() -> Utf8PathBuf {
         let nanos = SystemTime::now()

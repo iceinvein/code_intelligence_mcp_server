@@ -464,6 +464,39 @@ pub fn batch_get_symbol_line_counts(
     Ok(out)
 }
 
+/// Batch-fetch the original symbol names for a set of symbol IDs.
+///
+/// Used to restore clean display names after scoring with concept-enriched names.
+pub fn batch_get_symbol_names(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> Result<std::collections::HashMap<String, String>> {
+    if symbol_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let placeholders = symbol_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let query = format!("SELECT id, name FROM symbols WHERE id IN ({})", placeholders);
+    let mut stmt = conn.prepare(&query).context("Failed to prepare batch_get_symbol_names")?;
+    let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let mut rows = stmt.query(params.as_slice())?;
+    let mut out = std::collections::HashMap::new();
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        out.insert(id, name);
+    }
+    Ok(out)
+}
+
 /// Batch-fetch the body text (source code) for a set of symbols.
 ///
 /// Used by the term_coverage signal to check whether query terms appear

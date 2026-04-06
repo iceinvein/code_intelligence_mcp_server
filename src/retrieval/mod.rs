@@ -47,6 +47,8 @@ use tokio::sync::Mutex as AsyncMutex;
 pub struct RankedHit {
     pub id: String,
     pub score: f32,
+    /// May be enriched with concept tags for BM25 scoring (Tantivy-sourced hits).
+    /// For display, use `SearchResponse.hits[].name` which is cleaned via SQLite lookup.
     pub name: String,
     pub kind: String,
     pub file_path: String,
@@ -1013,6 +1015,17 @@ impl Retriever {
 
         // Record Prometheus metrics
         self.metrics.search_results_total.inc_by(hits.len() as f64);
+
+        // Replace enriched names (with concept tags) with original names from SQLite.
+        // The enriched names are used for BM25 scoring and term_coverage during the
+        // pipeline, but the user-facing response should show clean symbol names.
+        let hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+        let original_names = sqlite.batch_get_symbol_names(&hit_ids).unwrap_or_default();
+        for hit in &mut hits {
+            if let Some(orig) = original_names.get(&hit.id) {
+                hit.name = orig.clone();
+            }
+        }
 
         let resp = SearchResponse {
             query: query.to_string(),

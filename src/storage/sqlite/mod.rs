@@ -341,6 +341,14 @@ impl SqliteStore {
         queries::symbols::batch_get_symbol_line_counts(&conn, symbol_ids)
     }
 
+    pub fn batch_get_symbol_names(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let conn = self.read()?;
+        queries::symbols::batch_get_symbol_names(&conn, symbol_ids)
+    }
+
     pub fn batch_get_symbol_texts(
         &self,
         symbol_ids: &[String],

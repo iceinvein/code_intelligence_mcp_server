@@ -322,10 +322,12 @@ pub fn get_synonyms(word: &str) -> Option<&'static [&'static str]> {
     SYNONYMS.get(word).copied()
 }
 
-/// Bidirectional synonym lookup for a single word.
+/// Bidirectional synonym lookup for a single word, with stem-aware matching.
 ///
 /// Returns related terms whether the word is a KEY or a VALUE in the SYNONYMS table.
 /// For example, "handler" (a value under "callback") returns ["callback", "listener", "hook", "delegate"].
+/// Also matches morphological variants: "concurrency" matches "concurrent" via shared
+/// prefix, bridging the gap between query terms and synonym table entries.
 /// Used by term_coverage scoring to bridge vocabulary gaps.
 pub fn get_related_terms(word: &str) -> Vec<&'static str> {
     let mut related = Vec::new();
@@ -335,9 +337,13 @@ pub fn get_related_terms(word: &str) -> Vec<&'static str> {
         related.extend_from_slice(synonyms);
     }
 
-    // Reverse: word is a value → return the key + sibling values
+    // Reverse: word is a value (exact or stem match) → return the key + sibling values
     for (key, values) in SYNONYMS.iter() {
-        if values.contains(&word) {
+        let matched = values.contains(&word)
+            || (word.len() >= 6 && values.iter().any(|v| {
+                v.len() >= 6 && synonym_stems_match(word, v)
+            }));
+        if matched {
             if *key != word && !related.contains(key) {
                 related.push(key);
             }
@@ -350,6 +356,16 @@ pub fn get_related_terms(word: &str) -> Vec<&'static str> {
     }
 
     related
+}
+
+/// Check if two words share a stem (prefix of length >= 6).
+/// Conservative: requires long shared prefix to avoid false positives.
+/// "concurrency" ↔ "concurrent" (share "concurren", len 9) → true
+/// "configuring" ↔ "config" (share "config", len 6) → true
+/// "processing" ↔ "procedure" (share "proce", len 5) → false (< 6)
+fn synonym_stems_match(a: &str, b: &str) -> bool {
+    let shared = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
+    shared >= 6
 }
 
 /// Expand query with synonyms (FNDN-18)
@@ -1547,5 +1563,36 @@ let path = "file:///tmp/test";"#;
         assert!(stripped.contains("http://example.com"), "URL in string preserved");
         assert!(!stripped.contains("a comment"), "trailing comment stripped");
         assert!(stripped.contains("file:///tmp/test"), "file URL in string preserved");
+    }
+
+    #[test]
+    fn test_get_related_terms_stem_matching() {
+        // "concurrency" should stem-match "concurrent" (value under "async")
+        let related = get_related_terms("concurrency");
+        assert!(!related.is_empty(), "concurrency should find related terms via stem matching");
+        assert!(related.contains(&"async"), "concurrency should relate to async");
+        assert!(related.contains(&"parallel"), "concurrency should relate to parallel");
+
+        // "processing" has no stem match in the table (too short shared prefix with anything)
+        let related = get_related_terms("processing");
+        assert!(related.is_empty(), "processing should have no related terms");
+
+        // Exact matches still work
+        let related = get_related_terms("concurrent");
+        assert!(related.contains(&"async"), "exact match still works");
+
+        // Short words don't false-positive
+        let related = get_related_terms("con");
+        assert!(related.is_empty(), "short words should not match");
+    }
+
+    #[test]
+    fn test_synonym_stems_match() {
+        assert!(synonym_stems_match("concurrency", "concurrent")); // share "concurren" (9)
+        assert!(synonym_stems_match("serialization", "serialize")); // share "serializ" (8)
+        assert!(synonym_stems_match("configuring", "configuration")); // share "configur" (8)
+        assert!(!synonym_stems_match("con", "concurrent")); // too short
+        assert!(!synonym_stems_match("consent", "concurrent")); // share "con" (3) < 6
+        assert!(!synonym_stems_match("processing", "procedure")); // share "proce" (5) < 6
     }
 }

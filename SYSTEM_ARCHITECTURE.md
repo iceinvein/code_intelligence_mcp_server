@@ -1,10 +1,12 @@
 # Code Intelligence System Architecture
 
-This document outlines the architecture of the Code Intelligence MCP Server v1.0.0. The system provides fast, semantic, and structure-aware code navigation for LLM agents by building a local knowledge graph of the codebase with advanced retrieval and ranking capabilities.
+This document outlines the architecture of the Code Intelligence MCP Server (v2.x). The system provides fast, semantic, and structure-aware code navigation for LLM agents by building a local knowledge graph of the codebase with advanced retrieval and ranking capabilities.
 
 ## High-Level Overview
 
-The system operates as a local indexing and retrieval engine. It scans the user's codebase, extracts semantic symbols (classes, functions, etc.), generates vector embeddings using jina-code-embeddings-0.5b (llama.cpp + Metal GPU), builds a knowledge graph with PageRank scoring, and provides intelligent search with query-aware context assembly.
+The system operates as a local indexing and retrieval engine. It scans the user's codebase, extracts semantic symbols (classes, functions, etc.), generates 1536-dimensional vector embeddings using jina-code-embeddings-1.5b (llama.cpp + Metal GPU), generates natural-language descriptions for every symbol using Qwen2.5-Coder-1.5B (llama.cpp + Metal GPU) to enrich BM25 keyword search, builds a knowledge graph with PageRank scoring, and provides intelligent search with cross-encoder reranking (bge-reranker-v2-m3) and query-aware context assembly.
+
+All three ML models run on-device via llama.cpp on Metal GPU. There are no cloud dependencies.
 
 ## System Architecture Diagram
 
@@ -21,27 +23,34 @@ flowchart LR
       Scan[File Scan] --> Parse[Tree-Sitter]
       Parse --> Extract[Symbol Extraction]
       Extract --> PageRank[PageRank Compute]
-      Extract --> Embed[Jina Code Embeddings]
+      Extract --> Embed[Jina Code 1.5b Embeddings]
+      Extract --> Describe[Qwen2.5-Coder-1.5B Descriptions]
       Extract --> Meta[JSDoc/Decorator/TODO Extract]
+      Describe --> EnrichBM25[Append to Tantivy text]
     end
 
     subgraph Storage [Storage Engine]
       direction TB
-      SQLite[(SQLite Metadata)]
-      Tantivy[(Tantivy BM25)]
-      Lance[(LanceDB Vectors)]
+      SQLite[(SQLite Metadata + Descriptions)]
+      Tantivy[(Tantivy BM25 + LLM-enriched)]
+      Lance[(LanceDB 1536-dim Vectors)]
       Cache[(Embedding Cache)]
     end
 
     subgraph Retrieval [Retrieval Engine]
       direction TB
-      QueryExpand[Query Expansion]
-      Decompose[Query Decomposition]
-      Hybrid[Hybrid Search RRF]
-      Rerank[Cross-Encoder]
-      Signals[Ranking Signals]
+      QueryExpand[Query Expansion + Synonyms]
+      Decompose[Query Decomposition + Sub-query Coverage]
+      Hybrid[Hybrid Search RRF: BM25 + Vector + Graph]
+      Promote[Vector Promotion]
+      Framework[Framework Pattern Injection]
+      Signals[Structural Ranking Signals]
+      EdgeExpand[Edge Expansion]
+      Diversify[File/Kind Diversification]
+      ScoreGap[Score-Gap Detection]
+      Rerank[bge-reranker-v2-m3 Cross-Encoder]
       Learn[Learning Boost]
-      Context[Token-Aware Assembly]
+      Context[Token-Aware Context Assembly]
     end
 
     subgraph Graph [Graph Engine]
@@ -58,19 +67,27 @@ flowchart LR
     Parse --> Extract
     Extract --> PageRank
     Extract --> Embed
+    Extract --> Describe
     Extract --> Meta
     PageRank --> SQLite
     Embed --> Lance
     Embed --> Cache
+    Describe --> SQLite
+    EnrichBM25 --> Tantivy
     Meta --> SQLite
 
     %% Query Flow
     Tools --> QueryExpand
     QueryExpand --> Decompose
     Decompose --> Hybrid
-    Hybrid --> Rerank
-    Rerank --> Signals
-    Signals --> Learn
+    Hybrid --> Promote
+    Promote --> Framework
+    Framework --> Signals
+    Signals --> EdgeExpand
+    EdgeExpand --> Diversify
+    Diversify --> ScoreGap
+    ScoreGap --> Rerank
+    Rerank --> Learn
     Learn --> Context
     Context --> Tools
 
@@ -121,10 +138,13 @@ Language-specific extractors walk the AST to identify:
 
 #### Embedding Model (`src/embeddings/llamacpp.rs`)
 
-- **Default model**: `jinaai/jina-code-embeddings-0.5b-GGUF` (Q8_0 quantization)
-- 896-dimensional embeddings optimized for code
-- llama.cpp runtime with Metal GPU acceleration
+- **Default model**: `jinaai/jina-code-embeddings-1.5b-GGUF` (Q8_0 quantization, ~1.5 GB)
+- **Native dimension**: 1536 (Matryoshka representation: the first N dimensions retain meaningful structure, so embeddings can be truncated and L2-renormalized)
+- **Symmetric** embeddings: queries and documents share the same space (no instruction prefix needed, unlike BGE asymmetric models)
+- llama.cpp runtime with Metal GPU acceleration (`n_gpu_layers=99`)
 - Batch processing with configurable batch size
+- Override dimension via `EMBEDDING_DIM` for evaluating models with different native dimensions
+- `TruncatingEmbedder` decorator caps output at a smaller dimension when needed
 
 #### Embedding Cache (`src/storage/cache.rs`)
 
@@ -133,7 +153,33 @@ Language-specific extractors walk the AST to identify:
 - Dramatically speeds up re-indexing
 - Configurable via `EMBEDDING_CACHE_ENABLED`
 
-### 3. Storage Engine (`src/storage`)
+### 3. Description LLM (`src/llm`)
+
+The description LLM enriches BM25 search by generating natural-language summaries for every indexed symbol, bridging the vocabulary gap between how users search ("auth handler") and how code is named (`authenticate_request`).
+
+#### LLM Backend (`src/llm/llamacpp.rs`)
+
+- **Default model**: `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` (Q4_K_M quantization, ~1.0 GB)
+- llama.cpp runtime with Metal GPU acceleration (`n_gpu_layers=99`, all 29 layers offloaded)
+- Greedy sampling with `AddBos::Never` (Qwen2.5 chat template handles BOS)
+- ~0.32s per symbol generation throughput on Apple Silicon
+- Per-call `LlamaContext` creation (the type is `!Send`)
+
+#### Description Pipeline
+
+1. After parallel indexing produces a batch of new symbols, the LLM is loaded and generates a description for each
+2. Descriptions are appended to the symbol's Tantivy text field via `expand_index_text` (BM25 enrichment)
+3. Descriptions are also stored in SQLite (`symbol_descriptions` table) keyed by `symbol_id` and `content_hash`
+4. After generation completes the LLM is **freed** to release ~1.0 GB of RAM; the embedding model and reranker stay resident for queries
+5. Stale descriptions (content hash mismatch after a code edit) are detected by `find_stale_descriptions` and regenerated on the next refresh
+6. Background recovery task on startup regenerates descriptions for symbols that lost their LLM enrichment (e.g. after schema bump or LanceDB data loss)
+
+#### Storage Coordination
+
+- In standalone HTTP mode: a single instance generates descriptions for each repo
+- In stdio mode: leader election via file lock (`src/leader.rs`) ensures only one process per repo loads the LLM and writes descriptions; followers never load it
+
+### 4. Storage Engine (`src/storage`)
 
 Multi-modal storage approach optimized for different query patterns:
 
@@ -154,17 +200,20 @@ Relational metadata storage:
 
 - High-performance full-text search engine
 - BM25 ranking with n-gram tokenization
+- Indexes symbol names, code text (comments stripped), morphological variants, concept tags, framework patterns, and **LLM-generated descriptions**
+- Schema is versioned (currently v21); a schema bump wipes the Tantivy index and forces a `refresh_index`
 - Fuzzy search and exact identifier matching
 - Optimized for keyword queries
 
 #### LanceDB (`src/storage/vector.rs`)
 
 - Vector database for semantic similarity search
-- Stores 896-dim jina-code-0.5b embeddings
+- Stores 1536-dim jina-code-embeddings-1.5b embeddings (configurable truncation via `EMBEDDING_DIM`)
 - Cosine distance for similarity scoring
 - Configurable search limit
+- Auto-recovery: if LanceDB `data/` directory is lost (transactions/versions remain), the embedding-generation pass on startup regenerates orphaned vectors
 
-### 4. Retrieval Engine (`src/retrieval`)
+### 5. Retrieval Engine (`src/retrieval`)
 
 The heart of the system with advanced search and ranking capabilities.
 
@@ -190,29 +239,32 @@ The heart of the system with advanced search and ranking capabilities.
 
 #### Cross-Encoder Reranking (`src/reranker/`)
 
-- Reranker trait (currently disabled)
-- Always-on for precision result ranking
+- **Default model**: `gpustack/bge-reranker-v2-m3-GGUF` (Q8_0, ~600 MB)
+- BERT-based cross-encoder run via llama.cpp + Metal GPU
+- **Enabled by default** (`reranker_enabled: true`); disable via `RERANKER_ENABLED=false`
 - Top-K reranking (default: 20) to balance quality and latency
-- Query-document relevance scoring
+- Query-document relevance scoring; results are wrapped in a `CachedReranker` to avoid re-scoring identical (query, doc) pairs
+- Stays resident in memory alongside the embedding model
 
 #### Ranking Signals (`src/retrieval/ranking/score.rs`)
 
-Sophisticated scoring pipeline with multiple signals:
+Sophisticated scoring pipeline with multiple signals applied between RRF and reranking:
 
-1. **PageRank Boost**: Graph-based importance (0.05 × score)
-2. **Test Penalty**: 0.5x multiplier unless test intent
-3. **Glue Code Filtering**: -5.0 penalty for re-export files
-4. **Directory Semantics**:
-   - `dist`, `build`, `node_modules`: -15.0 penalty
-   - `src`, `lib`, `app`: +1.0 boost
-   - Path matching: +2.0 boost
-5. **Export Boost**: +0.1 for exported symbols
-6. **Intent Multipliers**:
-   - Definitions: 1.5x boost
-   - Schema: 50-75x boost
-7. **JSDoc Boost**: 1.5x for documented symbols
-8. **Learning Boost**: User selection feedback (optional)
-9. **Package Boost**: Same-package boost in monorepos
+1. **PageRank Boost**: Graph-based importance (0.05 × score by default, tunable via `RANK_POPULARITY_WEIGHT`)
+2. **Test Penalty**: 0.5x multiplier unless test intent (multi-layer detection: file path, symbol name, AST `#[test]` / `mod tests`)
+3. **Glue Code Filtering**: penalty for `index.ts`-style barrel files
+4. **Directory Semantics**: `dist`, `build`, `node_modules` heavily penalized; `src`, `lib`, `app` boosted
+5. **Export Boost**: `RANK_EXPORTED_BOOST` for exported symbols (public API surface)
+6. **Intent Multipliers**: Definitions 1.5x, Schema 50-75x, Test multipliers, etc.
+7. **JSDoc Boost**: documented symbols ranked higher
+8. **Framework-pattern injection**: routes, middleware, decorators surfaced alongside symbol matches
+9. **Sub-query coverage**: multi-term queries ensure each sub-query has at least 2 matching results
+10. **Edge expansion**: high-ranking symbols pull in structurally related code (callers, type members) with parent-derived scores stripped of intent multipliers
+11. **File/kind diversification**: caps how many results come from one file or one kind
+12. **Score-gap detection**: drops trailing results when there's a >2.5x score drop from the previous result (configurable ratio threshold 0.4)
+13. **Learning Boost**: User selection feedback (optional, off by default)
+14. **Package Boost**: Same-package boost in monorepos
+15. **Final intent enforcement**: applied after expansion + diversification so edge-expanded hits get correct test/schema treatment
 
 #### Intent Detection (`src/retrieval/intent.rs`)
 
@@ -223,7 +275,7 @@ Query understanding for specialized ranking:
 - `Intent::Test`: "verify login", "test authentication"
 - `Intent::Schema`: "User model", "schema definition"
 
-### 5. Context Assembly (`src/retrieval/assembler/`)
+### 6. Context Assembly (`src/retrieval/assembler/`)
 
 Token-aware context formatting with query-aware truncation.
 
@@ -246,7 +298,7 @@ Token-aware context formatting with query-aware truncation.
 - **Standard**: Balanced formatting with metadata
 - **Verbose**: Full context with all metadata
 
-### 6. Graph Engine (`src/graph/`)
+### 7. Graph Engine (`src/graph/`)
 
 Knowledge graph for code relationship understanding.
 
@@ -274,7 +326,7 @@ Knowledge graph for code relationship understanding.
 - Variable usage tracing
 - Impact analysis for changes
 
-### 7. Learning System (`src/learning/`)
+### 8. Learning System (`src/learning/`)
 
 Optional adaptive ranking based on user feedback.
 
@@ -290,7 +342,7 @@ Optional adaptive ranking based on user feedback.
 - File affinity boosting for frequent access
 - Disabled by default (`LEARNING_ENABLED=false`)
 
-### 8. Metrics (`src/metrics/`)
+### 9. Metrics (`src/metrics/`)
 
 Prometheus metrics for observability:
 
@@ -365,46 +417,44 @@ User: "authentication and authorization"
 }
 ```
 
-## MCP Tools (19 Total)
+## MCP Tools (32 Total)
 
-See README.md for complete tool list. Key categories:
+See README.md for the complete tool list with descriptions. Key categories:
 
-### Core Search
+### Core Search & Navigation
 
-- `search_code`: Primary search with query decomposition
-- `get_definition`: Symbol definition with disambiguation
-- `find_references`: Find all usages
-- `get_call_hierarchy`: Callers and callees
-- `get_type_graph`: Type relationships
+- `search_code`, `get_definition`, `find_references`
+- `get_call_hierarchy`, `get_type_graph`, `explore_dependency_graph`
+- `get_file_symbols`, `get_usage_examples`, `get_context_bundle`
 
 ### Advanced Analysis
 
-- `explain_search`: Scoring breakdown
-- `find_similar_code`: Semantic similarity
-- `trace_data_flow`: Variable usage tracing
-- `find_affected_code`: Impact analysis
-- `summarize_file`: File overview
-- `get_module_summary`: Exported symbols
+- `find_affected_code`, `predict_impact` (combines structural deps with git co-change history)
+- `trace_data_flow`, `find_similar_code`, `get_similarity_cluster`
+- `find_duplicates`, `find_dead_code`
+- `explain_search`, `summarize_file`, `get_module_summary`
 
-### Testing & Documentation
+### Testing, Frameworks & Description Lifecycle
 
-- `search_todos`: TODO/FIXME search
-- `find_tests_for_symbol`: Test-to-code linking
-- `search_decorators`: Decorator search
+- `find_tests_for_symbol`, `search_todos`, `search_decorators`, `search_framework_patterns`
+- `find_undocumented_symbols`, `find_stale_descriptions` (LLM description lifecycle)
 
-### Context & Learning
+### Cross-Repo (standalone mode only)
 
-- `hydrate_symbols`: Batch symbol context
-- `report_selection`: Learning feedback
-- `refresh_index`: Re-indexing
-- `get_index_stats`: Index statistics
+- `search_across_repos`, `explore_cross_repo_dependencies`
+
+### Index Management & Learning
+
+- `hydrate_symbols`, `report_selection`, `report_file_access`
+- `refresh_index`, `get_index_stats`
 
 ## Performance Characteristics
 
 ### Indexing
 
-- **Initial Index**: ~2-3 min for 10k files (Jina Code model download)
-- **Re-index**: ~30-60 sec with cache (parallel workers)
+- **First-launch model download**: ~3.2 GB (embedding 1.5 GB + LLM 1.0 GB + reranker 600 MB)
+- **Initial Index**: ~2-3 min for 10k files (parsing + embedding); description generation adds ~0.32s/symbol on top
+- **Re-index**: ~30-60 sec with cache (parallel workers); only changed files re-embedded and re-described
 - **Incremental**: ~100-500 ms per changed file (watch mode)
 
 ### Search Latency
@@ -414,13 +464,13 @@ See README.md for complete tool list. Key categories:
 - **Components**:
   - Tantivy: 10-50 ms
   - LanceDB: 20-100 ms
-  - Cross-encoder: 20-50 ms (top-20)
+  - Cross-encoder reranker: 20-50 ms (top-20)
 
 ### Storage
 
-- **SQLite**: ~1-5 MB per 10k symbols
-- **Tantivy**: ~50-200 MB per 10k symbols
-- **LanceDB**: ~100-500 MB per 10k symbols (896-dim vectors)
+- **SQLite**: ~1-5 MB per 10k symbols (more if LLM descriptions are populated)
+- **Tantivy**: ~50-200 MB per 10k symbols (LLM descriptions roughly double the text-field size)
+- **LanceDB**: ~150-700 MB per 10k symbols (1536-dim vectors)
 - **Cache**: ~200 MB per 10k symbols (embeddings)
 
 ## Data Storage Layout
@@ -429,18 +479,19 @@ Both embedded (stdio) and standalone (HTTP) modes use the same centralized stora
 
 ```text
 ~/.code-intelligence/
-├── models/                  # Shared across all repos
-│   ├── jina-code-embeddings-0.5b-gguf/      # Embedding model (~531MB, GGUF via llama.cpp)
-│   └── qwen2.5-coder-1.5b-gguf/  # LLM model (~1.1GB)
+├── models/                                  # Shared across all repos (~3.2 GB total)
+│   ├── jina-code-embeddings-1.5b-gguf/      # Embedding model, ~1.5 GB Q8_0
+│   ├── qwen2.5-coder-1.5b-gguf/             # Description LLM, ~1.0 GB Q4_K_M
+│   └── bge-reranker-v2-m3-gguf/             # Cross-encoder reranker, ~600 MB Q8_0
 ├── logs/
 │   └── server.log
 ├── server.toml              # Standalone config (optional)
 └── repos/
     ├── registry.json        # Maps repo paths → hash dirs
     └── <sha256[:16]>/       # Per-repo data
-        ├── code-intelligence.db  # SQLite (symbols, edges, metadata)
-        ├── tantivy-index/        # BM25 full-text index
-        └── vectors/              # LanceDB vector embeddings
+        ├── code-intelligence.db  # SQLite (symbols, edges, metadata, LLM descriptions)
+        ├── tantivy-index/        # BM25 full-text index (LLM-enriched)
+        └── vectors/              # LanceDB vector embeddings (1536-dim)
 ```
 
 The same repo always maps to the same hash, so embedded and standalone modes share index data. The `repos/registry.json` file tracks registered repos for discovery by the standalone mode's session manager.
@@ -470,10 +521,12 @@ See README.md for complete environment variable reference. Key settings:
 ## Technology Stack
 
 - **Language**: Rust 2021
-- **Parsing**: Tree-Sitter (9 languages)
-- **Storage**: SQLite, Tantivy, LanceDB
-- **Embeddings**: jina-code-0.5b (GGUF via llama.cpp)
-- **Reranking**: Disabled (trait preserved)
+- **Parsing**: Tree-Sitter (Rust, TypeScript, JavaScript, Python, Go, Java, C, C++)
+- **Storage**: SQLite (rusqlite), Tantivy (BM25), LanceDB (vectors)
+- **Embeddings**: jina-code-embeddings-1.5b Q8_0, 1536-dim Matryoshka (GGUF via llama-cpp-2 + Metal GPU)
+- **Description LLM**: Qwen2.5-Coder-1.5B-Instruct Q4_K_M (GGUF via llama-cpp-2 + Metal GPU)
+- **Reranker**: bge-reranker-v2-m3 Q8_0 cross-encoder (GGUF via llama-cpp-2 + Metal GPU), enabled by default
 - **Tokenization**: tiktoken (o200k_base)
-- **Protocol**: Model Context Protocol (MCP)
-- **Metrics**: Prometheus
+- **Protocol**: Model Context Protocol via `rust-mcp-sdk 0.8.1` (stdio + Streamable HTTP)
+- **Path safety**: camino (UTF-8 typed paths), dunce (Windows UNC normalization)
+- **Metrics**: Prometheus (port 9090, configurable)

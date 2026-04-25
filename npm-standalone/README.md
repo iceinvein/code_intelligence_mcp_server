@@ -68,27 +68,28 @@ Add to `opencode.json`:
 }
 ```
 
-> On first launch, the server downloads the embedding model (~531 MB) and LLM (~1.1 GB), then indexes your project in the background. Models are cached in `~/.code-intelligence/models/`.
+> On first launch, the server downloads three models, ~3.2 GB total: the embedding model (Jina Code 1.5b, ~1.5 GB), the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB), and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB). Indexing then runs in the background. Models are cached in `~/.code-intelligence/models/`.
 
 ---
 
 ## What It Does
 
-Unlike basic text search (grep/ripgrep), this server builds a **local knowledge graph** of your code and exposes it through 23 MCP tools.
+Unlike basic text search (grep/ripgrep), this server builds a **local knowledge graph** of your code and exposes it through 32 MCP tools.
 
 | Capability | How It Works |
 |---|---|
-| **Hybrid search** | BM25 keyword search (Tantivy) + semantic vector search (LanceDB) merged via Reciprocal Rank Fusion |
+| **Hybrid search** | BM25 keyword search (Tantivy) + semantic vector search (LanceDB, jina-code-embeddings-1.5b, 1536-dim Matryoshka) merged via Reciprocal Rank Fusion |
+| **Cross-encoder reranking** | bge-reranker-v2-m3 re-scores top candidates (llama.cpp + Metal) for precision tuning |
 | **On-device LLM descriptions** | Qwen2.5-Coder-1.5B generates natural-language summaries for every symbol, bridging the gap between how you search ("auth handler") and how code is named (`authenticate_request`) |
 | **Graph intelligence** | Call hierarchies, type graphs, dependency trees, and PageRank-based importance scoring |
-| **Impact analysis** | Find all code affected by a change before you make it |
-| **Smart ranking** | Test detection, export boosting, directory semantics, intent detection, edge expansion, and score-gap filtering |
-| **Multi-repo** | Index and search across multiple repositories simultaneously |
+| **Impact analysis** | Find all code affected by a change, with optional git co-change history for confidence scoring |
+| **Smart ranking** | Test detection, export boosting, directory semantics, intent detection, edge expansion, framework-pattern injection, score-gap filtering, sub-query coverage |
+| **Multi-repo** | Index and search across multiple repositories simultaneously, including cross-repo dependency exploration |
 | **Auto-reindex** | OS-native file watching (FSEvents) keeps the index fresh as you code |
 
 ---
 
-## Tools (23)
+## Tools (32)
 
 ### Search & Navigation
 
@@ -102,15 +103,19 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 | `explore_dependency_graph` | Module-level import/export dependencies |
 | `get_file_symbols` | All symbols defined in a file |
 | `get_usage_examples` | Real-world usage examples from the codebase |
+| `get_context_bundle` | Pre-assembled context bundle (definitions, call chains, tests, similar code) for a task description, in one call |
 
 ### Analysis
 
 | Tool | What It Does |
 |---|---|
 | `find_affected_code` | Reverse dependency analysis — what breaks if this changes? |
+| `predict_impact` | Like `find_affected_code` but also factors in git co-change history for confidence scoring |
 | `trace_data_flow` | Follow variable reads and writes through the code |
 | `find_similar_code` | Semantically similar code to a given symbol |
 | `get_similarity_cluster` | Symbols in the same semantic cluster |
+| `find_duplicates` | Groups of semantically near-duplicate symbols based on embedding clusters |
+| `find_dead_code` | Symbols with zero incoming references — candidates for safe removal |
 | `explain_search` | Scoring breakdown explaining why results ranked as they did |
 | `summarize_file` | File summary with symbol counts and key exports |
 | `get_module_summary` | All exported symbols from a module with signatures |
@@ -123,13 +128,23 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 | `search_todos` | Search TODO/FIXME comments |
 | `search_decorators` | Find TypeScript/JavaScript decorators |
 | `search_framework_patterns` | Find framework-specific patterns (routes, middleware, WebSocket handlers) |
+| `find_undocumented_symbols` | Symbols missing LLM-generated descriptions, ranked by importance |
+| `find_stale_descriptions` | Symbols whose LLM descriptions are out of sync with the current code (content-hash mismatch) |
 
-### Index Management
+### Cross-Repo (standalone mode)
+
+| Tool | What It Does |
+|---|---|
+| `search_across_repos` | Run a single query across all indexed repos, merged by score |
+| `explore_cross_repo_dependencies` | Walk dependency edges that cross repo boundaries |
+
+### Index Management & Learning
 
 | Tool | What It Does |
 |---|---|
 | `hydrate_symbols` | Load full context for a set of symbol IDs |
 | `report_selection` | Feedback loop — tell the server which result was useful |
+| `report_file_access` | Tell the server when a file is viewed/edited; feeds file-affinity ranking |
 | `refresh_index` | Manually trigger re-indexing |
 | `get_index_stats` | Index statistics (files, symbols, edges, last updated) |
 
@@ -290,10 +305,12 @@ Priority: CLI flags > Environment variables > `server.toml` > Defaults
 The search pipeline runs keyword search (BM25) and semantic vector search in parallel, merges them with Reciprocal Rank Fusion, then applies structural signals:
 
 - **Intent detection** — "struct User" boosts definitions, "who calls login" triggers graph lookup, "User schema" boosts models 50-75x
-- **Query decomposition** — "authentication and authorization" automatically splits into sub-queries
-- **LLM-enriched index** — on-device Qwen2.5-Coder generates descriptions bridging vocabulary gaps
+- **Query decomposition** — "authentication and authorization" automatically splits into sub-queries; sub-query coverage ensures each term has at least one matching result
+- **LLM-enriched index** — on-device Qwen2.5-Coder generates descriptions bridging vocabulary gaps between how you search and how code is named
+- **Cross-encoder reranker** — bge-reranker-v2-m3 re-scores top candidates for precision (always-on by default, disable with `RERANKER_ENABLED=false`)
 - **PageRank** — graph-based importance scoring identifies central, heavily-used symbols
 - **Morphological expansion** — `watch` matches `watcher`, `index` matches `reindex`
+- **Framework-pattern injection** — route, middleware, and handler patterns surface alongside symbol matches
 - **Multi-layer test detection** — file paths, symbol names, and AST-level analysis (`#[test]`, `mod tests`)
 - **Edge expansion** — high-ranking symbols pull in structurally related code (callers, type members)
 - **Export boost** — public API surface ranks above private helpers
@@ -310,11 +327,14 @@ All data lives in `~/.code-intelligence/`:
 
 ```
 ~/.code-intelligence/
-├── models/                     # Shared (embedding ~531 MB, LLM ~1.1 GB)
+├── models/                     # Shared across repos (~3.2 GB total)
+│   ├── jina-code-embeddings-1.5b-gguf/   # ~1.5 GB, 1536-dim Matryoshka, Q8_0
+│   ├── qwen2.5-coder-1.5b-gguf/          # ~1.0 GB, Q4_K_M, description LLM
+│   └── bge-reranker-v2-m3-gguf/          # ~600 MB, Q8_0, cross-encoder reranker
 ├── repos/
 │   ├── registry.json           # Tracks all known repos
 │   └── <hash>/                 # Per-repo (SHA256 of repo path)
-│       ├── code-intelligence.db   # SQLite (symbols, edges, metadata)
+│       ├── code-intelligence.db   # SQLite (symbols, edges, metadata, descriptions)
 │       ├── tantivy-index/         # BM25 full-text search
 │       └── vectors/               # LanceDB vector embeddings
 ├── logs/
@@ -339,14 +359,14 @@ EMBEDDINGS_BACKEND=hash cargo test                # Fast (no model download)
 src/
 ├── indexer/          # File scanning, Tree-Sitter parsing, symbol extraction, embeddings, LLM descriptions
 ├── storage/          # SQLite, Tantivy (BM25), LanceDB (vectors)
-├── retrieval/        # Hybrid search, ranking signals, RRF, context assembly, reranker
-├── graph/            # PageRank, call hierarchy, type graphs
+├── retrieval/        # Hybrid search, ranking signals, RRF, context assembly, reranker, HyDE
+├── graph/            # PageRank, call hierarchy, type graphs, dependency graph
 ├── handlers/         # MCP tool implementations
 ├── server/           # MCP protocol routing (embedded + standalone)
-├── tools/            # Tool definitions (23 MCP tools)
-├── embeddings/       # jina-code-0.5b (GGUF via llama.cpp)
-├── llm/              # Qwen2.5-Coder-1.5B (GGUF via llama.cpp)
-├── reranker/         # Cross-encoder reranker
+├── tools/            # Tool definitions (32 MCP tools)
+├── embeddings/       # jina-code-embeddings-1.5b (GGUF via llama.cpp + Metal)
+├── llm/              # Qwen2.5-Coder-1.5B (GGUF via llama.cpp + Metal)
+├── reranker/         # bge-reranker-v2-m3 cross-encoder (GGUF via llama.cpp + Metal)
 └── path/             # UTF-8 path normalization (camino)
 ```
 </details>

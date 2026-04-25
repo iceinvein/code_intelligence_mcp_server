@@ -20,7 +20,7 @@ Key acronyms and concepts used throughout the codebase:
 | **BM25** | Best Matching 25 | Probabilistic text retrieval algorithm used by Tantivy. Ranks documents by term frequency (TF) and inverse document frequency (IDF) — how often a term appears in a document vs. how rare it is across the corpus. |
 | **IDF** | Inverse Document Frequency | A BM25 component measuring term rarity. High IDF = rare term = more discriminating. Low IDF = common term (e.g., "error") = less useful for ranking. IDF dilution is a recurring concern when adding synonyms or descriptions. |
 | **RRF** | Reciprocal Rank Fusion | Technique for combining ranked lists from different search systems (BM25 keyword search + vector semantic search). Merges by reciprocal rank position rather than raw scores, making it robust across different scoring scales. |
-| **GGUF** | GGML Unified Format | Binary format for quantized LLM model weights. Used by llama.cpp for both the embedding model (jina-code-0.5b) and the description LLM (Qwen2.5-Coder-1.5B). Q4_K_M quantization balances quality and speed. |
+| **GGUF** | GGML Unified Format | Binary format for quantized LLM model weights. Used by llama.cpp for the embedding model (jina-code-embeddings-1.5b, Q8_0), the description LLM (Qwen2.5-Coder-1.5B-Instruct, Q4_K_M), and the cross-encoder reranker (bge-reranker-v2-m3, Q8_0). |
 | **LLM** | Large Language Model | Used on-device (Qwen2.5-Coder-1.5B via llama.cpp) to generate natural-language descriptions for each indexed symbol, enriching BM25 search with human-readable terms. |
 
 ## Usage in Claude Code
@@ -41,7 +41,7 @@ Add to `~/.claude.json` (or project-level `.mcp.json`):
 }
 ```
 
-Each Claude Code session spawns its own server process. The server auto-detects the working directory as `BASE_DIR` and begins indexing in the background. The embedding model (~531MB) and LLM (~1.1GB) are downloaded on first launch and cached in `~/.code-intelligence/models/`.
+Each Claude Code session spawns its own server process. The server auto-detects the working directory as `BASE_DIR` and begins indexing in the background. Three GGUF models (~3.2 GB total) are downloaded on first launch and cached in `~/.code-intelligence/models/`: the embedding model (~1.5 GB), the description LLM (~1.0 GB), and the cross-encoder reranker (~600 MB).
 
 ### Standalone Mode (Recommended for Multiple Sessions)
 
@@ -68,7 +68,7 @@ The standalone server auto-detects each session's workspace root via the MCP `ro
 
 ### What Claude Code Gets
 
-Once connected, Claude Code gains access to 23 MCP tools including:
+Once connected, Claude Code gains access to 32 MCP tools including:
 
 - **`search_code`** — Primary semantic + keyword hybrid search (e.g., "how does auth work?" or "class User")
 - **`get_definition`** / **`find_references`** — Jump to definitions and find all usages
@@ -100,7 +100,7 @@ EMBEDDINGS_BACKEND=hash cargo test
 
 ## Standalone Server Mode
 
-The server can run as a long-lived HTTP daemon serving multiple repos via Streamable HTTP transport. This is ideal when running multiple MCP clients (e.g. 5-6 Claude Code instances) — the embedding model (~531MB) and LLM (~1.1GB) are loaded once and shared. The LLM is automatically freed after descriptions are generated; the embedding model stays resident for queries. In stdio mode, leader election ensures only one instance per repo performs indexing/descriptions; followers never load the LLM.
+The server can run as a long-lived HTTP daemon serving multiple repos via Streamable HTTP transport. This is ideal when running multiple MCP clients (e.g. 5-6 Claude Code instances) — the embedding model (~1.5 GB), description LLM (~1.0 GB), and reranker (~600 MB) are loaded once and shared. The description LLM is freed after descriptions are generated; the embedding model and reranker stay resident for queries. In stdio mode, leader election ensures only one instance per repo performs indexing/descriptions; followers never load the description LLM.
 
 ```bash
 # Start standalone server (default: localhost:3333)
@@ -151,7 +151,7 @@ Optional config: `~/.code-intelligence/server.toml`.
 
 - **SQLite** (`storage/sqlite/`): Symbols, edges, file metadata, index/search telemetry, LLM descriptions
 - **Tantivy** (`storage/tantivy.rs`): Full-text search using BM25 ranking with n-gram tokenization. Indexes symbol names, code text (comments stripped), morphological variants, and LLM-generated descriptions.
-- **LanceDB** (`storage/vector.rs`): Vector embeddings (896-dim, jina-code-0.5b via llama.cpp) for semantic similarity search. Combined with Tantivy results via RRF.
+- **LanceDB** (`storage/vector.rs`): Vector embeddings (1536-dim Matryoshka, jina-code-embeddings-1.5b Q8_0 via llama.cpp + Metal) for semantic similarity search. Combined with Tantivy results via RRF, then re-scored by the bge-reranker-v2-m3 cross-encoder.
 
 ### Runtime Data Location
 
@@ -160,8 +160,9 @@ All data stored under `~/.code-intelligence/`:
 - `repos/<hash>/vectors/` (LanceDB, per-repo)
 - `repos/<hash>/tantivy-index/` (per-repo)
 - `repos/registry.json` (shared repo registry)
-- `models/jina-code-embeddings-0.5b-gguf/` (shared embedding model, GGUF via llama.cpp)
-- `models/qwen2.5-coder-1.5b-gguf/` (shared description LLM model, GGUF via llama.cpp)
+- `models/jina-code-embeddings-1.5b-gguf/` (shared embedding model, ~1.5 GB Q8_0, GGUF via llama.cpp)
+- `models/qwen2.5-coder-1.5b-gguf/` (shared description LLM, ~1.0 GB Q4_K_M, GGUF via llama.cpp)
+- `models/bge-reranker-v2-m3-gguf/` (shared cross-encoder reranker, ~600 MB Q8_0, GGUF via llama.cpp)
 - `logs/` (shared log files)
 
 The `<hash>` is the first 16 characters of `SHA256(BASE_DIR)`.

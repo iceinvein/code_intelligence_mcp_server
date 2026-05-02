@@ -29,11 +29,10 @@ pub struct RefreshIndexTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetDefinitionTool {
-    /// The symbol name to look up
     pub symbol_name: String,
-    /// Optional file path to disambiguate when multiple symbols share the same name
+    /// Disambiguating file path.
     pub file: Option<String>,
-    /// Maximum number of definitions to return (default: 10)
+    /// Default 10.
     pub limit: Option<u32>,
 }
 
@@ -43,13 +42,12 @@ pub struct GetDefinitionTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindReferencesTool {
-    /// The symbol name to find references for
     pub symbol_name: String,
-    /// Optional file path to disambiguate when multiple symbols share the same name
+    /// Disambiguating file path.
     pub file: Option<String>,
-    /// Filter by reference type: "call", "import", "reference", "extends", "implements", or "all" (default)
+    /// call, import, reference, extends, implements, or all.
     pub reference_type: Option<String>,
-    /// Maximum number of references to return (default: 200)
+    /// Default 200.
     pub limit: Option<u32>,
 }
 
@@ -70,11 +68,11 @@ pub struct GetFileSymbolsTool {
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetCallHierarchyTool {
     pub symbol_name: String,
-    /// Direction: \"callees\" (what this calls), \"callers\" (what calls this), or \"both\" (default)
+    /// callees, callers, or both.
     pub direction: Option<String>,
-    /// Traversal depth (default: 3, max: 10)
+    /// Default 3, max 10.
     pub depth: Option<u32>,
-    /// Maximum number of nodes to return (default: 50)
+    /// Default 50.
     pub limit: Option<u32>,
 }
 
@@ -85,7 +83,7 @@ pub struct GetCallHierarchyTool {
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetTypeGraphTool {
     pub symbol_name: String,
-    /// Direction of traversal: "downstream" (what does this extend/implement), "upstream" (who extends/implements this), or "both" (default)
+    /// downstream, upstream, or both.
     pub direction: Option<String>,
     pub depth: Option<u32>,
     pub limit: Option<u32>,
@@ -127,7 +125,7 @@ pub struct ExploreDependencyGraphTool {
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetSimilarityClusterTool {
     pub symbol_name: String,
-    /// Maximum number of cluster members to return (default: 20)
+    /// Default 20.
     pub limit: Option<u32>,
 }
 
@@ -137,9 +135,9 @@ pub struct GetSimilarityClusterTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct HydrateSymbolsTool {
-    /// Symbol IDs to hydrate (from search_code, find_references, etc.)
+    /// Symbol IDs.
     pub ids: Vec<String>,
-    /// Output mode: \"full\" includes surrounding context (callers, types), omit for code-only (default)
+    /// full for surrounding context.
     pub mode: Option<String>,
 }
 
@@ -160,9 +158,9 @@ pub struct ReportSelectionTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ReportFileAccessTool {
-    /// The file path being accessed (relative to repo root)
+    /// Repo-relative path.
     pub file_path: String,
-    /// Access type: "view" (default) or "edit"
+    /// view or edit.
     pub action: Option<String>,
 }
 
@@ -175,9 +173,9 @@ pub struct ExplainSearchTool {
     pub query: String,
     pub limit: Option<u32>,
     pub exported_only: Option<bool>,
-    /// When true, includes per-signal breakdown (term_coverage, popularity_boost, definition_bias, symbol_importance, test_penalty) for each result
+    /// Include per-signal details.
     pub verbose: Option<bool>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -192,7 +190,7 @@ pub struct FindSimilarCodeTool {
     pub file_path: Option<String>,
     pub limit: Option<u32>,
     pub threshold: Option<f32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -204,14 +202,14 @@ pub struct FindSimilarCodeTool {
 pub struct TraceDataFlowTool {
     pub symbol_name: String,
     pub file_path: Option<String>,
-    /// Direction: \"forward\" (where data flows to), \"backward\" (where data comes from), or \"both\" (default)
+    /// forward, backward, or both.
     pub direction: Option<String>,
-    /// Graph traversal depth (default: 3, max: 10)
+    /// Default 3, max 10.
     pub depth: Option<u32>,
     pub limit: Option<u32>,
-    /// Expand 1 level into called functions to trace cross-function data flow (default: false)
+    /// Expand into called functions.
     pub inter_procedural: Option<bool>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -221,13 +219,13 @@ pub struct TraceDataFlowTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SummarizeFileTool {
-    /// File path relative to repo root (e.g., \"src/auth.ts\")
+    /// Repo-relative file path.
     pub file_path: String,
-    /// Include function/method signatures in the summary (default: false)
+    /// Include signatures.
     pub include_signatures: Option<bool>,
-    /// Include additional detail: import/export counts, edge statistics (default: false)
+    /// Include extra details.
     pub verbose: Option<bool>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -242,9 +240,9 @@ pub struct FindAffectedCodeTool {
     pub depth: Option<u32>,
     pub limit: Option<u32>,
     pub include_tests: Option<bool>,
-    /// Filter by edge types (default: ["call", "reference"]). Options: call, reference, type, extends, implements, alias
+    /// Edge type filter.
     pub edge_types: Option<Vec<String>>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -256,7 +254,7 @@ pub struct FindAffectedCodeTool {
 pub struct GetModuleSummaryTool {
     pub file_path: String,
     pub group_by_kind: Option<bool>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -266,15 +264,14 @@ pub struct GetModuleSummaryTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchTodosTool {
-    /// Keyword to search for in TODO text (e.g., 'auth', 'parser', 'refactor')
+    /// TODO text keyword.
     pub query: Option<String>,
-    /// Filter to specific file path
+    /// File path filter.
     pub file_path: Option<String>,
-    /// Filter to specific TODO kind: 'todo', 'fixme', or None for both
+    /// todo or fixme.
     pub kind: Option<String>,
-    /// Maximum number of results to return
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -284,13 +281,11 @@ pub struct SearchTodosTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindTestsForSymbolTool {
-    /// Symbol name to find tests for
     pub symbol_name: String,
-    /// Optional file path to disambiguate symbols
+    /// Disambiguating file path.
     pub file_path: Option<String>,
-    /// Maximum number of test files to return
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -300,13 +295,13 @@ pub struct FindTestsForSymbolTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchDecoratorsTool {
-    /// Decorator name to search for (e.g., 'Component', 'Controller', 'Get'). Exact or prefix match.
+    /// Decorator name.
     pub name: Option<String>,
-    /// Filter by decorator type (e.g., 'component', 'injectable', 'controller', 'get')
+    /// Decorator type.
     pub decorator_type: Option<String>,
-    /// Maximum number of results to return (default: 50)
+    /// Default 50.
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -316,17 +311,17 @@ pub struct SearchDecoratorsTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchFrameworkPatternsTool {
-    /// Framework to filter by (e.g., 'elysia'). If not specified, returns patterns from all frameworks.
+    /// Framework filter.
     pub framework: Option<String>,
-    /// Pattern kind to filter by (e.g., 'route', 'websocket', 'plugin', 'middleware')
+    /// Pattern kind.
     pub kind: Option<String>,
-    /// HTTP method to filter by (e.g., 'GET', 'POST', 'PUT', 'DELETE')
+    /// HTTP method.
     pub http_method: Option<String>,
-    /// Route path pattern to search for (e.g., '/api/users')
+    /// Route path.
     pub path: Option<String>,
-    /// Maximum number of results to return (default: 50)
+    /// Default 50.
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -336,17 +331,17 @@ pub struct SearchFrameworkPatternsTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindDeadCodeTool {
-    /// Scope to specific file path
+    /// File path filter.
     pub file_path: Option<String>,
-    /// Filter by language (e.g., "rust", "typescript")
+    /// Language filter.
     pub language: Option<String>,
-    /// Filter by kind (e.g., "function", "class", "struct")
+    /// Symbol kind filter.
     pub kind: Option<String>,
-    /// Include test symbols (default false)
+    /// Include tests.
     pub include_tests: Option<bool>,
-    /// Maximum number of results (default 50)
+    /// Default 50.
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -356,13 +351,13 @@ pub struct FindDeadCodeTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindDuplicatesTool {
-    /// Filter to symbols in a specific file path
+    /// File path filter.
     pub file_path: Option<String>,
-    /// Filter by symbol kind (e.g., "function", "class", "struct")
+    /// Symbol kind filter.
     pub kind: Option<String>,
-    /// Maximum number of duplicate groups to return (default: 50)
+    /// Default 50.
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -372,12 +367,11 @@ pub struct FindDuplicatesTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchAcrossReposTool {
-    /// Search query (natural language or code pattern)
     pub query: String,
-    /// Maximum total results to return (default: 10)
+    /// Default 10.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -387,15 +381,14 @@ pub struct SearchAcrossReposTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExploreCrossRepoDependenciesTool {
-    /// The symbol name to explore cross-repo dependencies for
     pub symbol_name: String,
-    /// Optional file path to disambiguate when multiple symbols share the same name
+    /// Disambiguating file path.
     pub file_path: Option<String>,
-    /// Direction: "downstream" (what this symbol references in other repos). "upstream" and "both" are accepted but upstream is not yet implemented.
+    /// downstream, upstream, or both.
     pub direction: Option<String>,
-    /// Maximum number of cross-repo edges to return (default: 20)
+    /// Default 20.
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -405,11 +398,11 @@ pub struct ExploreCrossRepoDependenciesTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindStaleDescriptionsTool {
-    /// Filter to symbols in a specific file path
+    /// File path filter.
     pub file_path: Option<String>,
-    /// Maximum number of results to return (default: 100)
+    /// Default 100.
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -419,15 +412,15 @@ pub struct FindStaleDescriptionsTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindUndocumentedSymbolsTool {
-    /// Filter to symbols in a specific file path
+    /// File path filter.
     pub file_path: Option<String>,
-    /// Minimum line count to include (default: 3)
+    /// Default 3.
     pub min_lines: Option<u32>,
-    /// Only include exported/public symbols
+    /// Exported only.
     pub exported_only: Option<bool>,
-    /// Maximum number of results to return (default: 100)
+    /// Default 100.
     pub limit: Option<u32>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -437,15 +430,14 @@ pub struct FindUndocumentedSymbolsTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct PredictImpactTool {
-    /// The symbol name to predict impact for
     pub symbol_name: String,
-    /// Optional file path to disambiguate
+    /// Disambiguating file path.
     pub file_path: Option<String>,
-    /// Maximum number of predictions to return (default: 20)
+    /// Default 20.
     pub limit: Option<u32>,
-    /// Include test files in predictions (default: false)
+    /// Include tests.
     pub include_tests: Option<bool>,
-    /// Include markdown display summary. Default false.
+    /// Include markdown summary.
     pub include_display: Option<bool>,
 }
 
@@ -455,14 +447,14 @@ pub struct PredictImpactTool {
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetContextBundleTool {
-    /// Description of the task to gather context for
+    /// Task description.
     pub task: String,
-    /// Maximum tokens for the context string (estimated as chars/4)
+    /// Context token budget.
     pub max_tokens: Option<u32>,
-    /// Which sections to include: definitions, call_chain, tests, similar, affected. Default: all.
+    /// definitions, call_chain, tests, similar, affected.
     pub sections: Option<Vec<String>>,
-    /// Number of seed symbols from initial search (default: 3)
+    /// Default 3.
     pub seed_limit: Option<u32>,
-    /// Include raw per-section tool outputs. Default false; use only for debugging.
+    /// Include raw section outputs.
     pub include_raw_sections: Option<bool>,
 }

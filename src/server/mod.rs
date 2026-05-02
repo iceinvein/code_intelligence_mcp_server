@@ -30,7 +30,7 @@ pub const EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG: &str =
 /// Used by both embedded and standalone server initialization so the capability
 /// advertisement stays in sync.
 pub fn task_capabilities() -> rust_mcp_sdk::schema::ServerTasks {
-    use rust_mcp_sdk::schema::{ServerTaskRequest, ServerTasks, ServerTaskTools};
+    use rust_mcp_sdk::schema::{ServerTaskRequest, ServerTaskTools, ServerTasks};
     ServerTasks {
         cancel: Some(serde_json::Map::new()),
         list: Some(serde_json::Map::new()),
@@ -65,9 +65,7 @@ pub(crate) async fn dispatch_task_augmented_call(
             let task_id = task.task_id.clone();
             let task_id_supervisor = task_id.clone();
             let task_store = runtime.task_store().ok_or_else(|| {
-                CallToolError::from_message(
-                    "Internal error: task_store not configured".to_string(),
-                )
+                CallToolError::from_message("Internal error: task_store not configured".to_string())
             })?;
             let task_store_supervisor = task_store.clone();
             let handle = tokio::spawn(async move {
@@ -79,11 +77,7 @@ pub(crate) async fn dispatch_task_augmented_call(
                                 &task_id,
                                 rust_mcp_sdk::schema::TaskStatus::Completed,
                                 rust_mcp_sdk::schema::schema_utils::ResultFromServer::CallToolResult(
-                                    CallToolResult::text_content(vec![
-                                        serde_json::to_string_pretty(&value)
-                                            .unwrap_or_else(|_| "{\"ok\":true}".to_string())
-                                            .into(),
-                                    ]),
+                                    tool_json_content(&value),
                                 ),
                                 None,
                             )
@@ -167,9 +161,7 @@ macro_rules! dispatch_sync {
     ($params:expr, $tool_ty:ty, |$tool:ident| $handler:expr) => {{
         let $tool: $tool_ty = parse_tool_args(&$params)?;
         let result = { $handler }.map_err(tool_internal_error)?;
-        Ok(CallToolResult::text_content(vec![
-            serde_json::to_string_pretty(&result).unwrap_or_default().into(),
-        ]))
+        Ok(tool_json_content(&result))
     }};
 }
 
@@ -178,10 +170,17 @@ macro_rules! dispatch_async {
     ($params:expr, $tool_ty:ty, |$tool:ident| $handler:expr) => {{
         let $tool: $tool_ty = parse_tool_args(&$params)?;
         let result = { $handler }.await.map_err(tool_internal_error)?;
-        Ok(CallToolResult::text_content(vec![
-            serde_json::to_string_pretty(&result).unwrap_or_default().into(),
-        ]))
+        Ok(tool_json_content(&result))
     }};
+}
+
+/// Serialize tool results without pretty-print whitespace. MCP clients place
+/// tool outputs directly in model context, so compact JSON saves tokens on
+/// every call without changing the response schema.
+pub(crate) fn tool_json_content(value: &serde_json::Value) -> CallToolResult {
+    CallToolResult::text_content(vec![serde_json::to_string(value)
+        .unwrap_or_else(|_| "{}".to_string())
+        .into()])
 }
 
 /// Shared tool dispatch — used by both embedded and standalone handlers
@@ -194,55 +193,143 @@ pub async fn dispatch_tool_call(
 
     let result = match params.name.as_str() {
         // --- Async handlers ---
-        "refresh_index"    => dispatch_async!(params, RefreshIndexTool,    |tool| handle_refresh_index(state, tool)),
-        "search_code"      => dispatch_async!(params, SearchCodeTool,      |tool| handle_search_code(&state.retriever, tool)),
-        "get_definition"   => dispatch_async!(params, GetDefinitionTool,   |tool| handle_get_definition(state, tool)),
-        "report_selection"  => dispatch_async!(params, ReportSelectionTool,  |tool| handle_report_selection(state, tool)),
-        "report_file_access"=> dispatch_async!(params, ReportFileAccessTool, |tool| handle_report_file_access(state, tool)),
-        "explain_search"   => dispatch_async!(params, ExplainSearchTool,   |tool| handle_explain_search(&state.retriever, tool)),
-        "find_similar_code"=> dispatch_async!(params, FindSimilarCodeTool, |tool| handle_find_similar_code(state, tool)),
-        "get_context_bundle"=> dispatch_async!(params, GetContextBundleTool,|tool| handle_get_context_bundle(state, tool)),
+        "refresh_index" => dispatch_async!(params, RefreshIndexTool, |tool| handle_refresh_index(
+            state, tool
+        )),
+        "search_code" => dispatch_async!(params, SearchCodeTool, |tool| handle_search_code(
+            &state.retriever,
+            tool
+        )),
+        "get_definition" => {
+            dispatch_async!(params, GetDefinitionTool, |tool| handle_get_definition(
+                state, tool
+            ))
+        }
+        "report_selection" => {
+            dispatch_async!(params, ReportSelectionTool, |tool| handle_report_selection(
+                state, tool
+            ))
+        }
+        "report_file_access" => dispatch_async!(params, ReportFileAccessTool, |tool| {
+            handle_report_file_access(state, tool)
+        }),
+        "explain_search" => {
+            dispatch_async!(params, ExplainSearchTool, |tool| handle_explain_search(
+                &state.retriever,
+                tool
+            ))
+        }
+        "find_similar_code" => {
+            dispatch_async!(
+                params,
+                FindSimilarCodeTool,
+                |tool| handle_find_similar_code(state, tool)
+            )
+        }
+        "get_context_bundle" => dispatch_async!(params, GetContextBundleTool, |tool| {
+            handle_get_context_bundle(state, tool)
+        }),
 
         // --- Sync handlers ---
-        "get_file_symbols"          => dispatch_sync!(params, GetFileSymbolsTool,          |tool| handle_get_file_symbols(state, tool)),
-        "hydrate_symbols"           => dispatch_sync!(params, HydrateSymbolsTool,           |tool| handle_hydrate_symbols(state, tool)),
-        "explore_dependency_graph"  => dispatch_sync!(params, ExploreDependencyGraphTool,  |tool| handle_explore_dependency_graph(state, tool)),
-        "get_similarity_cluster"    => dispatch_sync!(params, GetSimilarityClusterTool,    |tool| handle_get_similarity_cluster(state, tool)),
-        "find_references"           => dispatch_sync!(params, FindReferencesTool,           |tool| handle_find_references(state, tool)),
-        "get_usage_examples"        => dispatch_sync!(params, GetUsageExamplesTool,        |tool| handle_get_usage_examples(state, tool)),
-        "get_call_hierarchy"        => dispatch_sync!(params, GetCallHierarchyTool,        |tool| handle_get_call_hierarchy(state, tool)),
-        "get_type_graph"            => dispatch_sync!(params, GetTypeGraphTool,            |tool| handle_get_type_graph(state, tool)),
-        "summarize_file"            => dispatch_sync!(params, SummarizeFileTool,            |tool| handle_summarize_file(state, tool)),
-        "get_module_summary"        => dispatch_sync!(params, GetModuleSummaryTool,        |tool| handle_get_module_summary(state, tool)),
-        "trace_data_flow"           => dispatch_sync!(params, TraceDataFlowTool,           |tool| handle_trace_data_flow(state, tool)),
-        "find_affected_code"        => dispatch_sync!(params, FindAffectedCodeTool,        |tool| handle_find_affected_code(state, tool)),
-        "search_todos"              => dispatch_sync!(params, SearchTodosTool,              |tool| handle_search_todos(state, tool)),
-        "find_tests_for_symbol"     => dispatch_sync!(params, FindTestsForSymbolTool,     |tool| handle_find_tests_for_symbol(state, tool)),
-        "search_decorators"         => dispatch_sync!(params, SearchDecoratorsTool,         |tool| handle_search_decorators(state, tool)),
-        "search_framework_patterns" => dispatch_sync!(params, SearchFrameworkPatternsTool, |tool| handle_search_framework_patterns(state, tool)),
-        "find_dead_code"            => dispatch_sync!(params, FindDeadCodeTool,            |tool| handle_find_dead_code(state, tool)),
-        "find_duplicates"           => dispatch_sync!(params, FindDuplicatesTool,           |tool| handle_find_duplicates(state, tool)),
-        "find_stale_descriptions"   => dispatch_sync!(params, FindStaleDescriptionsTool,   |tool| handle_find_stale_descriptions(state, tool)),
-        "find_undocumented_symbols" => dispatch_sync!(params, FindUndocumentedSymbolsTool, |tool| handle_find_undocumented_symbols(state, tool)),
-        "predict_impact"            => dispatch_sync!(params, PredictImpactTool,            |tool| handle_predict_impact(state, tool)),
+        "get_file_symbols" => {
+            dispatch_sync!(params, GetFileSymbolsTool, |tool| handle_get_file_symbols(
+                state, tool
+            ))
+        }
+        "hydrate_symbols" => {
+            dispatch_sync!(params, HydrateSymbolsTool, |tool| handle_hydrate_symbols(
+                state, tool
+            ))
+        }
+        "explore_dependency_graph" => dispatch_sync!(params, ExploreDependencyGraphTool, |tool| {
+            handle_explore_dependency_graph(state, tool)
+        }),
+        "get_similarity_cluster" => dispatch_sync!(params, GetSimilarityClusterTool, |tool| {
+            handle_get_similarity_cluster(state, tool)
+        }),
+        "find_references" => {
+            dispatch_sync!(params, FindReferencesTool, |tool| handle_find_references(
+                state, tool
+            ))
+        }
+        "get_usage_examples" => dispatch_sync!(params, GetUsageExamplesTool, |tool| {
+            handle_get_usage_examples(state, tool)
+        }),
+        "get_call_hierarchy" => dispatch_sync!(params, GetCallHierarchyTool, |tool| {
+            handle_get_call_hierarchy(state, tool)
+        }),
+        "get_type_graph" => dispatch_sync!(params, GetTypeGraphTool, |tool| handle_get_type_graph(
+            state, tool
+        )),
+        "summarize_file" => {
+            dispatch_sync!(params, SummarizeFileTool, |tool| handle_summarize_file(
+                state, tool
+            ))
+        }
+        "get_module_summary" => dispatch_sync!(params, GetModuleSummaryTool, |tool| {
+            handle_get_module_summary(state, tool)
+        }),
+        "trace_data_flow" => {
+            dispatch_sync!(params, TraceDataFlowTool, |tool| handle_trace_data_flow(
+                state, tool
+            ))
+        }
+        "find_affected_code" => dispatch_sync!(params, FindAffectedCodeTool, |tool| {
+            handle_find_affected_code(state, tool)
+        }),
+        "search_todos" => dispatch_sync!(params, SearchTodosTool, |tool| handle_search_todos(
+            state, tool
+        )),
+        "find_tests_for_symbol" => dispatch_sync!(params, FindTestsForSymbolTool, |tool| {
+            handle_find_tests_for_symbol(state, tool)
+        }),
+        "search_decorators" => dispatch_sync!(params, SearchDecoratorsTool, |tool| {
+            handle_search_decorators(state, tool)
+        }),
+        "search_framework_patterns" => {
+            dispatch_sync!(params, SearchFrameworkPatternsTool, |tool| {
+                handle_search_framework_patterns(state, tool)
+            })
+        }
+        "find_dead_code" => dispatch_sync!(params, FindDeadCodeTool, |tool| handle_find_dead_code(
+            state, tool
+        )),
+        "find_duplicates" => {
+            dispatch_sync!(params, FindDuplicatesTool, |tool| handle_find_duplicates(
+                state, tool
+            ))
+        }
+        "find_stale_descriptions" => dispatch_sync!(params, FindStaleDescriptionsTool, |tool| {
+            handle_find_stale_descriptions(state, tool)
+        }),
+        "find_undocumented_symbols" => {
+            dispatch_sync!(params, FindUndocumentedSymbolsTool, |tool| {
+                handle_find_undocumented_symbols(state, tool)
+            })
+        }
+        "predict_impact" => {
+            dispatch_sync!(params, PredictImpactTool, |tool| handle_predict_impact(
+                state, tool
+            ))
+        }
 
         // --- Special: get_index_stats takes no tool arg ---
         "get_index_stats" => {
             let _tool: GetIndexStatsTool = parse_tool_args(&params).unwrap_or(GetIndexStatsTool {});
             let result = handle_get_index_stats(state).map_err(tool_internal_error)?;
-            Ok(CallToolResult::text_content(vec![
-                serde_json::to_string_pretty(&result).unwrap_or_default().into(),
-            ]))
+            Ok(tool_json_content(&result))
         }
 
         // --- Standalone-only tools (error in embedded mode) ---
         "search_across_repos" => {
-            let mut result = CallToolResult::text_content(vec![SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into()]);
+            let mut result =
+                CallToolResult::text_content(vec![SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into()]);
             result.is_error = Some(true);
             Ok(result)
         }
         "explore_cross_repo_dependencies" => {
-            let mut result = CallToolResult::text_content(vec![EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.into()]);
+            let mut result =
+                CallToolResult::text_content(vec![EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.into()]);
             result.is_error = Some(true);
             Ok(result)
         }
@@ -297,9 +384,7 @@ impl ServerHandler for CodeIntelligenceHandler {
     ) -> std::result::Result<CallToolResult, CallToolError> {
         // Store the MCP runtime on first tool call so the description worker
         // can use it for sampling-based description generation.
-        self.state
-            .mcp_runtime
-            .get_or_init(|| runtime.clone());
+        self.state.mcp_runtime.get_or_init(|| runtime.clone());
         dispatch_tool_call(&self.state, params).await
     }
 }
@@ -350,16 +435,18 @@ mod tests {
         let tool = SearchAcrossReposTool {
             query: "auth handler".to_string(),
             limit: Some(5),
+            include_display: Some(true),
         };
         let json = serde_json::to_string(&tool).unwrap();
         let parsed: SearchAcrossReposTool = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.query, "auth handler");
         assert_eq!(parsed.limit, Some(5));
+        assert_eq!(parsed.include_display, Some(true));
 
         // limit defaults to None when absent
-        let no_limit: SearchAcrossReposTool =
-            serde_json::from_str(r#"{"query":"foo"}"#).unwrap();
+        let no_limit: SearchAcrossReposTool = serde_json::from_str(r#"{"query":"foo"}"#).unwrap();
         assert_eq!(no_limit.limit, None);
+        assert_eq!(no_limit.include_display, None);
     }
 
     #[test]
@@ -404,6 +491,7 @@ mod tests {
             file_path: Some("src/service.rs".to_string()),
             direction: Some("downstream".to_string()),
             limit: Some(10),
+            include_display: Some(true),
         };
         let json = serde_json::to_string(&tool).unwrap();
         let parsed: ExploreCrossRepoDependenciesTool = serde_json::from_str(&json).unwrap();
@@ -411,6 +499,7 @@ mod tests {
         assert_eq!(parsed.file_path, Some("src/service.rs".to_string()));
         assert_eq!(parsed.direction, Some("downstream".to_string()));
         assert_eq!(parsed.limit, Some(10));
+        assert_eq!(parsed.include_display, Some(true));
 
         // Defaults when optional fields are absent
         let minimal: ExploreCrossRepoDependenciesTool =
@@ -419,6 +508,7 @@ mod tests {
         assert!(minimal.file_path.is_none());
         assert!(minimal.direction.is_none());
         assert!(minimal.limit.is_none());
+        assert!(minimal.include_display.is_none());
     }
 
     #[test]
@@ -459,24 +549,26 @@ mod tests {
             max_tokens: Some(4096),
             sections: Some(vec!["definitions".to_string(), "tests".to_string()]),
             seed_limit: Some(5),
+            include_raw_sections: Some(true),
         };
         let json = serde_json::to_string(&tool).unwrap();
         let parsed: GetContextBundleTool = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.task, "fix auth bug");
         assert_eq!(parsed.max_tokens, Some(4096));
         assert_eq!(parsed.seed_limit, Some(5));
+        assert_eq!(parsed.include_raw_sections, Some(true));
         assert_eq!(
             parsed.sections,
             Some(vec!["definitions".to_string(), "tests".to_string()])
         );
 
         // Minimal (only required field)
-        let minimal: GetContextBundleTool =
-            serde_json::from_str(r#"{"task":"hello"}"#).unwrap();
+        let minimal: GetContextBundleTool = serde_json::from_str(r#"{"task":"hello"}"#).unwrap();
         assert_eq!(minimal.task, "hello");
         assert!(minimal.max_tokens.is_none());
         assert!(minimal.sections.is_none());
         assert!(minimal.seed_limit.is_none());
+        assert!(minimal.include_raw_sections.is_none());
     }
 
     #[test]

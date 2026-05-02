@@ -1,8 +1,11 @@
 //! Standalone mode MCP handler — routes sessions to per-repo AppState
 
-use crate::handlers::{handle_explore_cross_repo_dependencies, handle_search_across_repos, parse_tool_args, tool_internal_error, AppState};
+use crate::handlers::{
+    handle_explore_cross_repo_dependencies, handle_search_across_repos, parse_tool_args,
+    tool_internal_error, AppState,
+};
 use crate::path::Utf8PathBuf;
-use crate::server::{all_tools, dispatch_tool_call};
+use crate::server::{all_tools, dispatch_tool_call, tool_json_content};
 use crate::session::SessionManager;
 use crate::tools::{ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
 use async_trait::async_trait;
@@ -97,12 +100,12 @@ impl ServerHandler for StandaloneHandler {
                                         "Root URI contains non-UTF-8 path, using raw URI"
                                     );
                                     Utf8PathBuf::from(
-                                        root.uri.strip_prefix("file://").unwrap_or(&root.uri)
+                                        root.uri.strip_prefix("file://").unwrap_or(&root.uri),
                                     )
                                 }
                             },
                             Err(_) => Utf8PathBuf::from(
-                                root.uri.strip_prefix("file://").unwrap_or(&root.uri)
+                                root.uri.strip_prefix("file://").unwrap_or(&root.uri),
                             ),
                         },
                         Err(_) => Utf8PathBuf::from(&root.uri),
@@ -123,7 +126,9 @@ impl ServerHandler for StandaloneHandler {
                     tokio::spawn(async move {
                         match sm.get_or_create_repo(&rp).await {
                             Ok(_) => tracing::info!(repo = %rp, "Repo initialized successfully"),
-                            Err(e) => tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo"),
+                            Err(e) => {
+                                tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo")
+                            }
                         }
                     });
                 } else {
@@ -179,28 +184,17 @@ impl ServerHandler for StandaloneHandler {
             let result = handle_search_across_repos(&self.session_manager, tool)
                 .await
                 .map_err(tool_internal_error)?;
-            return Ok(CallToolResult::text_content(vec![
-                serde_json::to_string_pretty(&result)
-                    .unwrap_or_else(|_| "{}".to_string())
-                    .into(),
-            ]));
+            return Ok(tool_json_content(&result));
         }
 
         // Cross-repo dependency exploration needs both per-repo state AND SessionManager
         if params.name == "explore_cross_repo_dependencies" {
             let state = self.resolve_state(&runtime).await?;
             let tool: ExploreCrossRepoDependenciesTool = parse_tool_args(&params)?;
-            let result = handle_explore_cross_repo_dependencies(
-                &state,
-                self.session_manager.as_ref(),
-                tool,
-            )
-            .map_err(tool_internal_error)?;
-            return Ok(CallToolResult::text_content(vec![
-                serde_json::to_string_pretty(&result)
-                    .unwrap_or_else(|_| "{}".to_string())
-                    .into(),
-            ]));
+            let result =
+                handle_explore_cross_repo_dependencies(&state, self.session_manager.as_ref(), tool)
+                    .map_err(tool_internal_error)?;
+            return Ok(tool_json_content(&result));
         }
 
         let state = self.resolve_state(&runtime).await?;
@@ -209,9 +203,7 @@ impl ServerHandler for StandaloneHandler {
         // NOTE: Currently forward-looking plumbing — standalone mode does not
         // yet spawn per-repo description workers. Once it does, this will
         // enable MCP sampling for standalone repos.
-        state
-            .mcp_runtime
-            .get_or_init(|| runtime.clone());
+        state.mcp_runtime.get_or_init(|| runtime.clone());
         dispatch_tool_call(&state, params).await
     }
 }

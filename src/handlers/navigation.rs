@@ -36,7 +36,7 @@ pub async fn handle_get_definition(
     let mut response = json!({
         "symbol_name": tool.symbol_name,
         "count": rows.len(),
-        "definitions": rows,
+        "definitions": symbol_summaries(&rows),
         "context": context,
     });
 
@@ -54,6 +54,25 @@ pub async fn handle_get_definition(
     }
 
     Ok(response)
+}
+
+fn symbol_summaries(rows: &[SymbolRow]) -> Vec<serde_json::Value> {
+    rows.iter()
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "file_path": row.file_path,
+                "language": row.language,
+                "kind": row.kind,
+                "name": row.name,
+                "exported": row.exported,
+                "start_byte": row.start_byte,
+                "end_byte": row.end_byte,
+                "start_line": row.start_line,
+                "end_line": row.end_line,
+            })
+        })
+        .collect()
 }
 
 /// Handle get_file_symbols tool
@@ -74,10 +93,9 @@ pub fn handle_get_file_symbols(
 
     // Convert to Utf8Path and validate
     let path_buf = std::path::PathBuf::from(&tool.file_path);
-    let utf8_path = Utf8PathBuf::from_path_buf(path_buf)
-        .map_err(|_| PathError::NonUtf8 {
-            path: std::path::PathBuf::from(&tool.file_path),
-        })?;
+    let utf8_path = Utf8PathBuf::from_path_buf(path_buf).map_err(|_| PathError::NonUtf8 {
+        path: std::path::PathBuf::from(&tool.file_path),
+    })?;
 
     // Get relative path to base (for database lookup)
     let file_path_normalized = normalizer
@@ -290,6 +308,8 @@ pub fn handle_get_module_summary(
     tool: GetModuleSummaryTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let group_by_kind = tool.group_by_kind.unwrap_or(false);
+    let include_display = tool.include_display.unwrap_or(false);
+    let requested_file_path = tool.file_path.clone();
 
     tracing::debug!(
         file_path = %tool.file_path,
@@ -302,10 +322,9 @@ pub fn handle_get_module_summary(
 
     // Convert to Utf8Path and validate
     let path_buf = std::path::PathBuf::from(&tool.file_path);
-    let utf8_path = Utf8PathBuf::from_path_buf(path_buf)
-        .map_err(|_| PathError::NonUtf8 {
-            path: std::path::PathBuf::from(&tool.file_path),
-        })?;
+    let utf8_path = Utf8PathBuf::from_path_buf(path_buf).map_err(|_| PathError::NonUtf8 {
+        path: std::path::PathBuf::from(&tool.file_path),
+    })?;
 
     // Get relative path to base (for database lookup)
     let file_path_normalized = normalizer
@@ -386,17 +405,17 @@ pub fn handle_get_module_summary(
         vec![]
     };
 
-    // Build display
-    let display = format_module_summary(&tool.file_path, &exports, &groups);
-
-    Ok(json!({
+    let mut response = json!({
         "file_path": tool.file_path,
         "file_path_normalized": file_path_normalized,
         "export_count": exports.len(),
         "exports": exports,
         "groups": groups,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_module_summary(&requested_file_path, &exports, &groups));
+    }
+    Ok(response)
 }
 
 /// Extract a clean signature from symbol text
@@ -482,6 +501,8 @@ pub fn handle_summarize_file(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let include_signatures = tool.include_signatures.unwrap_or(false);
     let verbose = tool.verbose.unwrap_or(false);
+    let include_display = tool.include_display.unwrap_or(false);
+    let requested_file_path = tool.file_path.clone();
 
     let sqlite = &state.sqlite;
 
@@ -536,16 +557,7 @@ pub fn handle_summarize_file(
     // Detect file purpose
     let purpose = infer_file_purpose_for_summary(&symbols);
 
-    // Build display
-    let display = format_file_summary(
-        &tool.file_path,
-        &symbols,
-        &counts_by_kind,
-        export_count,
-        &purpose,
-    );
-
-    Ok(json!({
+    let mut response = json!({
         "file_path": tool.file_path,
         "language": language,
         "total_symbols": symbols.len(),
@@ -554,8 +566,17 @@ pub fn handle_summarize_file(
         "counts_by_kind": counts_by_kind,
         "purpose": purpose,
         "exports": exports,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_file_summary(
+            &requested_file_path,
+            &symbols,
+            &counts_by_kind,
+            export_count,
+            &purpose,
+        ));
+    }
+    Ok(response)
 }
 
 /// Extract signature from symbol text for summarize_file

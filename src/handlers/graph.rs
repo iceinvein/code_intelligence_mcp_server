@@ -166,6 +166,7 @@ pub fn handle_trace_data_flow(
     let depth = tool.depth.unwrap_or(3) as usize;
     let limit = tool.limit.unwrap_or(50).max(1) as usize;
     let direction = tool.direction.unwrap_or_else(|| "both".to_string());
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -238,10 +239,7 @@ pub fn handle_trace_data_flow(
                 continue;
             }
 
-            let sym_id = flow
-                .get("symbol_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let sym_id = flow.get("symbol_id").and_then(|v| v.as_str()).unwrap_or("");
             let sym_kind = flow.get("kind").and_then(|v| v.as_str()).unwrap_or("");
 
             // Only expand functions/methods
@@ -283,10 +281,7 @@ pub fn handle_trace_data_flow(
         }
     }
 
-    // Build display
-    let display = format_data_flow(root, &flows);
-
-    Ok(json!({
+    let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "file_path": root.file_path,
@@ -299,8 +294,16 @@ pub fn handle_trace_data_flow(
         "write_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write")).count(),
         "spawn_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("spawn")).count(),
         "flows": flows,
-        "display": display,
-    }))
+    });
+    if include_display {
+        let flows = response
+            .get("flows")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        response["display"] = json!(format_data_flow(root, &flows));
+    }
+    Ok(response)
 }
 
 fn trace_data_flow_edges(

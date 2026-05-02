@@ -27,6 +27,7 @@ pub async fn handle_explain_search(
     let limit = tool.limit.unwrap_or(10).max(1) as usize;
     let exported_only = tool.exported_only.unwrap_or(false);
     let verbose = tool.verbose.unwrap_or(false);
+    let include_display = tool.include_display.unwrap_or(false);
 
     let result = retriever.search(&tool.query, limit, exported_only).await?;
     let resp = &result.response;
@@ -75,16 +76,16 @@ pub async fn handle_explain_search(
         results.push(breakdown);
     }
 
-    // Build display field with markdown table
-    let display = format_scoring_breakdown(&resp.query, &results);
-
-    Ok(json!({
+    let mut response = json!({
         "query": resp.query,
         "limit": resp.limit,
         "count": results.len(),
         "results": results,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_scoring_breakdown(&resp.query, &results));
+    }
+    Ok(response)
 }
 
 /// Handle find_similar_code tool - semantic similarity search via embeddings
@@ -94,6 +95,7 @@ pub async fn handle_find_similar_code(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(20).clamp(1, 100) as usize;
     let threshold = tool.threshold.unwrap_or(0.5);
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -190,16 +192,16 @@ pub async fn handle_find_similar_code(
     });
     results.truncate(limit);
 
-    // Build display
-    let display = format_similar_results(&query_description, threshold, &results);
-
-    Ok(json!({
+    let mut response = json!({
         "query": query_description,
         "threshold": threshold,
         "count": results.len(),
         "results": results,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_similar_results(&query_description, threshold, &results));
+    }
+    Ok(response)
 }
 
 fn format_similar_results(query: &str, threshold: f32, results: &[serde_json::Value]) -> String {

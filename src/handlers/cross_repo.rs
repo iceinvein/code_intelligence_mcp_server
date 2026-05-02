@@ -22,18 +22,28 @@ pub async fn handle_search_across_repos(
     tool: SearchAcrossReposTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(10).clamp(1, 100) as usize;
+    let include_display = tool.include_display.unwrap_or(false);
 
     // Gather all repos currently registered
     let entries = session_manager.registry.list_all()?;
     let total_repos = entries.len();
 
     if total_repos == 0 {
-        return Ok(json!({
+        let display = include_display.then(|| {
+            format!(
+                "## Cross-Repo Search: \"{}\"\n\nNo repositories are indexed yet.",
+                tool.query
+            )
+        });
+        let mut response = json!({
             "query": tool.query,
             "total_repos_searched": 0,
             "results": [],
-            "display": format!("## Cross-Repo Search: \"{}\"\n\nNo repositories are indexed yet.", tool.query),
-        }));
+        });
+        if let Some(display) = display {
+            response["display"] = json!(display);
+        }
+        return Ok(response);
     }
 
     // Initialise (or retrieve cached) AppState for every registered repo, then
@@ -95,14 +105,17 @@ pub async fn handle_search_across_repos(
     all_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
     all_hits.truncate(limit);
 
-    let display = format_cross_repo_results(&tool.query, repos_searched, &all_hits);
+    let display = include_display.then(|| format_cross_repo_results(&tool.query, repos_searched, &all_hits));
 
-    Ok(json!({
+    let mut response = json!({
         "query": tool.query,
         "total_repos_searched": repos_searched,
         "results": all_hits,
-        "display": display,
-    }))
+    });
+    if let Some(display) = display {
+        response["display"] = json!(display);
+    }
+    Ok(response)
 }
 
 /// Extract a short snippet for a named symbol from the assembled context string.
@@ -113,9 +126,7 @@ pub async fn handle_search_across_repos(
 /// useful is found.
 fn extract_context_snippet(context: &str, name: &str, file_path: &str) -> String {
     let lines: Vec<&str> = context.lines().collect();
-    let file_stem = Utf8Path::new(file_path)
-        .file_name()
-        .unwrap_or(file_path);
+    let file_stem = Utf8Path::new(file_path).file_name().unwrap_or(file_path);
 
     // Walk lines looking for the file marker, then capture up to 3 lines after
     // that mention the symbol name.
@@ -125,7 +136,9 @@ fn extract_context_snippet(context: &str, name: &str, file_path: &str) -> String
         // Reset in_file_block when we enter a different file's section.
         if line.contains(file_stem) {
             in_file_block = true;
-        } else if (line.starts_with("---") || line.starts_with("// file:") || line.starts_with("```"))
+        } else if (line.starts_with("---")
+            || line.starts_with("// file:")
+            || line.starts_with("```"))
             && !line.trim().is_empty()
             && line.contains('/')
             && !line.contains(file_stem)
@@ -163,13 +176,15 @@ fn format_cross_repo_results(query: &str, repos_searched: usize, hits: &[CrossRe
     );
 
     for (i, hit) in hits.iter().enumerate() {
-        let repo_label = Utf8Path::new(&hit.repo)
-            .file_name()
-            .unwrap_or(&hit.repo);
+        let repo_label = Utf8Path::new(&hit.repo).file_name().unwrap_or(&hit.repo);
 
         out.push_str(&format!(
             "{}. **{}** `{}` — `{}` [repo: {repo_label}] *(score: {:.2})*\n",
-            i + 1, hit.name, hit.kind, hit.file_path, hit.score
+            i + 1,
+            hit.name,
+            hit.kind,
+            hit.file_path,
+            hit.score
         ));
         let snippet = hit.snippet.trim();
         if !snippet.is_empty() {
@@ -191,6 +206,7 @@ pub fn handle_explore_cross_repo_dependencies(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(20).clamp(1, 200) as usize;
     let direction = tool.direction.as_deref().unwrap_or("both");
+    let include_display = tool.include_display.unwrap_or(false);
 
     // Validate direction
     if !matches!(direction, "downstream" | "upstream" | "both") {
@@ -276,49 +292,62 @@ pub fn handle_explore_cross_repo_dependencies(
         // but the cross-repo detection pipeline must be wired first.
     }
 
-    // Build display
-    let mut display = format!(
-        "## Cross-Repo Dependencies: `{}`\n\nDirection: {direction}\n\n",
-        root.name
-    );
-
-    if downstream_edges.is_empty() && upstream_edges.is_empty() {
-        display.push_str("No cross-repo dependencies found for this symbol.\n");
-        display.push_str("Cross-repo edges are populated during indexing when references to other indexed repos are detected.\n");
-    } else {
-        if !downstream_edges.is_empty() {
-            display.push_str(&format!(
-                "### Downstream ({} edges)\n\n",
-                downstream_edges.len()
-            ));
-            for (i, edge) in downstream_edges.iter().enumerate() {
-                display.push_str(&format!(
-                    "{}. `{}` -> `{}` in **{}** ({})\n",
-                    i + 1,
-                    edge["from_symbol_id"].as_str().unwrap_or("?"),
-                    edge["to_symbol_name"].as_str().unwrap_or("?"),
-                    edge["to_repo_name"].as_str().unwrap_or("?"),
-                    edge["edge_type"].as_str().unwrap_or("?"),
-                ));
-            }
-        }
-        if !upstream_edges.is_empty() {
-            display.push_str(&format!(
-                "\n### Upstream ({} edges)\n\n",
-                upstream_edges.len()
-            ));
-            for (i, edge) in upstream_edges.iter().enumerate() {
-                display.push_str(&format!("{}. {}\n", i + 1, edge));
-            }
-        }
-    }
-
-    Ok(json!({
+    let mut response = json!({
         "symbol_name": root.name,
         "symbol_id": root.id,
         "direction": direction,
         "downstream": downstream_edges,
         "upstream": upstream_edges,
-        "display": display,
-    }))
+    });
+
+    if include_display {
+        let downstream_edges = response
+            .get("downstream")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let upstream_edges = response
+            .get("upstream")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut display = format!(
+            "## Cross-Repo Dependencies: `{}`\n\nDirection: {direction}\n\n",
+            root.name
+        );
+
+        if downstream_edges.is_empty() && upstream_edges.is_empty() {
+            display.push_str("No cross-repo dependencies found for this symbol.\n");
+            display.push_str("Cross-repo edges are populated during indexing when references to other indexed repos are detected.\n");
+        } else {
+            if !downstream_edges.is_empty() {
+                display.push_str(&format!(
+                    "### Downstream ({} edges)\n\n",
+                    downstream_edges.len()
+                ));
+                for (i, edge) in downstream_edges.iter().enumerate() {
+                    display.push_str(&format!(
+                        "{}. `{}` -> `{}` in **{}** ({})\n",
+                        i + 1,
+                        edge["from_symbol_id"].as_str().unwrap_or("?"),
+                        edge["to_symbol_name"].as_str().unwrap_or("?"),
+                        edge["to_repo_name"].as_str().unwrap_or("?"),
+                        edge["edge_type"].as_str().unwrap_or("?"),
+                    ));
+                }
+            }
+            if !upstream_edges.is_empty() {
+                display.push_str(&format!(
+                    "\n### Upstream ({} edges)\n\n",
+                    upstream_edges.len()
+                ));
+                for (i, edge) in upstream_edges.iter().enumerate() {
+                    display.push_str(&format!("{}. {}\n", i + 1, edge));
+                }
+            }
+        }
+        response["display"] = json!(display);
+    }
+
+    Ok(response)
 }

@@ -23,6 +23,7 @@ pub fn handle_find_affected_code(
     let depth = tool.depth.unwrap_or(3) as usize;
     let limit = tool.limit.unwrap_or(100).max(1) as usize;
     let include_tests = tool.include_tests.unwrap_or(false);
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -85,8 +86,7 @@ pub fn handle_find_affected_code(
                 let in_degree = sqlite.count_incoming_edges(id).unwrap_or(0);
                 let depth_score = 8.0_f64; // Direct callers get high depth score
                 let export_score = if exported { 10.0 } else { 4.0 };
-                let indegree_score =
-                    ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+                let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
 
                 let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
                     as u8)
@@ -134,10 +134,7 @@ pub fn handle_find_affected_code(
         .collect::<std::collections::HashSet<_>>()
         .len();
 
-    // Build display
-    let display = format_affected_code(root, &affected, affected_files);
-
-    Ok(json!({
+    let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "file_path": root.file_path,
@@ -151,8 +148,11 @@ pub fn handle_find_affected_code(
         },
         "affected": affected,
         "warning": warning,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_affected_code(root, &affected, affected_files));
+    }
+    Ok(response)
 }
 
 /// Check if a file path appears to be a test file.
@@ -199,15 +199,9 @@ fn format_affected_code(
 
     fn format_group(out: &mut String, items: &[&serde_json::Value], max_display: usize) {
         for a in items.iter().take(max_display) {
-            let name = a
-                .get("symbol_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let name = a.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
             let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let file = a
-                .get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let file_short = file.split('/').next_back().unwrap_or(file);
             let severity = a.get("severity").and_then(|v| v.as_u64()).unwrap_or(0);
             out.push_str(&format!(
@@ -230,18 +224,12 @@ fn format_affected_code(
     }
 
     if !high.is_empty() {
-        out.push_str(&format!(
-            "## [!] High Impact ({} symbols)\n\n",
-            high.len()
-        ));
+        out.push_str(&format!("## [!] High Impact ({} symbols)\n\n", high.len()));
         format_group(&mut out, &high, 20);
     }
 
     if !medium.is_empty() {
-        out.push_str(&format!(
-            "## Medium Impact ({} symbols)\n\n",
-            medium.len()
-        ));
+        out.push_str(&format!("## Medium Impact ({} symbols)\n\n", medium.len()));
         format_group(&mut out, &medium, 20);
     }
 
@@ -254,6 +242,7 @@ pub fn handle_search_todos(
     tool: SearchTodosTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -264,14 +253,14 @@ pub fn handle_search_todos(
         limit,
     )?;
 
-    // Build display
-    let display = format_todos(&todos);
-
-    Ok(json!({
+    let mut response = json!({
         "count": todos.len(),
         "todos": todos,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_todos(&todos));
+    }
+    Ok(response)
 }
 
 /// Handle find_tests_for_symbol tool
@@ -280,6 +269,7 @@ pub fn handle_find_tests_for_symbol(
     tool: FindTestsForSymbolTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -320,10 +310,7 @@ pub fn handle_find_tests_for_symbol(
     // Get symbols with tests for more detail
     let symbols_with_tests = sqlite.get_symbols_with_tests(&root.file_path)?;
 
-    // Build display
-    let display = format_test_results(root, &test_files, &symbols_with_tests);
-
-    Ok(json!({
+    let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "source_file": root.file_path,
@@ -331,8 +318,11 @@ pub fn handle_find_tests_for_symbol(
         "test_files": test_files,
         "tests_for_symbol": tests_for_symbol,
         "symbols_with_tests": symbols_with_tests,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_test_results(root, &test_files, &symbols_with_tests));
+    }
+    Ok(response)
 }
 
 fn format_todos(todos: &[crate::storage::sqlite::schema::TodoRow]) -> String {
@@ -407,6 +397,7 @@ pub fn handle_search_decorators(
     tool: SearchDecoratorsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(50).clamp(1, 500) as usize;
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -436,14 +427,14 @@ pub fn handle_search_decorators(
         }));
     }
 
-    // Build display
-    let display = format_decorators(&results);
-
-    Ok(serde_json::json!({
+    let mut response = serde_json::json!({
         "count": results.len(),
         "decorators": results,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_decorators(&results));
+    }
+    Ok(response)
 }
 
 /// Format decorator search results as markdown
@@ -512,6 +503,7 @@ pub fn handle_search_framework_patterns(
     tool: SearchFrameworkPatternsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(50).clamp(1, 500) as usize;
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -542,14 +534,14 @@ pub fn handle_search_framework_patterns(
         }));
     }
 
-    // Build display
-    let display = format_framework_patterns(&results);
-
-    Ok(serde_json::json!({
+    let mut response = serde_json::json!({
         "count": results.len(),
         "patterns": results,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_framework_patterns(&results));
+    }
+    Ok(response)
 }
 
 /// Format framework pattern search results as markdown
@@ -562,7 +554,8 @@ fn format_framework_patterns(patterns: &[serde_json::Value]) -> String {
     }
 
     // Group by framework and kind
-    let mut by_framework: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
+    let mut by_framework: std::collections::HashMap<&str, Vec<_>> =
+        std::collections::HashMap::new();
     for pattern in patterns {
         let framework = pattern
             .get("framework")
@@ -577,7 +570,10 @@ fn format_framework_patterns(patterns: &[serde_json::Value]) -> String {
         // Group by kind within framework
         let mut by_kind: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
         for item in items {
-            let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let kind = item
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             by_kind.entry(kind).or_default().push(item);
         }
 
@@ -585,7 +581,10 @@ fn format_framework_patterns(patterns: &[serde_json::Value]) -> String {
             out.push_str(&format!("### {} ({})\n\n", kind, kind_items.len()));
 
             for pattern in kind_items.iter().take(20) {
-                let file_path = pattern.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                let file_path = pattern
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let file_short = file_path.split('/').next_back().unwrap_or(file_path);
                 let line = pattern.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
                 let http_method = pattern.get("http_method").and_then(|v| v.as_str());
@@ -619,6 +618,7 @@ pub fn handle_find_dead_code(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(50).max(1) as usize;
     let include_tests = tool.include_tests.unwrap_or(false);
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -662,17 +662,17 @@ pub fn handle_find_dead_code(
         dead_symbol_entries.push(entry);
     }
 
-    // Build display
-    let display = format_dead_code(&high_priority, &medium_priority);
-
-    Ok(json!({
+    let mut response = json!({
         "dead_symbol_count": dead_symbols.len(),
         "dead_files": dead_files.len(),
         "high_priority_count": high_priority.len(),
         "medium_priority_count": medium_priority.len(),
         "dead_symbols": dead_symbol_entries,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_dead_code(&high_priority, &medium_priority));
+    }
+    Ok(response)
 }
 
 /// Format dead code results as markdown
@@ -697,7 +697,10 @@ fn format_dead_code(
     if !high_priority.is_empty() {
         out.push_str("## High Priority (exported but unused)\n\n");
         for sym in high_priority.iter().take(30) {
-            let name = sym.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = sym
+                .get("symbol_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let kind = sym.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let file = sym.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let file_short = file.split('/').next_back().unwrap_or(file);
@@ -716,7 +719,10 @@ fn format_dead_code(
     if !medium_priority.is_empty() {
         out.push_str("## Medium Priority (private unused)\n\n");
         for sym in medium_priority.iter().take(30) {
-            let name = sym.get("symbol_name").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = sym
+                .get("symbol_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let kind = sym.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             let file = sym.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             let file_short = file.split('/').next_back().unwrap_or(file);
@@ -740,6 +746,7 @@ pub fn handle_find_duplicates(
     tool: FindDuplicatesTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let include_display = tool.include_display.unwrap_or(false);
     let sqlite = &state.sqlite;
 
     let clusters = sqlite.list_duplicate_clusters(limit)?;
@@ -809,15 +816,15 @@ pub fn handle_find_duplicates(
         }));
     }
 
-    // Build display
-    let display = format_duplicates(&groups, total_symbols);
-
-    Ok(json!({
+    let mut response = json!({
         "duplicate_group_count": groups.len(),
         "total_duplicate_symbols": total_symbols,
         "groups": groups,
-        "display": display,
-    }))
+    });
+    if include_display {
+        response["display"] = json!(format_duplicates(&groups, total_symbols));
+    }
+    Ok(response)
 }
 
 /// Format duplicate detection results as markdown
@@ -835,8 +842,15 @@ fn format_duplicates(groups: &[serde_json::Value], total_symbols: usize) -> Stri
     }
 
     for (i, group) in groups.iter().enumerate().take(30) {
-        let member_count = group.get("member_count").and_then(|v| v.as_u64()).unwrap_or(0);
-        out.push_str(&format!("## Group {} ({} members)\n\n", i + 1, member_count));
+        let member_count = group
+            .get("member_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        out.push_str(&format!(
+            "## Group {} ({} members)\n\n",
+            i + 1,
+            member_count
+        ));
 
         if let Some(members) = group.get("members").and_then(|v| v.as_array()) {
             for m in members {
@@ -867,12 +881,10 @@ pub fn handle_find_stale_descriptions(
     tool: FindStaleDescriptionsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(100).max(1) as usize;
+    let include_display = tool.include_display.unwrap_or(false);
     let sqlite = &state.sqlite;
 
-    let rows = sqlite.list_descriptions_with_symbol_data(
-        tool.file_path.as_deref(),
-        limit,
-    )?;
+    let rows = sqlite.list_descriptions_with_symbol_data(tool.file_path.as_deref(), limit)?;
 
     let mut stale_entries = Vec::new();
     let mut checked = 0usize;
@@ -893,33 +905,42 @@ pub fn handle_find_stale_descriptions(
         }
     }
 
-    // Build display
-    let mut display = String::from("# Stale Description Analysis\n\n");
-    display.push_str(&format!(
-        "**Checked:** {} descriptions | **Stale:** {}\n\n",
-        checked,
-        stale_entries.len()
-    ));
-    if stale_entries.is_empty() {
-        display.push_str("*All descriptions are up to date.*\n");
-    } else {
-        for (i, entry) in stale_entries.iter().enumerate() {
-            display.push_str(&format!(
-                "{}. **{}** `{}` — `{}`\n",
-                i + 1,
-                entry["name"].as_str().unwrap_or("?"),
-                entry["kind"].as_str().unwrap_or("?"),
-                entry["file_path"].as_str().unwrap_or("?"),
-            ));
-        }
-    }
-
-    Ok(json!({
+    let mut response = json!({
         "checked": checked,
         "stale_count": stale_entries.len(),
         "stale_symbols": stale_entries,
-        "display": display,
-    }))
+    });
+    if include_display {
+        let mut display = String::from("# Stale Description Analysis\n\n");
+        display.push_str(&format!(
+            "**Checked:** {} descriptions | **Stale:** {}\n\n",
+            checked,
+            response
+                .get("stale_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        ));
+        if response
+            .get("stale_symbols")
+            .and_then(|v| v.as_array())
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
+        {
+            display.push_str("*All descriptions are up to date.*\n");
+        } else if let Some(entries) = response.get("stale_symbols").and_then(|v| v.as_array()) {
+            for (i, entry) in entries.iter().enumerate() {
+                display.push_str(&format!(
+                    "{}. **{}** `{}` - `{}`\n",
+                    i + 1,
+                    entry["name"].as_str().unwrap_or("?"),
+                    entry["kind"].as_str().unwrap_or("?"),
+                    entry["file_path"].as_str().unwrap_or("?"),
+                ));
+            }
+        }
+        response["display"] = json!(display);
+    }
+    Ok(response)
 }
 
 /// Handle find_undocumented_symbols tool
@@ -930,6 +951,7 @@ pub fn handle_find_undocumented_symbols(
     let limit = tool.limit.unwrap_or(100).max(1) as usize;
     let min_lines = tool.min_lines.unwrap_or(3);
     let exported_only = tool.exported_only.unwrap_or(false);
+    let include_display = tool.include_display.unwrap_or(false);
     let sqlite = &state.sqlite;
 
     let symbols = sqlite.find_undocumented_symbols_filtered(
@@ -951,41 +973,47 @@ pub fn handle_find_undocumented_symbols(
         }));
     }
 
-    // Build display
-    let mut display = String::from("# Undocumented Symbols\n\n");
-    display.push_str(&format!("**Found:** {} symbols without descriptions\n\n", entries.len()));
-    if entries.is_empty() {
-        display.push_str("*All symbols have descriptions.*\n");
-    } else {
-        let exported_count = symbols.iter().filter(|s| s.exported).count();
-        let private_count = symbols.len() - exported_count;
-        display.push_str(&format!(
-            "**Exported:** {} | **Private:** {}\n\n",
-            exported_count, private_count
-        ));
-        for (i, entry) in entries.iter().enumerate() {
-            let marker = if entry["exported"].as_bool().unwrap_or(false) {
-                "pub"
-            } else {
-                "priv"
-            };
-            display.push_str(&format!(
-                "{}. [{}] **{}** `{}` — `{}` ({} lines)\n",
-                i + 1,
-                marker,
-                entry["name"].as_str().unwrap_or("?"),
-                entry["kind"].as_str().unwrap_or("?"),
-                entry["file_path"].as_str().unwrap_or("?"),
-                entry["line_count"].as_u64().unwrap_or(0),
-            ));
-        }
-    }
-
-    Ok(json!({
+    let mut response = json!({
         "undocumented_count": entries.len(),
         "symbols": entries,
-        "display": display,
-    }))
+    });
+    if include_display {
+        let mut display = String::from("# Undocumented Symbols\n\n");
+        display.push_str(&format!(
+            "**Found:** {} symbols without descriptions\n\n",
+            symbols.len()
+        ));
+        if symbols.is_empty() {
+            display.push_str("*All symbols have descriptions.*\n");
+        } else {
+            let exported_count = symbols.iter().filter(|s| s.exported).count();
+            let private_count = symbols.len() - exported_count;
+            display.push_str(&format!(
+                "**Exported:** {} | **Private:** {}\n\n",
+                exported_count, private_count
+            ));
+            if let Some(entries) = response.get("symbols").and_then(|v| v.as_array()) {
+                for (i, entry) in entries.iter().enumerate() {
+                    let marker = if entry["exported"].as_bool().unwrap_or(false) {
+                        "pub"
+                    } else {
+                        "priv"
+                    };
+                    display.push_str(&format!(
+                        "{}. [{}] **{}** `{}` - `{}` ({} lines)\n",
+                        i + 1,
+                        marker,
+                        entry["name"].as_str().unwrap_or("?"),
+                        entry["kind"].as_str().unwrap_or("?"),
+                        entry["file_path"].as_str().unwrap_or("?"),
+                        entry["line_count"].as_u64().unwrap_or(0),
+                    ));
+                }
+            }
+        }
+        response["display"] = json!(display);
+    }
+    Ok(response)
 }
 
 pub fn handle_predict_impact(
@@ -994,6 +1022,7 @@ pub fn handle_predict_impact(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(20).clamp(1, 200) as usize;
     let include_tests = tool.include_tests.unwrap_or(false);
+    let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
 
@@ -1042,11 +1071,9 @@ pub fn handle_predict_impact(
             let in_degree = sqlite.count_incoming_edges(id).unwrap_or(0);
             let depth_score = 8.0_f64;
             let export_score = if exported { 10.0 } else { 4.0 };
-            let indegree_score =
-                ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+            let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
 
-            let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
-                as u8)
+            let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3) as u8)
                 .clamp(1, 10);
 
             // Normalize structural score to 0.0-1.0 range
@@ -1122,10 +1149,7 @@ pub fn handle_predict_impact(
 
     // Add structural impacts
     for (id, val) in &structural_impacts {
-        let file_path = val
-            .get("file_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let file_path = val.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
         let structural_score = val
             .get("structural_score")
             .and_then(|v| v.as_f64())
@@ -1160,9 +1184,9 @@ pub fn handle_predict_impact(
     // Add co-change-only impacts (files not found via structural analysis)
     for (file_path, confidence) in &cochange_impacts {
         // Check if already covered by a structural impact
-        let already_covered = merged.values().any(|v| {
-            v.get("file_path").and_then(|p| p.as_str()) == Some(file_path.as_str())
-        });
+        let already_covered = merged
+            .values()
+            .any(|v| v.get("file_path").and_then(|p| p.as_str()) == Some(file_path.as_str()));
 
         if !already_covered {
             let merged_score = confidence * 0.4; // No structural component
@@ -1221,10 +1245,7 @@ pub fn handle_predict_impact(
         .filter_map(|p| p.get("file_path").and_then(|v| v.as_str()))
         .collect();
 
-    // Build display text
-    let display = format_predict_impact(root, &predictions, affected_files.len());
-
-    Ok(json!({
+    let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "file_path": root.file_path,
@@ -1237,8 +1258,17 @@ pub fn handle_predict_impact(
         },
         "co_change_stats": co_change_stats,
         "predictions": predictions,
-        "display": display,
-    }))
+    });
+    if include_display {
+        let predictions = response
+            .get("predictions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        response["display"] =
+            json!(format_predict_impact(root, &predictions, affected_files.len()));
+    }
+    Ok(response)
 }
 
 fn format_predict_impact(
@@ -1272,10 +1302,7 @@ fn format_predict_impact(
             .get("merged_score")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
-        let source = pred
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
+        let source = pred.get("source").and_then(|v| v.as_str()).unwrap_or("?");
 
         lines.push(format!(
             "{}. {} ({}) — score: {:.2} [{}]",
@@ -1304,6 +1331,7 @@ pub async fn handle_get_context_bundle(
     let start = std::time::Instant::now();
     let seed_limit = tool.seed_limit.unwrap_or(3).clamp(1, 10) as usize;
     let max_tokens = tool.max_tokens;
+    let include_raw_sections = tool.include_raw_sections.unwrap_or(false);
 
     // Determine which sections to include
     let all_sections = vec![
@@ -1333,7 +1361,8 @@ pub async fn handle_get_context_bundle(
 
     // Extract seed symbol names from search results
     let seed_symbols: Vec<String> = search_result
-        .get("results")
+        .get("hits")
+        .or_else(|| search_result.get("results"))
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -1344,7 +1373,8 @@ pub async fn handle_get_context_bundle(
 
     // Also extract file paths for disambiguation
     let seed_files: Vec<Option<String>> = search_result
-        .get("results")
+        .get("hits")
+        .or_else(|| search_result.get("results"))
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -1380,7 +1410,9 @@ pub async fn handle_get_context_bundle(
             .await;
             match def_result {
                 Ok(val) => definitions_section.push(val),
-                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: definition lookup failed"),
+                Err(e) => {
+                    tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: definition lookup failed")
+                }
             }
         }
 
@@ -1397,7 +1429,9 @@ pub async fn handle_get_context_bundle(
             );
             match call_result {
                 Ok(val) => call_chain_section.push(val),
-                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: call hierarchy failed"),
+                Err(e) => {
+                    tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: call hierarchy failed")
+                }
             }
         }
 
@@ -1409,11 +1443,14 @@ pub async fn handle_get_context_bundle(
                     symbol_name: symbol_name.clone(),
                     file_path: file_hint.clone(),
                     limit: Some(5),
+                    include_display: Some(true),
                 },
             );
             match tests_result {
                 Ok(val) => tests_section.push(val),
-                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: test lookup failed"),
+                Err(e) => {
+                    tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: test lookup failed")
+                }
             }
         }
 
@@ -1427,12 +1464,15 @@ pub async fn handle_get_context_bundle(
                     file_path: file_hint.clone(),
                     limit: Some(5),
                     threshold: None,
+                    include_display: None,
                 },
             )
             .await;
             match similar_result {
                 Ok(val) => similar_section.push(val),
-                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: similar code failed"),
+                Err(e) => {
+                    tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: similar code failed")
+                }
             }
         }
 
@@ -1447,11 +1487,14 @@ pub async fn handle_get_context_bundle(
                     limit: Some(10),
                     include_tests: Some(false),
                     edge_types: None,
+                    include_display: None,
                 },
             );
             match affected_result {
                 Ok(val) => affected_section.push(val),
-                Err(e) => tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: affected code failed"),
+                Err(e) => {
+                    tracing::debug!(symbol = %symbol_name, error = %e, "context_bundle: affected code failed")
+                }
             }
         }
     }
@@ -1482,7 +1525,10 @@ pub async fn handle_get_context_bundle(
                 for node in nodes.iter().take(10) {
                     let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let file = node.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
+                    let file = node
+                        .get("file_path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
                     context.push_str(&format!("- `{}` ({}) in `{}`\n", name, kind, file));
                 }
             }
@@ -1511,12 +1557,13 @@ pub async fn handle_get_context_bundle(
 
             if let Some(results) = sim.get("results").and_then(|v| v.as_array()) {
                 for r in results.iter().take(5) {
-                    let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = r
+                        .get("symbol_name")
+                        .or_else(|| r.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
                     let file = r.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
-                    let score = r
-                        .get("similarity")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
+                    let score = r.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     context.push_str(&format!(
                         "- `{}` in `{}` (similarity: {:.2})\n",
                         name, file, score
@@ -1538,7 +1585,11 @@ pub async fn handle_get_context_bundle(
 
             if let Some(affected) = aff.get("affected").and_then(|v| v.as_array()) {
                 for a in affected.iter().take(10) {
-                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = a
+                        .get("symbol_name")
+                        .or_else(|| a.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
                     let file = a.get("file_path").and_then(|v| v.as_str()).unwrap_or("?");
                     context.push_str(&format!("- `{}` in `{}`\n", name, file));
                 }
@@ -1566,30 +1617,30 @@ pub async fn handle_get_context_bundle(
     let token_count = context.len() / 4;
     let assembly_ms = start.elapsed().as_millis() as u64;
 
-    // Build sections object
-    let mut sections_obj = serde_json::Map::new();
-    if include_definitions {
-        sections_obj.insert("definitions".to_string(), json!(definitions_section));
-    }
-    if include_call_chain {
-        sections_obj.insert("call_chain".to_string(), json!(call_chain_section));
-    }
-    if include_tests {
-        sections_obj.insert("tests".to_string(), json!(tests_section));
-    }
-    if include_similar {
-        sections_obj.insert("similar".to_string(), json!(similar_section));
-    }
-    if include_affected {
-        sections_obj.insert("affected".to_string(), json!(affected_section));
-    }
-
-    Ok(json!({
+    let mut response = json!({
         "task": tool.task,
         "seed_symbols": seed_symbols,
-        "sections": sections_obj,
+        "section_counts": {
+            "definitions": definitions_section.len(),
+            "call_chain": call_chain_section.len(),
+            "tests": tests_section.len(),
+            "similar": similar_section.len(),
+            "affected": affected_section.len(),
+        },
         "context": context,
         "token_count": token_count,
         "assembly_ms": assembly_ms,
-    }))
+    });
+
+    if include_raw_sections {
+        response["raw_sections"] = json!({
+            "definitions": definitions_section,
+            "call_chain": call_chain_section,
+            "tests": tests_section,
+            "similar": similar_section,
+            "affected": affected_section,
+        });
+    }
+
+    Ok(response)
 }

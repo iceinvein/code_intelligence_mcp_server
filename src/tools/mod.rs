@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[macros::mcp_tool(
     name = "search_code",
-    description = "Search codebase for symbols and return assembled context."
+    description = "Search indexed code and return ranked hits with assembled context."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchCodeTool {
@@ -16,7 +16,7 @@ pub struct SearchCodeTool {
 
 #[macros::mcp_tool(
     name = "refresh_index",
-    description = "Re-index the codebase or specific files."
+    description = "Re-index the codebase or selected files."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct RefreshIndexTool {
@@ -25,7 +25,7 @@ pub struct RefreshIndexTool {
 
 #[macros::mcp_tool(
     name = "get_definition",
-    description = "Get full definition(s) for a symbol by name. When multiple symbols share the same name, use the 'file' parameter to disambiguate (e.g., file: \"src/auth.ts\")."
+    description = "Get definition context for a symbol. Use file to disambiguate duplicate names."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetDefinitionTool {
@@ -39,7 +39,7 @@ pub struct GetDefinitionTool {
 
 #[macros::mcp_tool(
     name = "find_references",
-    description = "Find imports/uses/calls of a symbol across the indexed graph. When multiple symbols share the same name, use 'file' parameter to disambiguate."
+    description = "Find imports, uses, or calls of a symbol."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindReferencesTool {
@@ -65,7 +65,7 @@ pub struct GetFileSymbolsTool {
 
 #[macros::mcp_tool(
     name = "get_call_hierarchy",
-    description = "Return a best-effort call hierarchy rooted at a symbol. Shows what a function calls (callees) or what calls it (callers)."
+    description = "Return callers, callees, or both for a symbol."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetCallHierarchyTool {
@@ -80,7 +80,7 @@ pub struct GetCallHierarchyTool {
 
 #[macros::mcp_tool(
     name = "get_type_graph",
-    description = "Return type relationships for a symbol (extends/implements/aliases)."
+    description = "Return type relationships for a symbol."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetTypeGraphTool {
@@ -93,7 +93,7 @@ pub struct GetTypeGraphTool {
 
 #[macros::mcp_tool(
     name = "get_usage_examples",
-    description = "Return extracted usage examples for a symbol from the indexed repo."
+    description = "Return indexed usage examples for a symbol."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetUsageExamplesTool {
@@ -103,14 +103,14 @@ pub struct GetUsageExamplesTool {
 
 #[macros::mcp_tool(
     name = "get_index_stats",
-    description = "Return index statistics (files, symbols, edges, last updated). Includes description generation progress (descriptions, undescribed_symbols)."
+    description = "Return index statistics and description coverage."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetIndexStatsTool {}
 
 #[macros::mcp_tool(
     name = "explore_dependency_graph",
-    description = "Explore dependencies upstream/downstream/bidirectional from a symbol."
+    description = "Explore upstream or downstream dependencies from a symbol."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExploreDependencyGraphTool {
@@ -122,7 +122,7 @@ pub struct ExploreDependencyGraphTool {
 
 #[macros::mcp_tool(
     name = "get_similarity_cluster",
-    description = "Return symbols that share the same embedding cluster as the given symbol — i.e., semantically similar code. Small symbols (< 3 lines) or test helpers are skipped during clustering and will return empty results. For arbitrary code snippet similarity, use find_similar_code instead."
+    description = "Return symbols in the same semantic cluster."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetSimilarityClusterTool {
@@ -133,7 +133,7 @@ pub struct GetSimilarityClusterTool {
 
 #[macros::mcp_tool(
     name = "hydrate_symbols",
-    description = "Hydrate full source code and context for a set of symbol IDs (from search_code hits or find_references results). Returns the actual code text for each symbol. Use mode \"full\" to include surrounding context (callers, type hierarchy), or omit for code-only output."
+    description = "Return source context for symbol IDs from other tools."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct HydrateSymbolsTool {
@@ -145,7 +145,7 @@ pub struct HydrateSymbolsTool {
 
 #[macros::mcp_tool(
     name = "report_selection",
-    description = "Record user selection feedback for learning. Call this when a user selects a search result."
+    description = "Record selected search result feedback."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ReportSelectionTool {
@@ -156,7 +156,7 @@ pub struct ReportSelectionTool {
 
 #[macros::mcp_tool(
     name = "report_file_access",
-    description = "Record file access for learning. Call this when a user views or edits a file to improve future search relevance."
+    description = "Record viewed or edited files for ranking feedback."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ReportFileAccessTool {
@@ -168,7 +168,7 @@ pub struct ReportFileAccessTool {
 
 #[macros::mcp_tool(
     name = "explain_search",
-    description = "Return detailed scoring breakdown for search results — shows keyword/vector/RRF scores, intent multipliers, and structural adjustments for each hit. Use verbose=true to include per-signal details (term_coverage, popularity_boost, etc.). Useful for debugging why a symbol ranks higher or lower than expected."
+    description = "Explain ranking scores for a search query."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExplainSearchTool {
@@ -177,11 +177,13 @@ pub struct ExplainSearchTool {
     pub exported_only: Option<bool>,
     /// When true, includes per-signal breakdown (term_coverage, popularity_boost, definition_bias, symbol_importance, test_penalty) for each result
     pub verbose: Option<bool>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_similar_code",
-    description = "Find code semantically similar to a given symbol or code snippet."
+    description = "Find code similar to a symbol or snippet."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindSimilarCodeTool {
@@ -190,11 +192,13 @@ pub struct FindSimilarCodeTool {
     pub file_path: Option<String>,
     pub limit: Option<u32>,
     pub threshold: Option<f32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "trace_data_flow",
-    description = "Trace where a variable/field is read and written across the codebase. Shows data flow edges (reads/writes) from the symbol's function scope. Use inter_procedural=true to expand 1 level into called functions, revealing cross-function data flow."
+    description = "Trace reads and writes related to a symbol."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct TraceDataFlowTool {
@@ -207,11 +211,13 @@ pub struct TraceDataFlowTool {
     pub limit: Option<u32>,
     /// Expand 1 level into called functions to trace cross-function data flow (default: false)
     pub inter_procedural: Option<bool>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "summarize_file",
-    description = "Generate a structural summary of an indexed file: symbol counts by kind (functions, structs, etc.), key exports, and dependency overview. This is a symbol-level summary from the index, not a line-by-line file read. Use include_signatures=true to show function/method signatures."
+    description = "Summarize an indexed file at symbol level."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SummarizeFileTool {
@@ -221,11 +227,13 @@ pub struct SummarizeFileTool {
     pub include_signatures: Option<bool>,
     /// Include additional detail: import/export counts, edge statistics (default: false)
     pub verbose: Option<bool>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_affected_code",
-    description = "Find code that would be affected if the given symbol changes, using the structural dependency graph (callers, importers, type implementors). Returns reverse dependencies with severity ratings. For impact analysis that also considers git co-change history, use predict_impact instead."
+    description = "Find reverse dependencies affected by a symbol change."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindAffectedCodeTool {
@@ -236,21 +244,25 @@ pub struct FindAffectedCodeTool {
     pub include_tests: Option<bool>,
     /// Filter by edge types (default: ["call", "reference"]). Options: call, reference, type, extends, implements, alias
     pub edge_types: Option<Vec<String>>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "get_module_summary",
-    description = "List all exported symbols from a module/file with their signatures."
+    description = "List exported symbols from a module or file."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetModuleSummaryTool {
     pub file_path: String,
     pub group_by_kind: Option<bool>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "search_todos",
-    description = "Search for TODO and FIXME comments in the codebase to track technical debt."
+    description = "Search indexed TODO and FIXME comments."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchTodosTool {
@@ -262,11 +274,13 @@ pub struct SearchTodosTool {
     pub kind: Option<String>,
     /// Maximum number of results to return
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_tests_for_symbol",
-    description = "Find test files that test a given symbol or source file. Returns test file paths and associated symbols."
+    description = "Find tests associated with a symbol or source file."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindTestsForSymbolTool {
@@ -276,11 +290,13 @@ pub struct FindTestsForSymbolTool {
     pub file_path: Option<String>,
     /// Maximum number of test files to return
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "search_decorators",
-    description = "Search for TypeScript/JavaScript decorators in the codebase (e.g., @Component, @Controller, @Injectable, @Get, @Post). Returns decorator metadata including symbol ID, decorator name, arguments, and location."
+    description = "Search TypeScript or JavaScript decorators."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchDecoratorsTool {
@@ -290,11 +306,13 @@ pub struct SearchDecoratorsTool {
     pub decorator_type: Option<String>,
     /// Maximum number of results to return (default: 50)
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "search_framework_patterns",
-    description = "Search for framework-specific patterns in the codebase (e.g., Elysia routes, WebSocket handlers, middleware). Returns pattern metadata including file path, line, framework, kind, HTTP method, and route path."
+    description = "Search indexed framework patterns such as routes."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchFrameworkPatternsTool {
@@ -308,11 +326,13 @@ pub struct SearchFrameworkPatternsTool {
     pub path: Option<String>,
     /// Maximum number of results to return (default: 50)
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_dead_code",
-    description = "Find unused symbols (functions, classes, types) with zero incoming references. Identifies dead code that can be safely removed."
+    description = "Find symbols with no incoming references."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindDeadCodeTool {
@@ -326,11 +346,13 @@ pub struct FindDeadCodeTool {
     pub include_tests: Option<bool>,
     /// Maximum number of results (default 50)
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_duplicates",
-    description = "Find groups of semantically similar symbols (potential duplicates) based on embedding clusters. Returns symbol groups that share the same embedding cluster, suggesting high semantic similarity."
+    description = "Find likely duplicate symbols by semantic cluster."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindDuplicatesTool {
@@ -340,11 +362,13 @@ pub struct FindDuplicatesTool {
     pub kind: Option<String>,
     /// Maximum number of duplicate groups to return (default: 50)
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "search_across_repos",
-    description = "Search across all indexed repositories. Returns results merged by score. Standalone mode only."
+    description = "Search all indexed repositories. Standalone only."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchAcrossReposTool {
@@ -353,11 +377,13 @@ pub struct SearchAcrossReposTool {
     /// Maximum total results to return (default: 10)
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "explore_cross_repo_dependencies",
-    description = "Explore cross-repo dependency edges for a symbol. Shows references from this repo's symbols to symbols in other indexed repos. Currently only downstream direction is implemented; upstream is planned. Standalone mode only."
+    description = "Explore cross-repo dependencies for a symbol. Standalone only."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExploreCrossRepoDependenciesTool {
@@ -369,11 +395,13 @@ pub struct ExploreCrossRepoDependenciesTool {
     pub direction: Option<String>,
     /// Maximum number of cross-repo edges to return (default: 20)
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_stale_descriptions",
-    description = "Find symbols whose LLM-generated descriptions are stale (content hash mismatch). Returns symbols where the code has changed since the description was generated."
+    description = "Find cached symbol descriptions whose source changed."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindStaleDescriptionsTool {
@@ -381,11 +409,13 @@ pub struct FindStaleDescriptionsTool {
     pub file_path: Option<String>,
     /// Maximum number of results to return (default: 100)
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "find_undocumented_symbols",
-    description = "Find symbols that don't have LLM-generated descriptions yet. Returns symbols ordered by importance (exported first, then by size)."
+    description = "Find symbols without generated descriptions."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindUndocumentedSymbolsTool {
@@ -397,11 +427,13 @@ pub struct FindUndocumentedSymbolsTool {
     pub exported_only: Option<bool>,
     /// Maximum number of results to return (default: 100)
     pub limit: Option<u32>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "predict_impact",
-    description = "Predict what code would be affected by changing a symbol. Combines structural dependencies (call graph, type hierarchy) with git co-change history (files that historically change together). Returns a ranked list with confidence scores. Unlike find_affected_code (which only uses the dependency graph), this also considers statistical co-change patterns from git log."
+    description = "Predict change impact using dependencies and git co-change."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct PredictImpactTool {
@@ -413,11 +445,13 @@ pub struct PredictImpactTool {
     pub limit: Option<u32>,
     /// Include test files in predictions (default: false)
     pub include_tests: Option<bool>,
+    /// Include markdown display summary. Default false.
+    pub include_display: Option<bool>,
 }
 
 #[macros::mcp_tool(
     name = "get_context_bundle",
-    description = "Accept a task description and return a pre-assembled context bundle with relevant definitions, call chains, test coverage, and similar code in one call."
+    description = "Build one compact context bundle for a task."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetContextBundleTool {
@@ -429,4 +463,6 @@ pub struct GetContextBundleTool {
     pub sections: Option<Vec<String>>,
     /// Number of seed symbols from initial search (default: 3)
     pub seed_limit: Option<u32>,
+    /// Include raw per-section tool outputs. Default false; use only for debugging.
+    pub include_raw_sections: Option<bool>,
 }

@@ -83,7 +83,10 @@ fn create_test_symbol(
 }
 
 /// Create AppState with sqlite initialized for handler tests
-async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp_server::handlers::AppState {
+async fn create_app_state(
+    db_path: &Path,
+    suffix: &str,
+) -> code_intelligence_mcp_server::handlers::AppState {
     // Use the parent directory of the db_path as the base directory
     let base_dir = db_path.parent().unwrap_or(db_path).to_path_buf();
 
@@ -95,16 +98,22 @@ async fn create_app_state(db_path: &Path, suffix: &str) -> code_intelligence_mcp
     sqlite.init().unwrap();
 
     // Create unique tantivy index path using db_path stem and suffix to avoid lock contention
-    let tantivy_index_path = config.tantivy_index_path
-        .join(format!("{}-{}", db_path.file_stem().unwrap_or_default().to_string_lossy(), suffix));
+    let tantivy_index_path = config.tantivy_index_path.join(format!(
+        "{}-{}",
+        db_path.file_stem().unwrap_or_default().to_string_lossy(),
+        suffix
+    ));
     let tantivy = Arc::new(TantivyIndex::open_or_create(&tantivy_index_path).unwrap());
     let embedder = Arc::new(AsyncMutex::new(
-        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _
+        Box::new(HashEmbedder::new(config.hash_embedding_dim)) as _,
     ));
 
     // Create unique vector db path using db_path stem and suffix to avoid table conflicts
-    let vector_db_path = config.vector_db_path
-        .join(format!("{}-{}", db_path.file_stem().unwrap_or_default().to_string_lossy(), suffix));
+    let vector_db_path = config.vector_db_path.join(format!(
+        "{}-{}",
+        db_path.file_stem().unwrap_or_default().to_string_lossy(),
+        suffix
+    ));
     let lancedb = LanceDbStore::connect(&vector_db_path).await.unwrap();
     let vectors = Arc::new(
         lancedb
@@ -191,6 +200,7 @@ async fn test_summarize_file_tool() {
         file_path: "src/test.rs".to_string(),
         include_signatures: Some(false),
         verbose: Some(false),
+        include_display: None,
     };
 
     let result = handle_summarize_file(&state, params).unwrap();
@@ -240,6 +250,7 @@ async fn test_summarize_file_with_signatures() {
         file_path: "src/module.ts".to_string(),
         include_signatures: Some(true),
         verbose: Some(false),
+        include_display: None,
     };
 
     let result = handle_summarize_file(&state, params).unwrap();
@@ -296,6 +307,7 @@ async fn test_summarize_file_verbose_includes_internal() {
         file_path: "src/module.ts".to_string(),
         include_signatures: Some(true),
         verbose: Some(true), // verbose=true should include internal symbols
+        include_display: None,
     };
 
     let result = handle_summarize_file(&state, params).unwrap();
@@ -319,6 +331,7 @@ async fn test_summarize_file_not_found() {
         file_path: "nonexistent.rs".to_string(),
         include_signatures: Some(false),
         verbose: Some(false),
+        include_display: None,
     };
 
     let result = handle_summarize_file(&state, params).unwrap();
@@ -348,7 +361,10 @@ mod get_module_summary_tests {
 
     /// Helper to create AppState for async tests
     /// This must be called within async context to avoid runtime conflicts
-    async fn create_async_app_state() -> (code_intelligence_mcp_server::handlers::AppState, std::path::PathBuf) {
+    async fn create_async_app_state() -> (
+        code_intelligence_mcp_server::handlers::AppState,
+        std::path::PathBuf,
+    ) {
         use code_intelligence_mcp_server::handlers::AppState;
         use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
         use code_intelligence_mcp_server::retrieval::Retriever;
@@ -362,17 +378,15 @@ mod get_module_summary_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let base_dir = std::path::PathBuf::from(format!(
-            "/tmp/cimcp-test-{}-{}",
-            unique_id,
-            counter
-        ));
+        let base_dir =
+            std::path::PathBuf::from(format!("/tmp/cimcp-test-{}-{}", unique_id, counter));
         std::fs::create_dir_all(&base_dir).unwrap();
 
         let config = std::sync::Arc::new(super::test_config(&base_dir));
 
         // Create storage components async
-        let tantivy = std::sync::Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+        let tantivy =
+            std::sync::Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
         let sqlite = std::sync::Arc::new(SqliteStore::open(config.db_path.as_path()).unwrap());
         sqlite.init().unwrap();
 
@@ -384,12 +398,16 @@ mod get_module_summary_tests {
                 .unwrap(),
         );
 
-        let embedder = std::sync::Arc::new(tokio::sync::Mutex::new(
-            Box::new(code_intelligence_mcp_server::embeddings::hash::HashEmbedder::new(config.hash_embedding_dim))
-                as Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>
-        ));
+        let embedder = std::sync::Arc::new(tokio::sync::Mutex::new(Box::new(
+            code_intelligence_mcp_server::embeddings::hash::HashEmbedder::new(
+                config.hash_embedding_dim,
+            ),
+        )
+            as Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>));
 
-        let metrics = std::sync::Arc::new(code_intelligence_mcp_server::metrics::MetricsRegistry::new().unwrap());
+        let metrics = std::sync::Arc::new(
+            code_intelligence_mcp_server::metrics::MetricsRegistry::new().unwrap(),
+        );
 
         let indexer = IndexPipeline::new(
             config.clone(),
@@ -415,7 +433,10 @@ mod get_module_summary_tests {
             retriever,
             sqlite,
             is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+            role_rx: tokio::sync::watch::channel(
+                code_intelligence_mcp_server::leader::Role::Leader,
+            )
+            .1,
             mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
         };
 
@@ -429,7 +450,9 @@ mod get_module_summary_tests {
         // Create actual source file with exports
         let module_path = app_state.config.base_dir.join("src/module.ts");
         std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
-        std::fs::write(&module_path, r#"
+        std::fs::write(
+            &module_path,
+            r#"
 export function exportedFunction() {
     return "hello";
 }
@@ -441,7 +464,9 @@ export class ExportedClass {
 function internalFunc() {
     // This is internal, not exported
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // Index the file
         app_state.indexer.index_all().await.unwrap();
@@ -449,6 +474,7 @@ function internalFunc() {
         let params = GetModuleSummaryTool {
             file_path: "src/module.ts".to_string(),
             group_by_kind: Some(true),
+            include_display: None,
         };
 
         let result = handle_get_module_summary(&app_state, params).unwrap();
@@ -481,11 +507,15 @@ function internalFunc() {
         // Create actual source file with a single export
         let module_path = app_state.config.base_dir.join("src/api.ts");
         std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
-        std::fs::write(&module_path, r#"
+        std::fs::write(
+            &module_path,
+            r#"
 export function myFunction() {
     return "api response";
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // Index the file
         app_state.indexer.index_all().await.unwrap();
@@ -493,6 +523,7 @@ export function myFunction() {
         let params = GetModuleSummaryTool {
             file_path: "src/api.ts".to_string(),
             group_by_kind: Some(false), // Flat output
+            include_display: None,
         };
 
         let result = handle_get_module_summary(&app_state, params).unwrap();
@@ -525,12 +556,16 @@ export function myFunction() {
         // Create actual source file with only internal symbols (no exports)
         let module_path = app_state.config.base_dir.join("src/internal.ts");
         std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
-        std::fs::write(&module_path, r#"
+        std::fs::write(
+            &module_path,
+            r#"
 function internalFunc() {
     // No exports here - just internal function
     return "internal";
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // Index the file
         app_state.indexer.index_all().await.unwrap();
@@ -538,6 +573,7 @@ function internalFunc() {
         let params = GetModuleSummaryTool {
             file_path: "src/internal.ts".to_string(),
             group_by_kind: Some(false),
+            include_display: None,
         };
 
         let result = handle_get_module_summary(&app_state, params).unwrap();
@@ -557,12 +593,16 @@ function internalFunc() {
         // Create actual source file with export
         let module_path = app_state.config.base_dir.join("src/utils.ts");
         std::fs::create_dir_all(module_path.parent().unwrap()).unwrap();
-        std::fs::write(&module_path, r#"
+        std::fs::write(
+            &module_path,
+            r#"
 // Exported function with a longer body to test signature truncation
 export function myFunction(param: string): number {
     return param.length * 2;
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // Index the file
         app_state.indexer.index_all().await.unwrap();
@@ -570,6 +610,7 @@ export function myFunction(param: string): number {
         let params = GetModuleSummaryTool {
             file_path: "src/utils.ts".to_string(),
             group_by_kind: Some(false),
+            include_display: None,
         };
 
         let result = handle_get_module_summary(&app_state, params).unwrap();
@@ -593,7 +634,10 @@ export function myFunction(param: string): number {
         assert!(!sig.is_empty());
 
         // Signature should contain the function signature
-        assert!(sig.contains("myFunction"), "Signature should contain function name");
+        assert!(
+            sig.contains("myFunction"),
+            "Signature should contain function name"
+        );
     }
 }
 
@@ -616,6 +660,7 @@ async fn test_trace_data_flow_tool() {
         depth: Some(2),
         limit: Some(50),
         inter_procedural: None,
+        include_display: None,
     };
 
     let result = handle_trace_data_flow(&state, params).unwrap();
@@ -639,6 +684,7 @@ async fn test_trace_data_flow_not_found() {
         depth: Some(2),
         limit: Some(50),
         inter_procedural: None,
+        include_display: None,
     };
 
     let result = handle_trace_data_flow(&state, params).unwrap();
@@ -676,6 +722,7 @@ async fn test_find_affected_code_tool() {
         limit: Some(50),
         include_tests: Some(false),
         edge_types: None,
+        include_display: None,
     };
 
     let result = handle_find_affected_code(&state, params).unwrap();
@@ -698,6 +745,7 @@ async fn test_find_affected_code_not_found() {
         limit: Some(50),
         include_tests: Some(false),
         edge_types: None,
+        include_display: None,
     };
 
     let result = handle_find_affected_code(&state, params).unwrap();
@@ -797,10 +845,11 @@ fn tmp_test_dir() -> PathBuf {
 
 /// Create test configuration
 fn test_config(base_dir: &Path) -> Config {
-    let base_dir = base_dir.canonicalize().unwrap_or_else(|_| base_dir.to_path_buf());
-    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone()).unwrap_or_else(|_| {
-        Utf8PathBuf::from(base_dir.to_string_lossy().as_ref())
-    });
+    let base_dir = base_dir
+        .canonicalize()
+        .unwrap_or_else(|_| base_dir.to_path_buf());
+    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone())
+        .unwrap_or_else(|_| Utf8PathBuf::from(base_dir.to_string_lossy().as_ref()));
     Config {
         db_path: base_dir_utf8.join("code-intelligence.db"),
         vector_db_path: base_dir_utf8.join("vectors"),
@@ -812,7 +861,7 @@ fn test_config(base_dir: &Path) -> Config {
         embedding_batch_size: 32,
         hash_embedding_dim: 32,
         vector_search_limit: 20,
-            vector_guaranteed_results: 3,
+        vector_guaranteed_results: 3,
         hybrid_alpha: 0.7,
         rank_vector_weight: 0.7,
         rank_keyword_weight: 0.3,
@@ -870,7 +919,7 @@ fn test_config(base_dir: &Path) -> Config {
         leader_heartbeat_interval_ms: 10_000,
         leader_ttl_seconds: 30,
         embedding_truncate_dim: None,
-            embedding_dim_override: None,
+        embedding_dim_override: None,
     }
 }
 
@@ -938,6 +987,7 @@ async fn test_explain_search_tool() {
         limit: Some(5),
         exported_only: Some(false),
         verbose: Some(false),
+        include_display: Some(true),
     };
 
     let result = handle_explain_search(&retriever, params).await.unwrap();
@@ -969,6 +1019,7 @@ async fn test_explain_search_verbose() {
         limit: Some(10),
         exported_only: Some(true),
         verbose: Some(true),
+        include_display: None,
     };
 
     let result = handle_explain_search(&retriever, params).await.unwrap();
@@ -1001,6 +1052,7 @@ async fn test_find_similar_code_by_symbol_name() {
         file_path: Some(dir.join("search.ts").to_str().unwrap().to_string()),
         limit: Some(10),
         threshold: Some(0.1), // Low threshold for testing
+        include_display: None,
     };
 
     // Create AppState - need to reconstruct the components
@@ -1082,6 +1134,7 @@ async fn test_find_similar_code_by_code_snippet() {
         file_path: None,
         limit: Some(5),
         threshold: Some(0.0), // Zero threshold to get any results
+        include_display: None,
     };
 
     // Create AppState
@@ -1143,6 +1196,7 @@ async fn test_find_similar_code_not_found() {
         file_path: Some(dir.join("search.ts").to_str().unwrap().to_string()),
         limit: Some(5),
         threshold: Some(0.5),
+        include_display: None,
     };
 
     // Create AppState
@@ -1231,7 +1285,9 @@ mod fixture_tests {
 
     // Async fixture test - verify metrics fixture works
     #[rstest]
-    fn rstest_metrics_fixture_works(_metrics: std::sync::Arc<code_intelligence_mcp_server::metrics::MetricsRegistry>) {
+    fn rstest_metrics_fixture_works(
+        _metrics: std::sync::Arc<code_intelligence_mcp_server::metrics::MetricsRegistry>,
+    ) {
         // Just verify we got the fixture - MetricsRegistry doesn't have much to check
     }
 

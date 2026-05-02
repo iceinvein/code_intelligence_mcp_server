@@ -10,6 +10,8 @@ use crate::tools::*;
 use anyhow::Result;
 use serde_json::json;
 
+use super::budget::{budget_array, insert_budgeted_array, BudgetedArray};
+
 /// Type alias for data flow trace results
 type DataFlowTraceResult = Result<
     (
@@ -228,7 +230,10 @@ pub fn handle_trace_data_flow(
             }
         }
     });
-    flows.truncate(limit);
+    let budgeted_flows = budget_array(flows, limit);
+    let total_flow_count = budgeted_flows.total_count;
+    let flows_truncated = budgeted_flows.truncated;
+    let mut flows = budgeted_flows.items;
 
     // Inter-procedural expansion: for each call/async_call edge, get callee's data flow
     let inter_proc = tool.inter_procedural.unwrap_or(false);
@@ -281,20 +286,38 @@ pub fn handle_trace_data_flow(
         }
     }
 
+    let read_count = flows
+        .iter()
+        .filter(|f| {
+            let ft = f.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
+            ft == "read" || ft == "async_read"
+        })
+        .count();
+    let write_count = flows
+        .iter()
+        .filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write"))
+        .count();
+    let spawn_count = flows
+        .iter()
+        .filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("spawn"))
+        .count();
+    let budgeted_flows = BudgetedArray {
+        returned_count: flows.len(),
+        items: flows,
+        total_count: total_flow_count,
+        truncated: flows_truncated,
+    };
     let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "file_path": root.file_path,
         "direction": direction,
         "depth": depth,
-        "read_count": flows.iter().filter(|f| {
-            let ft = f.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
-            ft == "read" || ft == "async_read"
-        }).count(),
-        "write_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("write")).count(),
-        "spawn_count": flows.iter().filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("spawn")).count(),
-        "flows": flows,
+        "read_count": read_count,
+        "write_count": write_count,
+        "spawn_count": spawn_count,
     });
+    insert_budgeted_array(&mut response, "flows", budgeted_flows)?;
     if include_display {
         let flows = response
             .get("flows")

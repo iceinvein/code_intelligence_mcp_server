@@ -10,6 +10,7 @@
 //! - `learning`: report_selection, report_file_access
 
 mod analysis;
+mod budget;
 mod cross_repo;
 mod graph;
 mod index;

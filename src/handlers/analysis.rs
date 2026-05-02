@@ -15,6 +15,9 @@ use super::AppState;
 use super::{
     handle_find_similar_code, handle_get_call_hierarchy, handle_get_definition, handle_search_code,
 };
+use super::budget::{
+    budget_array, budget_string_field, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
+};
 
 pub fn handle_find_affected_code(
     state: &AppState,
@@ -124,8 +127,10 @@ pub fn handle_find_affected_code(
         ),
     };
 
-    // Truncate to limit
-    let affected = affected.into_iter().take(limit).collect::<Vec<_>>();
+    let budgeted_affected = budget_array(affected, limit);
+    let affected_total_count = budgeted_affected.total_count;
+    let affected_truncated = budgeted_affected.truncated;
+    let affected = budgeted_affected.items;
 
     // Build summary stats
     let affected_files = affected
@@ -146,10 +151,24 @@ pub fn handle_find_affected_code(
             "high": affected.iter().filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("high")).count(),
             "medium": affected.iter().filter(|a| a.get("impact").and_then(|v| v.as_str()) == Some("medium")).count(),
         },
-        "affected": affected,
         "warning": warning,
     });
+    insert_budgeted_array(
+        &mut response,
+        "affected",
+        super::budget::BudgetedArray {
+            returned_count: affected.len(),
+            items: affected,
+            total_count: affected_total_count,
+            truncated: affected_truncated,
+        },
+    )?;
     if include_display {
+        let affected = response
+            .get("affected")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         response["display"] = json!(format_affected_code(root, &affected, affected_files));
     }
     Ok(response)
@@ -253,12 +272,14 @@ pub fn handle_search_todos(
         limit,
     )?;
 
+    let budgeted_todos = budget_array(todos, limit);
+    let display = include_display.then(|| format_todos(&budgeted_todos.items));
     let mut response = json!({
-        "count": todos.len(),
-        "todos": todos,
+        "count": budgeted_todos.returned_count,
     });
+    insert_budgeted_array(&mut response, "todos", budgeted_todos)?;
     if include_display {
-        response["display"] = json!(format_todos(&todos));
+        response["display"] = json!(display.unwrap_or_default());
     }
     Ok(response)
 }
@@ -310,17 +331,27 @@ pub fn handle_find_tests_for_symbol(
     // Get symbols with tests for more detail
     let symbols_with_tests = sqlite.get_symbols_with_tests(&root.file_path)?;
 
+    let budgeted_test_files = budget_array(test_files, limit);
+    let budgeted_symbols_with_tests = budget_array(symbols_with_tests, limit);
+    let display = include_display.then(|| {
+        format_test_results(root, &budgeted_test_files.items, &budgeted_symbols_with_tests.items)
+    });
+
     let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "source_file": root.file_path,
-        "test_file_count": test_files.len(),
-        "test_files": test_files,
+        "test_file_count": budgeted_test_files.returned_count,
         "tests_for_symbol": tests_for_symbol,
-        "symbols_with_tests": symbols_with_tests,
     });
+    insert_budgeted_array(&mut response, "test_files", budgeted_test_files)?;
+    insert_budgeted_array(
+        &mut response,
+        "symbols_with_tests",
+        budgeted_symbols_with_tests,
+    )?;
     if include_display {
-        response["display"] = json!(format_test_results(root, &test_files, &symbols_with_tests));
+        response["display"] = json!(display.unwrap_or_default());
     }
     Ok(response)
 }
@@ -427,12 +458,14 @@ pub fn handle_search_decorators(
         }));
     }
 
+    let budgeted_decorators = budget_array(results, limit);
+    let display = include_display.then(|| format_decorators(&budgeted_decorators.items));
     let mut response = serde_json::json!({
-        "count": results.len(),
-        "decorators": results,
+        "count": budgeted_decorators.returned_count,
     });
+    insert_budgeted_array(&mut response, "decorators", budgeted_decorators)?;
     if include_display {
-        response["display"] = json!(format_decorators(&results));
+        response["display"] = json!(display.unwrap_or_default());
     }
     Ok(response)
 }
@@ -534,12 +567,14 @@ pub fn handle_search_framework_patterns(
         }));
     }
 
+    let budgeted_patterns = budget_array(results, limit);
+    let display = include_display.then(|| format_framework_patterns(&budgeted_patterns.items));
     let mut response = serde_json::json!({
-        "count": results.len(),
-        "patterns": results,
+        "count": budgeted_patterns.returned_count,
     });
+    insert_budgeted_array(&mut response, "patterns", budgeted_patterns)?;
     if include_display {
-        response["display"] = json!(format_framework_patterns(&results));
+        response["display"] = json!(display.unwrap_or_default());
     }
     Ok(response)
 }
@@ -662,15 +697,17 @@ pub fn handle_find_dead_code(
         dead_symbol_entries.push(entry);
     }
 
+    let budgeted_dead_symbols = budget_array(dead_symbol_entries, limit);
+    let display = include_display.then(|| format_dead_code(&high_priority, &medium_priority));
     let mut response = json!({
         "dead_symbol_count": dead_symbols.len(),
         "dead_files": dead_files.len(),
         "high_priority_count": high_priority.len(),
         "medium_priority_count": medium_priority.len(),
-        "dead_symbols": dead_symbol_entries,
     });
+    insert_budgeted_array(&mut response, "dead_symbols", budgeted_dead_symbols)?;
     if include_display {
-        response["display"] = json!(format_dead_code(&high_priority, &medium_priority));
+        response["display"] = json!(display.unwrap_or_default());
     }
     Ok(response)
 }
@@ -816,13 +853,15 @@ pub fn handle_find_duplicates(
         }));
     }
 
+    let budgeted_groups = budget_array(groups, limit);
+    let display = include_display.then(|| format_duplicates(&budgeted_groups.items, total_symbols));
     let mut response = json!({
-        "duplicate_group_count": groups.len(),
+        "duplicate_group_count": budgeted_groups.returned_count,
         "total_duplicate_symbols": total_symbols,
-        "groups": groups,
     });
+    insert_budgeted_array(&mut response, "groups", budgeted_groups)?;
     if include_display {
-        response["display"] = json!(format_duplicates(&groups, total_symbols));
+        response["display"] = json!(display.unwrap_or_default());
     }
     Ok(response)
 }
@@ -905,11 +944,12 @@ pub fn handle_find_stale_descriptions(
         }
     }
 
+    let budgeted_stale = budget_array(stale_entries, limit);
     let mut response = json!({
         "checked": checked,
-        "stale_count": stale_entries.len(),
-        "stale_symbols": stale_entries,
+        "stale_count": budgeted_stale.returned_count,
     });
+    insert_budgeted_array(&mut response, "stale_symbols", budgeted_stale)?;
     if include_display {
         let mut display = String::from("# Stale Description Analysis\n\n");
         display.push_str(&format!(
@@ -973,10 +1013,11 @@ pub fn handle_find_undocumented_symbols(
         }));
     }
 
+    let budgeted_symbols = budget_array(entries, limit);
     let mut response = json!({
-        "undocumented_count": entries.len(),
-        "symbols": entries,
+        "undocumented_count": budgeted_symbols.returned_count,
     });
+    insert_budgeted_array(&mut response, "symbols", budgeted_symbols)?;
     if include_display {
         let mut display = String::from("# Undocumented Symbols\n\n");
         display.push_str(&format!(
@@ -1223,8 +1264,10 @@ pub fn handle_predict_impact(
         sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Truncate to limit
-    predictions.truncate(limit);
+    let budgeted_predictions = budget_array(predictions, limit);
+    let predictions_total_count = budgeted_predictions.total_count;
+    let predictions_truncated = budgeted_predictions.truncated;
+    let predictions = budgeted_predictions.items;
 
     // Build summary
     let structural_count = predictions
@@ -1240,25 +1283,36 @@ pub fn handle_predict_impact(
         .filter(|p| p.get("source").and_then(|v| v.as_str()) == Some("both"))
         .count();
 
-    let affected_files: std::collections::HashSet<&str> = predictions
+    let affected_files: std::collections::HashSet<String> = predictions
         .iter()
         .filter_map(|p| p.get("file_path").and_then(|v| v.as_str()))
+        .map(ToString::to_string)
         .collect();
+    let affected_file_count = affected_files.len();
 
     let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "file_path": root.file_path,
         "prediction_count": predictions.len(),
-        "affected_files": affected_files.len(),
+        "affected_files": affected_file_count,
         "source_breakdown": {
             "structural": structural_count,
             "cochange": cochange_count,
             "both": both_count,
         },
         "co_change_stats": co_change_stats,
-        "predictions": predictions,
     });
+    insert_budgeted_array(
+        &mut response,
+        "predictions",
+        super::budget::BudgetedArray {
+            returned_count: predictions.len(),
+            items: predictions,
+            total_count: predictions_total_count,
+            truncated: predictions_truncated,
+        },
+    )?;
     if include_display {
         let predictions = response
             .get("predictions")
@@ -1266,7 +1320,7 @@ pub fn handle_predict_impact(
             .cloned()
             .unwrap_or_default();
         response["display"] =
-            json!(format_predict_impact(root, &predictions, affected_files.len()));
+            json!(format_predict_impact(root, &predictions, affected_file_count));
     }
     Ok(response)
 }
@@ -1631,6 +1685,7 @@ pub async fn handle_get_context_bundle(
         "token_count": token_count,
         "assembly_ms": assembly_ms,
     });
+    budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
 
     if include_raw_sections {
         response["raw_sections"] = json!({

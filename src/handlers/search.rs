@@ -4,6 +4,7 @@ use crate::retrieval::Retriever;
 use crate::tools::*;
 use serde_json::json;
 
+use super::budget::{budget_array, clamp_limit, insert_budgeted_array};
 use super::AppState;
 
 /// Handle search_code tool
@@ -16,7 +17,21 @@ pub async fn handle_search_code(
 
     let result = retriever.search(&tool.query, limit, exported_only).await?;
     // Return only the SearchResponse (without hit_signals) to reduce response size
-    Ok(serde_json::to_value(result.response)?)
+    let mut response = serde_json::to_value(result.response)?;
+    response["hits_budget"] = json!({
+        "total_count": response
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .map(|v| v.len())
+            .unwrap_or(0),
+        "returned_count": response
+            .get("hits")
+            .and_then(|v| v.as_array())
+            .map(|v| v.len())
+            .unwrap_or(0),
+        "truncated": false,
+    });
+    Ok(response)
 }
 
 /// Handle explain_search tool
@@ -24,7 +39,7 @@ pub async fn handle_explain_search(
     retriever: &Retriever,
     tool: ExplainSearchTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(10).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 10, 100);
     let exported_only = tool.exported_only.unwrap_or(false);
     let verbose = tool.verbose.unwrap_or(false);
     let include_display = tool.include_display.unwrap_or(false);
@@ -76,13 +91,19 @@ pub async fn handle_explain_search(
         results.push(breakdown);
     }
 
+    let budgeted_results = budget_array(results, limit);
     let mut response = json!({
         "query": resp.query,
         "limit": resp.limit,
-        "count": results.len(),
-        "results": results,
+        "count": budgeted_results.returned_count,
     });
+    insert_budgeted_array(&mut response, "results", budgeted_results)?;
     if include_display {
+        let results = response
+            .get("results")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         response["display"] = json!(format_scoring_breakdown(&resp.query, &results));
     }
     Ok(response)
@@ -93,7 +114,7 @@ pub async fn handle_find_similar_code(
     state: &AppState,
     tool: FindSimilarCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(20).clamp(1, 100) as usize;
+    let limit = clamp_limit(tool.limit, 20, 100);
     let threshold = tool.threshold.unwrap_or(0.5);
     let include_display = tool.include_display.unwrap_or(false);
 
@@ -190,15 +211,20 @@ pub async fn handle_find_similar_code(
         let sb = b.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
         sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
     });
-    results.truncate(limit);
+    let budgeted_results = budget_array(results, limit);
 
     let mut response = json!({
         "query": query_description,
         "threshold": threshold,
-        "count": results.len(),
-        "results": results,
+        "count": budgeted_results.returned_count,
     });
+    insert_budgeted_array(&mut response, "results", budgeted_results)?;
     if include_display {
+        let results = response
+            .get("results")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         response["display"] = json!(format_similar_results(&query_description, threshold, &results));
     }
     Ok(response)

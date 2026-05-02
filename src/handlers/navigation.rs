@@ -13,6 +13,7 @@ use crate::retrieval::assembler::FormatMode;
 use crate::storage::sqlite::SymbolRow;
 use crate::tools::*;
 
+use super::budget::{budget_array, insert_budgeted_array};
 use super::{extract_usage_line, AppState};
 
 /// Handle get_definition tool
@@ -207,12 +208,13 @@ pub fn handle_find_references(
         }
     }
 
+    let budgeted_references = budget_array(out, limit);
     let mut response = json!({
         "symbol_name": tool.symbol_name,
         "reference_type": reference_type,
-        "count": out.len(),
-        "references": out,
+        "count": budgeted_references.returned_count,
     });
+    insert_budgeted_array(&mut response, "references", budgeted_references)?;
 
     // Add disambiguation hints when multiple symbols exist in different files
     if needs_disambiguation {
@@ -295,11 +297,13 @@ pub fn handle_get_usage_examples(
         }
     }
 
-    Ok(json!({
+    let budgeted_examples = budget_array(examples, limit);
+    let mut response = json!({
         "symbol_name": tool.symbol_name,
-        "count": examples.len(),
-        "examples": examples,
-    }))
+        "count": budgeted_examples.returned_count,
+    });
+    insert_budgeted_array(&mut response, "examples", budgeted_examples)?;
+    Ok(response)
 }
 
 /// Handle get_module_summary tool

@@ -6,6 +6,8 @@ use crate::tools::{ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
 use anyhow::Result;
 use serde_json::json;
 
+use super::budget::{budget_array, insert_budgeted_array};
+
 /// A single search hit tagged with its source repository.
 #[derive(serde::Serialize)]
 struct CrossRepoHit {
@@ -103,15 +105,16 @@ pub async fn handle_search_across_repos(
     // Sort by score descending (total_cmp for deterministic NaN handling),
     // then take the top `limit` overall.
     all_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-    all_hits.truncate(limit);
+    let budgeted_results = budget_array(all_hits, limit);
 
-    let display = include_display.then(|| format_cross_repo_results(&tool.query, repos_searched, &all_hits));
+    let display =
+        include_display.then(|| format_cross_repo_results(&tool.query, repos_searched, &budgeted_results.items));
 
     let mut response = json!({
         "query": tool.query,
         "total_repos_searched": repos_searched,
-        "results": all_hits,
     });
+    insert_budgeted_array(&mut response, "results", budgeted_results)?;
     if let Some(display) = display {
         response["display"] = json!(display);
     }
@@ -292,13 +295,15 @@ pub fn handle_explore_cross_repo_dependencies(
         // but the cross-repo detection pipeline must be wired first.
     }
 
+    let budgeted_downstream = budget_array(downstream_edges, limit);
+    let budgeted_upstream = budget_array(upstream_edges, limit);
     let mut response = json!({
         "symbol_name": root.name,
         "symbol_id": root.id,
         "direction": direction,
-        "downstream": downstream_edges,
-        "upstream": upstream_edges,
     });
+    insert_budgeted_array(&mut response, "downstream", budgeted_downstream)?;
+    insert_budgeted_array(&mut response, "upstream", budgeted_upstream)?;
 
     if include_display {
         let downstream_edges = response

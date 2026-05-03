@@ -1,6 +1,7 @@
 //! Search-related MCP tool handlers
 
-use crate::retrieval::Retriever;
+use crate::retrieval::{ContextMode, Retriever};
+use crate::storage::sqlite::SqliteStore;
 use crate::tools::*;
 use serde_json::json;
 
@@ -9,17 +10,27 @@ use super::budget::{
 };
 use super::AppState;
 
-/// Handle search_code tool
+/// Default per-hit snippet line count for `context="snippets"`.
+const SNIPPET_LINES: usize = 8;
+
+/// Handle search_code tool.
+///
+/// As of v3.0, `context` defaults to `"none"` — agents that need source code
+/// alongside hits should pass `context: "snippets"` (compact, per-hit) or
+/// `context: "full"` (legacy markdown bundle with graph expansion).
 pub async fn handle_search_code(
     retriever: &Retriever,
+    db_path: &camino::Utf8Path,
     tool: SearchCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(5).max(1) as usize;
     let exported_only = tool.exported_only.unwrap_or(false);
+    let context_mode = ContextMode::from_str(tool.context.as_deref());
 
-    let result = retriever.search(&tool.query, limit, exported_only).await?;
-    // Return only the SearchResponse (without hit_signals) to reduce response size
-    let mut response = serde_json::to_value(result.response)?;
+    let result = retriever
+        .search(&tool.query, limit, exported_only, context_mode)
+        .await?;
+    let mut response = serde_json::to_value(&result.response)?;
     let hits_count = response
         .get("hits")
         .and_then(|v| v.as_array())
@@ -30,8 +41,66 @@ pub async fn handle_search_code(
         "returned_count": hits_count,
         "truncated": false,
     });
-    budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
+
+    match context_mode {
+        ContextMode::None => {
+            // Drop the empty context string entirely so callers don't see a
+            // misleading empty field.
+            if let Some(map) = response.as_object_mut() {
+                map.remove("context");
+            }
+        }
+        ContextMode::Snippets => {
+            if let Some(map) = response.as_object_mut() {
+                map.remove("context");
+            }
+            attach_hit_snippets(db_path, &mut response, &result.response.hits)?;
+        }
+        ContextMode::Full => {
+            budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
+        }
+    }
     Ok(response)
+}
+
+/// Attach a compact per-hit `snippet` (first N body lines) to each entry in
+/// `response["hits"]`. Used by `context="snippets"`.
+fn attach_hit_snippets(
+    db_path: &camino::Utf8Path,
+    response: &mut serde_json::Value,
+    hits: &[crate::retrieval::RankedHit],
+) -> Result<(), anyhow::Error> {
+    if hits.is_empty() {
+        return Ok(());
+    }
+    let sqlite = SqliteStore::open(db_path)?;
+    sqlite.init()?;
+    let Some(arr) = response.get_mut("hits").and_then(|v| v.as_array_mut()) else {
+        return Ok(());
+    };
+    for (i, slot) in arr.iter_mut().enumerate() {
+        let Some(hit) = hits.get(i) else { break };
+        let Some(row) = sqlite.get_symbol_by_id(&hit.id)? else {
+            continue;
+        };
+        let snippet = compact_snippet(&row.text, SNIPPET_LINES);
+        if let Some(obj) = slot.as_object_mut() {
+            obj.insert("snippet".to_string(), json!(snippet));
+        }
+    }
+    Ok(())
+}
+
+/// Take the first `max_lines` lines (trimmed of trailing whitespace) and
+/// append a truncation marker when the body exceeds it.
+fn compact_snippet(text: &str, max_lines: usize) -> String {
+    let total = text.lines().count();
+    let kept: Vec<&str> = text.lines().take(max_lines).map(|l| l.trim_end()).collect();
+    let mut out = kept.join("\n");
+    if total > max_lines {
+        out.push_str(&format!("\n// ... {} more lines", total - max_lines));
+    }
+    out
 }
 
 /// Handle explain_search tool
@@ -44,7 +113,9 @@ pub async fn handle_explain_search(
     let verbose = tool.verbose.unwrap_or(false);
     let include_display = tool.include_display.unwrap_or(false);
 
-    let result = retriever.search(&tool.query, limit, exported_only).await?;
+    let result = retriever
+        .search(&tool.query, limit, exported_only, ContextMode::None)
+        .await?;
     let resp = &result.response;
     let hit_signals = &result.hit_signals;
 

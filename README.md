@@ -91,11 +91,13 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 
 ## Tools (32)
 
+> **Upgrade note (3.0.0):** `search_code` no longer assembles a `context` markdown bundle by default. Pass `context: "snippets"` for compact per-hit code, or `context: "full"` to restore the v2 behavior. See [Migration](#migration-v2--v3) below.
+
 ### Search & Navigation
 
 | Tool | What It Does |
 |---|---|
-| `search_code` | Semantic + keyword hybrid search. Handles natural language ("how does auth work?") and structural queries ("class User") |
+| `search_code` | Semantic + keyword hybrid search. Handles natural language ("how does auth work?") and structural queries ("class User"). Pass `context: "snippets"` or `"full"` to receive source code alongside hits. |
 | `get_definition` | Jump to a symbol's full definition |
 | `find_references` | Find all usages of a function, class, or variable |
 | `get_call_hierarchy` | Upstream callers and downstream callees |
@@ -372,6 +374,24 @@ src/
 </details>
 
 ---
+
+## Migration: v2 → v3
+
+`search_code` previously returned both ranked `hits` and a `context` markdown bundle (source code for top hits + auto-expanded "Examples" / "Related" symbols). The bundle was always assembled, even when callers only needed the ranked list, and could exceed 30 KB per call.
+
+In **v3.0.0**, `search_code` is a discovery tool by default. It returns hits only. Source code is opt-in via the new `context` parameter:
+
+| `context` value | What you get | Typical size (limit=5) |
+|---|---|---|
+| `"none"` *(default)* | `hits` array only — no source code, no graph expansion | ~600 B |
+| `"snippets"` | `hits` with a `snippet` field on each (signature + first 8 body lines) | ~2-4 KB |
+| `"full"` | Legacy v2 behavior: `context` markdown bundle with graph expansion | ~15 KB |
+
+**To restore v2 behavior**, pass `context: "full"` on every call.
+
+For most agent workflows, `"snippets"` is the recommended setting: enough code to ground the next decision, without rendering an entire markdown bundle. Agents that need full source for selected hits should call `hydrate_symbols(ids[])` after `search_code`.
+
+The web UI and cross-repo aggregator continue to request `context: "full"` internally; only the public MCP `search_code` tool default has changed.
 
 ## License
 

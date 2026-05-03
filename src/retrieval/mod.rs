@@ -95,6 +95,39 @@ pub struct HitSignals {
     pub package_boost: f32,
 }
 
+/// Controls whether `Retriever::search` assembles a `context` string alongside
+/// `hits`. `None` is the default for the MCP `search_code` tool and skips the
+/// expensive graph expansion + markdown rendering pass entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextMode {
+    /// Hits only. No graph expansion, no context string. Lowest token cost.
+    None,
+    /// Hits only at the retriever layer; the handler attaches per-hit code
+    /// snippets after this call. The retriever returns an empty `context`.
+    Snippets,
+    /// Legacy default: assemble the full markdown context bundle with graph
+    /// expansion (Examples / Related sections).
+    Full,
+}
+
+impl ContextMode {
+    pub fn from_str(value: Option<&str>) -> Self {
+        match value.map(str::to_ascii_lowercase).as_deref() {
+            Some("full") => ContextMode::Full,
+            Some("snippets") => ContextMode::Snippets,
+            _ => ContextMode::None,
+        }
+    }
+
+    fn cache_tag(self) -> &'static str {
+        match self {
+            ContextMode::None => "n",
+            ContextMode::Snippets => "s",
+            ContextMode::Full => "f",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Retriever {
     pub(super) config: Arc<Config>,
@@ -264,6 +297,7 @@ impl Retriever {
         query: &str,
         limit: usize,
         exported_only: bool,
+        context_mode: ContextMode,
     ) -> Result<SearchResponseWithSignals> {
         let _timer = self.metrics.search_duration.start_timer();
 
@@ -280,11 +314,12 @@ impl Retriever {
             .flatten()
             .map(|r| r.started_at_unix_s);
         let cache_key = format!(
-            "v2|cfg={}|q={}|l={}|e={}",
+            "v2|cfg={}|q={}|l={}|e={}|c={}",
             self.cache_config_key,
             trim_query(query, 500),
             limit,
-            exported_only
+            exported_only,
+            context_mode.cache_tag()
         );
         {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -397,7 +432,9 @@ impl Retriever {
         // alongside production code.
         {
             let ids: Vec<String> = uniq.iter().map(|h| h.id.clone()).collect();
-            let valid_ids = sqlite.batch_check_symbol_ids_exist(&ids).unwrap_or_default();
+            let valid_ids = sqlite
+                .batch_check_symbol_ids_exist(&ids)
+                .unwrap_or_default();
             if valid_ids.len() < ids.len() {
                 uniq.retain(|h| valid_ids.contains(&h.id));
             }
@@ -410,7 +447,8 @@ impl Retriever {
                 &query_without_controls,
                 &mut uniq,
                 &mut seen,
-            ).unwrap_or(0)
+            )
+            .unwrap_or(0)
         } else {
             0
         };
@@ -448,7 +486,8 @@ impl Retriever {
 
         // Save pre-expansion candidates for gap-fill after file-symbol dedup.
         let pre_expansion_candidates = hits.clone();
-        let (hits, expanded_ids) = expand_with_edges(&sqlite, hits, pool_size, &intent, &query_without_controls)?;
+        let (hits, expanded_ids) =
+            expand_with_edges(&sqlite, hits, pool_size, &intent, &query_without_controls)?;
 
         // Apply file/kind diversity on the expanded pool,
         // then truncate to final limit. This gives diversity enough headroom
@@ -461,9 +500,14 @@ impl Retriever {
         // This is the correct placement: post-RRF adjustments, edge expansion,
         // and diversity filtering have all run. Vector results that were buried
         // by BM25-friendly adjustments get promoted into the final top-N.
-        if is_nl_query && self.config.vector_guaranteed_results > 0 && !vector_ranked_for_promotion.is_empty() {
+        if is_nl_query
+            && self.config.vector_guaranteed_results > 0
+            && !vector_ranked_for_promotion.is_empty()
+        {
             let hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
-            let test_symbols = sqlite.batch_check_test_symbols(&hit_ids).unwrap_or_default();
+            let test_symbols = sqlite
+                .batch_check_test_symbols(&hit_ids)
+                .unwrap_or_default();
             promote_vector_results(
                 &mut hits,
                 &vector_ranked_for_promotion,
@@ -487,7 +531,9 @@ impl Retriever {
         // framework_tags_make_websocket_handler_searchable in tantivy.rs).
         {
             let final_hit_ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
-            let final_test_symbols = sqlite.batch_check_test_symbols(&final_hit_ids).unwrap_or_default();
+            let final_test_symbols = sqlite
+                .batch_check_test_symbols(&final_hit_ids)
+                .unwrap_or_default();
             let is_test_intent = matches!(intent, Some(Intent::Test));
 
             for hit in &mut hits {
@@ -534,9 +580,7 @@ impl Retriever {
         // Also remove test file results in non-test queries — they should
         // never appear regardless of score.
         let is_test_intent = matches!(intent, Some(Intent::Test));
-        hits.retain(|h| {
-            h.score >= 0.5 && (is_test_intent || !ranking::is_test_file(&h.file_path))
-        });
+        hits.retain(|h| h.score >= 0.5 && (is_test_intent || !ranking::is_test_file(&h.file_path)));
 
         // Apply cross-encoder reranking AFTER intent enforcement + score filtering.
         // This placement ensures test penalties and meta-match suppression are baked
@@ -574,7 +618,8 @@ impl Retriever {
             let mut hit_ids: std::collections::HashSet<String> =
                 hits.iter().map(|h| h.id.clone()).collect();
             let gap_max_per_file = (limit / 5).max(2) + 2; // slightly above diversity total_cap to allow gap fill after concentration bump
-            let mut gap_file_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut gap_file_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
             for h in &hits {
                 if h.kind != "file" {
                     *gap_file_counts.entry(h.file_path.clone()).or_insert(0) += 1;
@@ -598,7 +643,11 @@ impl Retriever {
                     }
                     // Apply intent enforcement to gap-filled result
                     let intent_mult = ranking::intent_adjustment(
-                        &intent, &h.kind, &h.file_path, h.exported, &h.name,
+                        &intent,
+                        &h.kind,
+                        &h.file_path,
+                        h.exported,
+                        &h.name,
                     );
                     let adj_score = if intent_mult < 1.0 {
                         h.score * intent_mult
@@ -648,13 +697,15 @@ impl Retriever {
                                     continue;
                                 }
                                 let intent_mult = ranking::intent_adjustment(
-                                    &intent, &row.kind, &row.file_path, row.exported, &row.name,
+                                    &intent,
+                                    &row.kind,
+                                    &row.file_path,
+                                    row.exported,
+                                    &row.name,
                                 );
-                                let adj_score = h.score * 0.7 * if intent_mult < 1.0 {
-                                    intent_mult
-                                } else {
-                                    1.0
-                                };
+                                let adj_score = h.score
+                                    * 0.7
+                                    * if intent_mult < 1.0 { intent_mult } else { 1.0 };
                                 if adj_score >= 0.5 {
                                     hit_ids.insert(row.id.clone());
                                     hits.push(RankedHit {
@@ -710,7 +761,10 @@ impl Retriever {
                 // (e.g., "permissions.rs" matches both → 2 matches from 1 word).
                 raw_terms.sort_by_key(|t| t.len());
                 raw_terms = raw_terms.into_iter().fold(Vec::new(), |mut acc, t| {
-                    if !acc.iter().any(|existing: &String| t.starts_with(existing.as_str())) {
+                    if !acc
+                        .iter()
+                        .any(|existing: &String| t.starts_with(existing.as_str()))
+                    {
                         acc.push(t);
                     }
                     acc
@@ -747,12 +801,17 @@ impl Retriever {
                         // Count ORIGINAL terms (not stems) to avoid double-counting.
                         // e.g., "access" + stem "acces" both match "accessRouter" → 2 matches
                         // from 1 real term. Use raw_terms to require distinct real terms.
-                        let match_count = raw_terms.iter()
-                            .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
+                        let match_count = raw_terms
+                            .iter()
+                            .filter(|t| {
+                                name_lower.contains(t.as_str()) || path_lower.contains(t.as_str())
+                            })
                             .count();
                         match_count >= 2
                     } else {
-                        terms.iter().any(|t| name_lower.contains(t) || path_lower.contains(t))
+                        terms
+                            .iter()
+                            .any(|t| name_lower.contains(t) || path_lower.contains(t))
                     }
                 });
 
@@ -792,15 +851,20 @@ impl Retriever {
                         // requestAccessibilityPermission for "request throttling",
                         // and the low-scoring injection triggers gap detection truncation.
                         if raw_terms.len() >= 2 {
-                            let term_match_count = raw_terms.iter()
-                                .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
+                            let term_match_count = raw_terms
+                                .iter()
+                                .filter(|t| {
+                                    name_lower.contains(t.as_str())
+                                        || path_lower.contains(t.as_str())
+                                })
                                 .count();
                             if term_match_count < 2 {
                                 continue;
                             }
                         }
                         // Priority: name+meaningful kind > name+any kind > path-only+meaningful > path-only
-                        let is_meaningful = !matches!(c.kind.as_str(), "const" | "variable" | "property");
+                        let is_meaningful =
+                            !matches!(c.kind.as_str(), "const" | "variable" | "property");
                         let priority = match (name_match, is_meaningful) {
                             (true, true) => 4,
                             (true, false) => 3,
@@ -810,7 +874,9 @@ impl Retriever {
                         if priority > best_priority {
                             best_priority = priority;
                             best_candidate = Some(c);
-                            if priority == 4 { break; } // best possible, stop searching
+                            if priority == 4 {
+                                break;
+                            } // best possible, stop searching
                         }
                     }
                     // Fallback: if no candidate in pre-expansion pool, do a direct
@@ -820,32 +886,45 @@ impl Retriever {
                     let mut fallback_hit: Option<RankedHit> = None;
                     if best_candidate.is_none() {
                         if let Ok(fallback_results) = self.tantivy.search(sq, 20) {
-                            let fallback_ids: Vec<String> = fallback_results.iter().map(|h| h.id.clone()).collect();
-                            let fallback_tests = sqlite.batch_check_test_symbols(&fallback_ids).unwrap_or_default();
+                            let fallback_ids: Vec<String> =
+                                fallback_results.iter().map(|h| h.id.clone()).collect();
+                            let fallback_tests = sqlite
+                                .batch_check_test_symbols(&fallback_ids)
+                                .unwrap_or_default();
                             let mut fb_best_priority = 0u8;
                             for fh in &fallback_results {
                                 if hit_ids_set.contains(&fh.id) || fh.kind == "file" {
                                     continue;
                                 }
-                                if !is_test_intent && (fallback_tests.contains(&fh.id) || ranking::is_test_file(&fh.file_path)) {
+                                if !is_test_intent
+                                    && (fallback_tests.contains(&fh.id)
+                                        || ranking::is_test_file(&fh.file_path))
+                                {
                                     continue;
                                 }
                                 let name_lower = fh.name.to_lowercase();
                                 let path_lower = fh.file_path.to_lowercase();
-                                let name_match = synonym_terms.iter().any(|t| name_lower.contains(t));
-                                let path_match = synonym_terms.iter().any(|t| path_lower.contains(t));
+                                let name_match =
+                                    synonym_terms.iter().any(|t| name_lower.contains(t));
+                                let path_match =
+                                    synonym_terms.iter().any(|t| path_lower.contains(t));
                                 if !name_match && !path_match {
                                     continue;
                                 }
                                 if raw_terms.len() >= 2 {
-                                    let term_match_count = raw_terms.iter()
-                                        .filter(|t| name_lower.contains(t.as_str()) || path_lower.contains(t.as_str()))
+                                    let term_match_count = raw_terms
+                                        .iter()
+                                        .filter(|t| {
+                                            name_lower.contains(t.as_str())
+                                                || path_lower.contains(t.as_str())
+                                        })
                                         .count();
                                     if term_match_count < 2 {
                                         continue;
                                     }
                                 }
-                                let is_meaningful = !matches!(fh.kind.as_str(), "const" | "variable" | "property");
+                                let is_meaningful =
+                                    !matches!(fh.kind.as_str(), "const" | "variable" | "property");
                                 let priority = match (name_match, is_meaningful) {
                                     (true, true) => 4,
                                     (true, false) => 3,
@@ -855,7 +934,8 @@ impl Retriever {
                                 if priority > fb_best_priority {
                                     fb_best_priority = priority;
                                     // Give it a reasonable score: half of the lowest current result
-                                    let inject_score = hits.last().map(|h| h.score * 0.5).unwrap_or(1.0).max(1.0);
+                                    let inject_score =
+                                        hits.last().map(|h| h.score * 0.5).unwrap_or(1.0).max(1.0);
                                     fallback_hit = Some(RankedHit {
                                         id: fh.id.clone(),
                                         score: inject_score,
@@ -865,7 +945,9 @@ impl Retriever {
                                         exported: fh.exported,
                                         language: String::new(),
                                     });
-                                    if priority == 4 { break; }
+                                    if priority == 4 {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -908,7 +990,8 @@ impl Retriever {
         if hits.len() < limit {
             let is_test_intent = matches!(intent, Some(Intent::Test));
             let hit_ids: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
-            let hit_names: HashSet<String> = hits.iter()
+            let hit_names: HashSet<String> = hits
+                .iter()
                 .filter(|h| h.kind != "file")
                 .map(|h| h.name.clone())
                 .collect();
@@ -954,7 +1037,8 @@ impl Retriever {
         if hits.len() < limit {
             let min_score = hits.last().map(|h| h.score * 0.4).unwrap_or(0.5);
             let hit_ids: HashSet<String> = hits.iter().map(|h| h.id.clone()).collect();
-            let hit_names: HashSet<String> = hits.iter()
+            let hit_names: HashSet<String> = hits
+                .iter()
                 .filter(|h| h.kind != "file")
                 .map(|h| h.name.clone())
                 .collect();
@@ -989,8 +1073,13 @@ impl Retriever {
         let scoring_ms = scoring_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let assembly_t = Instant::now();
-        let (context, _context_items) =
-            self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?;
+        let (context, _context_items) = if context_mode == ContextMode::Full {
+            self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?
+        } else {
+            // Modes other than Full skip graph expansion + markdown assembly
+            // entirely. Snippets mode is fulfilled at the handler layer per-hit.
+            (String::new(), Vec::new())
+        };
         let assembly_ms = assembly_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -1048,8 +1137,7 @@ impl Retriever {
         resp: SearchResponse,
         context_items: &[ContextItem],
     ) {
-        let size =
-            resp.context.len() + context_items.iter().map(|i| i.tokens * 4).sum::<usize>();
+        let size = resp.context.len() + context_items.iter().map(|i| i.tokens * 4).sum::<usize>();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.responses.insert(key, resp, size);
     }

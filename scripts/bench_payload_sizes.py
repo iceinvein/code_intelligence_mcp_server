@@ -158,8 +158,14 @@ def wait_for_index(client, label, max_wait=300, stable=15):
 
 
 CASES = [
-    ("search_code (limit=5)", "search_code", {"query": "ranking and scoring", "limit": 5}),
-    ("search_code (limit=20)", "search_code", {"query": "ranking and scoring", "limit": 20}),
+    ("search_code default (l=5)", "search_code", {"query": "ranking and scoring", "limit": 5}),
+    ("search_code snippets (l=5)", "search_code",
+     {"query": "ranking and scoring", "limit": 5, "context": "snippets"}),
+    ("search_code full (l=5)", "search_code",
+     {"query": "ranking and scoring", "limit": 5, "context": "full"}),
+    ("search_code default (l=20)", "search_code", {"query": "ranking and scoring", "limit": 20}),
+    ("search_code full (l=20)", "search_code",
+     {"query": "ranking and scoring", "limit": 20, "context": "full"}),
     ("get_definition", "get_definition", {"symbol_name": "PathNormalizer"}),
     ("find_references (limit=200)", "find_references", {"symbol_name": "search", "limit": 200}),
     ("get_call_hierarchy (depth=3 limit=100)", "get_call_hierarchy",
@@ -225,12 +231,16 @@ def main():
                     case[2]["ids"] = sample_ids[:3]
 
         rows = []
+        debug = os.environ.get("BENCH_DEBUG") == "1"
         for label, tool, args in CASES:
-            print(f"[run] {label}", flush=True)
+            print(f"[run] {label}  args={json.dumps(args)}", flush=True)
             b_envelope, b_payload = before.call_tool(tool, dict(args), timeout=120)
             a_envelope, a_payload = after.call_tool(tool, dict(args), timeout=120)
             b_size = len(b_payload) if b_payload else 0
             a_size = len(a_payload) if a_payload else 0
+            if debug:
+                print(f"  before head: {(b_payload or '')[:120]!r}", flush=True)
+                print(f"  after  head: {(a_payload or '')[:120]!r}", flush=True)
             rows.append((label, b_size, a_size))
 
         print()

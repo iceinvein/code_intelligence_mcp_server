@@ -5,13 +5,15 @@ use serde::{Deserialize, Serialize};
 
 #[macros::mcp_tool(
     name = "search_code",
-    description = "Search indexed code and return ranked hits with assembled context."
+    description = "Search indexed code. Returns ranked hits; pass context=\"snippets\" or \"full\" to also receive source code."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchCodeTool {
     pub query: String,
     pub limit: Option<u32>,
     pub exported_only: Option<bool>,
+    /// none (default), snippets (compact per-hit), or full (legacy markdown bundle).
+    pub context: Option<String>,
 }
 
 #[macros::mcp_tool(

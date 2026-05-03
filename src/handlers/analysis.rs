@@ -1405,13 +1405,16 @@ pub async fn handle_get_context_bundle(
     let include_similar = sections.iter().any(|s| s == "similar");
     let include_affected = sections.iter().any(|s| s == "affected");
 
-    // Step 1: Search for seed symbols
+    // Step 1: Search for seed symbols. context_bundle wants source code for
+    // each seed, so request snippets — full markdown would balloon the bundle.
     let search_result = handle_search_code(
         &state.retriever,
+        &state.config.db_path,
         SearchCodeTool {
             query: tool.task.clone(),
             limit: Some(seed_limit as u32),
             exported_only: None,
+            context: Some("snippets".to_string()),
         },
     )
     .await?;

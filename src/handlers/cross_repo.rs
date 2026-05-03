@@ -62,7 +62,15 @@ pub async fn handle_search_across_repos(
         search_futures.push(async move {
             let result = async {
                 let state = sm.get_or_create_repo(&repo_path).await?;
-                let result = state.retriever.search(&query_clone, limit, false).await?;
+                let result = state
+                    .retriever
+                    .search(
+                        &query_clone,
+                        limit,
+                        false,
+                        crate::retrieval::ContextMode::Full,
+                    )
+                    .await?;
                 Ok::<_, anyhow::Error>(result.response)
             }
             .await;
@@ -107,8 +115,8 @@ pub async fn handle_search_across_repos(
     all_hits.sort_by(|a, b| b.score.total_cmp(&a.score));
     let budgeted_results = budget_array(all_hits, limit);
 
-    let display =
-        include_display.then(|| format_cross_repo_results(&tool.query, repos_searched, &budgeted_results.items));
+    let display = include_display
+        .then(|| format_cross_repo_results(&tool.query, repos_searched, &budgeted_results.items));
 
     let mut response = json!({
         "query": tool.query,

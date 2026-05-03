@@ -4,7 +4,7 @@ use code_intelligence_mcp_server::{
     indexer::pipeline::IndexPipeline,
     metrics::MetricsRegistry,
     path::Utf8PathBuf,
-    retrieval::Retriever,
+    retrieval::{ContextMode, Retriever},
     storage::{sqlite::SqliteStore, tantivy::TantivyIndex, vector::LanceDbStore},
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,9 +31,8 @@ fn test_config(base_dir: &std::path::Path) -> Config {
     let base_dir = base_dir
         .canonicalize()
         .unwrap_or_else(|_| base_dir.to_path_buf());
-    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone()).unwrap_or_else(|_| {
-        Utf8PathBuf::from(base_dir.to_string_lossy().as_ref())
-    });
+    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone())
+        .unwrap_or_else(|_| Utf8PathBuf::from(base_dir.to_string_lossy().as_ref()));
     Config {
         db_path: base_dir_utf8.join("code-intelligence.db"),
         vector_db_path: base_dir_utf8.join("vectors"),
@@ -45,7 +44,7 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         embedding_batch_size: 32,
         hash_embedding_dim: 32,
         vector_search_limit: 20,
-            vector_guaranteed_results: 3,
+        vector_guaranteed_results: 3,
         hybrid_alpha: 0.7,
         rank_vector_weight: 0.7,
         rank_keyword_weight: 0.3,
@@ -112,7 +111,7 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         leader_heartbeat_interval_ms: 10_000,
         leader_ttl_seconds: 30,
         embedding_truncate_dim: None,
-            embedding_dim_override: None,
+        embedding_dim_override: None,
     }
 }
 
@@ -184,11 +183,17 @@ pub fn foo() -> Foo { Foo { a: 1 } }
     assert!(stats.files_indexed >= 2);
     assert!(stats.symbols_indexed >= 3);
 
-    let resp = retriever.search("alpha", 1, true).await.unwrap();
+    let resp = retriever
+        .search("alpha", 1, true, ContextMode::Full)
+        .await
+        .unwrap();
     assert!(resp.response.context.contains("export function alpha"));
     assert!(resp.response.context.contains("export function beta"));
 
-    let resp2 = retriever.search("Foo", 3, false).await.unwrap();
+    let resp2 = retriever
+        .search("Foo", 3, false, ContextMode::Full)
+        .await
+        .unwrap();
     assert!(resp2.response.context.contains("pub struct Foo"));
 
     let sqlite = SqliteStore::open(config.db_path.as_path()).unwrap();
@@ -279,7 +284,10 @@ pub fn gamma() -> i32 { 7 }
     assert_eq!(stats3.files_indexed, 0);
     assert_eq!(stats3.files_unchanged, 1);
 
-    let resp = retriever.search("alpha", 5, false).await.unwrap();
+    let resp = retriever
+        .search("alpha", 5, false, ContextMode::Full)
+        .await
+        .unwrap();
     assert!(!resp.response.hits.iter().any(|h| h.name == "alpha"));
     assert!(!resp.response.context.contains("export function alpha"));
 }
@@ -405,7 +413,10 @@ export function extraRoot() { return 42 }
     );
 
     indexer.index_all().await.unwrap();
-    let resp = retriever.search("extraRoot", 5, false).await.unwrap();
+    let resp = retriever
+        .search("extraRoot", 5, false, ContextMode::Full)
+        .await
+        .unwrap();
     assert!(resp.response.context.contains("export function extraRoot"));
 }
 
@@ -466,7 +477,7 @@ export function callerOne() { targetFunc(); }
 
     // Natural language query with intent
     let resp = retriever
-        .search("who calls targetFunc", 5, false)
+        .search("who calls targetFunc", 5, false, ContextMode::Full)
         .await
         .unwrap();
 

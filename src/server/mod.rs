@@ -198,6 +198,7 @@ pub async fn dispatch_tool_call(
         )),
         "search_code" => dispatch_async!(params, SearchCodeTool, |tool| handle_search_code(
             &state.retriever,
+            &state.config.db_path,
             tool
         )),
         "get_definition" => {

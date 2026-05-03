@@ -103,7 +103,12 @@ async fn api_search(
     let exported_only = params.exported_only.unwrap_or(false);
     match state
         .retriever
-        .search(&params.query, limit, exported_only)
+        .search(
+            &params.query,
+            limit,
+            exported_only,
+            crate::retrieval::ContextMode::Full,
+        )
         .await
     {
         Ok(resp) => Json(resp).into_response(),
@@ -194,9 +199,8 @@ mod tests {
 
     fn cfg(base: &Path) -> Config {
         let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
-        let base_utf8 = Utf8PathBuf::from_path_buf(base.clone()).unwrap_or_else(|_| {
-            Utf8PathBuf::from(base.to_string_lossy().as_ref())
-        });
+        let base_utf8 = Utf8PathBuf::from_path_buf(base.clone())
+            .unwrap_or_else(|_| Utf8PathBuf::from(base.to_string_lossy().as_ref()));
         Config {
             base_dir: base_utf8.clone(),
             db_path: base_utf8.join("code-intelligence.db"),
@@ -331,7 +335,10 @@ export function beta() { return alpha() }
             retriever,
             sqlite,
             is_leader: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
+            role_rx: tokio::sync::watch::channel(
+                code_intelligence_mcp_server::leader::Role::Leader,
+            )
+            .1,
             mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
         })
     }

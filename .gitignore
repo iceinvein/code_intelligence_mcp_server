@@ -32,3 +32,4 @@ docs/benchmark_rounds/*round_*.json
 docs/plans
 
 .remember
+.claude/scheduled_tasks.lock

@@ -4,7 +4,9 @@ use crate::retrieval::Retriever;
 use crate::tools::*;
 use serde_json::json;
 
-use super::budget::{budget_array, clamp_limit, insert_budgeted_array};
+use super::budget::{
+    budget_array, budget_string_field, clamp_limit, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
+};
 use super::AppState;
 
 /// Handle search_code tool
@@ -18,19 +20,17 @@ pub async fn handle_search_code(
     let result = retriever.search(&tool.query, limit, exported_only).await?;
     // Return only the SearchResponse (without hit_signals) to reduce response size
     let mut response = serde_json::to_value(result.response)?;
+    let hits_count = response
+        .get("hits")
+        .and_then(|v| v.as_array())
+        .map(|v| v.len())
+        .unwrap_or(0);
     response["hits_budget"] = json!({
-        "total_count": response
-            .get("hits")
-            .and_then(|v| v.as_array())
-            .map(|v| v.len())
-            .unwrap_or(0),
-        "returned_count": response
-            .get("hits")
-            .and_then(|v| v.as_array())
-            .map(|v| v.len())
-            .unwrap_or(0),
+        "total_count": hits_count,
+        "returned_count": hits_count,
         "truncated": false,
     });
+    budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
     Ok(response)
 }
 
@@ -225,7 +225,11 @@ pub async fn handle_find_similar_code(
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        response["display"] = json!(format_similar_results(&query_description, threshold, &results));
+        response["display"] = json!(format_similar_results(
+            &query_description,
+            threshold,
+            &results
+        ));
     }
     Ok(response)
 }

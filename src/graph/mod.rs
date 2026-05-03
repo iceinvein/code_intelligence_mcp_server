@@ -3,8 +3,94 @@
 pub mod pagerank;
 
 use crate::storage::sqlite::{CrossRepoEdgeRow, SqliteStore, SymbolRow};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
+
+/// Build a compact JSON node payload for graph responses.
+///
+/// `language` is intentionally omitted: callers can derive it from `file_path`
+/// extension when needed. Dropping it saves ~25 bytes per node on graphs that
+/// commonly contain hundreds of nodes.
+fn node_json(sym: &SymbolRow) -> Value {
+    json!({
+        "id": sym.id,
+        "name": sym.name,
+        "kind": sym.kind,
+        "file_path": sym.file_path,
+        "exported": sym.exported,
+        "line_range": [sym.start_line, sym.end_line],
+    })
+}
+
+/// Fetch up to 3 evidence rows and drop the one matching the edge's
+/// (at_file, at_line). Returns `None` when no extra evidence remains so
+/// callers can omit the field entirely. Evidence with `count > 1` is always
+/// kept since it adds aggregation info beyond what the edge already carries.
+fn extra_evidence(
+    sqlite: &SqliteStore,
+    from_id: &str,
+    to_id: &str,
+    edge_type: &str,
+    primary_at_file: Option<&str>,
+    primary_at_line: Option<u32>,
+) -> Option<Vec<Value>> {
+    let evidence = sqlite
+        .list_edge_evidence(from_id, to_id, edge_type, 3)
+        .unwrap_or_default();
+    let extras: Vec<Value> = evidence
+        .into_iter()
+        .filter(|ev| {
+            let same_file = primary_at_file == Some(ev.at_file.as_str());
+            let same_line = primary_at_line == Some(ev.at_line);
+            let duplicates_primary = same_file && same_line && ev.count <= 1;
+            !duplicates_primary
+        })
+        .map(|ev| {
+            json!({
+                "at_file": ev.at_file,
+                "at_line": ev.at_line,
+                "count": ev.count,
+            })
+        })
+        .collect();
+    if extras.is_empty() {
+        None
+    } else {
+        Some(extras)
+    }
+}
+
+/// Build an edge JSON payload, omitting `evidence` when it would only repeat
+/// the edge's own (at_file, at_line, count=1).
+fn edge_json(
+    sqlite: &SqliteStore,
+    edge: &crate::storage::sqlite::EdgeRow,
+    extra_fields: &[(&str, Value)],
+) -> Value {
+    let mut payload = json!({
+        "from": edge.from_symbol_id,
+        "to": edge.to_symbol_id,
+        "edge_type": edge.edge_type,
+        "at_file": edge.at_file,
+        "at_line": edge.at_line,
+        "evidence_count": edge.evidence_count,
+        "resolution": edge.resolution,
+    });
+    for (key, value) in extra_fields {
+        payload[*key] = value.clone();
+    }
+    if let Some(extras) = extra_evidence(
+        sqlite,
+        &edge.from_symbol_id,
+        &edge.to_symbol_id,
+        &edge.edge_type,
+        edge.at_file.as_deref(),
+        edge.at_line,
+    ) {
+        payload["evidence"] = Value::Array(extras);
+    }
+    payload
+}
 
 /// Trait for resolving cross-repo symbol references.
 ///
@@ -47,18 +133,7 @@ pub fn build_dependency_graph(
     let mut visited = std::collections::HashSet::<String>::new();
 
     // Initial node
-    nodes.insert(
-        root.id.clone(),
-        json!({
-            "id": root.id,
-            "name": root.name,
-            "kind": root.kind,
-            "file_path": root.file_path,
-            "language": root.language,
-            "exported": root.exported,
-            "line_range": [root.start_line, root.end_line],
-        }),
-    );
+    nodes.insert(root.id.clone(), node_json(root));
     visited.insert(root.id.clone());
 
     let mut frontier = vec![root.id.clone()];
@@ -97,40 +172,10 @@ pub fn build_dependency_graph(
                         continue;
                     };
 
-                    // Add node if new
                     if !nodes.contains_key(&caller.id) {
-                        nodes.insert(
-                            caller.id.clone(),
-                            json!({
-                                "id": caller.id,
-                                "name": caller.name,
-                                "kind": caller.kind,
-                                "file_path": caller.file_path,
-                                "language": caller.language,
-                                "exported": caller.exported,
-                                "line_range": [caller.start_line, caller.end_line],
-                            }),
-                        );
+                        nodes.insert(caller.id.clone(), node_json(&caller));
                     }
-
-                    // Add edge
-                    let evidence = sqlite
-                        .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
-                        .unwrap_or_default();
-                    edges.push(json!({
-                        "from": e.from_symbol_id,
-                        "to": e.to_symbol_id,
-                        "edge_type": e.edge_type,
-                        "at_file": e.at_file,
-                        "at_line": e.at_line,
-                        "evidence_count": e.evidence_count,
-                        "resolution": e.resolution,
-                        "evidence": evidence.into_iter().map(|ev| json!({
-                            "at_file": ev.at_file,
-                            "at_line": ev.at_line,
-                            "count": ev.count,
-                        })).collect::<Vec<_>>(),
-                    }));
+                    edges.push(edge_json(sqlite, &e, &[]));
 
                     if visited.insert(caller.id.clone()) {
                         next.push(caller.id);
@@ -155,39 +200,9 @@ pub fn build_dependency_graph(
                     };
 
                     if !nodes.contains_key(&callee.id) {
-                        nodes.insert(
-                            callee.id.clone(),
-                            json!({
-                                "id": callee.id,
-                                "name": callee.name,
-                                "kind": callee.kind,
-                                "file_path": callee.file_path,
-                                "language": callee.language,
-                                "exported": callee.exported,
-                                "line_range": [callee.start_line, callee.end_line],
-                            }),
-                        );
+                        nodes.insert(callee.id.clone(), node_json(&callee));
                     }
-
-                    edges.push(json!({
-                        "from": e.from_symbol_id,
-                        "to": e.to_symbol_id,
-                        "edge_type": e.edge_type,
-                        "at_file": e.at_file,
-                        "at_line": e.at_line,
-                        "evidence_count": e.evidence_count,
-                        "resolution": e.resolution,
-                        "evidence": sqlite
-                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|ev| json!({
-                                "at_file": ev.at_file,
-                                "at_line": ev.at_line,
-                                "count": ev.count,
-                            }))
-                            .collect::<Vec<_>>(),
-                    }));
+                    edges.push(edge_json(sqlite, &e, &[]));
 
                     if visited.insert(callee.id.clone()) {
                         next.push(callee.id);
@@ -219,18 +234,7 @@ pub fn build_call_hierarchy(
     let mut edges = Vec::<serde_json::Value>::new();
     let mut visited = std::collections::HashSet::<String>::new();
 
-    nodes.insert(
-        root.id.clone(),
-        json!({
-            "id": root.id,
-            "name": root.name,
-            "kind": root.kind,
-            "file_path": root.file_path,
-            "language": root.language,
-            "exported": root.exported,
-            "line_range": [root.start_line, root.end_line],
-        }),
-    );
+    nodes.insert(root.id.clone(), node_json(root));
     visited.insert(root.id.clone());
 
     let mut frontier = vec![root.id.clone()];
@@ -249,43 +253,20 @@ pub fn build_call_hierarchy(
                     if edges.len() >= limit {
                         break;
                     }
-                    if e.edge_type != "call" && e.edge_type != "async_call" && e.edge_type != "spawn" {
+                    if e.edge_type != "call"
+                        && e.edge_type != "async_call"
+                        && e.edge_type != "spawn"
+                    {
                         continue;
                     }
                     let Some(caller) = sqlite.get_symbol_by_id(&e.from_symbol_id)? else {
                         continue;
                     };
-                    nodes.entry(caller.id.clone()).or_insert_with(|| {
-                        json!({
-                            "id": caller.id,
-                            "name": caller.name,
-                            "kind": caller.kind,
-                            "file_path": caller.file_path,
-                            "language": caller.language,
-                            "exported": caller.exported,
-                            "line_range": [caller.start_line, caller.end_line],
-                        })
-                    });
-                    edges.push(json!({
-                        "from": e.from_symbol_id,
-                        "to": e.to_symbol_id,
-                        "edge_type": &e.edge_type,
-                        "is_async": e.edge_type == "async_call" || e.edge_type == "spawn",
-                        "at_file": e.at_file,
-                        "at_line": e.at_line,
-                        "evidence_count": e.evidence_count,
-                        "resolution": e.resolution,
-                        "evidence": sqlite
-                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|ev| json!({
-                                "at_file": ev.at_file,
-                                "at_line": ev.at_line,
-                                "count": ev.count,
-                            }))
-                            .collect::<Vec<_>>(),
-                    }));
+                    nodes
+                        .entry(caller.id.clone())
+                        .or_insert_with(|| node_json(&caller));
+                    let is_async = e.edge_type == "async_call" || e.edge_type == "spawn";
+                    edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
                     if visited.insert(caller.id.clone()) {
                         next.push(caller.id);
                     }
@@ -296,43 +277,20 @@ pub fn build_call_hierarchy(
                     if edges.len() >= limit {
                         break;
                     }
-                    if e.edge_type != "call" && e.edge_type != "async_call" && e.edge_type != "spawn" {
+                    if e.edge_type != "call"
+                        && e.edge_type != "async_call"
+                        && e.edge_type != "spawn"
+                    {
                         continue;
                     }
                     let Some(callee) = sqlite.get_symbol_by_id(&e.to_symbol_id)? else {
                         continue;
                     };
-                    nodes.entry(callee.id.clone()).or_insert_with(|| {
-                        json!({
-                            "id": callee.id,
-                            "name": callee.name,
-                            "kind": callee.kind,
-                            "file_path": callee.file_path,
-                            "language": callee.language,
-                            "exported": callee.exported,
-                            "line_range": [callee.start_line, callee.end_line],
-                        })
-                    });
-                    edges.push(json!({
-                        "from": e.from_symbol_id,
-                        "to": e.to_symbol_id,
-                        "edge_type": &e.edge_type,
-                        "is_async": e.edge_type == "async_call" || e.edge_type == "spawn",
-                        "at_file": e.at_file,
-                        "at_line": e.at_line,
-                        "evidence_count": e.evidence_count,
-                        "resolution": e.resolution,
-                        "evidence": sqlite
-                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|ev| json!({
-                                "at_file": ev.at_file,
-                                "at_line": ev.at_line,
-                                "count": ev.count,
-                            }))
-                            .collect::<Vec<_>>(),
-                    }));
+                    nodes
+                        .entry(callee.id.clone())
+                        .or_insert_with(|| node_json(&callee));
+                    let is_async = e.edge_type == "async_call" || e.edge_type == "spawn";
+                    edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
                     if visited.insert(callee.id.clone()) {
                         next.push(callee.id);
                     }
@@ -368,18 +326,7 @@ pub fn build_type_graph(
     let mut edges = Vec::<serde_json::Value>::new();
     let mut visited = std::collections::HashSet::<String>::new();
 
-    nodes.insert(
-        root.id.clone(),
-        json!({
-            "id": root.id,
-            "name": root.name,
-            "kind": root.kind,
-            "file_path": root.file_path,
-            "language": root.language,
-            "exported": root.exported,
-            "line_range": [root.start_line, root.end_line],
-        }),
-    );
+    nodes.insert(root.id.clone(), node_json(root));
     visited.insert(root.id.clone());
 
     let do_downstream = direction == "downstream" || direction == "both";
@@ -411,36 +358,10 @@ pub fn build_type_graph(
                     let Some(to_sym) = sqlite.get_symbol_by_id(&e.to_symbol_id)? else {
                         continue;
                     };
-                    nodes.entry(to_sym.id.clone()).or_insert_with(|| {
-                        json!({
-                            "id": to_sym.id,
-                            "name": to_sym.name,
-                            "kind": to_sym.kind,
-                            "file_path": to_sym.file_path,
-                            "language": to_sym.language,
-                            "exported": to_sym.exported,
-                            "line_range": [to_sym.start_line, to_sym.end_line],
-                        })
-                    });
-                    edges.push(json!({
-                        "from": e.from_symbol_id,
-                        "to": e.to_symbol_id,
-                        "edge_type": e.edge_type,
-                        "at_file": e.at_file,
-                        "at_line": e.at_line,
-                        "evidence_count": e.evidence_count,
-                        "resolution": e.resolution,
-                        "evidence": sqlite
-                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|ev| json!({
-                                "at_file": ev.at_file,
-                                "at_line": ev.at_line,
-                                "count": ev.count,
-                            }))
-                            .collect::<Vec<_>>(),
-                    }));
+                    nodes
+                        .entry(to_sym.id.clone())
+                        .or_insert_with(|| node_json(&to_sym));
+                    edges.push(edge_json(sqlite, &e, &[]));
                     if visited.insert(to_sym.id.clone()) {
                         next.push(to_sym.id);
                     }
@@ -476,36 +397,10 @@ pub fn build_type_graph(
                     let Some(from_sym) = sqlite.get_symbol_by_id(&e.from_symbol_id)? else {
                         continue;
                     };
-                    nodes.entry(from_sym.id.clone()).or_insert_with(|| {
-                        json!({
-                            "id": from_sym.id,
-                            "name": from_sym.name,
-                            "kind": from_sym.kind,
-                            "file_path": from_sym.file_path,
-                            "language": from_sym.language,
-                            "exported": from_sym.exported,
-                            "line_range": [from_sym.start_line, from_sym.end_line],
-                        })
-                    });
-                    edges.push(json!({
-                        "from": e.from_symbol_id,
-                        "to": e.to_symbol_id,
-                        "edge_type": e.edge_type,
-                        "at_file": e.at_file,
-                        "at_line": e.at_line,
-                        "evidence_count": e.evidence_count,
-                        "resolution": e.resolution,
-                        "evidence": sqlite
-                            .list_edge_evidence(&e.from_symbol_id, &e.to_symbol_id, &e.edge_type, 3)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|ev| json!({
-                                "at_file": ev.at_file,
-                                "at_line": ev.at_line,
-                                "count": ev.count,
-                            }))
-                            .collect::<Vec<_>>(),
-                    }));
+                    nodes
+                        .entry(from_sym.id.clone())
+                        .or_insert_with(|| node_json(&from_sym));
+                    edges.push(edge_json(sqlite, &e, &[]));
                     if visited.insert(from_sym.id.clone()) {
                         next.push(from_sym.id);
                     }

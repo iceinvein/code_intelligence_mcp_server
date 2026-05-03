@@ -12,11 +12,11 @@ use serde_json::json;
 use super::AppState;
 
 // Re-import the other handlers called by handle_get_context_bundle
-use super::{
-    handle_find_similar_code, handle_get_call_hierarchy, handle_get_definition, handle_search_code,
-};
 use super::budget::{
     budget_array, budget_string_field, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
+};
+use super::{
+    handle_find_similar_code, handle_get_call_hierarchy, handle_get_definition, handle_search_code,
 };
 
 pub fn handle_find_affected_code(
@@ -334,7 +334,11 @@ pub fn handle_find_tests_for_symbol(
     let budgeted_test_files = budget_array(test_files, limit);
     let budgeted_symbols_with_tests = budget_array(symbols_with_tests, limit);
     let display = include_display.then(|| {
-        format_test_results(root, &budgeted_test_files.items, &budgeted_symbols_with_tests.items)
+        format_test_results(
+            root,
+            &budgeted_test_files.items,
+            &budgeted_symbols_with_tests.items,
+        )
     });
 
     let mut response = json!({
@@ -675,8 +679,8 @@ pub fn handle_find_dead_code(
     for sym in &dead_symbols {
         dead_files.insert(sym.file_path.clone());
 
-        let priority = if sym.exported { "high" } else { "medium" };
-
+        // priority is derivable from `exported` (true => high, false => medium),
+        // so we don't ship it in the per-symbol entry.
         let entry = json!({
             "symbol_name": sym.name,
             "symbol_id": sym.id,
@@ -684,7 +688,6 @@ pub fn handle_find_dead_code(
             "file_path": sym.file_path,
             "line": sym.start_line,
             "exported": sym.exported,
-            "priority": priority,
             "language": sym.language,
         });
 
@@ -699,8 +702,9 @@ pub fn handle_find_dead_code(
 
     let budgeted_dead_symbols = budget_array(dead_symbol_entries, limit);
     let display = include_display.then(|| format_dead_code(&high_priority, &medium_priority));
+    // dead_symbol_count is omitted: the array's `dead_symbols_budget.total_count`
+    // already carries the same number.
     let mut response = json!({
-        "dead_symbol_count": dead_symbols.len(),
         "dead_files": dead_files.len(),
         "high_priority_count": high_priority.len(),
         "medium_priority_count": medium_priority.len(),
@@ -1222,9 +1226,10 @@ pub fn handle_predict_impact(
         );
     }
 
-    // Add co-change-only impacts (files not found via structural analysis)
+    // Add co-change-only impacts (files not found via structural analysis).
+    // We omit symbol_id/symbol_name/kind/exported/in_degree here rather than
+    // shipping explicit nulls — these are file-level signals with no symbol.
     for (file_path, confidence) in &cochange_impacts {
-        // Check if already covered by a structural impact
         let already_covered = merged
             .values()
             .any(|v| v.get("file_path").and_then(|p| p.as_str()) == Some(file_path.as_str()));
@@ -1235,16 +1240,11 @@ pub fn handle_predict_impact(
             merged.insert(
                 key,
                 json!({
-                    "symbol_id": null,
-                    "symbol_name": null,
-                    "kind": null,
                     "file_path": file_path,
-                    "exported": null,
                     "structural_score": 0.0,
                     "cochange_confidence": confidence,
                     "merged_score": merged_score,
                     "source": "cochange",
-                    "in_degree": null,
                 }),
             );
         }
@@ -1319,8 +1319,11 @@ pub fn handle_predict_impact(
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        response["display"] =
-            json!(format_predict_impact(root, &predictions, affected_file_count));
+        response["display"] = json!(format_predict_impact(
+            root,
+            &predictions,
+            affected_file_count
+        ));
     }
     Ok(response)
 }

@@ -139,6 +139,8 @@ pub struct HydrateSymbolsTool {
     pub ids: Vec<String>,
     /// full for surrounding context.
     pub mode: Option<String>,
+    /// Include per-symbol metadata (id, role, tokens, reasons).
+    pub verbose: Option<bool>,
 }
 
 #[macros::mcp_tool(

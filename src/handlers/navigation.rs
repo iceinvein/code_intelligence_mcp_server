@@ -13,7 +13,9 @@ use crate::retrieval::assembler::FormatMode;
 use crate::storage::sqlite::SymbolRow;
 use crate::tools::*;
 
-use super::budget::{budget_array, insert_budgeted_array};
+use super::budget::{
+    budget_array, budget_string_field, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
+};
 use super::{extract_usage_line, AppState};
 
 /// Handle get_definition tool
@@ -40,6 +42,7 @@ pub async fn handle_get_definition(
         "definitions": symbol_summaries(&rows),
         "context": context,
     });
+    budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
 
     // Add disambiguation hints when multiple symbols exist in different files
     if needs_disambiguation {
@@ -122,12 +125,34 @@ pub fn handle_get_file_symbols(
         );
     }
 
-    Ok(json!({
+    // Drop per-row file_path (it equals file_path_normalized for every row,
+    // and the response already carries it once at the top level).
+    let symbols: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "language": r.language,
+                "kind": r.kind,
+                "name": r.name,
+                "exported": r.exported,
+                "start_byte": r.start_byte,
+                "end_byte": r.end_byte,
+                "start_line": r.start_line,
+                "end_line": r.end_line,
+            })
+        })
+        .collect();
+
+    let mut response = json!({
         "file_path": tool.file_path,
-        "file_path_normalized": file_path_normalized,
         "count": rows.len(),
-        "symbols": rows,
-    }))
+        "symbols": symbols,
+    });
+    if file_path_normalized != tool.file_path {
+        response["file_path_normalized"] = json!(file_path_normalized);
+    }
+    Ok(response)
 }
 
 /// Handle hydrate_symbols tool
@@ -151,16 +176,21 @@ pub fn handle_hydrate_symbols(
         _ => FormatMode::Default,
     };
 
+    let verbose = tool.verbose.unwrap_or(false);
     let assembler = crate::retrieval::assembler::ContextAssembler::new(state.config.clone());
     let (context, context_items) =
         assembler.format_context_with_mode(sqlite, &rows, &[], &[], mode, None)?;
 
-    Ok(json!({
+    let mut response = json!({
         "count": rows.len(),
         "missing_ids": missing,
         "context": context,
-        "context_items": context_items,
-    }))
+    });
+    budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
+    if verbose {
+        response["context_items"] = serde_json::to_value(&context_items)?;
+    }
+    Ok(response)
 }
 
 /// Handle find_references tool
@@ -181,9 +211,18 @@ pub fn handle_find_references(
     let needs_disambiguation = unique_files.len() > 1 && tool.file.is_none();
 
     let mut out = Vec::new();
+    let mut targets: Vec<serde_json::Value> = Vec::new();
+    let mut seen_targets: HashSet<String> = HashSet::new();
     for root in &roots {
         if out.len() >= limit {
             break;
+        }
+        if seen_targets.insert(root.id.clone()) {
+            targets.push(json!({
+                "symbol_id": root.id,
+                "symbol_name": root.name,
+                "file_path": root.file_path,
+            }));
         }
         let edges = sqlite.list_edges_to(&root.id, limit * 3)?;
         for e in edges {
@@ -196,8 +235,6 @@ pub fn handle_find_references(
             let from = sqlite.get_symbol_by_id(&e.from_symbol_id)?;
             out.push(json!({
                 "to_symbol_id": e.to_symbol_id,
-                "to_symbol_name": root.name,
-                "to_symbol_file": root.file_path,
                 "from_symbol_id": e.from_symbol_id,
                 "from_symbol_name": from.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
                 "from_symbol_file": from.as_ref().map(|s| s.file_path.clone()).unwrap_or_default(),
@@ -213,6 +250,7 @@ pub fn handle_find_references(
         "symbol_name": tool.symbol_name,
         "reference_type": reference_type,
         "count": budgeted_references.returned_count,
+        "targets": targets,
     });
     insert_budgeted_array(&mut response, "references", budgeted_references)?;
 
@@ -381,8 +419,10 @@ pub fn handle_get_module_summary(
         }
     }
 
-    // Group by kind if requested
-    let groups = if group_by_kind {
+    // When grouping is requested, the `groups` field carries each export
+    // (categorized by kind), so we omit the flat `exports` list to avoid
+    // shipping every export twice. When not grouping, we omit `groups` entirely.
+    let groups: Vec<serde_json::Value> = if group_by_kind {
         let mut grouped: std::collections::HashMap<String, Vec<serde_json::Value>> =
             std::collections::HashMap::new();
         for exp in &exports {
@@ -409,15 +449,28 @@ pub fn handle_get_module_summary(
         vec![]
     };
 
+    let display_string = if include_display {
+        Some(format_module_summary(
+            &requested_file_path,
+            &exports,
+            &groups,
+        ))
+    } else {
+        None
+    };
+
     let mut response = json!({
         "file_path": tool.file_path,
         "file_path_normalized": file_path_normalized,
         "export_count": exports.len(),
-        "exports": exports,
-        "groups": groups,
     });
-    if include_display {
-        response["display"] = json!(format_module_summary(&requested_file_path, &exports, &groups));
+    if group_by_kind {
+        response["groups"] = json!(groups);
+    } else {
+        response["exports"] = json!(exports);
+    }
+    if let Some(display) = display_string {
+        response["display"] = json!(display);
     }
     Ok(response)
 }

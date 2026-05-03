@@ -480,7 +480,10 @@ function internalFunc() {
         let result = handle_get_module_summary(&app_state, params).unwrap();
 
         assert_eq!(result.get("export_count").and_then(|v| v.as_u64()), Some(2));
-        assert!(result.get("exports").is_some());
+        // When group_by_kind=true, only `groups` is emitted (exports are nested
+        // inside each group entry) — the flat `exports` field is dropped to
+        // avoid shipping every export twice.
+        assert!(result.get("exports").is_none());
         assert!(result.get("groups").is_some());
 
         // Check grouping worked

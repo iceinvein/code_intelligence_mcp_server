@@ -1,43 +1,43 @@
 {
-  "name": "@iceinvein/code-intelligence-mcp-standalone",
-  "version": "2.3.1",
-  "description": "Code Intelligence MCP Server - Standalone HTTP mode for multi-client setups",
-  "bin": {
-    "code-intelligence-mcp-standalone": "bin/run.js"
-  },
-  "scripts": {
-    "postinstall": "node install.js"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/iceinvein/code_intelligence_mcp_server.git"
-  },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "code-intelligence",
-    "code-search",
-    "semantic-search",
-    "code-navigation",
-    "llm",
-    "ai-coding",
-    "tree-sitter",
-    "code-indexer",
-    "claude",
-    "cursor",
-    "opencode",
-    "standalone"
-  ],
-  "author": "iceinvein",
-  "license": "MIT",
-  "dependencies": {
-    "axios": "^1.13.2",
-    "tar": "^7.5.3"
-  },
-  "os": [
-    "darwin"
-  ],
-  "cpu": [
-    "arm64"
-  ]
+	"name": "@iceinvein/code-intelligence-mcp-standalone",
+	"version": "2.3.1",
+	"description": "Code Intelligence MCP Server - Standalone HTTP mode for multi-client setups",
+	"bin": {
+		"code-intelligence-mcp-standalone": "bin/run.js"
+	},
+	"scripts": {
+		"postinstall": "node install.js"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/iceinvein/code_intelligence_mcp_server.git"
+	},
+	"keywords": [
+		"mcp",
+		"model-context-protocol",
+		"code-intelligence",
+		"code-search",
+		"semantic-search",
+		"code-navigation",
+		"llm",
+		"ai-coding",
+		"tree-sitter",
+		"code-indexer",
+		"claude",
+		"cursor",
+		"opencode",
+		"standalone"
+	],
+	"author": "iceinvein",
+	"license": "MIT",
+	"dependencies": {
+		"axios": "^1.13.2",
+		"tar": "^7.5.3"
+	},
+	"os": [
+		"darwin"
+	],
+	"cpu": [
+		"arm64"
+	]
 }

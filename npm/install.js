@@ -1,89 +1,94 @@
-const fs = require('fs');
-const path = require('path');
-const axios = require('axios');
-const tar = require('tar');
-const os = require('os');
+const fs = require("fs");
+const path = require("path");
+const axios = require("axios");
+const tar = require("tar");
+const os = require("os");
 
-const REPO = 'iceinvein/code_intelligence_mcp_server';
-const BINARY_NAME = 'code-intelligence-mcp-server';
+const REPO = "iceinvein/code_intelligence_mcp_server";
+const BINARY_NAME = "code-intelligence-mcp-server";
 // We use the version from package.json to fetch the matching tag
-const VERSION = 'v' + require('./package.json').version;
+const VERSION = "v" + require("./package.json").version;
 
 const MAPPING = {
-    'darwin': {
-        'arm64': 'aarch64-apple-darwin'
-    }
+	darwin: {
+		arm64: "aarch64-apple-darwin",
+	},
 };
 
 async function install() {
-    const platform = os.platform();
-    const arch = os.arch();
+	const platform = os.platform();
+	const arch = os.arch();
 
-    if (!MAPPING[platform] || !MAPPING[platform][arch]) {
-        console.error(`\n  Code Intelligence MCP Server currently only supports macOS (Apple Silicon).\n`);
-        console.error(`  Detected: ${platform} ${arch}`);
-        console.error(`  Supported: darwin arm64 (macOS with Apple Silicon)\n`);
-        console.error(`  For updates on additional platform support, see:`);
-        console.error(`  https://github.com/iceinvein/code_intelligence_mcp_server\n`);
-        process.exit(1);
-    }
+	if (!MAPPING[platform] || !MAPPING[platform][arch]) {
+		console.error(
+			`\n  Code Intelligence MCP Server currently only supports macOS (Apple Silicon).\n`,
+		);
+		console.error(`  Detected: ${platform} ${arch}`);
+		console.error(`  Supported: darwin arm64 (macOS with Apple Silicon)\n`);
+		console.error(`  For updates on additional platform support, see:`);
+		console.error(
+			`  https://github.com/iceinvein/code_intelligence_mcp_server\n`,
+		);
+		process.exit(1);
+	}
 
-    const target = MAPPING[platform][arch];
-    const tarFilename = `${BINARY_NAME}-${target}.tar.gz`;
-    const url = `https://github.com/${REPO}/releases/download/${VERSION}/${tarFilename}`;
-    
-    const binDir = path.join(__dirname, 'bin');
-    const destBinary = path.join(binDir, BINARY_NAME);
+	const target = MAPPING[platform][arch];
+	const tarFilename = `${BINARY_NAME}-${target}.tar.gz`;
+	const url = `https://github.com/${REPO}/releases/download/${VERSION}/${tarFilename}`;
 
-    // Ensure bin dir exists
-    if (!fs.existsSync(binDir)) {
-        fs.mkdirSync(binDir, { recursive: true });
-    }
+	const binDir = path.join(__dirname, "bin");
+	const destBinary = path.join(binDir, BINARY_NAME);
 
-    console.log(`Downloading ${BINARY_NAME} ${VERSION} for ${target}...`);
-    console.log(`URL: ${url}`);
+	// Ensure bin dir exists
+	if (!fs.existsSync(binDir)) {
+		fs.mkdirSync(binDir, { recursive: true });
+	}
 
-    try {
-        const response = await axios({
-            method: 'get',
-            url: url,
-            responseType: 'stream'
-        });
+	console.log(`Downloading ${BINARY_NAME} ${VERSION} for ${target}...`);
+	console.log(`URL: ${url}`);
 
-        // Pipe the tar.gz stream directly into the extractor
-        const extract = tar.x({
-            C: binDir,
-            // We want to extract the binary, but the tar structure might depend on how it was packed.
-            // The CI "tar czf" command packs the binary directly at the root of the tarball.
-            // So we just extract it.
-        });
+	try {
+		const response = await axios({
+			method: "get",
+			url: url,
+			responseType: "stream",
+		});
 
-        response.data.pipe(extract);
+		// Pipe the tar.gz stream directly into the extractor
+		const extract = tar.x({
+			C: binDir,
+			// We want to extract the binary, but the tar structure might depend on how it was packed.
+			// The CI "tar czf" command packs the binary directly at the root of the tarball.
+			// So we just extract it.
+		});
 
-        await new Promise((resolve, reject) => {
-            extract.on('finish', resolve);
-            extract.on('error', reject);
-        });
+		response.data.pipe(extract);
 
-        // Verify the binary exists
-        if (fs.existsSync(destBinary)) {
-            fs.chmodSync(destBinary, 0o755);
-            console.log(`Successfully installed to ${destBinary}`);
-        } else {
-            console.error('Extraction failed: Binary not found after unpacking.');
-            console.error(`Expected location: ${destBinary}`);
-            // List contents of binDir to help debug
-            console.log('Contents of bin directory:', fs.readdirSync(binDir));
-            process.exit(1);
-        }
+		await new Promise((resolve, reject) => {
+			extract.on("finish", resolve);
+			extract.on("error", reject);
+		});
 
-    } catch (error) {
-        console.error('Failed to download or install binary:', error.message);
-        if (error.response && error.response.status === 404) {
-            console.error(`Release not found. Please ensure version ${VERSION} is published on GitHub.`);
-        }
-        process.exit(1);
-    }
+		// Verify the binary exists
+		if (fs.existsSync(destBinary)) {
+			fs.chmodSync(destBinary, 0o755);
+			console.log(`Successfully installed to ${destBinary}`);
+		} else {
+			console.error("Extraction failed: Binary not found after unpacking.");
+			console.error(`Expected location: ${destBinary}`);
+			// List contents of binDir to help debug
+			console.log("Contents of bin directory:", fs.readdirSync(binDir));
+			process.exit(1);
+		}
+	} catch (error) {
+		console.error("Failed to download or install binary:", error.message);
+		if (error.response && error.response.status === 404) {
+			console.error(
+				`Release not found. Please ensure version ${VERSION} is published on GitHub.`,
+			);
+		}
+		process.exit(1);
+	}
 }
 
 install();

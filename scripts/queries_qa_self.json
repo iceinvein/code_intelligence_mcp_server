@@ -1,0 +1,122 @@
+[
+  {
+    "id": "self-q1",
+    "question": "Where is the score-gap detection threshold defined and what value does it use?",
+    "expected": {
+      "files": ["src/retrieval/ranking/score.rs"],
+      "symbols": ["score_gap"],
+      "facts": [["0.4", "0.40"], "ratio"]
+    },
+    "rubric": "Cites src/retrieval/ranking/score.rs (or the score module) and identifies the 0.4 ratio threshold used to drop trailing low-score results. Bonus for noting it only triggers at scan position 3+."
+  },
+  {
+    "id": "self-q2",
+    "question": "Which module performs the LanceDB orphaned-symbol embedding recovery on startup?",
+    "expected": {
+      "files": ["src/storage/vector.rs", "src/indexer"],
+      "symbols": ["generate_embeddings_for_orphaned_symbols"],
+      "facts": ["LanceDB"]
+    },
+    "rubric": "Names generate_embeddings_for_orphaned_symbols (or its module) and explains it backfills vector embeddings for symbols missing from LanceDB. Should mention startup/post-indexing run."
+  },
+  {
+    "id": "self-q3",
+    "question": "Where does the Tantivy schema version get bumped, and what triggers a rebuild?",
+    "expected": {
+      "files": ["src/storage/tantivy.rs"],
+      "symbols": ["TANTIVY_SCHEMA_VERSION"],
+      "facts": ["schema", "rebuild"]
+    },
+    "rubric": "Names src/storage/tantivy.rs and the TANTIVY_SCHEMA_VERSION constant; explains that bumping it wipes the Tantivy index and triggers re-upsert of changed files."
+  },
+  {
+    "id": "self-q4",
+    "question": "How does the framework pattern injection cap work in retrieval?",
+    "expected": {
+      "files": ["src/retrieval/framework_patterns.rs"],
+      "symbols": ["MAX_FRAMEWORK_INJECTIONS"],
+      "facts": ["8"]
+    },
+    "rubric": "Names framework_patterns.rs and the MAX_FRAMEWORK_INJECTIONS = 8 cap; explains it limits how many parent symbols are injected per query to prevent flooding."
+  },
+  {
+    "id": "self-q5",
+    "question": "Which file defines the path normalization API used across the indexer?",
+    "expected": {
+      "files": ["src/path/mod.rs"],
+      "symbols": ["PathNormalizer"],
+      "facts": ["camino", "Utf8PathBuf"]
+    },
+    "rubric": "Cites src/path/mod.rs and PathNormalizer; mentions camino-typed paths (Utf8PathBuf) as the project standard."
+  },
+  {
+    "id": "self-q6",
+    "question": "Explain how hybrid search merges Tantivy and LanceDB results.",
+    "expected": {
+      "files": ["src/retrieval"],
+      "symbols": ["RRF"],
+      "facts": ["Reciprocal Rank Fusion", "BM25", "vector"]
+    },
+    "rubric": "Explains RRF (Reciprocal Rank Fusion) combining BM25 (Tantivy) keyword search and vector (LanceDB) semantic search, then re-scored by structural signals. Bonus for mentioning the cross-encoder reranker."
+  },
+  {
+    "id": "self-q7",
+    "question": "Explain the sub-query coverage check and why stem deduplication was added in R1044.",
+    "expected": {
+      "files": ["src/retrieval"],
+      "symbols": ["sub_query", "coverage"],
+      "facts": ["stem", "double-count"]
+    },
+    "rubric": "Explains that sub-query coverage requires multiple terms to match for multi-term sub-queries; describes how normalize_query adds stems (permissions -> permission) and why dedup avoids double-counting in 2-term checks."
+  },
+  {
+    "id": "self-q8",
+    "question": "Walk through what happens when refresh_index is invoked.",
+    "expected": {
+      "files": ["src/handlers", "src/indexer"],
+      "symbols": ["refresh_index"],
+      "facts": ["index", "Tantivy"]
+    },
+    "rubric": "Explains the handler dispatch, indexer scan, parser pass, symbol upsert into SQLite/Tantivy, and embedding generation. Bonus for mentioning that schema bumps require refresh_index to repopulate Tantivy."
+  },
+  {
+    "id": "self-q9",
+    "question": "Explain how the bench_payload_sizes.py script measures MCP tool response sizes.",
+    "expected": {
+      "files": ["scripts/bench_payload_sizes.py"],
+      "symbols": ["McpClient"],
+      "facts": ["JSON-RPC", "stdio"]
+    },
+    "rubric": "Names scripts/bench_payload_sizes.py and explains it spawns two MCP servers (published vs local), drives them via JSON-RPC over stdio, and measures byte sizes of identical tool responses."
+  },
+  {
+    "id": "self-q10",
+    "question": "What downstream code would break if PathNormalizer::relative_to_base changed its return type from Result<Utf8PathBuf, PathError> to Option<Utf8PathBuf>?",
+    "expected": {
+      "files": ["src/path/mod.rs", "src/indexer", "src/storage"],
+      "symbols": ["relative_to_base"],
+      "facts": ["Result", "PathError"]
+    },
+    "rubric": "Identifies callers of relative_to_base (indexer, storage layers) and notes they currently propagate PathError; switching to Option drops the error context. Bonus for citing specific call sites."
+  },
+  {
+    "id": "self-q11",
+    "question": "How would adding a new language extractor (say, Ruby) flow through the codebase?",
+    "expected": {
+      "files": ["src/indexer/extract", "src/indexer/parser.rs", "Cargo.toml"],
+      "symbols": ["extract"],
+      "facts": ["tree-sitter"]
+    },
+    "rubric": "Names: (1) Cargo.toml tree-sitter dependency, (2) new src/indexer/extract/ruby.rs module implementing symbol extraction, (3) registration in src/indexer/extract/mod.rs dispatcher, (4) language detection in src/indexer/parser.rs."
+  },
+  {
+    "id": "self-q12",
+    "question": "What components depend on the description LLM (Qwen 2.5 Coder), and which stay loaded after descriptions are generated?",
+    "expected": {
+      "files": ["src/llm"],
+      "symbols": ["LlamaCppGenerator"],
+      "facts": ["embedding", "reranker", "freed"]
+    },
+    "rubric": "Identifies LlamaCppGenerator and the description pipeline; notes that the description LLM is freed after descriptions are generated, while the embedding model and bge-reranker stay resident for queries."
+  }
+]

@@ -1,10 +1,19 @@
-"""LLM-as-judge that scores two answers (anonymized as A/B) against a rubric."""
+"""LLM-as-judge that scores two answers (anonymized as A/B) against a rubric.
+
+The judge is decoupled from any particular client: callers pass a `complete_fn`
+of shape `(system, user) -> str`. The bench CLI wires this to
+`scripts.agent_qa.claude_cli.run_one_shot` so the judge runs through the same
+Claude Code session as the agent.
+"""
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
+
+
+CompleteFn = Callable[[str, str], str]
 
 
 JUDGE_SYSTEM = (
@@ -65,8 +74,7 @@ def parse_judge_response(raw: str) -> ParsedJudgement:
 
 
 def judge_pair(
-    client: Any,
-    model: str,
+    complete_fn: CompleteFn,
     question: str,
     rubric: str,
     default_answer: str,
@@ -82,13 +90,7 @@ def judge_pair(
         a_label, b_label = "code_intel", "default"
 
     prompt = build_judge_prompt(question, rubric, answer_a, answer_b)
-    msg = client.messages.create(
-        model=model,
-        max_tokens=512,
-        system=JUDGE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = "".join(getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text")
+    raw = complete_fn(JUDGE_SYSTEM, prompt)
     parsed = parse_judge_response(raw)
 
     scores = {a_label: parsed.a_score, b_label: parsed.b_score}

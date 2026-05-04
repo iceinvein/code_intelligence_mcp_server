@@ -3,21 +3,21 @@
     "id": "self-q1",
     "question": "Where is the score-gap detection threshold defined and what value does it use?",
     "expected": {
-      "files": ["src/retrieval/ranking/score.rs"],
-      "symbols": ["score_gap"],
-      "facts": [["0.4", "0.40"], "ratio"]
+      "files": ["src/retrieval/mod.rs"],
+      "symbols": [],
+      "facts": [["0.4", "0.40"], ["score-gap", "score gap"], ["ratio", "drop", "trailing"]]
     },
-    "rubric": "Cites src/retrieval/ranking/score.rs (or the score module) and identifies the 0.4 ratio threshold used to drop trailing low-score results. Bonus for noting it only triggers at scan position 3+."
+    "rubric": "Cites src/retrieval/mod.rs (the score-gap detection block around line 1020) and identifies the 0.4 ratio threshold (a hardcoded literal, not a named constant) used to drop trailing low-score results. Bonus for noting it only triggers at scan position 3+ and is skipped when sub-query coverage injected a result."
   },
   {
     "id": "self-q2",
     "question": "Which module performs the LanceDB orphaned-symbol embedding recovery on startup?",
     "expected": {
-      "files": ["src/storage/vector.rs", "src/indexer"],
+      "files": ["src/indexer/pipeline"],
       "symbols": ["generate_embeddings_for_orphaned_symbols"],
-      "facts": ["LanceDB"]
+      "facts": ["LanceDB", ["startup", "background", "post-indexing"]]
     },
-    "rubric": "Names generate_embeddings_for_orphaned_symbols (or its module) and explains it backfills vector embeddings for symbols missing from LanceDB. Should mention startup/post-indexing run."
+    "rubric": "Names generate_embeddings_for_orphaned_symbols in src/indexer/pipeline/mod.rs and explains it backfills vector embeddings for symbols missing from LanceDB. Should mention it runs both at startup (background recovery) and post-indexing."
   },
   {
     "id": "self-q3",

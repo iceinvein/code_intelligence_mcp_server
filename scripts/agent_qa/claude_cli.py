@@ -54,6 +54,9 @@ class ClaudeRunOptions:
 
 
 def build_command(opts: ClaudeRunOptions) -> List[str]:
+    """Build the claude CLI argv. The question is passed via stdin, not argv,
+    because `--allowed-tools <tools...>` is variadic and would otherwise slurp
+    a positional prompt argument that follows it."""
     cmd: List[str] = [
         CLAUDE_BINARY,
         "--print",
@@ -69,7 +72,6 @@ def build_command(opts: ClaudeRunOptions) -> List[str]:
     if opts.allowed_tools:
         cmd.extend(["--allowed-tools", " ".join(opts.allowed_tools)])
     cmd.extend(opts.extra_args)
-    cmd.append(opts.question)
     return cmd
 
 
@@ -78,6 +80,8 @@ class ParsedStream:
     final_answer: str
     tool_calls: List[ToolCallRecord]
     input_tokens: int
+    cache_creation_input_tokens: int
+    cache_read_input_tokens: int
     output_tokens: int
     stop_reason: str
 
@@ -93,13 +97,18 @@ def _walk(obj: Any) -> Iterable[Any]:
             yield from _walk(v)
 
 
+_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
 def _extract_usage(event: dict) -> Optional[Dict[str, int]]:
     for node in _walk(event):
-        if isinstance(node, dict) and ("input_tokens" in node or "output_tokens" in node):
-            return {
-                "input_tokens": int(node.get("input_tokens") or 0),
-                "output_tokens": int(node.get("output_tokens") or 0),
-            }
+        if isinstance(node, dict) and any(k in node for k in _USAGE_KEYS):
+            return {k: int(node.get(k) or 0) for k in _USAGE_KEYS}
     return None
 
 
@@ -108,6 +117,8 @@ def parse_stream(lines: Iterable[str]) -> ParsedStream:
     final_text_parts: List[str] = []
     tool_calls: List[ToolCallRecord] = []
     input_tokens = 0
+    cache_creation = 0
+    cache_read = 0
     output_tokens = 0
     stop_reason = "unknown"
 
@@ -164,21 +175,24 @@ def parse_stream(lines: Iterable[str]) -> ParsedStream:
             res = event.get("result")
             if isinstance(res, str) and res.strip():
                 final_text_parts = [res]
-            usage = _extract_usage(event)
-            if usage:
-                input_tokens = max(input_tokens, usage["input_tokens"])
-                output_tokens = max(output_tokens, usage["output_tokens"])
+            sr = event.get("stop_reason")
+            if isinstance(sr, str):
+                stop_reason = sr
 
-        # Any other event with a usage block: take the largest-seen totals.
+        # Any event with a usage block: take the largest-seen totals.
         usage = _extract_usage(event)
         if usage:
             input_tokens = max(input_tokens, usage["input_tokens"])
             output_tokens = max(output_tokens, usage["output_tokens"])
+            cache_creation = max(cache_creation, usage["cache_creation_input_tokens"])
+            cache_read = max(cache_read, usage["cache_read_input_tokens"])
 
     return ParsedStream(
         final_answer="".join(final_text_parts).strip(),
         tool_calls=tool_calls,
         input_tokens=input_tokens,
+        cache_creation_input_tokens=cache_creation,
+        cache_read_input_tokens=cache_read,
         output_tokens=output_tokens,
         stop_reason=stop_reason,
     )
@@ -190,6 +204,7 @@ def run_with_tools(opts: ClaudeRunOptions) -> RunRecord:
     started = time.time()
     proc = subprocess.run(
         cmd,
+        input=opts.question,
         capture_output=True,
         text=True,
         timeout=opts.timeout_s,
@@ -205,6 +220,8 @@ def run_with_tools(opts: ClaudeRunOptions) -> RunRecord:
             repo="",
             final_answer=f"(claude CLI exit={proc.returncode})\nstderr:\n{proc.stderr.strip()}",
             input_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
             output_tokens=0,
             wall_ms=wall_ms,
             stop_reason=f"cli_error_{proc.returncode}",
@@ -219,6 +236,8 @@ def run_with_tools(opts: ClaudeRunOptions) -> RunRecord:
         repo="",
         final_answer=parsed.final_answer,
         input_tokens=parsed.input_tokens,
+        cache_creation_input_tokens=parsed.cache_creation_input_tokens,
+        cache_read_input_tokens=parsed.cache_read_input_tokens,
         output_tokens=parsed.output_tokens,
         wall_ms=wall_ms,
         stop_reason=parsed.stop_reason,
@@ -239,9 +258,8 @@ def run_one_shot(prompt: str, system_prompt: str, model: str, timeout_s: int = 1
         "--allowed-tools", "",
         "--system-prompt", system_prompt,
         "--model", model,
-        prompt,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout_s)
     if proc.returncode != 0:
         raise RuntimeError(f"claude CLI exit={proc.returncode}: {proc.stderr.strip()}")
     try:

@@ -146,8 +146,12 @@ def main() -> None:
             rec.toolset = toolset_name
             rec.repo = args.repo
             elapsed = int(time.time() - t0)
-            print(f"{elapsed}s, in_tokens={rec.input_tokens}, tools={len(rec.tool_calls)}",
-                  file=sys.stderr)
+            print(
+                f"{elapsed}s, total_tokens={rec.total_input_tokens}, "
+                f"(in={rec.input_tokens}, cache_w={rec.cache_creation_input_tokens}, "
+                f"cache_r={rec.cache_read_input_tokens}), tools={len(rec.tool_calls)}",
+                file=sys.stderr,
+            )
             d = rec.to_dict()
             raw_runs.append(d)
             per_q_records[toolset_name] = d
@@ -190,6 +194,9 @@ def main() -> None:
             (default_rec, mech_def, judge_def),
             (ci_rec, mech_ci, judge_ci),
         ):
+            # input_tokens here is the TOTAL the model saw (uncached + cache write + cache read)
+            # because Claude Code's default-system-prompt overhead lands almost entirely in
+            # cache_creation/read; comparing only the uncached fraction would be misleading.
             scored.append(
                 ScoredRun(
                     question_id=rec["question_id"],
@@ -197,7 +204,7 @@ def main() -> None:
                     repo=rec["repo"],
                     mech_score=mech_v,
                     judge_score=judge_v,
-                    input_tokens=rec["input_tokens"],
+                    input_tokens=rec.get("total_input_tokens", rec["input_tokens"]),
                     output_tokens=rec["output_tokens"],
                     tool_calls=[tc["name"] for tc in rec["tool_calls"]],
                     wall_ms=rec["wall_ms"],

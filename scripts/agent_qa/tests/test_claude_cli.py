@@ -43,8 +43,9 @@ def test_build_command_includes_all_required_flags(tmp_path: Path):
     # MCP config encoded as JSON
     j = cmd.index("--mcp-config")
     assert json.loads(cmd[j + 1]) == {"mcpServers": {}}
-    # Question is the trailing positional
-    assert cmd[-1] == "Where is X?"
+    # Question is NOT in argv; it is fed via stdin to avoid being slurped by
+    # the variadic --allowed-tools option.
+    assert "Where is X?" not in cmd
 
 
 def test_parse_stream_extracts_final_answer_and_tool_calls():

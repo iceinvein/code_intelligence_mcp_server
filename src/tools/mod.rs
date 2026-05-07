@@ -462,3 +462,52 @@ pub struct GetContextBundleTool {
     /// Include raw section outputs.
     pub include_raw_sections: Option<bool>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_code_description_mentions_hydrate_symbols_and_discourages_grep() {
+        let desc = SearchCodeTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.contains("hydrate_symbols"),
+            "search_code description must mention hydrate_symbols, got: {desc}"
+        );
+        assert!(
+            desc.contains("do NOT fall back to grep"),
+            "search_code description must explicitly discourage grep fallback, got: {desc}"
+        );
+        assert!(
+            desc.contains("snippets"),
+            "search_code description must still document the snippets mode"
+        );
+        assert!(
+            desc.contains("full"),
+            "search_code description must still document the full mode"
+        );
+    }
+
+    #[test]
+    fn hydrate_symbols_description_names_search_code_as_upstream() {
+        let desc = HydrateSymbolsTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.contains("search_code"),
+            "hydrate_symbols description must name search_code as a primary upstream, got: {desc}"
+        );
+        assert!(
+            desc.to_lowercase().contains("instead of"),
+            "hydrate_symbols description must position itself against read/grep, got: {desc}"
+        );
+        assert!(
+            desc.contains("verbose"),
+            "hydrate_symbols description must mention the verbose flag"
+        );
+    }
+}

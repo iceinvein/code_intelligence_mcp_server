@@ -118,5 +118,65 @@
       "facts": ["embedding", "reranker", "freed"]
     },
     "rubric": "Identifies LlamaCppGenerator and the description pipeline; notes that the description LLM is freed after descriptions are generated, while the embedding model and bge-reranker stay resident for queries."
+  },
+  {
+    "id": "self-q13",
+    "question": "If I rename `build_next_step` in src/handlers/search.rs, what call sites would need to be updated?",
+    "expected": {
+      "files": ["src/handlers/search.rs"],
+      "symbols": ["build_next_step", "handle_search_code"],
+      "facts": ["ContextMode::None", ["one call site", "single caller", "one production caller"]]
+    },
+    "rubric": "Identifies handle_search_code as the only current production caller (one site, inside the ContextMode::None arm of the match block in handle_search_code). Bonus for noting the test module also calls it directly."
+  },
+  {
+    "id": "self-q14",
+    "question": "What's the chain of callers that ends up invoking attach_hit_snippets?",
+    "expected": {
+      "files": ["src/handlers/search.rs"],
+      "symbols": ["attach_hit_snippets", "handle_search_code"],
+      "facts": [["ContextMode::Snippets", "context = \"snippets\""]]
+    },
+    "rubric": "Names the call chain handle_search_code -> attach_hit_snippets, fired only when context_mode is Snippets. Bonus for noting that attach_hit_snippets in turn calls compact_snippet."
+  },
+  {
+    "id": "self-q15",
+    "question": "How does a query string flow from `search_code`'s tool input to the actual Tantivy index lookup?",
+    "expected": {
+      "files": ["src/handlers/search.rs", "src/retrieval"],
+      "symbols": ["handle_search_code", "search"],
+      "facts": ["query", ["tantivy", "Tantivy"], ["BM25", "keyword"]]
+    },
+    "rubric": "Traces the path: SearchCodeTool.query into handle_search_code, then into Retriever::search (src/retrieval/mod.rs), then into hybrid execution (src/retrieval/hybrid.rs) where BM25 keyword search via Tantivy and vector search are merged via RRF. Bonus for naming the hybrid module and mentioning RRF explicitly."
+  },
+  {
+    "id": "self-q16",
+    "question": "Are there any exported functions in `src/retrieval/ranking/` with no remaining call sites in the codebase?",
+    "expected": {
+      "files": ["src/retrieval/ranking"],
+      "symbols": [],
+      "facts": [["exported", "pub"], ["caller", "call site", "invocation"]]
+    },
+    "rubric": "Names src/retrieval/ranking/ and either reports a concrete dead exported function with file:line OR explicitly states no exported dead code was found in this directory. Either is correct; the failure mode is a vague answer that does not actually check. Bonus for naming which `.rs` files were inspected."
+  },
+  {
+    "id": "self-q17",
+    "question": "Which tests cover `mech_score`'s OR-group fact handling?",
+    "expected": {
+      "files": ["scripts/agent_qa/tests/test_scoring.py"],
+      "symbols": ["mech_score", "test_or_group_in_facts", "test_or_group_partial"],
+      "facts": [["OR group", "or-group", "or group"]]
+    },
+    "rubric": "Names both test_or_group_in_facts and test_or_group_partial in scripts/agent_qa/tests/test_scoring.py. Bonus for identifying that they exercise both the all-match and the partial-match paths through the OR-group logic."
+  },
+  {
+    "id": "self-q18",
+    "question": "Give me a structural overview of `src/indexer/pipeline/`: the main types, what each does, and how they connect.",
+    "expected": {
+      "files": ["src/indexer/pipeline"],
+      "symbols": ["IndexPipeline"],
+      "facts": ["scan", ["parse", "parser"], ["embed", "embedding", "describe"], ["write", "upsert"]]
+    },
+    "rubric": "Names the IndexPipeline orchestrator type in src/indexer/pipeline/mod.rs and walks through the major stages (scan -> parse -> describe/embed -> write). Bonus for mentioning the orphaned-symbol embedding recovery path or the schema version gate."
   }
 ]

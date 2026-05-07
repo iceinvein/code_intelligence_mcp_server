@@ -38,7 +38,7 @@ Optional flags:
 Sanity-check pass on q1, q6, q8, q11 with judge skipped. Both toolsets scored mech=1.0 on every question (these are lookup/explain questions answerable with Grep+Read). Code-intel run averaged **+59,000 total_input_tokens (~30% overhead)** vs default.
 
 Pattern observed across all four smoke questions:
-1. Code-intel run starts with `ToolSearch` (Claude Code's deferred-schema loader) to pull in `mcp__code-intelligence__search_code` — costs ~20k cached tokens per question.
+1. Code-intel run starts with `ToolSearch` (Claude Code's deferred-schema loader) to pull in `mcp__code-intelligence__search_code`; this costs ~20k cached tokens per question.
 2. The agent then calls 1-2 MCP tools (most often `search_code`, sometimes `get_definition`).
 3. The agent still falls back to `Grep` and `Read` to verify and gather line-level detail.
 

@@ -110,7 +110,7 @@ pub struct GetIndexStatsTool {}
 
 #[macros::mcp_tool(
     name = "explore_dependency_graph",
-    description = "Explore upstream or downstream dependencies from a symbol."
+    description = "Walk module-level imports and exports up or down from a symbol. Use this for 'what does this module depend on' or 'who imports this module' questions, especially when the answer spans multiple files. Do NOT grep for `use` / `import` statements when you need a transitive view. Specify direction='upstream' (who depends on this) or 'downstream' (what this depends on)."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExploreDependencyGraphTool {
@@ -200,7 +200,7 @@ pub struct FindSimilarCodeTool {
 
 #[macros::mcp_tool(
     name = "trace_data_flow",
-    description = "Trace reads and writes related to a symbol."
+    description = "Trace where a variable, field, or symbol is read and written across the codebase. Use this when answering 'how does data flow from X to Y' or 'where does this value come from'; it follows reads/writes edges that plain grep cannot infer. Do NOT fall back to grep + manual reading when you need to understand dataflow. Pair with hydrate_symbols to fetch the bodies of the readers and writers it returns."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct TraceDataFlowTool {
@@ -219,7 +219,7 @@ pub struct TraceDataFlowTool {
 
 #[macros::mcp_tool(
     name = "summarize_file",
-    description = "Summarize an indexed file at symbol level."
+    description = "Get a one-pass symbol-level summary of a single file: which symbols it defines, their kinds, and a brief description of each. Use this instead of Read when you only need to know what's in a file, not its full contents. Prefer over get_file_symbols when you also want descriptions of each symbol; prefer get_module_summary when the unit is a module/directory rather than a single file."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SummarizeFileTool {
@@ -235,7 +235,7 @@ pub struct SummarizeFileTool {
 
 #[macros::mcp_tool(
     name = "find_affected_code",
-    description = "Find reverse dependencies affected by a symbol change."
+    description = "Find every symbol that depends on a target (reverse dependency graph). Use this when answering 'if I rename or change X, what breaks?'; it walks the indexed dependency graph and returns affected sites with file:line. Do NOT fall back to grep + manual reading for impact analysis on symbols this tool can already locate. Use predict_impact if you also want git co-change signal alongside the static graph."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindAffectedCodeTool {
@@ -252,7 +252,7 @@ pub struct FindAffectedCodeTool {
 
 #[macros::mcp_tool(
     name = "get_module_summary",
-    description = "List exported symbols from a module or file."
+    description = "Get a structured overview of a module's exported public API surface: types, functions, and traits with their roles. Use this for 'what's in this module' or 'walk me through the public API of X' questions. Prefer this over get_file_symbols when the question is about a directory or module rather than a single file, and over Read+Grep when you need just the API surface, not the bodies."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetModuleSummaryTool {
@@ -430,7 +430,7 @@ pub struct FindUndocumentedSymbolsTool {
 
 #[macros::mcp_tool(
     name = "predict_impact",
-    description = "Predict change impact using dependencies and git co-change."
+    description = "Predict the blast radius of changing a symbol by combining the static dependency graph with git co-change history. Use this for 'what will break if I refactor X' and 'which files historically change with X'; it surfaces both compile-time deps and behavioral coupling that grep alone cannot see. Do NOT manually grep for callers and then guess at impact; this tool already does both passes."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct PredictImpactTool {
@@ -508,6 +508,126 @@ mod tests {
         assert!(
             desc.contains("verbose"),
             "hydrate_symbols description must mention the verbose flag"
+        );
+    }
+
+    #[test]
+    fn trace_data_flow_description_advertises_dataflow_and_discourages_grep() {
+        let desc = TraceDataFlowTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.to_lowercase().contains("how does data flow"),
+            "trace_data_flow description must include the dataflow value hook, got: {desc}"
+        );
+        assert!(
+            desc.contains("Do NOT fall back to grep"),
+            "trace_data_flow description must explicitly discourage grep fallback, got: {desc}"
+        );
+        assert!(
+            desc.contains("hydrate_symbols"),
+            "trace_data_flow description must name hydrate_symbols as the chain target, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn find_affected_code_description_advertises_impact_and_chains_predict_impact() {
+        let desc = FindAffectedCodeTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.to_lowercase().contains("if i rename or change"),
+            "find_affected_code description must include the rename-impact value hook, got: {desc}"
+        );
+        assert!(
+            desc.contains("Do NOT fall back to grep"),
+            "find_affected_code description must explicitly discourage grep fallback, got: {desc}"
+        );
+        assert!(
+            desc.contains("predict_impact"),
+            "find_affected_code description must name predict_impact as a richer alternative, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn predict_impact_description_advertises_blast_radius_and_discourages_manual_grep() {
+        let desc = PredictImpactTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.to_lowercase().contains("blast radius"),
+            "predict_impact description must include the blast-radius value hook, got: {desc}"
+        );
+        assert!(
+            desc.to_lowercase().contains("co-change"),
+            "predict_impact description must mention git co-change as the differentiator, got: {desc}"
+        );
+        assert!(
+            desc.contains("Do NOT manually grep"),
+            "predict_impact description must explicitly discourage manual grep + guess, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn explore_dependency_graph_description_advertises_module_walk_and_discourages_use_grep() {
+        let desc = ExploreDependencyGraphTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.to_lowercase().contains("who imports this module"),
+            "explore_dependency_graph description must include the module-walk value hook, got: {desc}"
+        );
+        assert!(
+            desc.contains("Do NOT grep for `use`"),
+            "explore_dependency_graph description must explicitly discourage grepping for use/import, got: {desc}"
+        );
+        assert!(
+            desc.contains("upstream") && desc.contains("downstream"),
+            "explore_dependency_graph description must document the direction parameter values, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn get_module_summary_description_advertises_api_surface_and_prefers_over_get_file_symbols() {
+        let desc = GetModuleSummaryTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.to_lowercase().contains("public api"),
+            "get_module_summary description must include the API-surface value hook, got: {desc}"
+        );
+        assert!(
+            desc.contains("Prefer this over get_file_symbols"),
+            "get_module_summary description must position itself against get_file_symbols, got: {desc}"
+        );
+        assert!(
+            desc.contains("module"),
+            "get_module_summary description must mention 'module' as the unit, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn summarize_file_description_advertises_file_summary_and_prefers_over_read() {
+        let desc = SummarizeFileTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.to_lowercase().contains("symbol-level summary"),
+            "summarize_file description must include the symbol-level summary value hook, got: {desc}"
+        );
+        assert!(
+            desc.to_lowercase().contains("instead of read"),
+            "summarize_file description must explicitly position against Read, got: {desc}"
+        );
+        assert!(
+            desc.contains("get_module_summary"),
+            "summarize_file description must name get_module_summary as the directory-scoped sibling, got: {desc}"
         );
     }
 }

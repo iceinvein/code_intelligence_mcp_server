@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[macros::mcp_tool(
     name = "search_code",
-    description = "Search indexed code. Returns ranked hits; pass context=\"snippets\" or \"full\" to also receive source code."
+    description = "Hybrid keyword + semantic code search. Returns ranked hits with symbol IDs (no bodies by default). To fetch source for the located symbols, call hydrate_symbols with the returned IDs; do NOT fall back to grep/read for symbols search_code already located. Pass context=\"snippets\" for an inline 8-line preview per hit, or context=\"full\" for the legacy markdown bundle."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchCodeTool {
@@ -133,7 +133,7 @@ pub struct GetSimilarityClusterTool {
 
 #[macros::mcp_tool(
     name = "hydrate_symbols",
-    description = "Return source context for symbol IDs from other tools."
+    description = "Fetch source bodies for symbol IDs returned by search_code, find_references, get_call_hierarchy, or any other code-intelligence tool. Use this to read the body of an already-located symbol instead of reaching for read/grep. Accepts a verbose flag to control how much surrounding context is returned per symbol."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct HydrateSymbolsTool {

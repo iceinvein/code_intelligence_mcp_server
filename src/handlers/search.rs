@@ -13,6 +13,37 @@ use super::AppState;
 /// Default per-hit snippet line count for `context="snippets"`.
 const SNIPPET_LINES: usize = 8;
 
+/// Build the `next_step` payload that nudges the agent toward `hydrate_symbols`
+/// when `search_code` returned hits in discovery-only mode.
+///
+/// Returns `None` when:
+///   - `context_mode` is not `None` (bodies are already in the response).
+///   - `hits` is empty (nothing to hydrate).
+#[allow(dead_code)]
+fn build_next_step(
+    context_mode: ContextMode,
+    hits: &[crate::retrieval::RankedHit],
+) -> Option<serde_json::Value> {
+    if !matches!(context_mode, ContextMode::None) {
+        return None;
+    }
+    if hits.is_empty() {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut ids: Vec<String> = Vec::with_capacity(hits.len());
+    for h in hits {
+        if seen.insert(h.id.clone()) {
+            ids.push(h.id.clone());
+        }
+    }
+    Some(json!({
+        "tool": "hydrate_symbols",
+        "args": { "ids": ids },
+        "reason": "Call hydrate_symbols with these IDs to fetch source bodies. Prefer this over grep/read for the symbols already located by search_code."
+    }))
+}
+
 /// Handle search_code tool.
 ///
 /// As of v3.0, `context` defaults to `"none"` — agents that need source code
@@ -385,4 +416,66 @@ fn format_scoring_breakdown(query: &str, results: &[serde_json::Value]) -> Strin
 
     out.push_str("\n*Scores: keyword, vector, popularity, learning boosts*\n");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::retrieval::{ContextMode, RankedHit};
+
+    fn hit(id: &str) -> RankedHit {
+        RankedHit {
+            id: id.to_string(),
+            score: 1.0,
+            name: "x".to_string(),
+            kind: "function".to_string(),
+            file_path: "src/x.rs".to_string(),
+            exported: true,
+            language: "rust".to_string(),
+        }
+    }
+
+    #[test]
+    fn next_step_emitted_for_context_none_with_hits() {
+        let hits = vec![hit("sym_a"), hit("sym_b")];
+        let v = build_next_step(ContextMode::None, &hits).expect("Some");
+        assert_eq!(v["tool"], "hydrate_symbols");
+        let ids = v["args"]["ids"].as_array().expect("ids array");
+        let ids_vec: Vec<&str> = ids.iter().map(|x| x.as_str().unwrap()).collect();
+        assert_eq!(ids_vec, vec!["sym_a", "sym_b"]);
+        let reason = v["reason"].as_str().expect("reason str");
+        assert!(reason.contains("hydrate_symbols"));
+        assert!(reason.to_lowercase().contains("grep"));
+    }
+
+    #[test]
+    fn next_step_omitted_for_context_snippets() {
+        let hits = vec![hit("sym_a")];
+        assert!(build_next_step(ContextMode::Snippets, &hits).is_none());
+    }
+
+    #[test]
+    fn next_step_omitted_for_context_full() {
+        let hits = vec![hit("sym_a")];
+        assert!(build_next_step(ContextMode::Full, &hits).is_none());
+    }
+
+    #[test]
+    fn next_step_omitted_for_empty_hits() {
+        let hits: Vec<RankedHit> = vec![];
+        assert!(build_next_step(ContextMode::None, &hits).is_none());
+    }
+
+    #[test]
+    fn next_step_dedups_repeated_ids_defensively() {
+        let hits = vec![hit("sym_a"), hit("sym_a"), hit("sym_b")];
+        let v = build_next_step(ContextMode::None, &hits).expect("Some");
+        let ids: Vec<&str> = v["args"]["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["sym_a", "sym_b"]);
+    }
 }

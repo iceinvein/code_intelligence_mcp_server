@@ -71,5 +71,46 @@ The other 28 tools were never invoked. The agent's pattern is: ToolSearch → se
 
 **Methodological caveats:**
 - Sonnet 4.6 is highly capable on Rust + grep/read patterns; the gap might widen on weaker models.
-- The 12 self-repo questions skew lookup/explain. Questions that genuinely require cross-file reference tracing (the design hypothesized 3 of these per repo) may shift the balance — q10 was the only one and code-intel did get +3 judge there.
+- The 12 self-repo questions skew lookup/explain. Questions that genuinely require cross-file reference tracing (the design hypothesized 3 of these per repo) may shift the balance; q10 was the only one and code-intel did get +3 judge there.
 - The agent never reached for `get_call_hierarchy`, `find_affected_code`, `predict_impact`, or `trace_data_flow`. Either the question set didn't surface their value, or the tool descriptions aren't selling them strongly enough to compete with Grep.
+
+### Round 002
+
+After Spec 1 (`docs/plans/2026-05-07-search-code-followup-flow-design.md`): added a structured `next_step` hint to `search_code`'s discovery-mode response, plus rewrote the descriptions of `search_code` and `hydrate_symbols` to reinforce them as a paired workflow.
+
+| | default R001 | code_intel R001 | default R002 | code_intel R002 |
+|---|---:|---:|---:|---:|
+| avg mech | 0.85 | 0.88 | 0.89 | 0.88 |
+| avg judge | 7.75 | 8.42 | 7.92 | 8.67 |
+| avg total_input_tokens | 165,904 | 272,472 | 164,524 | 216,133 |
+| avg tool calls | 3.8 | 6.6 | 3.6 | 4.8 |
+
+**Code_intel changes (R001 → R002):** total_input_tokens dropped 56k (-21%); gap vs default narrowed from +106k (+64%) to +52k (+31%). Judge improved +0.25 on top of the already high R001 baseline. Mech unchanged at 0.88.
+
+**Spec 1 success criteria (recap):**
+- Token delta under +50k: **borderline pass** at +52k (close enough that round-to-round noise covers it).
+- Judge ≥ 8.42 and mech ≥ 0.88: **pass** (8.67 / 0.88).
+- Tool reach shows `hydrate_symbols` calls > zero: **fail** (still zero).
+
+**Tool reach delta (code_intel):**
+
+| tool | R001 | R002 | Δ |
+|---|---:|---:|---:|
+| Grep | 31 | 23 | -8 |
+| Read | 21 | 16 | -5 |
+| ToolSearch | 11 | 8 | -3 |
+| mcp__code-intelligence__search_code | 11 | 7 | -4 |
+| mcp__code-intelligence__get_definition | 1 | 1 | 0 |
+| mcp__code-intelligence__find_references | 1 | 1 | 0 |
+| mcp__code-intelligence__get_file_symbols | 1 | 0 | -1 |
+| mcp__code-intelligence__hydrate_symbols | 0 | 0 | 0 |
+
+**What actually happened.** The hypothesis was that the agent would route `search_code` results into `hydrate_symbols` instead of falling back to `Grep`+`Read`. That did NOT happen. Across 12 questions and 7 `search_code` calls (down from 11), the agent invoked `hydrate_symbols` zero times. Of the 7 `search_code` calls, 6 used the default `context: "none"` (so they received the `next_step` hint in the response), but the agent ignored every hint.
+
+The savings came from a different path: the rewritten descriptions discouraged grep fallback at the discovery stage, so the agent either skipped `search_code` entirely for simpler questions (relying on default tools that were already adequate) or accepted `search_code`'s results and stopped earlier. Net effect: 4 fewer `search_code` calls, 8 fewer `Grep`s, 5 fewer `Read`s, 3 fewer `ToolSearch` round-trips.
+
+**Real lesson.** Tool descriptions shape agent behaviour more reliably than structured response hints. The "do NOT fall back to grep/read for symbols search_code already located" line in the description did real work; the JSON `next_step` directive in the response did not detectably move the agent.
+
+**Decision gate for Spec 2 (ToolSearch tax investigation):** R002 closed the gap to +31% (target was <30% to deprioritise). It is borderline. Adopting Spec 2 next would target the residual `ToolSearch` round-trips (8 in R002) and the cache-creation overhead they impose (~20-25k cached tokens per round-trip). Estimated upside: another 100-150k tokens off the round average if the deferred-loading mechanism can be bypassed.
+
+**Recommended next move:** keep Spec 2 (ToolSearch investigation) as the next planned work, but treat its priority as roughly equal to broadening the Q-set with impact-style questions that exercise `find_references` / `get_call_hierarchy` / `predict_impact` directly. The current set is too lookup-heavy to give those code-intel tools a fair shot. Either pick wins the right next round.

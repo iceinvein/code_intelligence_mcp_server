@@ -79,6 +79,9 @@ pub async fn handle_search_code(
             // misleading empty field.
             if let Some(map) = response.as_object_mut() {
                 map.remove("context");
+                if let Some(ns) = build_next_step(ContextMode::None, &result.response.hits) {
+                    map.insert("next_step".to_string(), ns);
+                }
             }
         }
         ContextMode::Snippets => {
@@ -477,5 +480,41 @@ mod tests {
             .map(|x| x.as_str().unwrap())
             .collect();
         assert_eq!(ids, vec!["sym_a", "sym_b"]);
+    }
+
+    #[test]
+    fn handle_search_code_response_contract_for_none_with_hits() {
+        // We do not exercise the full handler here (it requires SQLite + Tantivy
+        // + LanceDB). Instead we simulate the response-shaping path the handler
+        // performs for `context: "none"` and verify that `build_next_step`'s
+        // output is the value the handler will insert under the `next_step` key.
+        let hits = vec![hit("sym_a")];
+        let mut response = json!({
+            "hits": [{"id": "sym_a", "name": "x", "file": "src/x.rs", "line": 1}],
+            "hits_budget": {"total_count": 1, "returned_count": 1, "truncated": false},
+            "context": ""
+        });
+        if let Some(map) = response.as_object_mut() {
+            map.remove("context");
+            if let Some(ns) = build_next_step(ContextMode::None, &hits) {
+                map.insert("next_step".to_string(), ns);
+            }
+        }
+        assert!(response.get("context").is_none());
+        let ns = response.get("next_step").expect("next_step set");
+        assert_eq!(ns["tool"], "hydrate_symbols");
+        assert_eq!(ns["args"]["ids"][0], "sym_a");
+    }
+
+    #[test]
+    fn handle_search_code_response_contract_for_snippets_omits_next_step() {
+        let hits = vec![hit("sym_a")];
+        let mut response = json!({"hits": [], "hits_budget": {}});
+        if let Some(map) = response.as_object_mut() {
+            if let Some(ns) = build_next_step(ContextMode::Snippets, &hits) {
+                map.insert("next_step".to_string(), ns);
+            }
+        }
+        assert!(response.get("next_step").is_none());
     }
 }

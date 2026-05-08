@@ -66,6 +66,7 @@ pub fn plan_code_investigation(
     })
 }
 
+#[allow(dead_code)]
 pub fn handle_plan_code_investigation(tool: PlanCodeInvestigationTool) -> Result<Value> {
     let plan = plan_code_investigation(
         &tool.question,
@@ -98,7 +99,9 @@ fn classify_intent(question: &str, file_path: Option<&str>) -> InvestigationInte
             "what breaks",
             "impact",
             "rename",
-            "change",
+            "if i change",
+            "if we change",
+            "when changing",
             "refactor",
             "blast radius",
             "affected",
@@ -179,25 +182,12 @@ fn impact_steps(
     steps.push(RecommendedStep {
         tool: "find_affected_code".to_string(),
         why: "Find reverse dependencies affected by changes to the target.".to_string(),
-        arguments: optional_file_args(
-            json!({
-                "symbol_name": symbol_name,
-                "depth": 3,
-                "limit": 20
-            }),
-            file_path,
-        ),
+        arguments: find_affected_args(symbol_name, file_path),
     });
     steps.push(RecommendedStep {
         tool: "predict_impact".to_string(),
         why: "Add git co-change signal alongside the static graph.".to_string(),
-        arguments: optional_file_args(
-            json!({
-                "symbol_name": symbol_name,
-                "limit": 20
-            }),
-            file_path,
-        ),
+        arguments: predict_impact_args(symbol_name, file_path),
     });
     steps.push(hydrate_step());
     steps
@@ -215,15 +205,7 @@ fn dataflow_steps(
         RecommendedStep {
             tool: "trace_data_flow".to_string(),
             why: "Trace where the target is read and written across the codebase.".to_string(),
-            arguments: optional_file_args(
-                json!({
-                    "symbol_name": symbol_name,
-                    "direction": "both",
-                    "depth": 3,
-                    "limit": 20
-                }),
-                file_path,
-            ),
+            arguments: trace_data_flow_args(symbol_name, file_path),
         },
         hydrate_step(),
     ]
@@ -232,7 +214,7 @@ fn dataflow_steps(
 fn dependency_steps(
     question: &str,
     target: Option<&str>,
-    file_path: Option<&str>,
+    _file_path: Option<&str>,
 ) -> Vec<RecommendedStep> {
     let query = target.unwrap_or(question);
     let symbol_name = target.unwrap_or(query);
@@ -243,15 +225,7 @@ fn dependency_steps(
             tool: "explore_dependency_graph".to_string(),
             why: "Walk module-level dependency edges instead of grepping import statements."
                 .to_string(),
-            arguments: optional_file_args(
-                json!({
-                    "symbol_name": symbol_name,
-                    "direction": direction,
-                    "depth": 3,
-                    "limit": 20
-                }),
-                file_path,
-            ),
+            arguments: dependency_graph_args(symbol_name, direction),
         },
     ]
 }
@@ -261,7 +235,7 @@ fn module_summary_steps(
     target: Option<&str>,
     file_path: Option<&str>,
 ) -> Vec<RecommendedStep> {
-    if let Some(path) = file_path.or(target) {
+    if let Some(path) = file_path.or_else(|| target.filter(|value| is_path_like_target(value))) {
         vec![RecommendedStep {
             tool: "get_module_summary".to_string(),
             why: "Summarize the exported public API surface for the module.".to_string(),
@@ -307,30 +281,85 @@ fn symbol_lookup_steps(
         steps.push(RecommendedStep {
             tool: "get_definition".to_string(),
             why: "Fetch definition context once the symbol name is known.".to_string(),
-            arguments: optional_file_args(
-                json!({
-                    "symbol_name": query,
-                    "limit": 10
-                }),
-                file_path,
-            ),
+            arguments: get_definition_args(query, file_path),
         });
     } else if lower.contains("reference") || lower.contains("references") || lower.contains("uses")
     {
         steps.push(RecommendedStep {
             tool: "find_references".to_string(),
             why: "Find direct references when the question asks for uses.".to_string(),
-            arguments: optional_file_args(
-                json!({
-                    "symbol_name": query,
-                    "reference_type": "all",
-                    "limit": 200
-                }),
-                file_path,
-            ),
+            arguments: find_references_args(query, file_path),
         });
     }
     steps
+}
+
+fn find_affected_args(symbol_name: &str, file_path: Option<&str>) -> Value {
+    with_optional_string_arg(
+        json!({
+            "symbol_name": symbol_name,
+            "depth": 3,
+            "limit": 20
+        }),
+        "file_path",
+        file_path,
+    )
+}
+
+fn predict_impact_args(symbol_name: &str, file_path: Option<&str>) -> Value {
+    with_optional_string_arg(
+        json!({
+            "symbol_name": symbol_name,
+            "limit": 20
+        }),
+        "file_path",
+        file_path,
+    )
+}
+
+fn trace_data_flow_args(symbol_name: &str, file_path: Option<&str>) -> Value {
+    with_optional_string_arg(
+        json!({
+            "symbol_name": symbol_name,
+            "direction": "both",
+            "depth": 3,
+            "limit": 20
+        }),
+        "file_path",
+        file_path,
+    )
+}
+
+fn dependency_graph_args(symbol_name: &str, direction: &str) -> Value {
+    json!({
+        "symbol_name": symbol_name,
+        "direction": direction,
+        "depth": 3,
+        "limit": 20
+    })
+}
+
+fn get_definition_args(symbol_name: &str, file_path: Option<&str>) -> Value {
+    with_optional_string_arg(
+        json!({
+            "symbol_name": symbol_name,
+            "limit": 10
+        }),
+        "file",
+        file_path,
+    )
+}
+
+fn find_references_args(symbol_name: &str, file_path: Option<&str>) -> Value {
+    with_optional_string_arg(
+        json!({
+            "symbol_name": symbol_name,
+            "reference_type": "all",
+            "limit": 200
+        }),
+        "file",
+        file_path,
+    )
 }
 
 fn search_step(query: &str) -> RecommendedStep {
@@ -358,10 +387,9 @@ fn hydrate_step() -> RecommendedStep {
     }
 }
 
-fn optional_file_args(mut value: Value, file_path: Option<&str>) -> Value {
-    if let (Value::Object(map), Some(path)) = (&mut value, file_path) {
-        map.insert("file_path".to_string(), Value::String(path.to_string()));
-        map.insert("file".to_string(), Value::String(path.to_string()));
+fn with_optional_string_arg(mut value: Value, key: &str, option: Option<&str>) -> Value {
+    if let (Value::Object(map), Some(value)) = (&mut value, option) {
+        map.insert(key.to_string(), Value::String(value.to_string()));
     }
     value
 }
@@ -449,6 +477,10 @@ fn looks_like_target(value: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
+fn is_path_like_target(value: &str) -> bool {
+    value.contains('/') || value.contains('\\') || value.contains("::") || value.contains('.')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +490,13 @@ mod tests {
             .iter()
             .map(|step| step.tool.as_str())
             .collect()
+    }
+
+    fn step<'a>(plan: &'a InvestigationPlan, tool: &str) -> &'a RecommendedStep {
+        plan.recommended_steps
+            .iter()
+            .find(|step| step.tool == tool)
+            .unwrap_or_else(|| panic!("missing {tool} step in {:?}", step_tools(plan)))
     }
 
     #[test]
@@ -551,6 +590,123 @@ mod tests {
         assert_eq!(plan.intent, InvestigationIntent::SymbolLookup);
         let tools = step_tools(&plan);
         assert_eq!(tools.first(), Some(&"search_code"));
+    }
+
+    #[test]
+    fn lookup_containing_change_substring_stays_symbol_lookup() {
+        let plan = plan_code_investigation(
+            "where is exchange_rate defined?",
+            Some("exchange_rate"),
+            None,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(plan.intent, InvestigationIntent::SymbolLookup);
+        assert_eq!(step_tools(&plan).first(), Some(&"search_code"));
+    }
+
+    #[test]
+    fn module_summary_uses_path_like_target_as_file_path() {
+        let plan = plan_code_investigation(
+            "walk me through the public API",
+            Some("src/storage"),
+            None,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(plan.intent, InvestigationIntent::ModuleSummary);
+        assert_eq!(
+            step(&plan, "get_module_summary").arguments,
+            json!({
+                "file_path": "src/storage",
+                "group_by_kind": true
+            })
+        );
+    }
+
+    #[test]
+    fn module_summary_with_symbol_like_target_falls_back_to_search() {
+        let plan = plan_code_investigation(
+            "walk me through the public API",
+            Some("PathNormalizer"),
+            None,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(plan.intent, InvestigationIntent::ModuleSummary);
+        assert_eq!(step_tools(&plan), vec!["search_code"]);
+        assert_eq!(
+            step(&plan, "search_code").arguments,
+            json!({
+                "query": "walk me through the public API",
+                "limit": 5
+            })
+        );
+    }
+
+    #[test]
+    fn dependency_graph_arguments_match_tool_schema() {
+        let plan = plan_code_investigation(
+            "who imports this module?",
+            Some("src/storage"),
+            Some("src/storage/mod.rs"),
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(
+            step(&plan, "explore_dependency_graph").arguments,
+            json!({
+                "symbol_name": "src/storage",
+                "direction": "upstream",
+                "depth": 3,
+                "limit": 20
+            })
+        );
+    }
+
+    #[test]
+    fn definition_arguments_use_file_not_file_path() {
+        let plan = plan_code_investigation(
+            "where is PathNormalizer defined?",
+            Some("PathNormalizer"),
+            Some("src/path.rs"),
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(
+            step(&plan, "get_definition").arguments,
+            json!({
+                "symbol_name": "PathNormalizer",
+                "limit": 10,
+                "file": "src/path.rs"
+            })
+        );
+    }
+
+    #[test]
+    fn impact_arguments_use_file_path_not_file() {
+        let plan = plan_code_investigation(
+            "what breaks if I refactor PathNormalizer?",
+            Some("PathNormalizer"),
+            Some("src/path.rs"),
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(
+            step(&plan, "find_affected_code").arguments,
+            json!({
+                "symbol_name": "PathNormalizer",
+                "depth": 3,
+                "limit": 20,
+                "file_path": "src/path.rs"
+            })
+        );
     }
 
     #[test]

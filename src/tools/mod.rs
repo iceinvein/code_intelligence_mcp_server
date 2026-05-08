@@ -146,6 +146,19 @@ pub struct HydrateSymbolsTool {
 }
 
 #[macros::mcp_tool(
+    name = "plan_code_investigation",
+    description = "Recommend a code-intelligence workflow for a natural-language codebase question. Use this before Grep/Read when deciding whether the task needs search_code, find_references, find_affected_code, predict_impact, trace_data_flow, explore_dependency_graph, get_module_summary, summarize_file, or hydrate_symbols. This tool only recommends next tool calls; it does not execute them."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct PlanCodeInvestigationTool {
+    pub question: String,
+    pub target: Option<String>,
+    pub file_path: Option<String>,
+    /// Default 4, clamped to 1..=6.
+    pub max_steps: Option<u32>,
+}
+
+#[macros::mcp_tool(
     name = "report_selection",
     description = "Record selected search result feedback."
 )]

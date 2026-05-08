@@ -16,6 +16,7 @@ mod graph;
 mod index;
 mod learning;
 mod navigation;
+mod planning;
 mod search;
 mod state;
 

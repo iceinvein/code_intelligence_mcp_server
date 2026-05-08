@@ -1,0 +1,3381 @@
+{
+  "runs": [
+    {
+      "question_id": "self-q1",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The score-gap detection threshold is defined in `src/retrieval/mod.rs` at **line 1023**, with the value **`0.4`**:\n\n```rust\nif hits[i - 1].score > 0.0 && hits[i].score / hits[i - 1].score < 0.4 {\n```\n\nA ratio below 0.4 between consecutive results (a >2.5x drop) triggers truncation at that position, starting from scan position 3+. The same constant reappears at line 1038 for the post-gap fill minimum score threshold (`hits.last().score * 0.4`).",
+      "input_tokens": 4,
+      "output_tokens": 351,
+      "wall_ms": 11184,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 38842,
+      "cache_read_input_tokens": 37559,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "score.gap|gap.*threshold|0\\.4|score_gap",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation",
+            "type": "rust",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 76405,
+      "judge_justification": "Answer B correctly identifies the threshold (0.4 at line 1023) with code snippet and explains the 2.5x drop and position 3+ constraint. However, it's less detailed on the gap-fill mechanism\u2014the phrase 'hits.last().score * 0.4' is vague (should clarify this is the last *kept* result, not the absolute last hit). Concise but loses points for less comprehensive explanation of the line 1038 floor behavior. Also misses the undefined bonus criterion about sub-query coverage.",
+      "mech_score": 1.0,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q1",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The score-gap detection threshold is defined at **`src/retrieval/mod.rs`, line 1023**, with a value of **`0.4`**:\n\n```rust\nif hits[i - 1].score > 0.0 && hits[i].score / hits[i - 1].score < 0.4 {\n```\n\nWhen the ratio between a result's score and the previous result's score drops below 0.4 (a ~2.5x+ drop), the pipeline truncates from that position onward. The check only applies starting at position 3 (index `i >= 3`), so the top 3 results are never dropped. The same `0.4` constant also appears at line 1038 as the post-gap gap-fill floor: backfill candidates must score above `last_kept.score * 0.4` to be re-injected.",
+      "input_tokens": 6,
+      "output_tokens": 647,
+      "wall_ms": 25145,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 20058,
+      "cache_read_input_tokens": 134898,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "0\\.4|score.gap|gap.*thresh|thresh.*gap",
+            "path": "src/retrieval/ranking",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "score.gap|gap_ratio|gap_thresh|consecutive|trailing|drop_ratio|ratio.*0\\.\\|0\\.4.*ratio",
+            "path": "src/retrieval",
+            "output_mode": "content",
+            "-n": true,
+            "-i": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/mod.rs",
+            "offset": 1010,
+            "limit": 35
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 154962,
+      "judge_justification": "Answer A provides the complete picture: correct citation (src/retrieval/mod.rs line 1023), correct threshold value (0.4), code snippet, explanation of the ~2.5x drop ratio, position 3+ trigger condition, and importantly, details about the gap-fill mechanism (line 1038, backfill candidates must exceed last_kept.score * 0.4). Comprehensive and accurate. Misses the vague rubric bonus about sub-query coverage interaction, but that criterion is not clearly explained in the rubric itself.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q2",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "`src/indexer/pipeline/mod.rs` \u2014 specifically `IndexPipeline::generate_embeddings_for_orphaned_symbols` defined at line 747. The startup call is in `src/main.rs` at line 617, where it's spawned as a background task after the server initializes. The same method also runs unconditionally at the end of normal indexing (line 667 of `pipeline/mod.rs`) to catch any symbols that parallel indexing left without LanceDB vectors.",
+      "input_tokens": 4,
+      "output_tokens": 307,
+      "wall_ms": 24214,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 19959,
+      "cache_read_input_tokens": 57486,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "generate_embeddings_for_orphaned_symbols",
+            "output_mode": "content",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 77449,
+      "judge_justification": "Addresses all three rubric requirements: (1) correctly names the function in the right module and file, (2) explains backfilling LanceDB vectors clearly, (3) explicitly covers BOTH startup (line 617, background task) AND post-indexing (line 667) execution. Provides specific line numbers for both locations, demonstrating complete understanding of the dual-run pattern required by the rubric.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q2",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The startup recovery is in `src/main.rs` (line 617), which calls `generate_embeddings_for_orphaned_symbols()` defined in `src/indexer/pipeline/mod.rs` (line 747) on the `IndexPipeline` struct. The function runs as a background `tokio::spawn` task after parallel indexing completes, ensuring LanceDB vectors are regenerated for any symbols whose embedding data was lost.",
+      "input_tokens": 8,
+      "output_tokens": 417,
+      "wall_ms": 14657,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 18825,
+      "cache_read_input_tokens": 134678,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "generate_embeddings_for_orphaned_symbols startup recovery",
+            "context": "snippets",
+            "limit": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "generate_embeddings_for_orphaned_symbols",
+            "output_mode": "content",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 153511,
+      "judge_justification": "Names the function and file correctly with appropriate startup context (main.rs line 617, tokio::spawn background task), and explains the backfilling purpose clearly. However, critically omits the post-indexing run mentioned in the rubric requirement ('Should mention it runs both at startup...and post-indexing'). Loses 3 points for this material omission despite accurate startup details.",
+      "mech_score": 1.0,
+      "judge_score": 6
+    },
+    {
+      "question_id": "self-q3",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "`TANTIVY_SCHEMA_VERSION` is defined at **`src/storage/tantivy.rs` line 18** as the string constant `\"21\"`.\n\n**How it works:** On startup, the code reads a `version` file from the on-disk index directory and compares it against `TANTIVY_SCHEMA_VERSION` (lines 188-224). If the stored version exists but differs from the constant, the entire Tantivy index directory is deleted (`remove_dir_all`) and rebuilt from scratch, then the new version string is written back to the `version` file (line 224).\n\n**What triggers a rebuild:** Bumping the constant value in `tantivy.rs` (e.g., from `\"20\"` to `\"21\"`) causes the mismatch check at line 192 to fire on next startup, wiping the index. However, after the wipe only *changed* files get re-upserted (SQLite tracks file modification times), so a `refresh_index` MCP call is needed afterward to force all symbols back into the fresh index.",
+      "input_tokens": 4,
+      "output_tokens": 393,
+      "wall_ms": 14522,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 22643,
+      "cache_read_input_tokens": 57489,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "TANTIVY_SCHEMA_VERSION",
+            "output_mode": "content",
+            "context": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 80136,
+      "judge_justification": "Meets all rubric requirements concisely: names tantivy.rs, names TANTIVY_SCHEMA_VERSION, explains the wipe, and explicitly clarifies the critical nuance ('only *changed* files get re-upserted') that aligns with MEMORY.md. Correctly notes SQLite tracks modification times as the reason for this behavior and emphasizes the need for refresh_index to force all symbols. More conservative line citations (188-224 as a range) rather than specific potentially-hallucinated numbers. Trade-off: less structural detail than A, but accuracy and proper caveats outweigh verbose detail per rubric emphasis on correctness.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q3",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The answer is fully in `src/storage/tantivy.rs`:\n\n- **Where it lives:** `TANTIVY_SCHEMA_VERSION` is a `const &str` defined at line 18 of `src/storage/tantivy.rs`, currently `\"21\"`.\n\n- **What triggers a rebuild:** In `TantivyIndex::open_or_create` (line 170), the server reads a `schema_version` file from the index directory on startup (line 186). If that file exists and its content differs from the constant (line 191-192), `was_recreated` is set to `true`, the entire index directory is deleted (line 199-210), and a fresh index is created. The `was_recreated` flag (field on `TantivyIndex`, line 58) signals the indexing pipeline to force a full re-upsert of all symbols into the new empty index. After creation, the current version string is written back to `schema_version` (line 224).\n\nIn short: bump the constant in `tantivy.rs`, rebuild and restart the server, then call `refresh_index` to re-populate the now-empty index.",
+      "input_tokens": 9,
+      "output_tokens": 736,
+      "wall_ms": 21936,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 61212,
+      "cache_read_input_tokens": 134791,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "TANTIVY_SCHEMA_VERSION",
+            "context": "snippets"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "TANTIVY_SCHEMA_VERSION",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/storage/tantivy.rs",
+            "offset": 1,
+            "limit": 240
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 196012,
+      "judge_justification": "Meets rubric requirements: names tantivy.rs, the TANTIVY_SCHEMA_VERSION constant, explains the wipe via deletion, and describes a re-upsert pathway. However, the claim about 'force a full re-upsert of all symbols into the new empty index' is inaccurate per MEMORY.md ('unchanged files won't be re-upserted; SQLite tracks file times'). This contradicts Answer A's own mention of calling refresh_index afterward. The specific line citations (170, 186, 191-192, 199-210) and the `was_recreated` field reference are unverified and could be hallucinated. Type notation `const &str` is imprecise (should be '&str' is the type, 'const' is the keyword).",
+      "mech_score": 1.0,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q4",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The cap is implemented in `src/retrieval/framework_patterns.rs` at line 23, with enforcement at lines 125 and 147.\n\n**How it works:**\n\n`MAX_FRAMEWORK_INJECTIONS = 8` limits how many *new* parent symbols can be injected per query. The function `inject_framework_patterns` works in two modes for matched framework patterns:\n\n1. **Boost** (symbol already in results): adds `+0.15` to the existing hit's score. This is uncapped.\n2. **Inject** (symbol not yet in results): creates a new `RankedHit` at `top_score * 0.7` and appends it to the hits vec. This increments `injection_count` and stops once it hits 8.\n\nThe cap is checked at two points: before iterating patterns for a file (line 125) and before inserting a new hit (line 147). Boosts are not counted toward the cap.\n\n**Why 8 specifically:** The comment on line 19-22 explains the motivation. Route-heavy codebases can have 18+ router symbols. Without the cap, all of them flood the result pool, pushing genuine BM25 results out of the `pool_size` window. This also inflates the score floor, causing sub-query coverage injections to trigger score-gap removal (the cascade bug documented in MEMORY.md as the R124 Q3 fix).",
+      "input_tokens": 5,
+      "output_tokens": 595,
+      "wall_ms": 20110,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 20747,
+      "cache_read_input_tokens": 95721,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "MAX_FRAMEWORK_INJECTIONS",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/framework_patterns.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 116473,
+      "judge_justification": "Concise, focused answer that directly addresses the cap mechanism. Correctly identifies the constant, explains boost vs. inject distinction, notes that only injections count toward the cap, and explains why 8 was chosen (prevents flooding + score-gap cascade). Efficient delivery of core concepts without tangential details. Minor: Could reference MEMORY.md for context on the R124 cascade bug.",
+      "mech_score": 1.0,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q4",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The framework pattern injection cap is implemented in `src/retrieval/framework_patterns.rs` at line 23:\n\n```rust\nconst MAX_FRAMEWORK_INJECTIONS: usize = 8;\n```\n\n**How it works:**\n\n`inject_framework_patterns` is called during retrieval to surface symbols that live in framework-specific tables (routes, WebSocket handlers, middleware, Convex functions, etc.) that BM25/vector search can't reach directly. The function:\n\n1. **Matches patterns to the query** (lines 37-117): Loads up to 200 framework patterns from SQLite and checks each one's `kind` against keyword aliases in the query (e.g., `\"route\"` fires on \"route\", \"endpoint\", or \"api\"; `\"websocket\"` fires on \"ws\" or \"socket\"). Route patterns without an HTTP path starting with `/` are filtered as Elysia false-positives.\n\n2. **Finds the smallest enclosing symbol** (lines 133-138): For each matched pattern's `(file, line)`, it finds the tightest-spanning symbol in that file whose `start_line <= line <= end_line`.\n\n3. **Boosts or injects** (lines 141-163):\n   - If the symbol is already in the results (`seen` set): adds `+0.15` to its score.\n   - If it's new: injects it at `top_score * 0.7` and increments `injection_count`.\n   - The cap is checked at **two points**: once at the outer file-iteration loop (line 125) and once inside the inner symbol loop (line 147), so it can break out of both levels.\n\n**Why the cap exists** (lines 19-22 doc comment): Without it, a query like \"API route handlers\" in a route-heavy codebase could inject 18+ router symbols. That floods the pool, pushes genuine BM25 results past the `pool_size` window, and inflates the score floor to the point where sub-query coverage injections trigger score-gap removal (the cascade described in MEMORY.md R124).",
+      "input_tokens": 10,
+      "output_tokens": 1172,
+      "wall_ms": 32754,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 27698,
+      "cache_read_input_tokens": 226339,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code,mcp__code-intelligence__get_definition",
+            "max_results": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "MAX_FRAMEWORK_INJECTIONS framework pattern injection cap",
+            "context": "snippets"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "MAX_FRAMEWORK_INJECTIONS",
+            "output_mode": "content",
+            "context": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/framework_patterns.rs",
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/framework_patterns.rs",
+            "offset": 80,
+            "limit": 90
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 254047,
+      "judge_justification": "Comprehensive and informative but somewhat verbose per rubric preference for conciseness. Includes substantial implementation details (pattern matching lines 37-117, symbol-finding lines 133-138, Elysia filtering) that provide useful context but aren't strictly necessary to answer 'how does the cap work?' The core mechanism (stop at 8 injections) gets lost in broader pattern-injection workflow explanation. Correctly identifies constant and explains why the cap exists. ~250 extra words of context reduces conciseness score despite accuracy.",
+      "mech_score": 1.0,
+      "judge_score": 7
+    },
+    {
+      "question_id": "self-q5",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "`src/path/mod.rs` defines the path normalization API. Per the CLAUDE.md, it exports `PathNormalizer`, `Utf8PathBuf`, `Utf8Path`, and `PathError`, centralizing all path operations (normalization for comparison, relative path conversion, and security validation against path escaping) used across the indexer.",
+      "input_tokens": 4,
+      "output_tokens": 137,
+      "wall_ms": 9666,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 17707,
+      "cache_read_input_tokens": 57484,
+      "tool_calls": [
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/path/**"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 75195,
+      "judge_justification": "Meets most requirements but fails to explicitly mention camino, which the rubric specifically requires ('camino-typed paths'). Correctly identifies file, PathNormalizer, and Utf8PathBuf/Utf8Path, with good operational clarity. More concise than A, but incompleteness (omitted camino reference) outweighs conciseness gain under strict rubric standards.",
+      "mech_score": 0.9,
+      "judge_score": 7
+    },
+    {
+      "question_id": "self-q5",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The path normalization API is defined in **`src/path/mod.rs`**. It exports the core types used across the indexer:\n\n- `PathNormalizer` \u2014 centralized path operations (normalize, relativize, validate)\n- `Utf8PathBuf` / `&Utf8Path` \u2014 owned/borrowed UTF-8 typed paths (via `camino`)\n- `PathError` \u2014 structured error variants (`OutsideRepo`, `NonUtf8`)\n\nThis is confirmed by the CLAUDE.md, which explicitly documents the module and its API contract, and by the fact that it is the only file under `src/path/`.",
+      "input_tokens": 8,
+      "output_tokens": 424,
+      "wall_ms": 16604,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 18539,
+      "cache_read_input_tokens": 134503,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__get_definition",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_definition",
+          "args": {
+            "symbol_name": "PathNormalizer"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/path/**"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 153050,
+      "judge_justification": "Meets all rubric requirements: cites src/path/mod.rs, mentions PathNormalizer, explicitly identifies Utf8PathBuf/Utf8Path as camino-typed paths with '(via camino)'. Includes additional relevant details (PathError variants, specific operations). Only weakness: final sentence about being 'the only file under src/path/' is speculative filler.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q6",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Here is how hybrid search merges Tantivy and LanceDB results:\n\n**Three ranked lists, one RRF pass** (`src/retrieval/ranking/rrf.rs`, `src/retrieval/hybrid.rs`)\n\n1. **Tantivy (BM25)** runs `retriever.tantivy.search(query, k)` and returns keyword-scored hits.\n2. **LanceDB (vector)** runs `retriever.vectors.search(&query_vector, k)` and returns hits with a cosine distance. The distance is immediately converted to a similarity score: `1.0 / (1.0 + distance)` (hybrid.rs lines 172\u2013173).\n3. **Graph (PageRank)** takes the keyword hits and re-sorts them by incoming edge counts from SQLite (`get_graph_ranked_hits`, rrf.rs lines 105\u2013123).\n\n**RRF formula** (`reciprocal_rank_fusion`, rrf.rs lines 36\u201392):\n\n```\nscore(symbol) = \u03a3  weight_source / (60 + rank_in_source + 1)\n```\n\nThe constant `k=60` prevents rank-1 hits from dominating. Each source's contribution is summed per symbol ID, so a symbol appearing in both BM25 and vector results gets contributions from both. Symbols not present in a source simply get no contribution from it.\n\n**Dynamic weights** (`rrf_weights`, hybrid.rs lines 424\u2013438): For natural-language queries, vector weight is multiplied by 1.5 and keyword weight by 0.5 (BM25 matches random identifiers on NL queries). For code-snippet queries, weights stay at their config defaults (`rrf_keyword_weight` / `rrf_vector_weight` / `rrf_graph_weight`).\n\n**Post-RRF normalization** (`normalize_rrf_scores`, hybrid.rs lines 442\u2013462): The fused scores are linearly rescaled to a 0\u201310 range so they are competitive with the additive structural adjustments applied next.\n\n**Structural scoring** follows (`apply_structural_scoring`, hybrid.rs lines 474\u2013580): term coverage, definition bias, symbol importance, test penalties, and intent multipliers are all additive/multiplicative adjustments layered on top of the normalized RRF score. The final sort is by this composite score.\n\n**Multi-query path** (hybrid.rs lines 253\u2013421): When a query is decomposed into sub-queries, each sub-query runs its own BM25 pass and the combined hit lists are fed into a single unified RRF pass, while vector search uses only the raw original query (one embedding for full intent).",
+      "input_tokens": 5,
+      "output_tokens": 995,
+      "wall_ms": 26341,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 28472,
+      "cache_read_input_tokens": 95353,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "rrf|reciprocal_rank|hybrid",
+            "path": "src/retrieval",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/hybrid.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/ranking/rrf.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 123830,
+      "judge_justification": "Accurate and complete explanation of RRF merging BM25/LanceDB with dynamic weighting, post-RRF normalization, and structural signal scoring. Includes useful extra detail on multi-query decomposition. However, verbose presentation with less clear structure; multi-query detail is tangential to the core question. Misses cross-encoder reranker bonus.",
+      "mech_score": 0.9333333333333333,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q6",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Here is a precise explanation of how hybrid search merges Tantivy and LanceDB results.\n\n---\n\n**Reciprocal Rank Fusion (RRF)** is the mechanism, implemented in `src/retrieval/ranking/rrf.rs` (`reciprocal_rank_fusion`, line 36) and called from `src/retrieval/hybrid.rs` (line 193/379).\n\n**Step 1: Run three independent ranked lists in parallel**\n- **Tantivy** (BM25 keyword search): `retriever.tantivy.search(query, k)` (hybrid.rs:82)\n- **LanceDB** (vector search): `retriever.vectors.search(&query_vector, k)` (hybrid.rs:97). LanceDB distances are converted to similarity scores via `1.0 / (1.0 + distance)` (hybrid.rs:172).\n- **Graph** (PageRank): the keyword hits are re-sorted by PageRank scores from SQLite (`get_graph_ranked_hits`, rrf.rs:105).\n\n**Step 2: Apply RRF formula**\nFor each result in each list, the formula `weight / (k + rank + 1)` is computed, where `k=60` (rrf.rs:11) prevents dominance by rank-1. Scores for the same symbol ID are summed across all three lists (rrf.rs:49-73). A symbol appearing at rank 1 in both BM25 and vector search gets ~2x the score of one appearing in only one list.\n\n**Step 3: Dynamic weights by query type** (`rrf_weights`, hybrid.rs:424)\nFor natural-language queries (conceptual questions), keyword weight is halved (`* 0.5`) and vector weight is boosted (`* 1.5`) because BM25 often matches irrelevant identifiers in those cases. Code-snippet queries use base config weights.\n\n**Step 4: Normalize to 0-10** (`normalize_rrf_scores`, hybrid.rs:442)\nThe RRF scores are min-max normalized to the 0-10 range so subsequent additive structural signals (test penalties, export boosts, term coverage, etc.) are competitive with the base RRF score.\n\n**Step 5: Structural scoring on top**\n`apply_structural_scoring` then runs on the merged list, applying signals like test-file penalties, intent multipliers, export boost, and sub-query coverage before final ranking and diversity enforcement.",
+      "input_tokens": 12,
+      "output_tokens": 1540,
+      "wall_ms": 43016,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 26805,
+      "cache_read_input_tokens": 309279,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "RRF reciprocal rank fusion hybrid merge Tantivy LanceDB",
+            "limit": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "rrf|reciprocal_rank|hybrid",
+            "path": "src/retrieval",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "fn hybrid_search|rrf_score|reciprocal_rank",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/ranking/rrf.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/hybrid.rs",
+            "limit": 220
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "fn rrf_weights|fn normalize_rrf_scores",
+            "path": "src/retrieval",
+            "type": "rust",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/hybrid.rs",
+            "offset": 424,
+            "limit": 35
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 336096,
+      "judge_justification": "Excellent explanation of RRF merging BM25/LanceDB with dynamic weighting and structural signals. Clear numbered 5-step structure makes the answer significantly more readable and followable. More precise terminology ('min-max normalized', explicit k=60 impact). Concise without sacrificing accuracy. Misses cross-encoder reranker bonus, but otherwise covers rubric requirements completely.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q7",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The code is clear. Here is a concise explanation:\n\n---\n\n**Sub-query coverage check** (`src/retrieval/mod.rs`, lines 738-968)\n\nFor compound queries (3+ words joined by \"and\"), `decompose_query` splits them into branches (e.g., \"roles and permissions\" \u2192 `[\"roles\", \"permissions\"]`). After the main ranking pipeline, the check scans the final `hits` list to verify each branch has at least one representative result. If a branch has no match, the system injects the best candidate from the pre-expansion pool (or falls back to a direct BM25 search). This prevents one dominant branch from crowding out the other entirely.\n\n**Why stem deduplication was added in R1044** (lines 758-771)\n\n`normalize_and_expand_query` calls `expand_stems`, which appends stem variants to the query string. So a single input word like \"permissions\" becomes both `\"permissions\"` and `\"permission\"` in the normalized query. When `raw_terms` is built from that, both forms land in the list.\n\nThe 2-term coverage check then counts how many `raw_terms` match a candidate's name/path. A filename like `permissions.rs` contains \"permission\" (substring of \"permissions\"), so both `\"permissions\"` and `\"permission\"` match, yielding a count of 2 from just one real word. This satisfied the \"2+ distinct term matches\" threshold with a single vocabulary item, defeating the anti-false-positive guard.\n\nThe fix (lines 762-771) sorts `raw_terms` by length, then iterates and skips any term that starts with an already-accepted shorter term (`t.starts_with(existing)`). So `\"permission\"` is kept and `\"permissions\"` is dropped. The coverage check then only counts genuinely distinct root terms, restoring the intent of the 2-term requirement.",
+      "input_tokens": 6,
+      "output_tokens": 1095,
+      "wall_ms": 27773,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 24160,
+      "cache_read_input_tokens": 136342,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "sub.?query|subquery|sub_query",
+            "path": "src/retrieval",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "normalize_query|stem.*dedup|dedup.*stem",
+            "path": "src/retrieval",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "sub_query|subquery|coverage",
+            "path": "src/retrieval/mod.rs",
+            "output_mode": "content",
+            "context": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "normalize_query|stem",
+            "path": "src/retrieval/query.rs",
+            "output_mode": "content",
+            "context": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/mod.rs",
+            "offset": 743,
+            "limit": 220
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 160508,
+      "judge_justification": "Answer B hits all three rubric points concisely and clearly: explains sub-query coverage with 2-term matching, describes normalize_and_expand_query adding stems, and explains the dedup fix with the exact logic. The explanation is direct and readable. Minor issue: says 'compound queries (3+ words joined by and)' which is imprecise\u2014the actual threshold is decomposition on 'and' regardless of word count (e.g., 'roles and permissions' is 3 words, but the mechanism isn't word-count-dependent). This ambiguity is minor and doesn't affect the core explanation. Aligns well with the rubric's preference for conciseness.",
+      "mech_score": 0.7000000000000001,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q7",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "I have all the evidence needed. Here is the explanation:\n\n---\n\n**Sub-query coverage check** (`src/retrieval/mod.rs`, lines 738-968)\n\nWhen a query is compound (split on \"and\", producing `sub_queries.len() > 1`), the pipeline checks that each branch has at least one representative in the final top-N. Without this, a dominant branch (e.g., \"invitation\") can crowd out the secondary branch (\"onboarding\") entirely.\n\nFor each sub-query branch, the check:\n1. Extracts \"significant\" terms (>3 chars, not stopwords).\n2. Expands them with hyphen-split parts and basic stemming.\n3. Scans the current top-N: if `raw_terms.len() >= 2`, it requires **2+ distinct raw term matches** in a hit's name or path. (A single-term sub-query only needs 1 match.) This 2-term threshold was added in R120 to stop \"request\" alone from satisfying the \"request throttling\" branch.\n4. If no hit satisfies the branch, it searches the pre-expansion candidate pool (and falls back to a direct BM25 search) for the best candidate and injects it, replacing the lowest-scoring result.\n\n---\n\n**Why stem deduplication was added in R1044** (lines 758-771)\n\n`normalize_query` (called earlier in the pipeline) adds morphological stems: \"permissions\" \u2192 adds \"permission\" to the term list. When the coverage check built `raw_terms` from the already-normalized sub-query text, both \"permissions\" **and** \"permission\" ended up in `raw_terms`.\n\nThe 2-term requirement then backfired: a symbol like `permissions.rs` would match \"permissions\" and \"permission\" in the path, satisfying `match_count >= 2` from what is semantically a single vocabulary word. This meant a path like `permissions.rs` could falsely satisfy the \"role-based permissions\" sub-query without containing anything about \"role\" or \"role-based\".\n\nThe fix (lines 762-771) deduplicates before the 2-term check: sort `raw_terms` by length (shortest first), then fold, skipping any term that `starts_with` an already-accepted shorter term. So \"permission\" is kept and \"permissions\" is dropped, because \"permissions\".starts_with(\"permission\"). The 2-term check then correctly requires two *distinct* vocabulary concepts rather than two surface forms of the same word.",
+      "input_tokens": 10,
+      "output_tokens": 1384,
+      "wall_ms": 36945,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 23657,
+      "cache_read_input_tokens": 215669,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code,mcp__code-intelligence__get_definition",
+            "max_results": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "sub-query coverage check stem deduplication",
+            "limit": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "sub.?query|subquery|coverage",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "sub.?quer|coverage|stem.?dedup|dedup.*stem",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/mod.rs",
+            "output_mode": "content",
+            "context": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/mod.rs",
+            "offset": 743,
+            "limit": 130
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 239336,
+      "judge_justification": "Answer A correctly explains all three rubric points with solid detail: sub-query coverage's 2-term requirement, normalize_query adding stems (permissions\u2192permission), and the dedup fix with the exact mechanism (sort by length, skip terms that start_with shorter terms). However, the rubric explicitly rewards conciseness over verbose answers, and Answer A includes extra context (R120 history, detailed injection flow, line numbers) that, while helpful, adds length without being required by the rubric. Accuracy is perfect; clarity is high; but verbosity costs points.",
+      "mech_score": 0.7000000000000001,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q8",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "That's enough to give a complete answer. Here's the full flow:\n\n---\n\n**`refresh_index` invocation walkthrough**\n\n**1. MCP dispatch** (`src/server/mod.rs:197`)\nThe tool call arrives at `dispatch_async!` which routes to `handle_refresh_index`. If the call comes through the task-augmented path (e.g. from a client that supports MCP tasks), `dispatch_task_augmented_call` (`server/mod.rs:56`) wraps it in a `create_task` future with a 300s TTL and 2s poll interval, so the caller can poll for completion instead of blocking.\n\n**2. Leader guard** (`src/handlers/index.rs:14`)\nIf the instance is a follower (stdio leader-election), it immediately returns `FOLLOWER_INSTANCE` \u2014 only the leader may write.\n\n**3. Branch: targeted vs full**\n- If `tool.files` is set: paths are validated within base via `PathNormalizer`, then `indexer.index_paths()` is called (line 41).\n- Otherwise: `indexer.index_all()` is called (line 43).\n\n**4. `index_all`** (`src/indexer/pipeline/mod.rs:137`)\n- Optionally runs package/repository detection (`index_packages_and_repositories`, line 149).\n- Scans all `repo_roots` via `scan_files` to collect matching paths (line 160).\n- Delegates to `index_files(files, cleanup_deleted=true)`.\n\n**5. `index_files`** (`src/indexer/pipeline/mod.rs:540`) \u2014 the core pipeline:\n\n   a. **Tantivy schema check** (line 561): if Tantivy was recreated (schema version bump), all file fingerprints are cleared to force full re-index.\n\n   b. **Deleted file cleanup** (line 573): compares scanned files against stored fingerprints. For each missing file: SQLite rows (symbols, usage examples, todos, docstrings, decorators, fingerprint) are deleted, Tantivy and LanceDB records are purged.\n\n   c. **Phase 1 \u2014 Parse** (line 626): `parse::parse_files` runs in a Rayon thread pool (via `spawn_blocking`). For each file it checks the stored fingerprint; unchanged files return `ParseResult::Unchanged`, new/modified files are parsed by Tree-Sitter and return `ParseResult::Parsed` with extracted `SymbolRow`s.\n\n   d. **Phase 2 \u2014 Write** (line 657): `write::write_batch` writes all parsed symbol rows to SQLite and Tantivy in a single batched transaction.\n\n   e. **Phase 3 \u2014 Embed + PageRank concurrently** (line 667 / `tokio::join!` at 696):\n   - `generate_embeddings_for_orphaned_symbols`: queries SQLite for symbols lacking `similarity_clusters` entries, batches 200 at a time. Trivial symbols (file-kind, tiny unexported helpers, test symbols) get a `__skipped__` placeholder. For the rest, `embed_and_build_vector_records` builds a semantic text header, checks the embedding cache, calls the llama.cpp embedder for cache misses, then pipelines LanceDB writes in a background task while the next batch is being embedded. Cluster keys are derived from the vector.\n   - PageRank: reads the call/type graph from SQLite and recomputes scores via `pagerank::compute_and_store_pagerank` (only when files were actually indexed or deleted).\n\n**6. Post-index housekeeping** (back in `index_all`, line 187):\n- Prometheus metrics are updated.\n- If any files changed, `vectors.optimize()` compacts LanceDB fragments to prevent unbounded growth.\n- `persist_index_run_metrics` records the run row in SQLite (`index_runs` table).\n\n**7. Return** (`handlers/index.rs:46`): `{ ok: true, stats: { files_scanned, files_indexed, files_unchanged, files_skipped, files_deleted, symbols_indexed } }`.",
+      "input_tokens": 10,
+      "output_tokens": 1841,
+      "wall_ms": 45485,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 33897,
+      "cache_read_input_tokens": 298147,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "path": "src/handlers/index.rs",
+            "output_mode": "content",
+            "context": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "path": "src/server/mod.rs",
+            "output_mode": "content",
+            "context": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/index.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/indexer/**/*.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub async fn index_all|pub async fn index_paths",
+            "type": "rust",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 332054,
+      "judge_justification": "Equally comprehensive with tight technical depth. Covers all rubric elements with more granular implementation detail: __skipped__ placeholder for trivial symbols, semantic text header for embeddings, embedding cache checking, cluster key derivation from vectors, conditional PageRank execution (only if files changed). Explicitly names the index_runs table and mentions Prometheus metrics. Returns the actual function signature. Slightly more concise (~950 vs ~1050 words) while adding valuable specifics. Trade-off: lacks the summary table from A, but front-loads more actionable implementation knowledge.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q8",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Now I have a complete picture. Here's what happens when `refresh_index` is invoked:\n\n---\n\n## `refresh_index` flow\n\n### 1. MCP dispatch (`src/server/mod.rs`, line 197)\nThe MCP server routes the `refresh_index` tool call. In task-augmented mode (line 56\u201372) it wraps the handler in a `tokio::spawn` backed by a task store so the client can poll for completion. In synchronous mode it calls the handler directly.\n\n### 2. `handle_refresh_index` (`src/handlers/index.rs`, lines 9\u201350)\n- **Follower guard** (line 14): if `is_leader == false`, returns `FOLLOWER_INSTANCE` immediately, doing nothing.\n- **Selective vs full**: if `tool.files` is set, validates each path is within `base_dir` (via `PathNormalizer::validate_within_base`) and calls `indexer.index_paths(paths)`. Otherwise calls `indexer.index_all()`.\n\n### 3. `index_all` / `index_paths` (`src/indexer/pipeline/mod.rs`, lines 137 and 318)\n- `index_all` first runs **package/repo detection** if enabled (discovers `Cargo.toml`, `package.json`, etc. and upserts them into SQLite).\n- Calls `scan_files` for each configured repo root to build the file list.\n- Both paths converge on `index_files(files, cleanup_deleted)`.\n\n### 4. `index_files` (line 540) \u2014 the core pipeline\n1. **Dedup** scanned paths by canonical path.\n2. **Tantivy schema check** (line 561): if Tantivy was recreated (schema version mismatch), clears all file fingerprints so every file is treated as changed.\n3. **Cleanup deleted files** (when `cleanup_deleted=true`, i.e. `index_all`): diffs scanned set against SQLite fingerprints; for each missing file, deletes its symbols from SQLite, Tantivy, and LanceDB.\n4. **Phase 1 \u2014 Parse** (line 626): runs `parse::parse_files` via `spawn_blocking` (Rayon parallel). Returns `ParseResult::Parsed`, `Unchanged`, or `Skipped`. Unchanged files (fingerprint matches mtime+size) are skipped.\n5. **Phase 2 \u2014 Write** (line 657): `write::write_batch` writes parsed symbols to SQLite and Tantivy in a single-threaded batched commit.\n6. **Phase 3 \u2014 Embed + PageRank** (lines 667\u2013703) run concurrently via `tokio::join!`:\n   - `generate_embeddings_for_orphaned_symbols`: queries SQLite for symbols without `similarity_clusters` entries (in batches of 200), filters with `should_generate_embedding` (skips file-kind, tiny private, test symbols), embeds via the `Embedder` (llama.cpp/Metal or hash), writes vectors to LanceDB, upserts cluster keys to SQLite. I/O is pipelined: while batch N is being embedded, batch N-1's LanceDB write runs in a background task.\n   - `pagerank::compute_and_store_pagerank`: reads call/type edges from SQLite, computes PageRank, writes scores back.\n7. **LanceDB optimization** (line 194): if any files were indexed or deleted, compacts LanceDB fragments.\n8. **Metrics persistence** (`persist_index_run_metrics`): inserts an `IndexRunRow` into SQLite with timing and counts.\n\n### Summary of writes per invocation\n| Store | What's written |\n|---|---|\n| SQLite | Symbols, edges, file fingerprints, packages/repos, similarity_clusters, pagerank scores, index_run row |\n| Tantivy | BM25 documents for each symbol (upsert + commit) |\n| LanceDB | Vector records per embedded symbol + optional optimize/compact |",
+      "input_tokens": 12,
+      "output_tokens": 1927,
+      "wall_ms": 47436,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 33876,
+      "cache_read_input_tokens": 297077,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__get_definition,mcp__code-intelligence__get_call_hierarchy,mcp__code-intelligence__search_code",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_definition",
+          "args": {
+            "symbol_name": "refresh_index"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "path": "src/handlers/index.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "path": "src/server/mod.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/index.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub async fn index_all|pub async fn index_paths",
+            "type": "rust",
+            "output_mode": "content",
+            "context": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 330965,
+      "judge_justification": "Comprehensive walkthrough covering handler dispatch (MCP routing, task-augmented mode), leader guard, branching logic (index_paths vs index_all), full pipeline stages (scan\u2192parse\u2192write\u2192embed+pagerank). Good specifics on fingerprint-based change detection, phase 3 concurrent execution, and embedding batching. Clearly explains schema-bump trigger for Tantivy repopulation. Strength: summary table organizing writes by store. Minor: missing some implementation details like __skipped__ placeholder for trivial symbols and embedding cache behavior.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q9",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The script works as follows:\n\n**Two-server comparison setup (lines 199-215):** It spawns two MCP server processes side-by-side over stdio: the published `@iceinvein/code-intelligence-mcp` (via `npx`) as \"before\", and the local `target/release` binary as \"after\". Each gets its own isolated temp directory for the SQLite DB, LanceDB vectors, and Tantivy index. Both servers index the same repo (`BASE_DIR = REPO_ROOT`) with `EMBEDDINGS_BACKEND=hash` (no real model needed) and `LLM_ENABLED=false`.\n\n**Async stdout reader (lines 49-69):** `McpClient._read_stdout` runs in a background thread, reading newline-delimited JSON-RPC responses. For each response it extracts `result.content[0].text` (the tool's actual payload string) and stores it in `_tool_payloads[id]`. The raw JSON-RPC envelope is also stored separately.\n\n**Measurement (lines 236-244):** For each of the 16 test cases in `CASES` (covering `search_code` at multiple limits/context modes, `get_definition`, `find_references`, `get_call_hierarchy`, etc.), `call_tool` sends a JSON-RPC `tools/call` request and polls `_tool_payloads` until the response arrives or a 120s timeout elapses. The size is simply `len(payload)` -- the byte length of the `content[0].text` string extracted from the response.\n\n**Reporting (lines 247-256):** Results are printed as a table: before-bytes, after-bytes, absolute delta, and percentage change per tool, plus a TOTAL row. This lets you see at a glance whether a local change bloated or shrunk any tool's response payload relative to the published version.",
+      "input_tokens": 5,
+      "output_tokens": 624,
+      "wall_ms": 24252,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 21635,
+      "cache_read_input_tokens": 95167,
+      "tool_calls": [
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "**/bench_payload_sizes.py"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/scripts/bench_payload_sizes.py"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 116807,
+      "judge_justification": "Comprehensive and correct, including operational configuration details (temp dirs, EMBEDDINGS_BACKEND=hash, LLM_ENABLED=false) that explain why the benchmark is fast. Clear explanation of async stdout reading and 120s timeout. Addresses all rubric points accurately. Slightly less structured than A and marginally longer, but the additional context is substantive rather than padding. Both answers equally satisfy the rubric; difference is depth vs. concision.",
+      "mech_score": 0.6000000000000001,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q9",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The script measures response sizes by running two MCP server instances in parallel and comparing the byte length of each tool's response payload.\n\n**Mechanics, step by step:**\n\n1. **Two servers, isolated data dirs** (`lines 199\u2013205`): It spawns a \"before\" server (the published `npx @iceinvein/code-intelligence-mcp`) and an \"after\" server (the local `target/release` binary), each with their own temporary SQLite/LanceDB/Tantivy directories. Both index the same repo root.\n\n2. **JSON-RPC over stdio** (`McpClient`, lines 28\u2013118`): `McpClient` wraps a `subprocess.Popen`, writing JSON-RPC `tools/call` messages to `stdin` and reading responses from `stdout` on a background thread. Responses are keyed by request `id`.\n\n3. **Two sizes captured per response** (`lines 39, 67\u201369`):\n   - `_raw_responses[id]` = the full JSON-RPC envelope (the entire line).\n   - `_tool_payloads[id]` = the text inside `result.content[0].text`, i.e. just the tool's returned JSON string.\n\n4. **Size = `len(payload)`** (`lines 239\u2013240`): For each test case, it calls the same tool on both servers and measures `len(content[0].text)` in bytes (UTF-8 encoded length of the inner JSON string). This is the \"payload size\" being benchmarked.\n\n5. **Fixed test cases** (`CASES`, lines 160\u2013186`): 16 hardcoded tool calls covering `search_code` at various limits/contexts, `get_definition`, `find_references`, `get_call_hierarchy`, `get_type_graph`, `explore_dependency_graph`, `find_dead_code`, `find_affected_code`, `get_module_summary`, `get_file_symbols`, and `hydrate_symbols`.\n\n6. **Tabular output** (`lines 247\u2013256`): Prints before/after byte counts, absolute delta, and percentage change per tool, plus a grand total row. A `BENCH_DEBUG=1` env var logs the first 120 chars of each payload for inspection.\n\nThe key design choice is measuring only `content[0].text` (not the full envelope), so the benchmark reflects the actual structured data returned to the LLM agent, not protocol framing overhead.",
+      "input_tokens": 5,
+      "output_tokens": 766,
+      "wall_ms": 22818,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 22063,
+      "cache_read_input_tokens": 96012,
+      "tool_calls": [
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "**/bench_payload_sizes.py"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/scripts/bench_payload_sizes.py"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 118080,
+      "judge_justification": "Clear six-step structure with specific line references and accurate mechanism explanation. Correctly identifies payload measurement via len(content[0].text) and lists 11 specific tools tested. Good detail on what's captured vs. measured. However, omits operational context (EMBEDDINGS_BACKEND=hash, LLM_ENABLED=false) that shows how the script avoids model overhead during benchmarking. Slightly more concise than B, rewarding per rubric.",
+      "mech_score": 0.6000000000000001,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q10",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Five call sites would break. Here's the breakdown:\n\n**1. `src/path/mod.rs:241` \u2014 `validate_within_base`**\nCalls `self.relative_to_base(&normalized)?` with `?` to propagate `PathError`. With `Option`, `?` would convert to a `bool`/unit type error \u2014 but since the return type of `validate_within_base` is `Result<(), PathError>`, the `?` on `Option` would no longer compile directly (you'd need `.ok_or(PathError::\u2026)?`). This is the most critical breakage because `validate_within_base` exists solely to surface the `OutsideRepo` error variant.\n\n**2. `src/config.rs:1009` \u2014 `Config::path_relative_to_base`**\n```rust\nlet relative = normalizer.relative_to_base(path)?;\n```\nUses `?` to propagate into `Result<String>` (anyhow). With `Option`, `?` won't auto-convert \u2014 needs `.ok_or_else(|| anyhow!(\"\u2026\"))?`. This cascades to every caller of `path_relative_to_base`, including:\n\n**3. `src/indexer/pipeline/utils.rs:46` \u2014 `file_key`**\nCalls `config.path_relative_to_base(path).unwrap_or_else(|_| \u2026)`. The closure argument is `|_|` matching `anyhow::Error`; if the return became `Option`, this would need `.unwrap_or_else(|| \u2026)` (no argument).\n\n**4. `src/handlers/navigation.rs:106\u2013108` and `373\u2013375`** (two call sites)\nBoth use `.map(|p| p.to_string()).unwrap_or_else(|_| tool.file_path.clone())`. An `Option` has no `Err` branch, so `.unwrap_or_else(|_| \u2026)` doesn't compile; it would become `.unwrap_or_else(|| \u2026)` or `.unwrap_or(\u2026)`. These calls are resilient in intent (fall back to the original path on failure) but the error type annotation breaks compilation.\n\n**5. `src/main.rs:745\u2013749`**\nUses `.ok()` on the `Result`, which converts it to `Option`. If the return is already `Option`, calling `.ok()` would fail to compile (method doesn't exist on `Option<T>`).\n\n**Summary:** The `?` operator and `.unwrap_or_else(|_| \u2026)` closures are the dominant failure modes. The deepest semantic loss is in `validate_within_base` \u2014 it currently surfaces *which* `PathError` variant fired (`OutsideRepo` vs `NonUtf8`); `Option` drops that context entirely, breaking the security-validation contract documented in `src/path/mod.rs`.",
+      "input_tokens": 6,
+      "output_tokens": 1548,
+      "wall_ms": 36805,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 22280,
+      "cache_read_input_tokens": 138621,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "relative_to_base",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/config.rs",
+            "offset": 1004,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/navigation.rs",
+            "offset": 100,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/navigation.rs",
+            "offset": 368,
+            "limit": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/path/mod.rs",
+            "offset": 230,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/utils.rs",
+            "offset": 40,
+            "limit": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/main.rs",
+            "offset": 742,
+            "limit": 10
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 160907,
+      "mech_score": 0.8666666666666667,
+      "judge_score": 0
+    },
+    {
+      "question_id": "self-q10",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Here is a precise breakdown of every site that would fail to compile, plus one indirect cascade:\n\n---\n\n**1. `src/path/mod.rs:241` \u2014 `validate_within_base` (direct internal caller)**\n\n```rust\nself.relative_to_base(&normalized)?;\n```\n\nUses `?` in a function returning `Result<(), PathError>`. `?` on `Option` in a `Result`-returning context is a compile error (no `From<NoneError>` in stable Rust). This is the closest caller \u2014 it lives in the same file.\n\n---\n\n**2. `src/config.rs:1009` \u2014 `Config::path_relative_to_base` (wrapper method)**\n\n```rust\nlet relative = normalizer.relative_to_base(path)?;\nOk(relative.as_str().to_string())\n```\n\nSame `?`-on-`Option`-in-`Result` problem. This wrapper returns `anyhow::Result<String>`, so it won't compile. This is the most consequential break because everything else goes through this wrapper.\n\n---\n\n**3. `src/handlers/navigation.rs:106` and `373` (two call sites)**\n\n```rust\nnormalizer\n    .relative_to_base(&utf8_path)\n    .map(|p| p.to_string())\n    .unwrap_or_else(|_| tool.file_path.clone());\n```\n\n`Option::unwrap_or_else` takes `FnOnce() -> T` (no argument), not `FnOnce(E) -> T`. The `|_|` closure binding won't match \u2014 compile error. Affects both `get_definition` and `find_references` handler paths.\n\n---\n\n**4. `src/path/mod.rs` tests \u2014 multiple compile errors**\n\nLines 357, 431, 513\u2013515, 640 all call `result.is_err()`, and lines 751, 766 call `result.is_ok()`. `Option` has no `is_err()`/`is_ok()` methods (it has `is_none()`/`is_some()`). Every test that checks for failure semantics using `.is_err()` breaks.\n\n---\n\n**Indirect cascade: `src/indexer/pipeline/utils.rs:46` and `src/main.rs:745\u2013749`**\n\nOnce `Config::path_relative_to_base` is forced to change its return type from `Result<String>` to `Option<String>`:\n- `src/main.rs:745\u2013749` calls `.ok()` on the result \u2014 `.ok()` doesn't exist on `Option`, so it breaks.\n- `src/indexer/pipeline/utils.rs:46` uses `.unwrap_or_else(|_| ...)` \u2014 again the `|_|` closure won't match `Option::unwrap_or_else`'s zero-argument signature.\n\n---\n\n**Summary table:**\n\n| File | Lines | Break type |\n|---|---|---|\n| `src/path/mod.rs` | 241 | `?` on `Option` in `Result` fn |\n| `src/config.rs` | 1009 | `?` on `Option` in `Result` fn |\n| `src/handlers/navigation.rs` | 106, 373 | `unwrap_or_else(|_|)` \u2014 wrong closure arity |\n| `src/path/mod.rs` tests | 357, 431, 515, 640, 751, 766 | `.is_err()` / `.is_ok()` don't exist on `Option` |\n| `src/main.rs` (indirect) | 745\u2013749 | `.ok()` on `Option` (no such method) |\n| `src/indexer/pipeline/utils.rs` (indirect) | 46 | `unwrap_or_else(|_|)` \u2014 wrong closure arity |\n\nThe most structurally important break is `validate_within_base` (line 241) and `Config::path_relative_to_base` (line 1009) \u2014 both use `?` for error propagation, which is the primary reason callers rely on `Result` rather than `Option`.",
+      "input_tokens": 9,
+      "output_tokens": 3425,
+      "wall_ms": 61009,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 28180,
+      "cache_read_input_tokens": 179957,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__find_references,mcp__code-intelligence__get_definition",
+            "max_results": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__find_references",
+          "args": {
+            "symbol_name": "relative_to_base",
+            "reference_type": "all"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "relative_to_base",
+            "type": "rust",
+            "output_mode": "content",
+            "context": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "relative_to_base\\(&",
+            "type": "rust",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 208146,
+      "mech_score": 0.8666666666666667,
+      "judge_score": 0
+    },
+    {
+      "question_id": "self-q11",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Ruby is already implemented. Here is exactly how adding a new language extractor flows through the codebase, using Ruby as the concrete example:\n\n---\n\n**1. `Cargo.toml` \u2014 add the tree-sitter crate**\n`tree-sitter-ruby = \"0.23.1\"` (line 38). This brings in the compiled C grammar.\n\n**2. `src/indexer/parser.rs` \u2014 three changes**\n\n- Add a variant to the `LanguageId` enum (line 16: `Ruby`).\n- Map the file extension to that variant in `language_id_for_path` (line 33: `Some(\"rb\") => Some(LanguageId::Ruby)`).\n- Map the variant to its tree-sitter `Language` in `language_for_id` (line 52: `LanguageId::Ruby => tree_sitter_ruby::LANGUAGE.into()`).\n\n**3. `src/indexer/extract/ruby.rs` \u2014 implement the extractor**\nA public `extract_ruby_symbols(source: &str) -> Result<ExtractedFile>` function (line 27) uses `parser_for_id(LanguageId::Ruby)` and walks the tree-sitter CST to populate `ExtractedFile` with `ExtractedSymbol`s, imports, and type edges.\n\n**4. `src/indexer/extract/mod.rs` \u2014 expose the module**\n`pub mod ruby;` (line 23) makes it visible to the rest of the indexer.\n\n**5. `src/indexer/pipeline/parse.rs` \u2014 wire into the dispatch**\nThe `match language_id` block (line 133-148) routes `LanguageId::Ruby => extract_ruby_symbols(&source)`. From this point the extracted symbols flow identically through the rest of the pipeline: they are assigned stable IDs, converted to `SymbolRow`s, written to SQLite, indexed in Tantivy (BM25), and embedded into LanceDB (vectors).\n\n**6. `src/indexer/pipeline/scan.rs` \u2014 include in the file-accept filter**\n`LanguageId::Ruby` is listed in the `matches!` guard (line 116) so `.rb` files pass the \"is this a supported language?\" check during directory scanning.\n\n**7. `src/indexer/pipeline/utils.rs` \u2014 language string label**\n`language_string` returns `\"ruby\"` for `LanguageId::Ruby` (line 88), used when writing the `language` column to SQLite.\n\nIn short: the pattern is a 7-file change: `Cargo.toml`, `parser.rs` (enum + 2 match arms), a new `{lang}.rs` extractor, `extract/mod.rs`, `pipeline/parse.rs`, `pipeline/scan.rs`, and `pipeline/utils.rs`. All downstream storage, ranking, and MCP tools operate on the language-agnostic `SymbolRow`/`ExtractedFile` types and require no changes.",
+      "input_tokens": 8,
+      "output_tokens": 1826,
+      "wall_ms": 36755,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 25737,
+      "cache_read_input_tokens": 226339,
+      "tool_calls": [
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/indexer/extract/*.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/extract/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/parser.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/extract/ruby.rs",
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "extract_symbols|Ruby|LanguageId::Ruby",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer",
+            "glob": "*.rs",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/parse.rs",
+            "limit": 80,
+            "offset": 120
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/scan.rs",
+            "limit": 40,
+            "offset": 105
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/utils.rs",
+            "limit": 30,
+            "offset": 75
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "tree-sitter-ruby",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/Cargo.toml",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 252084,
+      "judge_justification": "Covers all 4 rubric items correctly with specific line numbers. However, claims a '7-file change' pattern (adding pipeline/scan.rs, pipeline/utils.rs beyond the documented 4 steps) when CLAUDE.md explicitly lists only 4 steps for 'Adding a New Language.' These extra files may be necessary, but claiming they're required without documentation support invites hallucination penalties. Critically misses the INDEX_PATTERNS gap: Ruby files would silently be skipped by the indexer unless INDEX_PATTERNS is updated, a real operational gotcha for users.",
+      "mech_score": 1.0,
+      "judge_score": 6
+    },
+    {
+      "question_id": "self-q11",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Ruby is already fully implemented in this codebase. Here is the exact flow a new language extractor takes, illustrated by how Ruby was actually added:\n\n---\n\n## The 4-touch flow for a new language extractor\n\n### 1. `Cargo.toml` \u2014 add the tree-sitter crate\nAdd `tree-sitter-ruby = \"...\"` (or whatever the crate name is) as a dependency. This gives the Rust binding to the grammar.\n\n---\n\n### 2. `src/indexer/parser.rs` \u2014 extend the enum and two match arms\nThree changes in one file:\n\n- **`LanguageId` enum** (line 16): add the `Ruby` variant.\n- **`language_id_for_path`** (line 33): map `\"rb\"` \u2192 `LanguageId::Ruby` so the file-extension dispatcher picks it up.\n- **`language_for_id`** (line 52): map `LanguageId::Ruby` \u2192 `tree_sitter_ruby::LANGUAGE.into()` so a `Parser` can be created.\n\n---\n\n### 3. `src/indexer/extract/ruby.rs` \u2014 write the extractor\nImplement a public function `extract_ruby_symbols(source: &str) -> Result<ExtractedFile>`. It calls `parser_for_id(LanguageId::Ruby)` to get a tree-sitter `Parser`, then walks the CST and populates `ExtractedFile` with `ExtractedSymbol`, `Import`, and type-edge data. The `ExtractedFile` struct (in `src/indexer/extract/symbol.rs`) is the common interchange type all extractors return.\n\n---\n\n### 4. `src/indexer/extract/mod.rs` \u2014 declare the module\nAdd `pub mod ruby;` (line 23). That's it for the module system.\n\n---\n\n### 5. `src/indexer/pipeline/parse.rs` \u2014 wire into the dispatch switch\nThis is the actual pipeline entry point. `parse_single_file` (line 73):\n- Calls `language_id_for_path` to get a `LanguageId`.\n- Dispatches to the right extractor in a `match` (lines 133-148): `LanguageId::Ruby => extract_ruby_symbols(&source)` (line 144).\n- The returned `ExtractedFile` flows into symbol-row construction, edge extraction, BM25 text assembly, and SQLite/Tantivy/LanceDB writes that follow in the same function.\n\n---\n\n### Gotcha: `INDEX_PATTERNS` default does not include `**/*.rb`\n`src/config.rs` lines 598-615 (embedded mode `Config::from_env`) and lines 139-154 (`StandaloneConfig::default`) both enumerate the default glob patterns. Neither list includes `**/*.rb`. The parser and extractor are fully wired, but Ruby files will be silently skipped by the file scanner unless the user explicitly sets `INDEX_PATTERNS=**/*.rb,...` in their environment. This is a real gap: the language is implemented but not indexed by default.",
+      "input_tokens": 16,
+      "output_tokens": 3273,
+      "wall_ms": 74402,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 38549,
+      "cache_read_input_tokens": 554923,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code,mcp__code-intelligence__get_definition,mcp__code-intelligence__find_references",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_definition",
+          "args": {
+            "symbol_name": "language_for_id"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "language detection file extension indexer parser",
+            "context": "snippets",
+            "limit": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/indexer/extract/*.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/parser.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/extract/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/extract/ruby.rs",
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "extract_ruby_symbols|ruby::extract",
+            "type": "rust",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "INDEX_PATTERNS|rb\\b",
+            "type": "rust",
+            "output_mode": "content",
+            "context": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/parse.rs",
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "\\*\\*\\/\\*.rb|\\.rb|ruby",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/config.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/parse.rs",
+            "offset": 80,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "index_patterns|default.*patterns|\\*\\*\\/\\*\\.rb",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/config.rs",
+            "output_mode": "content",
+            "context": 5,
+            "head_limit": 40
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "default_index_patterns",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/config.rs",
+            "output_mode": "content",
+            "context": 20,
+            "head_limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "\\*\\*\\/\\*\\.rb|\\.rb|ruby",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/config.rs",
+            "output_mode": "content",
+            "context": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "parse_csv_or_default|INDEX_PATTERNS.*default|default.*INDEX_PATTERNS|\\*\\*\\/\\*\\.rb",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/config.rs",
+            "output_mode": "content",
+            "context": 5,
+            "head_limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/config.rs",
+            "offset": 597,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 593488,
+      "judge_justification": "Cleanly covers all 4 rubric items with clear structure matching the official CLAUDE.md guidance exactly. Correctly treats pipeline/parse.rs as part of the flow explanation rather than an undocumented new requirement. Identifies the INDEX_PATTERNS default gap (lines 598-615, 139-154 in config.rs) as a crucial practical issue\u2014Ruby is 'fully implemented' but won't index .rb files by default without environment setup. More conservative with line number claims while providing the same core accuracy (lines 16, 33, 52, 23, 133-148 match ANSWER A). Aligns with official documentation rather than speculating beyond it.",
+      "mech_score": 1.0,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q12",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Now I have all the information needed.\n\n**Components that depend on the description LLM (Qwen 2.5 Coder):**\n\n1. **`src/indexer/pipeline/describe.rs` \u2014 `run_description_worker`**: The primary consumer. It holds the `Arc<dyn LlmGenerator>`, iterates undescribed symbols in batches of 500, calls `llm.generate()` per symbol, caches results in SQLite, and re-upserts to Tantivy with descriptions appended.\n\n2. **`src/retrieval/hyde/generator.rs` \u2014 `HypotheticalCodeGenerator`**: Optional second consumer. When `HYDE_LLM_BACKEND=local` is configured, a second instance of the same Qwen model is loaded into this struct's `local_llm: Option<Arc<dyn LlmGenerator>>` field and used to generate hypothetical code snippets at query time.\n\n**What happens after descriptions are generated:**\n\nThe description worker (`describe.rs` line 201) explicitly calls `drop(llm)` after the generation loop completes, freeing the ~1.1 GB of GPU memory. This is intentional: the doc comment on `run_description_worker` says \"The LLM model (~1.1 GB GPU) is explicitly dropped after all descriptions are generated.\" After MAX_IDLE_CYCLES (20 \u00d7 30s = 10 min) with no new symbols, the worker loop exits and the drop fires.\n\n**What stays loaded permanently:**\n\n- **Embedding model** (`src/embeddings/llamacpp.rs`, held as `Arc<Mutex<Box<dyn Embedder>>>` in `src/indexer/pipeline/mod.rs` line 79 and `src/retrieval/mod.rs` line 137): Stays resident for all vector search queries.\n- **Cross-encoder reranker** (`src/reranker/llamacpp.rs`, held as `Option<Arc<dyn Reranker>>` in `src/retrieval/mod.rs` line 138): Also stays loaded for query-time reranking.\n\nThe `LlamaBackend` singleton (`src/llm/mod.rs` line 24, `Box::leak`ed) is permanent by design since freeing it would invalidate all loaded model weights, but the Qwen model weights themselves are freed via the `drop(llm)` call in `describe.rs`.",
+      "input_tokens": 8,
+      "output_tokens": 1706,
+      "wall_ms": 35545,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 33031,
+      "cache_read_input_tokens": 248116,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "LlamaCppGenerator|qwen|description.*llm|llm.*description|DescriptionGenerator|generate_description",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "drop|free|unload|Arc.*llm|llm.*Arc|embedding_model|reranker",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/llm/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/describe.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "llm|description_worker|create_llm_generator|embedding_model|reranker",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/main.rs",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "spawn_description_worker|drop.*llm|llm.*drop|Arc.*embed|embed.*Arc|reranker.*Arc|Arc.*rerank",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src",
+            "output_mode": "content",
+            "glob": "*.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/reranker/mod.rs",
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/hyde/generator.rs",
+            "limit": 50
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 281155,
+      "judge_justification": "Answer B correctly identifies all core components (describe.rs, HypotheticalCodeGenerator), notes the explicit drop() freeing the LLM, and lists what stays loaded. More concise and directly answers the question. However, makes specific file path claims (src/embeddings/llamacpp.rs line 79, src/reranker/llamacpp.rs line 138) that cannot be verified against provided context\u2014CLAUDE.md references storage/vector.rs for embeddings, not src/embeddings/llamacpp.rs. Neither answer explicitly names 'LlamaCppGenerator' as required by rubric. The specificity creates hallucination risk; while plausible, the discrepancy with documented paths (-1) combined with failing to name the exact type (-1) limits the score despite good conciseness.",
+      "mech_score": 0.6000000000000001,
+      "judge_score": 7
+    },
+    {
+      "question_id": "self-q12",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "I have enough information to answer clearly.\n\n**Components that depend on the Qwen 2.5-Coder LLM:**\n\n1. **Description worker** (`src/indexer/pipeline/describe.rs`, `run_description_worker`): The primary consumer. It holds an `Arc<dyn LlmGenerator>` and calls `llm.generate()` per symbol to produce keyword tags stored in SQLite and re-upserted to Tantivy. At line 201 of `describe.rs`, the worker explicitly calls `drop(llm)` when it exits, freeing the ~1.1 GB GPU allocation. The worker exits after 20 consecutive 30-second idle cycles (10 minutes with no new symbols) or when cancelled.\n\n2. **HyDE generator** (`src/retrieval/`, wired in `src/main.rs` ~line 501): When `HYDE_LLM_BACKEND=local`, the same Qwen model is loaded via `create_llm_generator` and passed into `HypotheticalCodeGenerator`. This instance is stored inside `Retriever` (held in `AppState`) and **stays loaded for the lifetime of the process** \u2014 it is never explicitly dropped since `Retriever` persists in `AppState`.\n\n3. **`FallbackLlmGenerator`** (`src/llm/sampling.rs`): A wrapper that delegates to the local `LlamaCppGenerator` when MCP sampling is not available. It is the actual value passed to the description worker when sampling is enabled; it is dropped together with the worker.\n\n**What stays loaded after descriptions complete:**\n\n- The **embedding model** (jina-code-embeddings-1.5b, inside `IndexPipeline.embedder`) and the **cross-encoder reranker** (bge-reranker-v2-m3, inside `Retriever.reranker`) both stay resident in `AppState` for query-time use.\n- The **HyDE LLM instance** also stays resident if HyDE is enabled with a local backend.\n- The **`LlamaBackend` singleton** (`src/llm/mod.rs` line 24, `LLAMA_BACKEND: OnceCell<&'static LlamaBackend>`) is intentionally `Box::leak`ed and lives for the entire process.\n- The **description LLM itself** is freed: `describe.rs` line 201 `drop(llm)` reclaims the ~1.1 GB of GPU memory once the description pass is complete.",
+      "input_tokens": 13,
+      "output_tokens": 1908,
+      "wall_ms": 42133,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 36007,
+      "cache_read_input_tokens": 382216,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code,mcp__code-intelligence__get_definition,mcp__code-intelligence__find_references",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "LlamaCppGenerator description LLM drop free unload",
+            "limit": 10
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "Qwen description generator loaded resident",
+            "limit": 10
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "LlamaCppGenerator",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "description.*llm|llm.*description|generator.*drop|drop.*generator|freed|unload",
+            "type": "rust",
+            "output_mode": "files_with_matches",
+            "-i": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/llm/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/describe.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/state.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/mod.rs",
+            "limit": 100
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "llm|LlmGenerator|description_worker|run_description_worker",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/main.rs",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/main.rs",
+            "offset": 480,
+            "limit": 220
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 418236,
+      "judge_justification": "Answer A fully addresses all rubric requirements: identifies the description pipeline (run_description_worker), notes explicit drop() at line 201 freeing the LLM, and clearly identifies embedding model and cross-encoder staying resident. Adds valuable context about HyDE as a secondary consumer that stays loaded and the LlamaBackend singleton. However, neither answer explicitly names 'LlamaCppGenerator' despite rubric requirement. Slightly verbose but the extra architectural context (HyDE loader lifetime, idle cycle mechanism) is directly relevant to understanding what components depend on the LLM and which persist.",
+      "mech_score": 1.0,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q13",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "`build_next_step` is a private function (note the lowercase `fn`, no `pub`) defined at line 23 of `src/handlers/search.rs`. All call sites are within that same file:\n\n- **Line 82**: production call inside `handle_search_code` (the main handler logic)\n- **Lines 444, 475, 499, 514**: used in inline tests within the same file\n- **Lines 457, 463, 469**: assertion checks also in the test section\n\nSince the function is private (no `pub`), it has no external call sites. A rename only requires updating references within `src/handlers/search.rs` itself. No other files reference it.",
+      "input_tokens": 4,
+      "output_tokens": 344,
+      "wall_ms": 9779,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 18251,
+      "cache_read_input_tokens": 57498,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "build_next_step",
+            "output_mode": "content",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 75753,
+      "judge_justification": "Explicitly names `handle_search_code` as the production caller (rubric requirement met), correctly identifies it as the only production call site, and notes test calls for the bonus. More precise than Answer A by naming the actual handler function. However, does not mention the ContextMode::None arm detail that the rubric specifies as part of the full answer, representing a minor gap in completeness.",
+      "mech_score": 0.8,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q13",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "`build_next_step` is defined and used exclusively within `src/handlers/search.rs`. It is a module-private function (no `pub`), so renaming it requires updating only that one file. Specifically:\n\n- **Line 23**: definition (`fn build_next_step(...)`)\n- **Line 82**: call in the main search handler\n- **Lines 444, 457, 463, 469, 475, 499, 514**: calls in unit tests at the bottom of the file\n\nNo other files reference it, so no external call sites need updating.",
+      "input_tokens": 8,
+      "output_tokens": 504,
+      "wall_ms": 15366,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 19079,
+      "cache_read_input_tokens": 134718,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__find_references",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__find_references",
+          "args": {
+            "symbol_name": "build_next_step",
+            "file": "src/handlers/search.rs",
+            "reference_type": "all"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "build_next_step",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 153805,
+      "judge_justification": "Correctly identifies that the function is module-private and that all call sites are within the same file, and notes test usage. However, fails to explicitly name `handle_search_code` as the production caller, instead vaguely referring to it as 'the main search handler.' This imprecision fails to fully meet the rubric's key requirement to identify handle_search_code specifically. Also missing the ContextMode::None arm detail that characterizes where in handle_search_code the call occurs.",
+      "mech_score": 0.6000000000000001,
+      "judge_score": 6
+    },
+    {
+      "question_id": "self-q14",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The call chain is:\n\n**`handle_search_code` \u2192 `attach_hit_snippets` \u2192 `compact_snippet`**\n\nIn `src/handlers/search.rs`:\n\n1. **`handle_search_code`** (line 52) is the MCP tool handler for `search_code`. After running the retriever, it checks `context_mode`. Only when the mode is `ContextMode::Snippets` (i.e., the caller passed `context: \"snippets\"`) does it call `attach_hit_snippets` at line 91.\n\n2. **`attach_hit_snippets`** (line 102) opens SQLite, iterates over the ranked hits, fetches each symbol's full body text, and calls `compact_snippet` at line 120 to trim it to 8 lines (`SNIPPET_LINES`), then injects the result as a `\"snippet\"` field on each hit object.\n\n3. **`compact_snippet`** (line 130) does the actual truncation: takes the first `max_lines` lines and appends a `// ... N more lines` marker if the body is longer.\n\nSo the full chain is: `handle_search_code` calls `attach_hit_snippets` (guarded by `ContextMode::Snippets`), which in turn calls `compact_snippet` for each hit.",
+      "input_tokens": 6,
+      "output_tokens": 687,
+      "wall_ms": 18436,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 20359,
+      "cache_read_input_tokens": 135005,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "attach_hit_snippets",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/search.rs",
+            "limit": 120
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/search.rs",
+            "offset": 120,
+            "limit": 40
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 155370,
+      "judge_justification": "Answer A correctly identifies the full call chain including the bonus (handle_search_code \u2192 attach_hit_snippets \u2192 compact_snippet), accurately describes the ContextMode::Snippets guard, provides correct line numbers, and explains what each function does. Includes the bonus by naming and explaining compact_snippet's role (truncation to SNIPPET_LINES, append marker). Fully satisfies all rubric requirements.",
+      "mech_score": 1.0,
+      "judge_score": 10
+    },
+    {
+      "question_id": "self-q14",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The call chain is straightforward and only one level deep:\n\n**`handle_search_code` \u2192 `attach_hit_snippets`**\n\nSpecifically, in `src/handlers/search.rs`:\n\n- `handle_search_code` (line 52) is the public handler for the `search_code` MCP tool. When the caller passes `context: \"snippets\"`, it hits the `ContextMode::Snippets` branch (line 87) and calls `attach_hit_snippets` at line 91.\n- `attach_hit_snippets` (defined at line 102) is a private helper that reads snippet lines from SQLite and staples them onto each hit in the JSON response.\n\nThere are no intermediate functions between them. The entry point is `handle_search_code`, which is itself invoked by the MCP tool dispatch layer in `src/handlers/mod.rs` (or `src/server/mod.rs`) when a `search_code` tool call arrives over the MCP protocol.",
+      "input_tokens": 9,
+      "output_tokens": 700,
+      "wall_ms": 20529,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 20116,
+      "cache_read_input_tokens": 173304,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__get_call_hierarchy",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_call_hierarchy",
+          "args": {
+            "symbol_name": "attach_hit_snippets",
+            "direction": "callers",
+            "depth": 10
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "attach_hit_snippets",
+            "output_mode": "content",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/search.rs",
+            "limit": 100
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 193429,
+      "judge_justification": "Answer A correctly identifies the core call chain (handle_search_code \u2192 attach_hit_snippets) and accurately notes the ContextMode::Snippets guard. Line numbers and file locations are correct. However, it completely omits the bonus requirement: no mention of attach_hit_snippets calling compact_snippet. This is a significant gap given the rubric explicitly rewards noting that relationship.",
+      "mech_score": 1.0,
+      "judge_score": 7
+    },
+    {
+      "question_id": "self-q15",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Here is the complete flow from `search_code` input to the Tantivy index lookup:\n\n---\n\n**`search_code` \u2192 Tantivy: call chain**\n\n1. **MCP routing** (`src/server/mod.rs`) dispatches the `search_code` tool call to `handle_search_code` in `src/handlers/search.rs:52`.\n\n2. **Handler** (`src/handlers/search.rs:61-63`) extracts `tool.query`, `limit`, and `exported_only`, then calls `retriever.search(&tool.query, limit, exported_only, context_mode)`.\n\n3. **Retriever::search** (`src/retrieval/mod.rs:295`):\n   - Checks a response cache (keyed on query, limit, etc.).\n   - Strips control directives with `parse_query_controls(query)` \u2192 `query_without_controls`.\n   - Detects intent (`detect_intent`) and whether the query looks like natural language (`contains_code_snippet`).\n   - Normalizes/decomposes the query: `normalize_and_expand_query` (camelCase split \u2192 synonym expansion \u2192 stem expansion) then `decompose_query` (splits on \" and \" / \" & \" into sub-queries).\n   - Calls `hybrid::execute_hybrid_search(retriever, sqlite, query_without_controls, sub_queries, \u2026)` at line 401.\n\n4. **`execute_hybrid_search`** (`src/retrieval/hybrid.rs:27`) routes to either `execute_single_query_search` or `execute_multi_query_search` depending on whether decomposition produced one or multiple sub-queries.\n\n5. **`execute_single_query_search`** (`src/retrieval/hybrid.rs:82`) issues the BM25 search:\n   ```rust\n   let keyword_hits = retriever.tantivy.search(search_query, k)?;\n   ```\n   (The multi-query path does the same per sub-query at lines 313\u2013318.)\n\n6. **`TantivyStore::search`** (`src/storage/tantivy.rs:447`):\n   - Runs `text::remove_stop_words(query)` on the incoming string.\n   - Picks field boosts by word-count (1-word \u2192 name-heavy; 3+-word \u2192 text/description-heavy).\n   - Calls `search_in_fields` which builds a `QueryParser` over the `name`, `text`, and `description` fields, applies per-field boosts, then calls Tantivy's `searcher.search(&parsed_query, &TopDocs::with_limit(limit))` at line 530-537.\n   - If results are sparse and the query looks like a partial token, a second pass runs against the n-gram fields (`name_ngram`, `text_ngram`) at line 489.\n   - Returns `Vec<SearchHit>` (symbol IDs + BM25 scores).\n\nSo the path is: **tool input string \u2192 `handle_search_code` \u2192 `Retriever::search` \u2192 (control-strip, intent-detect, normalize+stem, decompose) \u2192 `hybrid::execute_hybrid_search` \u2192 `TantivyStore::search` \u2192 stop-word removal \u2192 field-boosted `QueryParser::parse_query` \u2192 Tantivy `searcher.search`**.",
+      "input_tokens": 15,
+      "output_tokens": 2658,
+      "wall_ms": 59902,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 26509,
+      "cache_read_input_tokens": 517488,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "search_code",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "search_code",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/search.rs",
+            "output_mode": "content",
+            "head_limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "fn handle_search_code|async fn search",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/search.rs",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/handlers/search.rs",
+            "limit": 100,
+            "offset": 47
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub async fn search",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/mod.rs",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/mod.rs",
+            "limit": 120,
+            "offset": 295
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/retrieval/hybrid*.rs",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub.*fn execute_hybrid_search|tantivy|bm25|keyword_search|search_tantivy",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/hybrid.rs",
+            "output_mode": "content",
+            "head_limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/hybrid.rs",
+            "limit": 100,
+            "offset": 27
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub fn search|fn search",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/storage/tantivy.rs",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/storage/tantivy.rs",
+            "limit": 100,
+            "offset": 447
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub fn normalize_and_expand_query|fn normalize_query|fn decompose_query",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/query.rs",
+            "limit": 60,
+            "offset": 255
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 544012,
+      "judge_justification": "Answer B clearly traces the path through handle_search_code \u2192 Retriever::search \u2192 hybrid execution \u2192 TantivyStore::search with good structural detail about field boost selection and the QueryParser. However, it completely omits the vector search and RRF merger that is explicitly required by the rubric. The answer stops after Tantivy lookup without describing how results combine with vector search\u2014this is not merely a bonus omission but a core requirement ('hybrid execution...where BM25...and vector search are merged via RRF'). No mention of RRF anywhere. The Tantivy-specific details are solid, but the answer is fundamentally incomplete.",
+      "mech_score": 1.0,
+      "judge_score": 5
+    },
+    {
+      "question_id": "self-q15",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "That's the full chain. The picture is clear. Here is the complete flow:\n\n---\n\n## Query flow: `search_code` \u2192 Tantivy\n\n**1. MCP dispatch** (`src/server/mod.rs` line 200-203)\nThe `\"search_code\"` tool string is matched and deserialized into a `SearchCodeTool` struct, then routed to `handle_search_code`.\n\n**2. Handler** (`src/handlers/search.rs` lines 52-63)\n`handle_search_code` reads `tool.query` and calls `retriever.search(&tool.query, limit, exported_only, context_mode)`.\n\n**3. Retriever::search** (`src/retrieval/mod.rs` lines 295-410)\nSeveral preprocessing steps happen before any index hits the disk:\n- **Cache check**: a `v2|cfg=...|q=...|l=...|e=...|c=...` key is checked; if warm, returns immediately.\n- **Control parsing**: `parse_query_controls(query)` strips any inline control flags, yielding `query_without_controls`.\n- **Fast paths**: direct ID lookups and `Callers:` intent are handled without touching Tantivy.\n- **Intent detection**: `detect_intent(&query_without_controls)` classifies the query (Definition, Schema, Callers, etc.).\n- **Normalization + decomposition**: `normalize_and_expand_query` expands synonyms/stems; `decompose_query` splits compound queries into sub-queries (max 3).\n\n**4. execute_hybrid_search** (`src/retrieval/hybrid.rs` lines 27-59)\nRoutes to `execute_single_query_search` (one sub-query) or `execute_multi_query_search` (multiple). In the single path (lines 62-83):\n\n**5. Tantivy keyword search** (`src/retrieval/hybrid.rs` line 82)\n```rust\nlet keyword_hits = retriever.tantivy.search(search_query, k)?;\n```\n`search_query` here is the normalized/synonym-expanded version of `query_without_controls`.\n\n**6. TantivyIndex::search** (`src/storage/tantivy.rs` lines 447-511)\n- Stop words are stripped (`text::remove_stop_words`).\n- Field boosts are selected by word count: 1 word = name-heavy (1.5/1.0/0.5), 2 words = balanced (0.5/2.0/1.0), 3+ words = text-heavy (0.2/3.0/1.5) for `(name, text, description)` fields.\n- `search_in_fields` is called, which creates a Tantivy `QueryParser`, calls `parse_query(query)`, then `searcher.search(&parsed_query, &TopDocs::with_limit(k))` (lines 522-531). That is the actual BM25 index lookup.\n- If the result count is short and the query looks like a partial token, a second pass over n-gram fields (`name_ngram`, `text_ngram`) is done with a 0.35\u00d7 score multiplier and results are merged.\n\n**7. After Tantivy**: results are combined with LanceDB vector hits via RRF (`reciprocal_rank_fusion`), structural signals are applied, and diversity/truncation is enforced before returning to the handler.",
+      "input_tokens": 17,
+      "output_tokens": 2465,
+      "wall_ms": 54561,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 29013,
+      "cache_read_input_tokens": 529620,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code,mcp__code-intelligence__get_definition,mcp__code-intelligence__trace_data_flow",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "search_code handler MCP tool",
+            "limit": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_definition",
+          "args": {
+            "symbol_name": "search_code"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "search_code",
+            "path": "src",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/handlers/**/*.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "search_code",
+            "path": "src/handlers/search.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "search_code",
+            "path": "src/server/mod.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/handlers/search.rs",
+            "limit": 120,
+            "offset": 47
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub async fn search",
+            "path": "src/retrieval/mod.rs",
+            "output_mode": "content",
+            "context": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/mod.rs",
+            "offset": 295,
+            "limit": 120
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "fn execute_hybrid_search",
+            "path": "src/retrieval",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/hybrid.rs",
+            "limit": 130
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/hybrid.rs",
+            "offset": 130,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub fn search",
+            "path": "src/storage/tantivy.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/storage/tantivy.rs",
+            "offset": 447,
+            "limit": 90
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 558650,
+      "judge_justification": "Answer A traces the complete required path and explicitly mentions RRF (Reciprocal Rank Fusion) as a bonus requirement. Critically, it includes step 7 describing how Tantivy keyword results are merged with LanceDB vector hits via RRF\u2014a core requirement stated in the rubric ('where BM25 keyword search via Tantivy and vector search are merged via RRF'). All major preprocessing steps (cache check, intent detection, normalization, decomposition) are covered. Line citations are unverified but plausible. Minor deduction for unconfirmed line numbers.",
+      "mech_score": 1.0,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q16",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "All exported `pub fn` functions in `src/retrieval/ranking/` have at least one real call site. There are no dead exported functions. Every function is either called from `retrieval/mod.rs`, `retrieval/hybrid.rs`, or `retrieval/postprocess.rs`, or within the module itself:\n\n- `rank_hits_with_signals` \u2014 called in `retrieval/hybrid.rs:234`\n- `reciprocal_rank_fusion` / `get_graph_ranked_hits` \u2014 called in `retrieval/hybrid.rs`\n- `apply_selection_boost_with_signals`, `apply_file_affinity_boost_with_signals`, `apply_popularity_boost_with_signals`, `apply_docstring_boost_with_signals`, `apply_package_boost_with_signals` \u2014 all called in `retrieval/postprocess.rs`\n- `expand_with_edges`, `diversify_by_file`, `diversify_by_cluster`, `diversify_by_kind`, `prepare_rerank_docs`, `should_rerank`, `apply_reranker_scores` \u2014 all called in `retrieval/mod.rs`\n- `is_definition_kind` \u2014 `pub fn` in `diversify.rs` but not re-exported from `mod.rs`; its only external consumer is `score.rs` within the same module (`use super::diversify::is_definition_kind`)\n\nThe closest thing to a candidate is `is_definition_kind` (`diversify.rs:419`): it is `pub fn` but not re-exported through `ranking/mod.rs`, and its only caller is `score.rs` within the same `ranking` module. It could safely be `pub(super)` rather than `pub`, but it does have an active call site so it is not dead code.",
+      "input_tokens": 13,
+      "output_tokens": 4958,
+      "wall_ms": 79519,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 25783,
+      "cache_read_input_tokens": 424255,
+      "tool_calls": [
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/retrieval/ranking/**/*.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "^pub fn ",
+            "path": "src/retrieval/ranking",
+            "type": "rust",
+            "output_mode": "content",
+            "head_limit": 100
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "get_graph_ranked_hits",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "diversify_by_cluster",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_docstring_boost_with_signals",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "should_rerank",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_package_boost_with_signals",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "prepare_rerank_docs",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "is_definition_kind",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "reciprocal_rank_fusion",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "is_definition_kind",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "expand_with_edges",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_reranker_scores",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "diversify_by_file|diversify_by_kind",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_selection_boost_with_signals|apply_file_affinity_boost_with_signals|rank_hits_with_signals|apply_popularity_boost_with_signals",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_reranker_scores",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/retrieval/ranking/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "^pub.* fn ",
+            "path": "src/retrieval/ranking/score.rs",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_selection_boost_with_signals|apply_file_affinity_boost_with_signals|rank_hits_with_signals|apply_popularity_boost_with_signals",
+            "path": "src",
+            "type": "rust",
+            "output_mode": "content",
+            "head_limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 450051,
+      "judge_justification": "Answer B reaches the correct conclusion (no dead exported functions) and provides good function-level detail with some call site citations (retrieval/hybrid.rs:234). However, it fails to explicitly enumerate which .rs files within src/retrieval/ranking/ were actually inspected\u2014it mentions call sites in other modules (retrieval/hybrid.rs, retrieval/postprocess.rs, retrieval/mod.rs) but doesn't say 'I checked diversify.rs, expansion.rs, etc.' This omission costs the bonus points and makes the evidence less concrete. The answer is correct but less systematic in presenting the inspection scope.",
+      "mech_score": 1.0,
+      "judge_score": 7
+    },
+    {
+      "question_id": "self-q16",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "All exported functions have call sites. Based on my investigation, **there are no exported functions in `src/retrieval/ranking/` with zero call sites in the codebase.** Here is the full picture:\n\n- All 15 `pub fn` functions (across `diversify.rs`, `expansion.rs`, `rrf.rs`, `reranker.rs`, `package.rs`, `score.rs`) are re-exported through `ranking/mod.rs` and each has at least one real call site outside the ranking module itself, primarily in `src/retrieval/mod.rs`, `src/retrieval/hybrid.rs`, or `src/retrieval/postprocess.rs`.\n- `is_definition_kind` (`diversify.rs:419`) is `pub fn` but is **not** re-exported from `mod.rs`; its only callers are `diversify.rs:455` (same file) and `score.rs:527` (via `use super::diversify::is_definition_kind`), both within the `ranking/` module. It has callers, just internal ones.\n- The six `pub(crate) fn` helpers in `score.rs` (`definition_bias`, `intent_adjustment`, `structural_adjustment`, `symbol_importance_adjustment`, `term_coverage_adjustment`, `test_symbol_penalty`) are also all actively used across `expansion.rs`, `diversify.rs`, `retrieval/mod.rs`, `hybrid.rs`, and `handlers/search.rs`.\n\nNo dead exported functions were found.",
+      "input_tokens": 230,
+      "output_tokens": 5436,
+      "wall_ms": 87875,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 26579,
+      "cache_read_input_tokens": 477252,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__find_references,mcp__code-intelligence__search_code,mcp__code-intelligence__get_definition",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "exported functions in src/retrieval/ranking",
+            "exported_only": true,
+            "limit": 50
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/retrieval/ranking/**/*.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "^pub fn ",
+            "path": "src/retrieval/ranking",
+            "output_mode": "content",
+            "type": "rust",
+            "head_limit": 100
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "get_graph_ranked_hits",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "prepare_rerank_docs",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "diversify_by_cluster",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_docstring_boost_with_signals",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_package_boost_with_signals",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_selection_boost_with_signals|apply_file_affinity_boost_with_signals|rank_hits_with_signals|apply_popularity_boost_with_signals",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "expand_with_edges|reciprocal_rank_fusion|apply_reranker_scores|should_rerank|diversify_by_file|is_definition_kind|diversify_by_kind",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "src/retrieval/ranking/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "is_definition_kind",
+            "path": "src",
+            "output_mode": "content",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "^pub fn definition_bias|^pub fn intent_adjustment|^pub fn structural_adjustment|^pub fn symbol_importance_adjustment|^pub fn term_coverage_adjustment|^pub fn test_symbol_penalty",
+            "path": "src/retrieval/ranking/score.rs",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "definition_bias|intent_adjustment|structural_adjustment|symbol_importance_adjustment|term_coverage_adjustment|test_symbol_penalty",
+            "path": "src",
+            "output_mode": "files_with_matches",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "^pub.* fn (definition_bias|intent_adjustment|structural_adjustment|symbol_importance_adjustment|term_coverage_adjustment|test_symbol_penalty)",
+            "path": "src/retrieval/ranking/score.rs",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "get_graph_ranked_hits",
+            "path": "src",
+            "output_mode": "content",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "prepare_rerank_docs",
+            "path": "src",
+            "output_mode": "content",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "apply_docstring_boost_with_signals",
+            "path": "src",
+            "output_mode": "content",
+            "type": "rust"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 504061,
+      "judge_justification": "Answer A fully satisfies the rubric: explicitly states no dead exported functions, names the directory src/retrieval/ranking/, enumerates all 6 .rs files inspected (diversify.rs, expansion.rs, rrf.rs, reranker.rs, package.rs, score.rs), provides concrete file:line references (diversify.rs:419, diversify.rs:455), counts the functions found (15 pub fn + 6 pub(crate) fn), and earns the bonus for naming which files were inspected. The investigation appears systematic and thorough.",
+      "mech_score": 1.0,
+      "judge_score": 10
+    },
+    {
+      "question_id": "self-q17",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The two tests covering `mech_score`'s OR-group fact handling are both in `scripts/agent_qa/tests/test_scoring.py`:\n\n- **`test_or_group_in_facts`** (line 46): Passes `facts=[[\"0.4\", \"0.40\"], \"ratio\"]` and an answer containing `\"0.40 ratio\"`. Asserts `facts_hit == 1.0`, verifying that matching *any* element of a list-fact (the OR group) satisfies that bucket.\n\n- **`test_or_group_partial`** (line 53): Same OR-group entry, but the answer only contains `\"0.4\"` (missing `\"ratio\"`). Asserts `facts_hit == 0.5`, confirming that an unmatched non-OR fact still lowers the score even when the OR group itself is satisfied.",
+      "input_tokens": 5,
+      "output_tokens": 668,
+      "wall_ms": 16932,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 19433,
+      "cache_read_input_tokens": 95462,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "mech_score",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "or.group|or_group|OrGroup",
+            "output_mode": "files_with_matches",
+            "-i": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "or.group|or_group|OR.group",
+            "path": "scripts/agent_qa/tests/test_scoring.py",
+            "output_mode": "content",
+            "-C": 5,
+            "-i": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "mech_score",
+            "path": "scripts/agent_qa/tests/test_scoring.py",
+            "output_mode": "content",
+            "-C": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 114900,
+      "judge_justification": "Answer A fully satisfies the rubric: names both tests, correct file location, line numbers, and directly explains the two conceptual paths through OR-group logic (all-match when both \"0.40\" and \"ratio\" are present \u2192 facts_hit==1.0, vs partial-match when only \"0.4\" matches and \"ratio\" is absent \u2192 facts_hit==0.5). The phrasing 'matching *any* element of a list-fact' and 'unmatched non-OR fact' explicitly frames the two paths, clearly earning the bonus.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q17",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The OR-group fact handling in `mech_score` is covered by two tests in `scripts/agent_qa/tests/test_scoring.py`:\n\n- **`test_or_group_in_facts`** (line 46): sets `facts=[[\"0.4\", \"0.40\"], \"ratio\"]` where the first fact is an OR-group (a list). The answer contains `\"0.40\"`, which satisfies the OR-group, and `\"ratio\"` also matches, so `facts_hit == 1.0`.\n\n- **`test_or_group_partial`** (line 53): same OR-group fact definition, but the answer only contains `\"0.4\"` (OR-group hit) while `\"ratio\"` is absent, so `facts_hit == 0.5` (one of two fact items matched).\n\nBoth tests import `mech_score` from `scripts/agent_qa/scoring.py` and use the `_entry()` helper at the top of the file to build `QAEntry` fixtures.",
+      "input_tokens": 10,
+      "output_tokens": 1010,
+      "wall_ms": 25697,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 20628,
+      "cache_read_input_tokens": 213840,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__find_tests_for_symbol,mcp__code-intelligence__search_code",
+            "max_results": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__find_tests_for_symbol",
+          "args": {
+            "symbol_name": "mech_score",
+            "include_display": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "mech_score OR-group fact handling test",
+            "context": "snippets"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "mech_score",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "or.group|OR.group|or_group",
+            "output_mode": "files_with_matches",
+            "path": "scripts/agent_qa",
+            "-i": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "mech_score",
+            "output_mode": "content",
+            "path": "scripts/agent_qa/tests/test_scoring.py"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/scripts/agent_qa/tests/test_scoring.py"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 234478,
+      "judge_justification": "Answer B also names both tests correctly with correct file and line numbers, and describes both test cases accurately. However, the bonus explanation is less explicit about the conceptual distinction between paths; it describes what happens ('0.40, which satisfies... and ratio also matches' vs '0.4 (OR-group hit) while ratio is absent') without framing them as distinct algorithmic paths. The additional context about imports/helpers is useful but doesn't directly address the rubric's bonus criterion about 'all-match and partial-match paths through the OR-group logic.'",
+      "mech_score": 1.0,
+      "judge_score": 8
+    },
+    {
+      "question_id": "self-q18",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Here is the structural overview of `src/indexer/pipeline/`:\n\n---\n\n## Central type: `IndexPipeline` (`mod.rs`, line 74)\n\nThe single `#[derive(Clone)]` struct that owns all shared state: `Arc<Config>`, `Arc<TantivyIndex>`, `Arc<LanceVectorTable>`, the embedder behind a `Mutex`, an `EmbeddingCache`, a `MetricsRegistry`, and an `embedding_generation_lock` mutex that prevents concurrent embedding runs. Everything else in the module is either a free function or a sub-module called by `IndexPipeline`'s methods.\n\n---\n\n## Sub-modules and their roles\n\n| File | Key type / function | What it does |\n|---|---|---|\n| `scan.rs` | `scan_files()`, `should_index_file()` | Walks the filesystem (iterative, no recursion limit), filters by language extension and exclude patterns. Called at the start of every index run. |\n| `parse.rs` | `ParsedFile`, `ParseResult`, `parse_single_file()`, `parse_files()` | The pure-read phase. `parse_files()` runs via Rayon in parallel; each worker gets a SQLite pool connection for fingerprint checks, calls the language-specific tree-sitter extractor, builds `SymbolRow`s + edges + usage examples + framework patterns, and returns a `ParseResult` (Parsed / Unchanged / Skipped). No writes happen here. |\n| `write.rs` | `write_batch()`, `WriteStats` | The single-threaded write phase. Takes the `Vec<ParsedFile>` from parse, processes in chunks of 50: one SQLite transaction per chunk (delete-old + batch-upsert everything), then upserts all chunks into Tantivy with a single final commit. |\n| `describe.rs` | `run_description_worker()` | Background async loop: queries SQLite for symbols lacking LLM descriptions, generates them via `LlmGenerator`, writes back to SQLite, then re-upserts those symbols to Tantivy with the description appended. Idles/exits after 20 empty cycles (~10 min) to free ~1.1 GB GPU memory. |\n| `watch.rs` | `create_watcher()` | Wraps `notify::RecommendedWatcher` over all `repo_roots`. Filters out noise paths (`.git/`, `node_modules/`, etc.) and sends a `()` on a `tokio::mpsc` channel on real changes. Returned handle must stay alive. |\n| `stats.rs` | `IndexRunStats` | Simple counter struct (files scanned/indexed/skipped/unchanged/deleted, symbols indexed). Returned from every index entry-point and persisted to SQLite. |\n| `edges.rs` | `extract_edges_for_symbol()` | Called inside `parse_single_file` to build call/type/import edges for each symbol. |\n| `usage.rs` | `extract_usage_examples_for_file()` | Also called inside parse to find call-site usage examples. |\n| `parsing.rs` | `symbol_kind_to_string()` | Tiny helper mapping enum kinds to strings, used during parse. |\n| `utils.rs` | `file_fingerprint()`, `file_key_path()`, `stable_symbol_id()`, `cluster_key_from_vector()` | Shared utility functions used across parse, write, and embedding phases. |\n| `parallel.rs` | (empty / deprecated) | Kept for backwards-compat; all parallel logic moved into `parse.rs` + `write.rs`. |\n\n---\n\n## Data flow through `IndexPipeline::index_files()` (`mod.rs`, line 540)\n\n```\nscan_files()  \u2192  [PathBuf list]\n    \u2193\nPhase 1: parse::parse_files()          (Rayon parallel, read-only SQLite pool)\n    \u2192 Vec<ParseResult>\n    \u2193\nPhase 2: write::write_batch()          (single-threaded, one SQLite conn + Tantivy)\n    \u2192 SQLite + Tantivy committed\n    \u2193\nPhase 3 (concurrent via tokio::join!):\n    generate_embeddings_for_orphaned_symbols()   \u2192 LanceDB + similarity_clusters in SQLite\n    pagerank::compute_and_store_pagerank()        \u2192 pagerank scores in SQLite\n```\n\nThe `spawn_watch_loop()` method (`mod.rs`, line 386) drives this whole flow on file-change events via `watch::create_watcher`. The `spawn_description_worker()` method (`mod.rs`, line 497) runs `describe::run_description_worker` independently as a long-lived background task after indexing finishes.",
+      "input_tokens": 7,
+      "output_tokens": 1919,
+      "wall_ms": 46397,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 51145,
+      "cache_read_input_tokens": 216381,
+      "tool_calls": [
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/indexer/pipeline/**/*"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/scan.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/parallel.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/parse.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/write.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/describe.rs",
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/watch.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/stats.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 267533,
+      "judge_justification": "Correctly names IndexPipeline, walks through major stages in clean data-flow diagram format (scan \u2192 parse \u2192 write \u2192 embed), explicitly mentions orphaned-symbol embedding recovery via generate_embeddings_for_orphaned_symbols(). More concise than Answer A while covering the same essential rubric points. Uses cleaner table formatting and avoids unnecessary detail. Accurately identifies sub-modules and their roles without verbose implementation minutiae. Minor claim: line number '28' for both write_batch and run_description_worker may differ between files, but core structure is sound.",
+      "mech_score": 1.0,
+      "judge_score": 9
+    },
+    {
+      "question_id": "self-q18",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Here is the full structural picture of `src/indexer/pipeline/`:\n\n---\n\n## Central Orchestrator: `IndexPipeline` (`mod.rs`)\n\nThe single `struct IndexPipeline` (line 74) owns all storage handles: `TantivyIndex`, `LanceVectorTable`, `Embedder`, `EmbeddingCache`, `Config`, `MetricsRegistry`, and an `embedding_generation_lock` mutex. Every entry point routes through it:\n\n- **`index_all()`** (line 137): full repo scan \u2192 calls `scan_files()` \u2192 `index_files()` \u2192 records metrics \u2192 LanceDB optimization\n- **`index_paths()`** (line 318): incremental scan of specified paths\n- **`spawn_watch_loop()`** (line 386): spawns an async task using `watch::create_watcher()`, debounces OS events, calls `index_all()` on change\n- **`spawn_description_worker()`** (line 497): spawns async `describe::run_description_worker()` for post-index LLM enrichment\n\nThe core work is **`index_files()`** (line 540), which runs a strict 3-phase pipeline:\n\n| Phase | Code | Thread model |\n|---|---|---|\n| 1. Parse | `parse::parse_files()` | Rayon (parallel, `config.parallel_workers` threads) |\n| 2. Write | `write::write_batch()` | Single thread, batched |\n| 3. Embed + PageRank | `generate_embeddings_for_orphaned_symbols()` + `pagerank::compute_and_store_pagerank()` | Concurrent via `tokio::join!` |\n\n---\n\n## File Modules\n\n**`scan.rs`** \u2014 File discovery. `scan_files()` walks `repo_roots` with an explicit directory stack, applying `should_skip_dir()` (excludes `.git`, `target`, `dist`, `node_modules`, etc.) and `should_index_file()` (accepts the 12 supported `LanguageId` variants).\n\n**`parse.rs`** \u2014 Phase 1. Key types:\n- `ParsedFile` (line 43): data carrier for one file, holding `symbol_rows`, `edges`, `usage_examples`, `import_tags`, `framework_patterns`, `decorators`, `todos`, `docstrings`, plus the file `fingerprint`.\n- `ParseResult` (line 61): `Parsed(Box<ParsedFile>) | Unchanged | Skipped { reason }`.\n\n`parse_single_file()` (line 73) does 15 steps: language detect \u2192 fingerprint check \u2192 read source \u2192 tree-sitter extraction (dispatches to language-specific extractors in `src/indexer/extract/`) \u2192 build `SymbolRow`s \u2192 import/framework tags \u2192 edge extraction \u2192 usage examples \u2192 decorator/framework pattern rows. `parse_files()` (line 360) runs this over all files in parallel via Rayon.\n\n**`write.rs`** \u2014 Phase 2. `write_batch()` (line 28) processes `ParsedFile` slices in chunks of 50: each chunk runs one SQLite transaction (delete old rows then batch-upsert symbols, edges, usage examples, todos, docstrings, decorators, framework patterns, fingerprints), then Tantivy upserts for the chunk. A single Tantivy `commit()` runs after all chunks.\n\n**`edges.rs`** \u2014 Called from `parse.rs` during Phase 1. `extract_edges_for_symbol()` builds call, type, import, and dataflow edges. `upsert_name_mapping()` maintains a `name \u2192 id` map for within-file resolution. Resolves cross-package edges by querying SQLite for package membership.\n\n**`describe.rs`** \u2014 Background async worker (`run_description_worker()`, line 28). Polls SQLite for symbols without LLM descriptions (pages of 500), generates via `LlmGenerator`, stores back to SQLite, re-upserts to Tantivy with descriptions appended to the text field. Idles after 20 empty polls (~10 min) and drops the 1.1 GB GPU model.\n\n**`watch.rs`** \u2014 `create_watcher()` (line 14) wraps the `notify` crate's `RecommendedWatcher`, watching all `repo_roots` recursively. Filters noise from `.git/`, `target/`, etc. before sending `()` on an unbounded tokio channel.\n\n**`utils.rs`** \u2014 Shared helpers: `FileFingerprint` struct (mtime_ns + size_bytes), `file_fingerprint()`, `file_key_path()` (relative path normalization), `stable_symbol_id()` (deterministic hash for symbol IDs), `cluster_key_from_vector()`.\n\n**`stats.rs`** \u2014 Plain `IndexRunStats` struct: `files_scanned/indexed/skipped/unchanged/deleted`, `symbols_indexed`.\n\n**`parsing.rs`** \u2014 Low-level parsing helpers used by `edges.rs` and `parse.rs`: `symbol_kind_to_string()`, `extract_callee_names()`, `extract_identifiers()`, `parse_type_relations()`.\n\n**`usage.rs`** \u2014 `extract_usage_examples_for_file()` called from `parse.rs` step 11; finds call-site snippets for symbols imported or used within the file.\n\n**`parallel.rs`** \u2014 (Not read; likely houses earlier parallel indexing utilities superseded by the unified parse/write split.)\n\n---\n\n## Data Flow Summary\n\n```\nscan_files()\n    \u2514\u2500\u25ba index_files()\n          \u251c\u2500 Phase 1: parse_files() [Rayon] \u2192 Vec<ParseResult>\n          \u2502     \u2514\u2500 parse_single_file() \u2192 ParsedFile\n          \u2502           \u251c\u2500 tree-sitter extractors\n          \u2502           \u251c\u2500 edges::extract_edges_for_symbol()\n          \u2502           \u2514\u2500 usage::extract_usage_examples_for_file()\n          \u251c\u2500 Phase 2: write::write_batch() [single-thread] \u2192 SQLite + Tantivy\n          \u2514\u2500 Phase 3: [concurrent]\n                \u251c\u2500 generate_embeddings_for_orphaned_symbols() \u2192 LanceDB + similarity_clusters\n                \u2514\u2500 pagerank::compute_and_store_pagerank() \u2192 SQLite pagerank scores\n\nspawn_watch_loop() \u2192 watch::create_watcher() \u2192 debounce \u2192 index_all()\nspawn_description_worker() \u2192 describe::run_description_worker() \u2192 Tantivy re-upsert\n```",
+      "input_tokens": 11,
+      "output_tokens": 3878,
+      "wall_ms": 77167,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 53852,
+      "cache_read_input_tokens": 307448,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__get_module_summary,mcp__code-intelligence__get_file_symbols",
+            "max_results": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_module_summary",
+          "args": {
+            "file_path": "src/indexer/pipeline",
+            "include_display": true,
+            "group_by_kind": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "src/indexer/pipeline/**/*"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/scan.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/parse.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/write.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/stats.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/watch.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/edges.rs",
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/describe.rs",
+            "limit": 50
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/.worktrees/plan-code-investigation/src/indexer/pipeline/utils.rs",
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 361311,
+      "judge_justification": "Comprehensively names IndexPipeline, walks through all three phases (parse \u2192 write \u2192 embed/pagerank), and explicitly mentions orphaned-symbol embedding recovery. Provides thorough per-module breakdown with detailed explanations. However, the rubric explicitly rewards conciseness over verbosity; Answer A is padded with extensive implementation details, line numbers, and module-by-module explanations that exceed what 'structural overview' requires. Some line numbers (e.g., parse_single_file at line 73, index_files at line 540) are unverified claims.",
+      "mech_score": 1.0,
+      "judge_score": 8
+    }
+  ],
+  "round": 4,
+  "repo": "self",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

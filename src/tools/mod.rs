@@ -525,6 +525,34 @@ mod tests {
     }
 
     #[test]
+    fn plan_code_investigation_description_advertises_routing_and_specialists() {
+        let desc = PlanCodeInvestigationTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.contains("Grep/Read"),
+            "plan_code_investigation description must position itself before Grep/Read, got: {desc}"
+        );
+        assert!(
+            desc.contains("find_affected_code"),
+            "plan_code_investigation description must mention find_affected_code, got: {desc}"
+        );
+        assert!(
+            desc.contains("trace_data_flow"),
+            "plan_code_investigation description must mention trace_data_flow, got: {desc}"
+        );
+        assert!(
+            desc.contains("explore_dependency_graph"),
+            "plan_code_investigation description must mention explore_dependency_graph, got: {desc}"
+        );
+        assert!(
+            desc.contains("does not execute"),
+            "plan_code_investigation description must say it only recommends, got: {desc}"
+        );
+    }
+
+    #[test]
     fn trace_data_flow_description_advertises_dataflow_and_discourages_grep() {
         let desc = TraceDataFlowTool::tool()
             .description

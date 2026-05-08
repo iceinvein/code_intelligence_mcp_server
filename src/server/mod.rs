@@ -133,6 +133,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         GetUsageExamplesTool::tool(),
         GetIndexStatsTool::tool(),
         HydrateSymbolsTool::tool(),
+        PlanCodeInvestigationTool::tool(),
         ReportSelectionTool::tool(),
         ReportFileAccessTool::tool(),
         ExplainSearchTool::tool(),
@@ -241,6 +242,11 @@ pub async fn dispatch_tool_call(
             dispatch_sync!(params, HydrateSymbolsTool, |tool| handle_hydrate_symbols(
                 state, tool
             ))
+        }
+        "plan_code_investigation" => {
+            dispatch_sync!(params, PlanCodeInvestigationTool, |tool| {
+                handle_plan_code_investigation(tool)
+            })
         }
         "explore_dependency_graph" => dispatch_sync!(params, ExploreDependencyGraphTool, |tool| {
             handle_explore_dependency_graph(state, tool)
@@ -425,6 +431,25 @@ mod tests {
         assert!(
             names.contains(&"search_across_repos"),
             "all_tools() must include 'search_across_repos', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_plan_code_investigation() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"plan_code_investigation"),
+            "all_tools() must include 'plan_code_investigation', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_routes_plan_code_investigation() {
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains(r#""plan_code_investigation" =>"#),
+            "dispatch_tool_call must route plan_code_investigation"
         );
     }
 

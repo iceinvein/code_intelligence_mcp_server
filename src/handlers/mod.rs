@@ -45,6 +45,7 @@ pub use navigation::{
     handle_get_module_summary, handle_get_usage_examples, handle_hydrate_symbols,
     handle_summarize_file,
 };
+pub use planning::handle_plan_code_investigation;
 pub use search::{handle_explain_search, handle_find_similar_code, handle_search_code};
 
 /// Parse tool arguments from MCP request

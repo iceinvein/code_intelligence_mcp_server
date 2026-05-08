@@ -212,7 +212,7 @@ async fn run_standalone(
             ..Default::default()
         },
         protocol_version: ProtocolVersion::V2025_11_25.into(),
-        instructions: None,
+        instructions: Some(code_intelligence_mcp_server::server::server_instructions().into()),
         meta: None,
     };
 
@@ -835,7 +835,7 @@ async fn run_embedded() -> SdkResult<()> {
             ..Default::default()
         },
         protocol_version: ProtocolVersion::V2025_11_25.into(),
-        instructions: None,
+        instructions: Some(code_intelligence_mcp_server::server::server_instructions().into()),
         meta: None,
     };
 

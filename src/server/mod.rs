@@ -17,6 +17,20 @@ use rust_mcp_sdk::{
 };
 use std::sync::Arc;
 
+/// Instructions advertised during MCP initialization.
+///
+/// Tool descriptions are often loaded lazily by clients. These instructions
+/// give the model enough up-front routing context to discover the planner tool
+/// before it commits to lower-level search tools.
+pub fn server_instructions() -> &'static str {
+    "Code Intelligence provides plan_code_investigation, a recommend-only routing tool. \
+For any nontrivial codebase investigation, first load and call plan_code_investigation before \
+Grep/Read or before selecting individual code-intelligence specialists, then decide whether to \
+follow its recommended tool calls. Use this routing step for call-site, caller/callee, impact \
+analysis, data-flow, dependency, dead-code, tests, module overview, and file-summary questions. \
+Prefer the specialist code-intelligence tools over Grep/Read when they answer the question directly."
+}
+
 /// Error message returned when `search_across_repos` is called in embedded (stdio) mode.
 pub const SEARCH_ACROSS_REPOS_EMBEDDED_MSG: &str =
     "search_across_repos is only available in standalone mode. Start the server with --standalone to use cross-repo search.";
@@ -411,6 +425,47 @@ mod tests {
         assert!(
             caps.can_run_task_augmented_tools(),
             "task_capabilities() must produce a ServerTasks that advertises task-augmented tool support"
+        );
+    }
+
+    #[test]
+    fn server_instructions_advertise_planner_routing() {
+        let instructions = server_instructions();
+        assert!(
+            instructions.contains("plan_code_investigation"),
+            "server instructions must name the planner tool, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("impact analysis"),
+            "server instructions must advertise impact routing, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("data-flow"),
+            "server instructions must advertise data-flow routing, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("Grep/Read"),
+            "server instructions must position specialists against Grep/Read, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("call-site"),
+            "server instructions must advertise call-site routing, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("dead-code"),
+            "server instructions must advertise dead-code routing, got: {instructions}"
+        );
+    }
+
+    #[test]
+    fn initialize_results_use_server_instructions() {
+        let main_source = include_str!("../main.rs");
+        let uses = main_source
+            .matches("instructions: Some(code_intelligence_mcp_server::server::server_instructions().into())")
+            .count();
+        assert_eq!(
+            uses, 2,
+            "both embedded and standalone InitializeResult blocks must use server_instructions()"
         );
     }
 

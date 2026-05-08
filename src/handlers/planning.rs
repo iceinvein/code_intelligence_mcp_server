@@ -49,7 +49,7 @@ pub fn plan_code_investigation(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-        .or_else(|| derive_target(question, file_path));
+        .or_else(|| derive_target(question));
 
     let confidence = confidence_for(&intent, target.as_deref(), file_path);
     let mut recommended_steps = steps_for(&intent, question, target.as_deref(), file_path);
@@ -440,11 +440,7 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
-fn derive_target(question: &str, file_path: Option<&str>) -> Option<String> {
-    if let Some(path) = file_path {
-        return Some(path.to_string());
-    }
-
+fn derive_target(question: &str) -> Option<String> {
     for quote in ['`', '"', '\''] {
         let mut parts = question.split(quote);
         while let Some(_before) = parts.next() {
@@ -478,7 +474,7 @@ fn looks_like_target(value: &str) -> bool {
 }
 
 fn is_path_like_target(value: &str) -> bool {
-    value.contains('/') || value.contains('\\') || value.contains("::") || value.contains('.')
+    value.contains('/') || value.contains('\\')
 }
 
 #[cfg(test)]
@@ -686,6 +682,58 @@ mod tests {
                 "file": "src/path.rs"
             })
         );
+    }
+
+    #[test]
+    fn file_path_does_not_become_symbol_target_for_definition() {
+        let plan = plan_code_investigation(
+            "where is PathNormalizer defined?",
+            None,
+            Some("src/path.rs"),
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(plan.intent, InvestigationIntent::SymbolLookup);
+        assert_eq!(
+            step(&plan, "get_definition").arguments,
+            json!({
+                "symbol_name": "PathNormalizer",
+                "limit": 10,
+                "file": "src/path.rs"
+            })
+        );
+    }
+
+    #[test]
+    fn qualified_symbol_target_does_not_become_module_summary_file_path() {
+        let plan = plan_code_investigation(
+            "walk me through the public API",
+            Some("crate::path::PathNormalizer"),
+            None,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(plan.intent, InvestigationIntent::ModuleSummary);
+        assert_eq!(step_tools(&plan), vec!["search_code"]);
+        assert_eq!(
+            step(&plan, "search_code").arguments,
+            json!({
+                "query": "walk me through the public API",
+                "limit": 5
+            })
+        );
+    }
+
+    #[test]
+    fn dotted_symbol_target_does_not_become_module_summary_file_path() {
+        let plan =
+            plan_code_investigation("walk me through the public API", Some("Foo.bar"), None, 4)
+                .unwrap();
+
+        assert_eq!(plan.intent, InvestigationIntent::ModuleSummary);
+        assert_eq!(step_tools(&plan), vec!["search_code"]);
     }
 
     #[test]

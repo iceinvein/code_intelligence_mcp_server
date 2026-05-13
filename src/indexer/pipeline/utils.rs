@@ -1,8 +1,9 @@
 use crate::config::Config;
 use crate::indexer::extract::symbol::Import;
 use crate::indexer::parser::LanguageId;
-use crate::storage::sqlite::SqliteStore;
+use crate::storage::sqlite::queries;
 use anyhow::{Context, Result};
+use rusqlite::Connection;
 use std::{
     collections::HashMap,
     fs,
@@ -43,7 +44,9 @@ pub fn unix_now_s() -> i64 {
 
 pub fn file_key(config: &Config, path: &crate::path::Utf8Path) -> String {
     // PathNormalizer already normalizes separators, so we just use the relative path directly
-    config.path_relative_to_base(path).unwrap_or_else(|_| path.to_string())
+    config
+        .path_relative_to_base(path)
+        .unwrap_or_else(|_| path.to_string())
 }
 
 /// Legacy version of file_key that accepts &Path for compatibility
@@ -121,12 +124,14 @@ pub fn resolve_imported_symbol_id(current_file_path: &str, imp: &Import) -> Opti
 pub fn resolve_imported_symbol_id_with_db(
     current_file_path: &str,
     imp: &Import,
-    sqlite: &SqliteStore,
+    conn: &Connection,
 ) -> Option<String> {
     // First, try to resolve the path and find the symbol in the expected file
     if let Some(target_path) = resolve_path(current_file_path, &imp.source) {
         // Try to find an exported symbol with matching name in the target file
-        if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, Some(&target_path), 1) {
+        if let Ok(results) =
+            queries::symbols::search_symbols_by_exact_name(conn, &imp.name, Some(&target_path), 1)
+        {
             if let Some(symbol) = results.iter().find(|s| s.exported) {
                 return Some(symbol.id.clone());
             }
@@ -134,7 +139,8 @@ pub fn resolve_imported_symbol_id_with_db(
 
         // Try alternative file extensions (.tsx, .jsx, .js, index.ts, index.tsx)
         for alt_path in alternative_import_paths(&target_path) {
-            if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, Some(&alt_path), 1)
+            if let Ok(results) =
+                queries::symbols::search_symbols_by_exact_name(conn, &imp.name, Some(&alt_path), 1)
             {
                 if let Some(symbol) = results.iter().find(|s| s.exported) {
                     return Some(symbol.id.clone());
@@ -146,7 +152,7 @@ pub fn resolve_imported_symbol_id_with_db(
     // Fallback: search by name only across all files (prefer exported symbols)
     // This handles cases where path resolution is wrong (e.g., monorepo packages,
     // re-exports, or unusual directory structures)
-    if let Ok(results) = sqlite.search_symbols_by_exact_name(&imp.name, None, 10) {
+    if let Ok(results) = queries::symbols::search_symbols_by_exact_name(conn, &imp.name, None, 10) {
         // Prefer exported symbols - the query already orders by exported DESC
         if let Some(symbol) = results.iter().find(|s| s.exported) {
             return Some(symbol.id.clone());
@@ -245,6 +251,7 @@ pub fn build_import_map(imports: &[Import]) -> HashMap<&str, &Import> {
 mod tests {
     use super::*;
     use crate::path::Utf8PathBuf;
+    use crate::storage::sqlite::SqliteStore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn tmp_dir() -> std::path::PathBuf {
@@ -393,7 +400,8 @@ mod tests {
         };
 
         // Test the enhanced resolution with database
-        let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &sqlite);
+        let conn_guard = sqlite.read().unwrap();
+        let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &conn_guard);
 
         // Should resolve to the actual symbol ID from the database
         assert_eq!(resolved, Some("target_symbol_id".to_string()));
@@ -418,7 +426,8 @@ mod tests {
         };
 
         // Test the enhanced resolution - should fall back to file-level ID
-        let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &sqlite);
+        let conn_guard = sqlite.read().unwrap();
+        let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &conn_guard);
 
         // Should fall back to stable_symbol_id based on path and name
         assert!(resolved.is_some());
@@ -448,7 +457,7 @@ mod utils_proptest {
 
     // Strategy: realistic byte offsets (limited range for typical source files)
     fn start_byte_strategy() -> impl Strategy<Value = u32> {
-        0..50_000u32  // Covers files up to ~50KB
+        0..50_000u32 // Covers files up to ~50KB
     }
 
     // Property 1: Determinism

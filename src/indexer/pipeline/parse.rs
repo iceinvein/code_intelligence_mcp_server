@@ -1,9 +1,9 @@
+use crate::indexer::extract::symbol::{JSDocEntry, TodoEntry};
 use crate::indexer::pipeline::utils::FileFingerprint;
 use crate::storage::sqlite::schema::{
     DecoratorRow, EdgeEvidenceRow, EdgeRow, FrameworkPatternRow, UsageExampleRow,
 };
 use crate::storage::sqlite::SymbolRow;
-use crate::indexer::extract::symbol::{TodoEntry, JSDocEntry};
 
 use crate::{
     config::Config,
@@ -27,7 +27,7 @@ use crate::{
             utils::{file_fingerprint, file_key_path, language_string, stable_symbol_id},
         },
     },
-    storage::sqlite::{pool::SqlitePool, SqliteStore},
+    storage::sqlite::{pool::SqlitePool, queries},
 };
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -70,11 +70,7 @@ pub enum ParseResult {
 /// Parse a single file and return all extracted data.
 /// Takes a read-only SQLite connection for fingerprint checks and cross-file lookups.
 /// Does NOT write to any storage backend.
-pub fn parse_single_file(
-    file: &Path,
-    config: &Config,
-    conn: &Connection,
-) -> ParseResult {
+pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> ParseResult {
     // 1. Determine language from path
     let language_id = match language_id_for_path(file) {
         Some(id) => id,
@@ -239,24 +235,17 @@ pub fn parse_single_file(
     // 10. Extract edges for each symbol
     let mut all_edges: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
 
-    // Create package lookup function that queries via the provided conn
-    let db_path_clone = config.db_path.clone();
-    let package_lookup_fn: PackageLookupFn = Box::new(move |file_path: &str| -> Option<String> {
-        // We can't borrow conn from within this closure, so we create a temporary SqliteStore
-        // This is acceptable since parse_single_file is not performance-critical (will be replaced)
-        if let Ok(sqlite) = SqliteStore::open(&db_path_clone) {
-            if let Ok(Some(pkg)) = sqlite.get_package_for_file(file_path) {
-                return Some(pkg.id);
-            }
-        }
-        None
+    // Reuse the pooled SQLite connection for both package lookup and
+    // cross-file symbol resolution. Previously this code opened a fresh
+    // SqliteStore per file (and per closure invocation), which under parallel
+    // indexing could exhaust the process file-descriptor limit.
+    let package_lookup_fn: PackageLookupFn<'_> = Box::new(|file_path: &str| -> Option<String> {
+        queries::packages::get_package_for_file(conn, file_path)
+            .ok()
+            .flatten()
+            .map(|pkg| pkg.id)
     });
-
-    let package_lookup_ref: Option<&PackageLookupFn> = Some(&package_lookup_fn);
-
-    // Create a temporary SqliteStore for cross-file lookups in edge extraction
-    let sqlite_store_result = SqliteStore::open(&config.db_path);
-    let sqlite_store_ref = sqlite_store_result.as_ref().ok();
+    let package_lookup_ref: Option<&PackageLookupFn<'_>> = Some(&package_lookup_fn);
 
     for row in &symbol_rows {
         let edges = extract_edges_for_symbol(
@@ -267,7 +256,7 @@ pub fn parse_single_file(
             &extracted.type_edges,
             &extracted.dataflow_edges,
             package_lookup_ref,
-            sqlite_store_ref,
+            Some(conn),
         );
         all_edges.extend(edges);
     }

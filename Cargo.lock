@@ -1327,6 +1327,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "llama-cpp-2",
+ "lru",
  "notify",
  "num_cpus",
  "once_cell",

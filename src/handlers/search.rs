@@ -46,9 +46,10 @@ fn build_next_step(
 
 /// Handle search_code tool.
 ///
-/// As of v3.0, `context` defaults to `"none"` — agents that need source code
-/// alongside hits should pass `context: "snippets"` (compact, per-hit) or
-/// `context: "full"` (legacy markdown bundle with graph expansion).
+/// `context` defaults to `"none"` — the lean discovery response (hits + IDs).
+/// For nontrivial questions prefer `investigate` (which runs the full chain
+/// server-side); pass `context: "snippets"` for a per-hit preview, or
+/// `context: "full"` for the legacy markdown bundle with graph expansion.
 pub async fn handle_search_code(
     retriever: &Retriever,
     db_path: &camino::Utf8Path,

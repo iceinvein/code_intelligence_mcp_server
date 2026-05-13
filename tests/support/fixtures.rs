@@ -274,6 +274,8 @@ pub fn app_state(
         is_leader: Arc::new(AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
         mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: Arc::new(Default::default()),
     }
 }
 

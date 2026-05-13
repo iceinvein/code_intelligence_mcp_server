@@ -633,6 +633,8 @@ async fn run_embedded() -> SdkResult<()> {
         is_leader: is_leader_flag.clone(),
         role_rx,
         mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: Arc::new(Default::default()),
     });
 
     // Trigger automatic re-index if vector dimension migration occurred.

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[macros::mcp_tool(
     name = "search_code",
-    description = "Hybrid keyword + semantic code search. Returns ranked hits with symbol IDs (no bodies by default). To fetch source for the located symbols, call hydrate_symbols with the returned IDs; do NOT fall back to grep/read for symbols search_code already located. Pass context=\"snippets\" for an inline 8-line preview per hit, or context=\"full\" for the legacy markdown bundle."
+    description = "Hybrid keyword + semantic code search. Default returns ranked hits with symbol IDs only (no bodies). For nontrivial questions, prefer `investigate` - it runs the full chain (search_code -> shape-driven specialist hop) server-side and returns one bundled response with verified locations, so you do not need to chain tools or fall back to Grep/Read. To fetch source for the located symbols without running a full investigation, call hydrate_symbols with the returned IDs. Pass context=\"snippets\" for an inline per-hit code preview, or context=\"full\" for the legacy markdown bundle with graph expansion."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct SearchCodeTool {
@@ -147,7 +147,7 @@ pub struct HydrateSymbolsTool {
 
 #[macros::mcp_tool(
     name = "plan_code_investigation",
-    description = "Recommend a code-intelligence workflow for a natural-language codebase question. Use this before Grep/Read when deciding whether the task needs search_code, find_references, find_affected_code, predict_impact, trace_data_flow, explore_dependency_graph, get_module_summary, summarize_file, or hydrate_symbols. This tool only recommends next tool calls; it does not execute them."
+    description = "Recommend a code-intelligence workflow for a natural-language codebase question. Use this before Grep/Read when deciding whether the task needs search_code, find_references, find_affected_code, predict_impact, trace_data_flow, explore_dependency_graph, get_module_summary, summarize_file, or hydrate_symbols. This tool only recommends next tool calls; it does not execute them. For most non-trivial questions, prefer `investigate` (the executing variant) over running this plan and the recommended steps yourself."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct PlanCodeInvestigationTool {
@@ -156,6 +156,44 @@ pub struct PlanCodeInvestigationTool {
     pub file_path: Option<String>,
     /// Default 4, clamped to 1..=6.
     pub max_steps: Option<u32>,
+}
+
+#[macros::mcp_tool(
+    name = "investigate",
+    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns a single bundled response with the symbol bodies you need plus an explicit `verified_locations` list. Use this for non-trivial questions instead of orchestrating Grep/Read or chaining MCP tools yourself - the server's chain is structurally complete so you do not need to verify or follow up. Cite only entries from `verified_locations`; identifiers seen inside body text or context_chain but not in that list are NOT verified locations. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct InvestigateTool {
+    /// Natural-language question.
+    pub question: String,
+    /// Optional symbol or file the investigation should pivot on.
+    pub target: Option<String>,
+    /// Optional file path for disambiguation or module-survey shape.
+    pub file_path: Option<String>,
+    /// auto (default), discover, trace, data, impact, dependency, or module.
+    pub mode: Option<String>,
+    /// Default 3, clamped 1..=5.
+    pub max_hops: Option<u32>,
+}
+
+#[macros::mcp_tool(
+    name = "ask_code",
+    description = "Ask a question about the codebase and get a grounded answer with citations. The server retrieves the relevant evidence (running the full investigate chain), drafts an answer with the local LLM, and validates every citation against retrieved code bodies before returning. Prefer this over any other code-intelligence tool for natural-language questions: the response includes the answer text plus a citations[] list of resolved {file:line, symbol_id} pairs and an evidence[] array with the source bodies. Citations that did not resolve are dropped server-side, so file paths and line numbers in the response are guaranteed to exist. When confidence=\"low\", the server flags low evidence or low citation resolution; only then should you consider calling specialist tools (investigate, search_code, find_references, get_call_hierarchy) directly."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct AskCodeTool {
+    /// Natural-language question about the codebase.
+    pub question: String,
+    /// Optional symbol or file the investigation should pivot on.
+    pub target: Option<String>,
+    /// Optional file path for disambiguation or module-survey shape.
+    pub file_path: Option<String>,
+    /// auto (default), discover, trace, data, impact, dependency, or module.
+    pub mode: Option<String>,
+    /// Number of evidence entries to include in the prompt. Default 8, clamp 1..=15.
+    pub max_evidence: Option<u32>,
+    /// fast | balanced (default). 'deep' (Qwen 7B) reserved for a later version.
+    pub quality: Option<String>,
 }
 
 #[macros::mcp_tool(
@@ -481,7 +519,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn search_code_description_mentions_hydrate_symbols_and_discourages_grep() {
+    fn search_code_description_routes_multi_hop_to_investigate() {
         let desc = SearchCodeTool::tool()
             .description
             .clone()
@@ -491,16 +529,16 @@ mod tests {
             "search_code description must mention hydrate_symbols, got: {desc}"
         );
         assert!(
-            desc.contains("do NOT fall back to grep"),
-            "search_code description must explicitly discourage grep fallback, got: {desc}"
+            desc.contains("investigate"),
+            "search_code description must route multi-hop questions to investigate, got: {desc}"
         );
         assert!(
             desc.contains("snippets"),
-            "search_code description must still document the snippets mode"
+            "search_code description must still document the snippets mode, got: {desc}"
         );
         assert!(
             desc.contains("full"),
-            "search_code description must still document the full mode"
+            "search_code description must still document the full mode, got: {desc}"
         );
     }
 

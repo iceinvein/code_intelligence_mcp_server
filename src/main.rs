@@ -19,10 +19,15 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::config::Config;
-use code_intelligence_mcp_server::embeddings::{create_embedder, default_embedding_dim, DeferredEmbedder, Embedder, TruncatingEmbedder};
+use code_intelligence_mcp_server::embeddings::{
+    create_embedder, default_embedding_dim, DeferredEmbedder, Embedder, TruncatingEmbedder,
+};
 
 /// Type alias for the (embedder, optional-deferred-slot) pair returned by embedder creation.
-type EmbedderWithSlot = (Box<dyn Embedder + Send>, Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>);
+type EmbedderWithSlot = (
+    Box<dyn Embedder + Send>,
+    Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>,
+);
 
 /// Optionally wrap an embedder with Matryoshka truncation.
 fn maybe_truncate(
@@ -37,10 +42,10 @@ fn maybe_truncate(
 use code_intelligence_mcp_server::handlers::AppState;
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::leader::{LeaderElection, Role};
+use code_intelligence_mcp_server::llm::create_llm_generator;
 use code_intelligence_mcp_server::metrics::{spawn_metrics_server, MetricsRegistry};
 use code_intelligence_mcp_server::path::Utf8Path;
 use code_intelligence_mcp_server::reranker::create_reranker;
-use code_intelligence_mcp_server::llm::create_llm_generator;
 use code_intelligence_mcp_server::retrieval::hyde::HypotheticalCodeGenerator;
 use code_intelligence_mcp_server::retrieval::Retriever;
 use code_intelligence_mcp_server::server::CodeIntelligenceHandler;
@@ -98,22 +103,16 @@ async fn main() -> SdkResult<()> {
 
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_ansi(true)
-        )
-        .with(
-            fmt::layer()
-                .with_writer(non_blocking_file)
-                .with_ansi(false)
-        )
+        .with(fmt::layer().with_writer(std::io::stderr).with_ansi(true))
+        .with(fmt::layer().with_writer(non_blocking_file).with_ansi(false))
         .with(
             fmt::layer()
                 .with_writer(non_blocking_access)
                 .with_ansi(false)
-                .with_filter(tracing_subscriber::filter::Targets::new()
-                    .with_target("mcp_access", tracing::Level::INFO))
+                .with_filter(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_target("mcp_access", tracing::Level::INFO),
+                ),
         )
         .init();
 
@@ -127,13 +126,30 @@ async fn main() -> SdkResult<()> {
         "Starting code-intelligence-mcp-server"
     );
 
+    // Raise the soft FD limit toward the hard limit so parallel indexing
+    // (Tantivy mmap, LanceDB fragments, pooled SQLite WAL connections, plus
+    // the embedding/reranker/LLM models) doesn't trip the macOS default of
+    // 256 open files.
+    match code_intelligence_mcp_server::os::raise_fd_limit_to_hard() {
+        Ok((old_soft, new_soft, hard)) if new_soft > old_soft => {
+            info!(old_soft, new_soft, hard, "Raised RLIMIT_NOFILE soft limit");
+        }
+        Ok((soft, _, hard)) => {
+            debug!(soft, hard, "RLIMIT_NOFILE already at or above hard limit");
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "Failed to raise RLIMIT_NOFILE; indexing may hit FD limits under load");
+        }
+    }
+
     // Branch into standalone or embedded mode
     if cli_args.standalone {
         return run_standalone(
             cli_args.host.as_deref(),
             cli_args.port,
             cli_args.discovery_port,
-        ).await;
+        )
+        .await;
     }
 
     if let Err(err) = run_embedded().await {
@@ -148,15 +164,24 @@ async fn run_standalone(
     port: Option<u16>,
     discovery_port: Option<u16>,
 ) -> SdkResult<()> {
-    let standalone_config = code_intelligence_mcp_server::config::StandaloneConfig::load(host, port, discovery_port)
-        .map_err(|e| McpSdkError::Internal { description: e.to_string() })?;
+    let standalone_config =
+        code_intelligence_mcp_server::config::StandaloneConfig::load(host, port, discovery_port)
+            .map_err(|e| McpSdkError::Internal {
+                description: e.to_string(),
+            })?;
 
     // Ensure data directories exist
     let data_dir = &standalone_config.data_dir;
-    std::fs::create_dir_all(data_dir.join("repos").as_std_path())
-        .map_err(|e| McpSdkError::Internal { description: format!("Failed to create data dir: {}", e) })?;
-    std::fs::create_dir_all(data_dir.join("logs").as_std_path())
-        .map_err(|e| McpSdkError::Internal { description: format!("Failed to create logs dir: {}", e) })?;
+    std::fs::create_dir_all(data_dir.join("repos").as_std_path()).map_err(|e| {
+        McpSdkError::Internal {
+            description: format!("Failed to create data dir: {}", e),
+        }
+    })?;
+    std::fs::create_dir_all(data_dir.join("logs").as_std_path()).map_err(|e| {
+        McpSdkError::Internal {
+            description: format!("Failed to create logs dir: {}", e),
+        }
+    })?;
 
     // Create shared embedder (loaded once, shared across all repos).
     // For llamacpp backend, use DeferredEmbedder so the HTTP server starts immediately.
@@ -168,17 +193,31 @@ async fn run_standalone(
                     standalone_config.embeddings_model_dir.as_deref(),
                     standalone_config.embeddings_device,
                     standalone_config.hash_embedding_dim,
-                ).map_err(|e| McpSdkError::Internal { description: format!("Failed to create embedder: {}", e) })?;
-                let e = maybe_truncate(base, standalone_config.embedding_truncate_dim)
-                    .map_err(|e| McpSdkError::Internal { description: format!("Failed to create truncating embedder: {}", e) })?;
+                )
+                .map_err(|e| McpSdkError::Internal {
+                    description: format!("Failed to create embedder: {}", e),
+                })?;
+                let e = maybe_truncate(base, standalone_config.embedding_truncate_dim).map_err(
+                    |e| McpSdkError::Internal {
+                        description: format!("Failed to create truncating embedder: {}", e),
+                    },
+                )?;
                 info!("Created hash embedder with dimension: {}", e.dim());
                 (e, None)
             }
             code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
-                let dim = default_embedding_dim(standalone_config.embeddings_backend, standalone_config.hash_embedding_dim, standalone_config.embedding_truncate_dim, None);
+                let dim = default_embedding_dim(
+                    standalone_config.embeddings_backend,
+                    standalone_config.hash_embedding_dim,
+                    standalone_config.embedding_truncate_dim,
+                    None,
+                );
                 let deferred = DeferredEmbedder::new(dim);
                 let slot = deferred.inner_slot();
-                info!(dim, "Created deferred embedder — model will load in background");
+                info!(
+                    dim,
+                    "Created deferred embedder — model will load in background"
+                );
                 (Box::new(deferred), Some(slot))
             }
         };
@@ -190,10 +229,14 @@ async fn run_standalone(
     );
 
     let session_manager = code_intelligence_mcp_server::session::SessionManager::new(
-        standalone_config.clone(), registry, embedder,
+        standalone_config.clone(),
+        registry,
+        embedder,
     )
     .await
-    .map_err(|e| McpSdkError::Internal { description: e.to_string() })?;
+    .map_err(|e| McpSdkError::Internal {
+        description: e.to_string(),
+    })?;
     let session_manager = Arc::new(session_manager);
     session_manager.spawn_eviction_loop();
 
@@ -217,7 +260,8 @@ async fn run_standalone(
     };
 
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
-        session_manager, server_details.clone(),
+        session_manager,
+        server_details.clone(),
     );
     let bind_host = standalone_config.host.clone();
     let bind_port = standalone_config.port;
@@ -230,12 +274,10 @@ async fn run_standalone(
         HyperServerOptions {
             host: bind_host.clone(),
             port: bind_port,
-            task_store: Some(Arc::new(
-                rust_mcp_sdk::task_store::InMemoryTaskStore::<
-                    rust_mcp_sdk::schema::schema_utils::ClientJsonrpcRequest,
-                    rust_mcp_sdk::schema::schema_utils::ResultFromServer,
-                >::new(None),
-            )),
+            task_store: Some(Arc::new(rust_mcp_sdk::task_store::InMemoryTaskStore::<
+                rust_mcp_sdk::schema::schema_utils::ClientJsonrpcRequest,
+                rust_mcp_sdk::schema::schema_utils::ResultFromServer,
+            >::new(None))),
             client_task_store: None,
             ..Default::default()
         },
@@ -258,7 +300,8 @@ async fn run_standalone(
                 )?;
                 let embedder = maybe_truncate(base, truncate_dim)?;
                 Ok::<_, anyhow::Error>(embedder)
-            }).await;
+            })
+            .await;
             match result {
                 Ok(Ok(real_embedder)) => {
                     let mut guard = slot.lock().expect("DeferredEmbedder mutex poisoned");
@@ -287,7 +330,10 @@ async fn run_standalone(
         )
         .await
         {
-            error!("Failed to start discovery server: {}. Discovery endpoint will not be available.", e);
+            error!(
+                "Failed to start discovery server: {}. Discovery endpoint will not be available.",
+                e
+            );
         }
     }
 
@@ -308,14 +354,17 @@ async fn run_embedded() -> SdkResult<()> {
     })?;
 
     // Ensure per-repo data directory exists
-    std::fs::create_dir_all(config.db_path.parent().unwrap_or(&config.db_path))
-        .map_err(|err| McpSdkError::Internal {
+    std::fs::create_dir_all(config.db_path.parent().unwrap_or(&config.db_path)).map_err(|err| {
+        McpSdkError::Internal {
             description: format!("Failed to create repo data directory: {}", err),
-        })?;
+        }
+    })?;
 
     // Clean up per-repo log files older than 7 days
     {
-        let repo_logs_dir = config.db_path.parent()
+        let repo_logs_dir = config
+            .db_path
+            .parent()
             .unwrap_or(&config.db_path)
             .join("logs");
         code_intelligence_mcp_server::logging::cleanup_old_logs(&repo_logs_dir, 7);
@@ -334,8 +383,8 @@ async fn run_embedded() -> SdkResult<()> {
     }
 
     // Hint about legacy data directories
-    let legacy_cimcp = std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
-        .join(".cimcp");
+    let legacy_cimcp =
+        std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".cimcp");
     if legacy_cimcp.exists() {
         info!(
             path = %legacy_cimcp.display(),
@@ -354,31 +403,41 @@ async fn run_embedded() -> SdkResult<()> {
     // Create embedder — for hash backend (instant), load synchronously.
     // For llamacpp backend (downloads ~531 MB on first run), use a DeferredEmbedder
     // so the MCP server starts immediately and degrades to BM25-only until ready.
-    let (embedder, deferred_slot): EmbedderWithSlot =
-        match config.embeddings_backend {
-            code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
-                let base = create_embedder(
-                    config.embeddings_backend,
-                    config.embeddings_model_dir.as_deref(),
-                    config.embeddings_device,
-                    config.hash_embedding_dim,
-                )
-                .map_err(|err| McpSdkError::Internal {
-                    description: format!("Failed to create embedder: {}", err),
-                })?;
-                let e = maybe_truncate(base, config.embedding_truncate_dim)
-                    .map_err(|err| McpSdkError::Internal { description: format!("Failed to create truncating embedder: {}", err) })?;
-                info!("Created hash embedder with dimension: {}", e.dim());
-                (e, None)
-            }
-            code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
-                let dim = default_embedding_dim(config.embeddings_backend, config.hash_embedding_dim, config.embedding_truncate_dim, config.embedding_dim_override);
-                let deferred = DeferredEmbedder::new(dim);
-                let slot = deferred.inner_slot();
-                info!(dim, "Created deferred embedder — model will load in background");
-                (Box::new(deferred), Some(slot))
-            }
-        };
+    let (embedder, deferred_slot): EmbedderWithSlot = match config.embeddings_backend {
+        code_intelligence_mcp_server::config::EmbeddingsBackend::Hash => {
+            let base = create_embedder(
+                config.embeddings_backend,
+                config.embeddings_model_dir.as_deref(),
+                config.embeddings_device,
+                config.hash_embedding_dim,
+            )
+            .map_err(|err| McpSdkError::Internal {
+                description: format!("Failed to create embedder: {}", err),
+            })?;
+            let e = maybe_truncate(base, config.embedding_truncate_dim).map_err(|err| {
+                McpSdkError::Internal {
+                    description: format!("Failed to create truncating embedder: {}", err),
+                }
+            })?;
+            info!("Created hash embedder with dimension: {}", e.dim());
+            (e, None)
+        }
+        code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
+            let dim = default_embedding_dim(
+                config.embeddings_backend,
+                config.hash_embedding_dim,
+                config.embedding_truncate_dim,
+                config.embedding_dim_override,
+            );
+            let deferred = DeferredEmbedder::new(dim);
+            let slot = deferred.inner_slot();
+            info!(
+                dim,
+                "Created deferred embedder — model will load in background"
+            );
+            (Box::new(deferred), Some(slot))
+        }
+    };
 
     // --- Leader election ---
     let (is_leader_flag, role_rx, mut _leader_guard) = if config.leader_election_enabled {
@@ -388,9 +447,11 @@ async fn run_embedded() -> SdkResult<()> {
             config.leader_heartbeat_interval_ms,
             config.leader_ttl_seconds,
         );
-        let role = election.try_acquire().map_err(|err| McpSdkError::Internal {
-            description: format!("Leader election failed: {}", err),
-        })?;
+        let role = election
+            .try_acquire()
+            .map_err(|err| McpSdkError::Internal {
+                description: format!("Leader election failed: {}", err),
+            })?;
         info!(role = %role, "Leader election result");
         let flag = election.is_leader_flag();
         let rx = election.role_receiver();
@@ -411,18 +472,27 @@ async fn run_embedded() -> SdkResult<()> {
         let mut opened = None;
         for attempt in 0..5 {
             match TantivyIndex::open_readonly(&config.tantivy_index_path) {
-                Ok(t) => { opened = Some(t); break; }
+                Ok(t) => {
+                    opened = Some(t);
+                    break;
+                }
                 Err(e) => {
                     last_err = Some(e);
                     if attempt < 4 {
-                        info!(attempt = attempt + 1, "Tantivy index not ready, retrying in 2s...");
+                        info!(
+                            attempt = attempt + 1,
+                            "Tantivy index not ready, retrying in 2s..."
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                     }
                 }
             }
         }
-        opened.ok_or_else(|| last_err.unwrap_or_else(|| anyhow::anyhow!("Failed to open Tantivy index")))
-    }.map_err(|err| McpSdkError::Internal {
+        opened.ok_or_else(|| {
+            last_err.unwrap_or_else(|| anyhow::anyhow!("Failed to open Tantivy index"))
+        })
+    }
+    .map_err(|err| McpSdkError::Internal {
         description: err.to_string(),
     })?;
 
@@ -464,7 +534,10 @@ async fn run_embedded() -> SdkResult<()> {
         match spawn_metrics_server(Arc::clone(&metrics), config.metrics_port).await {
             Ok(handle) => Some(handle),
             Err(e) => {
-                tracing::warn!("Metrics server failed to start: {}. Continuing without metrics.", e);
+                tracing::warn!(
+                    "Metrics server failed to start: {}. Continuing without metrics.",
+                    e
+                );
                 None
             }
         }
@@ -502,7 +575,9 @@ async fn run_embedded() -> SdkResult<()> {
             let llm_config = config.clone();
             match tokio::task::spawn_blocking(move || create_llm_generator(&llm_config)).await {
                 Ok(Ok(Some(llm))) => {
-                    tracing::info!("HyDE local LLM loaded — on-device hypothetical code generation enabled");
+                    tracing::info!(
+                        "HyDE local LLM loaded — on-device hypothetical code generation enabled"
+                    );
                     gen = gen.with_local_llm(llm);
                 }
                 Ok(Ok(None)) => {
@@ -511,13 +586,12 @@ async fn run_embedded() -> SdkResult<()> {
                     );
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!(
-                        "Failed to create HyDE local LLM: {}. Disabling HyDE.", e
-                    );
+                    tracing::warn!("Failed to create HyDE local LLM: {}. Disabling HyDE.", e);
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "HyDE local LLM loading task panicked: {}. Disabling HyDE.", e
+                        "HyDE local LLM loading task panicked: {}. Disabling HyDE.",
+                        e
                     );
                 }
             }
@@ -575,7 +649,10 @@ async fn run_embedded() -> SdkResult<()> {
         }
         // Clear similarity clusters so embeddings are regenerated for all symbols
         if let Err(e) = state.sqlite.clear_similarity_clusters() {
-            tracing::error!("Failed to clear similarity clusters after vector migration: {}", e);
+            tracing::error!(
+                "Failed to clear similarity clusters after vector migration: {}",
+                e
+            );
         }
         let reindex_state = state.clone();
         tokio::spawn(async move {
@@ -642,10 +719,14 @@ async fn run_embedded() -> SdkResult<()> {
             tokio::spawn(async move {
                 let local_generator = match tokio::task::spawn_blocking(move || {
                     code_intelligence_mcp_server::llm::create_llm_generator(&llm_config)
-                }).await {
+                })
+                .await
+                {
                     Ok(Ok(Some(llm))) => llm,
                     Ok(Ok(None)) => {
-                        tracing::debug!("LLM descriptions not available, skipping description worker");
+                        tracing::debug!(
+                            "LLM descriptions not available, skipping description worker"
+                        );
                         return;
                     }
                     Ok(Err(e)) => {
@@ -663,20 +744,21 @@ async fn run_embedded() -> SdkResult<()> {
                 // first tool call from the client). FallbackLlmGenerator stores the
                 // Arc<OnceCell<...>> and checks it on each generate() call, so once
                 // the runtime becomes available, subsequent descriptions use sampling.
-                let generator: std::sync::Arc<dyn code_intelligence_mcp_server::llm::LlmGenerator> = if sampling_enabled {
-                    tracing::info!(
+                let generator: std::sync::Arc<dyn code_intelligence_mcp_server::llm::LlmGenerator> =
+                    if sampling_enabled {
+                        tracing::info!(
                         "MCP sampling enabled, FallbackLlmGenerator will use sampling once client connects"
                     );
-                    std::sync::Arc::new(
-                        code_intelligence_mcp_server::llm::sampling::FallbackLlmGenerator::new(
-                            mcp_runtime_cell,
-                            local_generator,
-                        ),
-                    )
-                } else {
-                    tracing::info!("MCP sampling descriptions disabled, using local LLM only");
-                    local_generator
-                };
+                        std::sync::Arc::new(
+                            code_intelligence_mcp_server::llm::sampling::FallbackLlmGenerator::new(
+                                mcp_runtime_cell,
+                                local_generator,
+                            ),
+                        )
+                    } else {
+                        tracing::info!("MCP sampling descriptions disabled, using local LLM only");
+                        local_generator
+                    };
 
                 let desc_cancel = tokio_util::sync::CancellationToken::new();
                 let _desc_handle = llm_indexer.spawn_description_worker(generator, desc_cancel);
@@ -797,7 +879,8 @@ async fn run_embedded() -> SdkResult<()> {
                 )?;
                 let embedder = maybe_truncate(base, truncate_dim)?;
                 Ok::<_, anyhow::Error>(embedder)
-            }).await;
+            })
+            .await;
             match result {
                 Ok(Ok(real_embedder)) => {
                     let mut guard = slot.lock().expect("DeferredEmbedder mutex poisoned");
@@ -846,12 +929,10 @@ async fn run_embedded() -> SdkResult<()> {
         server_details,
         transport,
         handler,
-        task_store: Some(Arc::new(
-            rust_mcp_sdk::task_store::InMemoryTaskStore::<
-                rust_mcp_sdk::schema::schema_utils::ClientJsonrpcRequest,
-                rust_mcp_sdk::schema::schema_utils::ResultFromServer,
-            >::new(None),
-        )),
+        task_store: Some(Arc::new(rust_mcp_sdk::task_store::InMemoryTaskStore::<
+            rust_mcp_sdk::schema::schema_utils::ClientJsonrpcRequest,
+            rust_mcp_sdk::schema::schema_utils::ResultFromServer,
+        >::new(None))),
         client_task_store: None,
     });
 

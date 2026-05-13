@@ -1325,6 +1325,7 @@ dependencies = [
  "http-body-util",
  "lancedb",
  "lazy_static",
+ "libc",
  "llama-cpp-2",
  "notify",
  "num_cpus",

@@ -49,6 +49,7 @@ prometheus = "0.13"
 sha2 = "0.10"
 rayon = "1"
 tiktoken-rs = "0.7"
+libc = "0.2"
 
 
 # Phase 3 HyDE dependencies (03-03) - LLM API client

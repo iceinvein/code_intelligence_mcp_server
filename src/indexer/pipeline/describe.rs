@@ -5,8 +5,8 @@
 //! results in SQLite, and re-upserts symbols to Tantivy with descriptions
 //! appended to the text field.
 
-use std::sync::Arc;
 use anyhow::{Context, Result};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::llm::{self, LlmGenerator};
@@ -73,11 +73,16 @@ pub async fn run_description_worker(
             }
             idle_cycles += 1;
             if idle_cycles >= MAX_IDLE_CYCLES {
-                tracing::info!("Description worker: idle for {}s, exiting", IDLE_POLL_INTERVAL.as_secs() * MAX_IDLE_CYCLES as u64);
+                tracing::info!(
+                    "Description worker: idle for {}s, exiting",
+                    IDLE_POLL_INTERVAL.as_secs() * MAX_IDLE_CYCLES as u64
+                );
                 break;
             }
             if idle_cycles == 1 {
-                tracing::debug!("Description worker: no undescribed symbols, waiting for indexing...");
+                tracing::debug!(
+                    "Description worker: no undescribed symbols, waiting for indexing..."
+                );
             }
             tokio::select! {
                 _ = cancel.cancelled() => break,
@@ -94,7 +99,11 @@ pub async fn run_description_worker(
 
         loop {
             if cancel.is_cancelled() {
-                tracing::info!("Description worker cancelled at {}/{}", processed_count, total);
+                tracing::info!(
+                    "Description worker cancelled at {}/{}",
+                    processed_count,
+                    total
+                );
                 break;
             }
 
@@ -115,8 +124,12 @@ pub async fn run_description_worker(
                 }
 
                 if !crate::indexer::pipeline::should_generate_embedding(
-                    &sym.kind, &sym.name, &sym.file_path,
-                    sym.exported, sym.start_line, sym.end_line,
+                    &sym.kind,
+                    &sym.name,
+                    &sym.file_path,
+                    sym.exported,
+                    sym.start_line,
+                    sym.end_line,
                 ) {
                     let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
                     {
@@ -139,14 +152,17 @@ pub async fn run_description_worker(
                 }
 
                 // Generate description
-                let prompt = llm::build_description_prompt(&sym.name, &sym.kind, &sym.file_path, &sym.text);
+                let prompt =
+                    llm::build_description_prompt(&sym.name, &sym.kind, &sym.file_path, &sym.text);
                 let description = match llm.generate(&prompt, max_tokens) {
                     Ok(desc) => desc,
                     Err(e) => {
                         tracing::warn!("Failed to generate description for {}: {:#}", sym.name, e);
                         // Mark as described (empty) to prevent infinite retry on
                         // permanently-failing symbols (e.g. text too large for context window).
-                        let conn = db.read().context("read conn for failed-description upsert")?;
+                        let conn = db
+                            .read()
+                            .context("read conn for failed-description upsert")?;
                         let _ = desc_queries::upsert_description(&conn, &sym.id, &content_hash, "");
                         continue;
                     }
@@ -162,7 +178,9 @@ pub async fn run_description_worker(
                 {
                     let conn = db.read().context("read conn for symbol lookup")?;
                     if let Some(symbol_row) = get_symbol_row(&conn, &sym.id)? {
-                        if let Err(e) = tantivy.upsert_symbol(&symbol_row, "", "", Some(&description)) {
+                        if let Err(e) =
+                            tantivy.upsert_symbol(&symbol_row, "", "", Some(&description))
+                        {
                             tracing::warn!("Failed to re-upsert {} to Tantivy: {}", sym.name, e);
                         }
                     }
@@ -188,7 +206,9 @@ pub async fn run_description_worker(
 
         // Final commit for this pass
         if generated_count > 0 {
-            tantivy.commit().context("Final Tantivy commit after descriptions")?;
+            tantivy
+                .commit()
+                .context("Final Tantivy commit after descriptions")?;
         }
         tracing::info!(
             "Description worker: pass complete, {} symbols described out of {} total",
@@ -205,10 +225,7 @@ pub async fn run_description_worker(
 const PAGE_SIZE: usize = 500;
 
 /// Helper to get a SymbolRow from SQLite by ID.
-fn get_symbol_row(
-    conn: &rusqlite::Connection,
-    symbol_id: &str,
-) -> Result<Option<SymbolRow>> {
+fn get_symbol_row(conn: &rusqlite::Connection, symbol_id: &str) -> Result<Option<SymbolRow>> {
     use rusqlite::OptionalExtension;
     let mut stmt = conn.prepare_cached(
         "SELECT id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text
@@ -239,8 +256,8 @@ fn get_symbol_row(
 mod tests {
     use super::*;
     use crate::llm::MockLlmGenerator;
-    use crate::storage::sqlite::schema::SCHEMA_SQL;
     use crate::path::Utf8PathBuf;
+    use crate::storage::sqlite::schema::SCHEMA_SQL;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn setup_test_env() -> (Arc<SqliteStore>, Arc<TantivyIndex>) {

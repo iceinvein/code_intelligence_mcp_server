@@ -3,8 +3,8 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::path::Utf8Path;
 use super::schema::SCHEMA_SQL;
+use crate::path::Utf8Path;
 
 pub struct SqliteStore {
     pub(crate) conn: RwLock<Connection>,
@@ -81,8 +81,7 @@ impl SqliteStore {
 
     /// Create an in-memory SQLite database (for testing).
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()
-            .context("Failed to open in-memory SQLite")?;
+        let conn = Connection::open_in_memory().context("Failed to open in-memory SQLite")?;
         conn.execute("PRAGMA foreign_keys = ON", [])
             .context("Failed to enable foreign keys on in-memory connection")?;
         Ok(Self {
@@ -102,12 +101,14 @@ impl SqliteStore {
                 .with_context(|| "Failed to run migration: migrate_add_edges_location_columns")?;
             migrate_add_edges_confidence_column(&conn)
                 .with_context(|| "Failed to run migration: migrate_add_edges_confidence_column")?;
-            migrate_add_edges_evidence_count_column(&conn)
-                .with_context(|| "Failed to run migration: migrate_add_edges_evidence_count_column")?;
+            migrate_add_edges_evidence_count_column(&conn).with_context(|| {
+                "Failed to run migration: migrate_add_edges_evidence_count_column"
+            })?;
             migrate_add_edges_resolution_columns(&conn)
                 .with_context(|| "Failed to run migration: migrate_add_edges_resolution_columns")?;
-            migrate_add_search_runs_timing_columns(&conn)
-                .with_context(|| "Failed to run migration: migrate_add_search_runs_timing_columns")?;
+            migrate_add_search_runs_timing_columns(&conn).with_context(|| {
+                "Failed to run migration: migrate_add_search_runs_timing_columns"
+            })?;
         }
         Ok(())
     }

@@ -128,7 +128,12 @@ fn extract_pattern_details(
     kind: FrameworkPatternKind,
     args_node: Node,
     source: &str,
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let mut path = None;
     let mut name = None;
     let mut handler = None;
@@ -138,7 +143,9 @@ fn extract_pattern_details(
     let children: Vec<Node> = args_node.children(&mut cursor).collect();
 
     match kind {
-        FrameworkPatternKind::Route | FrameworkPatternKind::WebSocket | FrameworkPatternKind::Group => {
+        FrameworkPatternKind::Route
+        | FrameworkPatternKind::WebSocket
+        | FrameworkPatternKind::Group => {
             // First arg is path (string), second is handler
             if let Some(first) = children.iter().find(|n| n.is_named()) {
                 if first.kind() == "string" || first.kind() == "template_string" {
@@ -180,7 +187,9 @@ fn extract_pattern_details(
                 name = Some(text_for_node(*first, source));
             }
         }
-        FrameworkPatternKind::Derive | FrameworkPatternKind::Resolve | FrameworkPatternKind::Guard => {
+        FrameworkPatternKind::Derive
+        | FrameworkPatternKind::Resolve
+        | FrameworkPatternKind::Guard => {
             // These take function/object arguments
             if let Some(first) = children.iter().find(|n| n.is_named()) {
                 arguments = Some(truncate_text(&text_for_node(*first, source), 200));
@@ -295,7 +304,9 @@ const app = new Elysia()
 "#;
         let patterns = parse_and_extract(source);
 
-        assert!(patterns.iter().any(|p| p.kind == FrameworkPatternKind::Listen));
+        assert!(patterns
+            .iter()
+            .any(|p| p.kind == FrameworkPatternKind::Listen));
     }
 
     #[test]
@@ -309,6 +320,10 @@ await api.delete(itemId);
 headers.get('content-type');
 "#;
         let patterns = parse_and_extract(source);
-        assert_eq!(patterns.len(), 0, "Generic .get()/.delete() calls should not be routes");
+        assert_eq!(
+            patterns.len(),
+            0,
+            "Generic .get()/.delete() calls should not be routes"
+        );
     }
 }

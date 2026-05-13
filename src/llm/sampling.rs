@@ -87,9 +87,8 @@ impl LlmGenerator for SamplingLlmGenerator {
         // context without starving the runtime (it moves the current task
         // off the worker thread).
         let result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                self.runtime.request_message_creation(params).await
-            })
+            tokio::runtime::Handle::current()
+                .block_on(async { self.runtime.request_message_creation(params).await })
         })
         .map_err(|e| anyhow!("MCP sampling request failed: {}", e))?;
 
@@ -123,10 +122,7 @@ impl FallbackLlmGenerator {
         mcp_runtime: Arc<OnceCell<Arc<dyn McpServer + 'static>>>,
         local: Arc<dyn LlmGenerator>,
     ) -> Self {
-        Self {
-            mcp_runtime,
-            local,
-        }
+        Self { mcp_runtime, local }
     }
 }
 
@@ -433,11 +429,9 @@ mod tests {
         let sampling = SamplingLlmGenerator::new(mock_server as Arc<dyn McpServer>);
 
         // Run in a blocking context to match the real usage pattern
-        let result = tokio::task::spawn_blocking(move || {
-            sampling.generate("test prompt", 50)
-        })
-        .await
-        .unwrap();
+        let result = tokio::task::spawn_blocking(move || sampling.generate("test prompt", 50))
+            .await
+            .unwrap();
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -502,7 +496,10 @@ mod tests {
 
         // First call: no runtime yet — uses local
         let result1 = fallback.generate(&prompt, 50).unwrap();
-        assert!(result1.contains("Mock description"), "Should use local when OnceCell is empty");
+        assert!(
+            result1.contains("Mock description"),
+            "Should use local when OnceCell is empty"
+        );
 
         // Simulate first tool call populating the runtime
         let mock_server = Arc::new(MockSamplingServer::new(false));

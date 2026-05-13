@@ -48,8 +48,11 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                 extract_namespace(node, source, &mut symbols, &mut type_edges);
             }
         }
-        "class_declaration" | "struct_declaration" | "interface_declaration"
-        | "enum_declaration" | "record_declaration" => {
+        "class_declaration"
+        | "struct_declaration"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "record_declaration" => {
             // Only handle top-level type declarations here (not nested inside
             // namespaces or other types — those are handled recursively).
             if !node_is_inside_type_declaration(node) && !node_is_inside_namespace(node) {
@@ -62,9 +65,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     symbols.sort_by_key(|s| s.bytes.start);
 
     let todo_cursor = root.walk();
-    let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment"],
-    );
+    let todos = super::comments::extract_todo_from_tree(todo_cursor, source, "", &["comment"]);
 
     Ok(ExtractedFile {
         symbols,
@@ -91,7 +92,12 @@ fn extract_namespace(
     let Some(name) = symbol_name(node, source) else {
         return;
     };
-    symbols.push(symbol_from_node(name.clone(), SymbolKind::Module, true, node));
+    symbols.push(symbol_from_node(
+        name.clone(),
+        SymbolKind::Module,
+        true,
+        node,
+    ));
 
     // Walk the declaration_list inside the namespace
     let mut cursor = node.walk();
@@ -247,7 +253,12 @@ fn extract_method(
     let is_test = is_test_method(node, source);
     let exported = exported && !is_test;
 
-    symbols.push(symbol_from_node(qualified, SymbolKind::Function, exported, node));
+    symbols.push(symbol_from_node(
+        qualified,
+        SymbolKind::Function,
+        exported,
+        node,
+    ));
 }
 
 /// Return `true` if the method has a `[Test]`, `[Fact]`, or `[TestMethod]` attribute.
@@ -313,11 +324,7 @@ fn extract_using_directive(node: Node<'_>, source: &str, imports: &mut Vec<Impor
         return;
     }
 
-    let name = qname
-        .split('.')
-        .next_back()
-        .unwrap_or(&qname)
-        .to_string();
+    let name = qname.split('.').next_back().unwrap_or(&qname).to_string();
 
     imports.push(Import {
         name: alias.clone().unwrap_or_else(|| name),
@@ -354,9 +361,7 @@ fn node_is_inside_interface(node: Node<'_>) -> bool {
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "interface_declaration" => return true,
-            "class_declaration"
-            | "struct_declaration"
-            | "enum_declaration"
+            "class_declaration" | "struct_declaration" | "enum_declaration"
             | "record_declaration" => return false,
             _ => {}
         }
@@ -524,7 +529,10 @@ namespace MyApp {
         let file = extract_csharp_symbols(source).unwrap();
 
         // Namespace
-        assert!(file.symbols.iter().any(|s| s.name == "MyApp" && s.kind == SymbolKind::Module));
+        assert!(file
+            .symbols
+            .iter()
+            .any(|s| s.name == "MyApp" && s.kind == SymbolKind::Module));
 
         let class_sym = file.symbols.iter().find(|s| s.name == "MyClass").unwrap();
         assert_eq!(class_sym.kind, SymbolKind::Class);

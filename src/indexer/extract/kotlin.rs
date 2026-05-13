@@ -67,7 +67,10 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     let todo_cursor = root.walk();
     let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["line_comment", "multiline_comment"],
+        todo_cursor,
+        source,
+        "",
+        &["line_comment", "multiline_comment"],
     );
 
     Ok(ExtractedFile {
@@ -114,16 +117,17 @@ fn extract_class_declaration(
     }
 }
 
-fn extract_object_declaration(
-    node: Node<'_>,
-    source: &str,
-    symbols: &mut Vec<ExtractedSymbol>,
-) {
+fn extract_object_declaration(node: Node<'_>, source: &str, symbols: &mut Vec<ExtractedSymbol>) {
     let Some(name) = symbol_name(node, source) else {
         return;
     };
     let exported = is_exported_node(node, source);
-    symbols.push(symbol_from_node(name.clone(), SymbolKind::Class, exported, node));
+    symbols.push(symbol_from_node(
+        name.clone(),
+        SymbolKind::Class,
+        exported,
+        node,
+    ));
 
     let body = node
         .child_by_field_name("class_body")
@@ -133,13 +137,7 @@ fn extract_object_declaration(
         let mut cursor = b.walk();
         for child in b.children(&mut cursor) {
             if child.kind() == "function_declaration" {
-                extract_function_declaration(
-                    child,
-                    source,
-                    Some(&name),
-                    symbols,
-                    &mut Vec::new(),
-                );
+                extract_function_declaration(child, source, Some(&name), symbols, &mut Vec::new());
             }
         }
     }
@@ -239,13 +237,7 @@ fn extract_class_body(
     for child in body.children(&mut cursor) {
         match child.kind() {
             "function_declaration" => {
-                extract_function_declaration(
-                    child,
-                    source,
-                    Some(class_name),
-                    symbols,
-                    type_edges,
-                );
+                extract_function_declaration(child, source, Some(class_name), symbols, type_edges);
             }
             "companion_object" => {
                 // companion object { … } — functions go under the parent class name
@@ -302,7 +294,12 @@ fn extract_function_declaration(
     let is_test = is_test_function(node, source);
     let exported = exported && !is_test;
 
-    symbols.push(symbol_from_node(qualified, SymbolKind::Function, exported, node));
+    symbols.push(symbol_from_node(
+        qualified,
+        SymbolKind::Function,
+        exported,
+        node,
+    ));
 }
 
 fn is_test_function(node: Node<'_>, source: &str) -> bool {
@@ -370,11 +367,7 @@ fn extract_import(node: Node<'_>, source: &str, imports: &mut Vec<Import>) {
         return;
     }
 
-    let name = qname
-        .split('.')
-        .next_back()
-        .unwrap_or(&qname)
-        .to_string();
+    let name = qname.split('.').next_back().unwrap_or(&qname).to_string();
 
     imports.push(Import {
         name: alias.clone().unwrap_or_else(|| name),
@@ -615,11 +608,7 @@ object Singleton {
 "#;
         let file = extract_kotlin_symbols(source).unwrap();
 
-        let obj_sym = file
-            .symbols
-            .iter()
-            .find(|s| s.name == "Singleton")
-            .unwrap();
+        let obj_sym = file.symbols.iter().find(|s| s.name == "Singleton").unwrap();
         assert_eq!(obj_sym.kind, SymbolKind::Class);
 
         assert!(

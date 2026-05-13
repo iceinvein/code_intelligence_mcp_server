@@ -40,9 +40,8 @@ impl LlamaCppEmbedder {
         // Offload all layers to Metal GPU (99 > actual layer count).
         let model_params = LlamaModelParams::default().with_n_gpu_layers(99);
 
-        let model =
-            LlamaModel::load_from_file(backend, model_path.as_std_path(), &model_params)
-                .map_err(|e| anyhow!("Failed to load embedding GGUF model: {:?}", e))?;
+        let model = LlamaModel::load_from_file(backend, model_path.as_std_path(), &model_params)
+            .map_err(|e| anyhow!("Failed to load embedding GGUF model: {:?}", e))?;
 
         let dim = model.n_embd() as usize;
 
@@ -229,7 +228,11 @@ impl LlamaCppEmbedder {
         }
 
         let total_tokens: usize = indices.iter().map(|&i| tokenized[i].len()).sum();
-        let max_seq_len = indices.iter().map(|&i| tokenized[i].len()).max().unwrap_or(0);
+        let max_seq_len = indices
+            .iter()
+            .map(|&i| tokenized[i].len())
+            .max()
+            .unwrap_or(0);
         let n_seqs = indices.len();
 
         // n_ctx must be max_seq_len * n_seqs because llama.cpp divides KV cache
@@ -271,13 +274,9 @@ impl LlamaCppEmbedder {
             .map_err(|e| anyhow!("Batch embedding decode failed: {:?}", e))?;
 
         for (seq_idx, &text_idx) in indices.iter().enumerate() {
-            let embedding = ctx.embeddings_seq_ith(seq_idx as i32).map_err(|e| {
-                anyhow!(
-                    "Failed to extract embedding for seq {}: {:?}",
-                    seq_idx,
-                    e
-                )
-            })?;
+            let embedding = ctx
+                .embeddings_seq_ith(seq_idx as i32)
+                .map_err(|e| anyhow!("Failed to extract embedding for seq {}: {:?}", seq_idx, e))?;
             let mut vec = embedding.to_vec();
             l2_normalize(&mut vec);
             results[text_idx] = Some(vec);

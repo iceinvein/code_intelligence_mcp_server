@@ -282,8 +282,7 @@ fn classify_nestjs_decorator(
         }
 
         "UseGuards" => {
-            let guard_name =
-                args_node.and_then(|a| extract_first_identifier_arg(a, source));
+            let guard_name = args_node.and_then(|a| extract_first_identifier_arg(a, source));
             Some(ExtractedFrameworkPattern {
                 line,
                 column,
@@ -299,8 +298,7 @@ fn classify_nestjs_decorator(
         }
 
         "UseInterceptors" => {
-            let interceptor_name =
-                args_node.and_then(|a| extract_first_identifier_arg(a, source));
+            let interceptor_name = args_node.and_then(|a| extract_first_identifier_arg(a, source));
             Some(ExtractedFrameworkPattern {
                 line,
                 column,
@@ -316,8 +314,7 @@ fn classify_nestjs_decorator(
         }
 
         "UsePipes" => {
-            let pipe_name =
-                args_node.and_then(|a| extract_first_identifier_arg(a, source));
+            let pipe_name = args_node.and_then(|a| extract_first_identifier_arg(a, source));
             Some(ExtractedFrameworkPattern {
                 line,
                 column,
@@ -354,13 +351,16 @@ fn extract_first_identifier_arg(args_node: Node, source: &str) -> Option<String>
     let mut cursor = args_node.walk();
     let children: Vec<_> = args_node.children(&mut cursor).collect();
     drop(cursor);
-    children.into_iter().filter(|n| n.is_named()).find_map(|n| match n.kind() {
-        "identifier" => Some(text_for_node(n, source)),
-        "new_expression" => n
-            .child_by_field_name("constructor")
-            .map(|c| text_for_node(c, source)),
-        _ => None,
-    })
+    children
+        .into_iter()
+        .filter(|n| n.is_named())
+        .find_map(|n| match n.kind() {
+            "identifier" => Some(text_for_node(n, source)),
+            "new_expression" => n
+                .child_by_field_name("constructor")
+                .map(|c| text_for_node(c, source)),
+            _ => None,
+        })
 }
 
 #[cfg(test)]
@@ -489,7 +489,11 @@ export class AdminController {
             .iter()
             .filter(|p| p.kind == FrameworkPatternKind::Guard)
             .collect();
-        assert_eq!(guards.len(), 2, "Expected 2 Guard patterns (class + method)");
+        assert_eq!(
+            guards.len(),
+            2,
+            "Expected 2 Guard patterns (class + method)"
+        );
         assert_eq!(guards[0].name, Some("AuthGuard".to_string()));
 
         let interceptors: Vec<_> = patterns
@@ -497,10 +501,7 @@ export class AdminController {
             .filter(|p| p.kind == FrameworkPatternKind::Interceptor)
             .collect();
         assert_eq!(interceptors.len(), 1, "Expected 1 Interceptor pattern");
-        assert_eq!(
-            interceptors[0].name,
-            Some("LoggingInterceptor".to_string())
-        );
+        assert_eq!(interceptors[0].name, Some("LoggingInterceptor".to_string()));
 
         let pipes: Vec<_> = patterns
             .iter()

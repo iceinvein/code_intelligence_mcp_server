@@ -4,12 +4,12 @@
 //! of code symbols using local LLM inference. Descriptions are appended to the
 //! Tantivy text field to improve search relevance for semantic queries.
 
+use crate::path::Utf8Path;
 use anyhow::Result;
+use llama_cpp_2::llama_backend::LlamaBackend;
 use once_cell::sync::OnceCell;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use crate::path::Utf8Path;
-use llama_cpp_2::llama_backend::LlamaBackend;
 
 pub mod llamacpp;
 pub mod sampling;
@@ -91,9 +91,7 @@ pub fn build_description_prompt(name: &str, kind: &str, file_path: &str, body: &
     // just the filename. This gives the LLM critical context about the module's
     // purpose — "score.rs" is ambiguous, but "retrieval/ranking/score.rs" tells
     // the model this is about search ranking and scoring.
-    let module_path = file_path
-        .strip_prefix("src/")
-        .unwrap_or(file_path);
+    let module_path = file_path.strip_prefix("src/").unwrap_or(file_path);
 
     // Truncate body to fit within the 512-token context window.
     // Line-based truncation alone isn't safe — generated TypeScript types can have
@@ -149,11 +147,7 @@ pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
     // v3: Keyword tags instead of prose descriptions (R50: prose had zero BM25 impact).
     const PROMPT_VERSION: &str = "v3";
 
-    let truncated_body: String = body
-        .lines()
-        .take(10)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let truncated_body: String = body.lines().take(10).collect::<Vec<_>>().join("\n");
 
     let input = format!("{}:{}:{}:{}", PROMPT_VERSION, name, kind, truncated_body);
     let mut hasher = Sha256::new();
@@ -194,7 +188,10 @@ pub fn create_llm_generator(
 
     // Auto-download if model not found
     if !model_file.exists() {
-        tracing::info!("LLM model not found at {}, attempting auto-download...", model_file);
+        tracing::info!(
+            "LLM model not found at {}, attempting auto-download...",
+            model_file
+        );
         match download_model(&model_dir) {
             Ok(()) => {
                 tracing::info!("LLM model downloaded successfully");
@@ -224,13 +221,16 @@ pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
 
     tracing::info!("Downloading LLM model from huggingface.co/{}", HF_REPO);
 
-    let api = hf_hub::api::sync::Api::new()
-        .context("Failed to initialize HuggingFace Hub API")?;
+    let api = hf_hub::api::sync::Api::new().context("Failed to initialize HuggingFace Hub API")?;
     let repo = api.model(HF_REPO.to_string());
 
     // Download GGUF model (~1.1 GB) — includes weights + tokenizer
-    tracing::info!("Downloading {} (~1.1 GB, this may take a few minutes)...", HF_MODEL_FILE);
-    let model_cached = repo.get(HF_MODEL_FILE)
+    tracing::info!(
+        "Downloading {} (~1.1 GB, this may take a few minutes)...",
+        HF_MODEL_FILE
+    );
+    let model_cached = repo
+        .get(HF_MODEL_FILE)
         .context("Failed to download GGUF model file")?;
 
     // Create target directory
@@ -356,7 +356,7 @@ mod tests {
         let hash3 = compute_content_hash(
             "PathNormalizer",
             "struct",
-            "pub struct PathNormalizer {\n    base: PathBuf,\n}",  // Changed type
+            "pub struct PathNormalizer {\n    base: PathBuf,\n}", // Changed type
         );
         assert_ne!(hash1, hash3);
     }
@@ -393,7 +393,9 @@ mod tests {
 
         let result = generator.generate(&prompt, 50).unwrap();
         // Module path is "server/handler.rs" (src/ stripped)
-        assert!(result.contains("Mock description for function handle_request in server/handler.rs"));
+        assert!(
+            result.contains("Mock description for function handle_request in server/handler.rs")
+        );
     }
 
     #[test]

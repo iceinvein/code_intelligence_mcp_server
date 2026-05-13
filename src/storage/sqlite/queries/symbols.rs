@@ -474,14 +474,15 @@ pub fn batch_get_symbol_names(
     if symbol_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let placeholders = symbol_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = symbol_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
-    let query = format!("SELECT id, name FROM symbols WHERE id IN ({})", placeholders);
-    let mut stmt = conn.prepare(&query).context("Failed to prepare batch_get_symbol_names")?;
+    let query = format!(
+        "SELECT id, name FROM symbols WHERE id IN ({})",
+        placeholders
+    );
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare batch_get_symbol_names")?;
     let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
         .iter()
         .map(|s| s as &dyn rusqlite::ToSql)
@@ -640,10 +641,7 @@ pub fn batch_check_symbol_ids_exist(
         .collect::<Vec<_>>()
         .join(",");
 
-    let query = format!(
-        "SELECT id FROM symbols WHERE id IN ({})",
-        placeholders
-    );
+    let query = format!("SELECT id FROM symbols WHERE id IN ({})", placeholders);
 
     let mut stmt = conn
         .prepare(&query)

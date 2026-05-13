@@ -212,7 +212,10 @@ mod tests {
             .iter()
             .filter(|h| h.file_path == "score.rs")
             .count();
-        assert_eq!(score_rs_top3, 3, "score.rs should have 3 in top 3 due to concentration");
+        assert_eq!(
+            score_rs_top3, 3,
+            "score.rs should have 3 in top 3 due to concentration"
+        );
         // rrf.rs pushed to position 4 (still present)
         assert_eq!(result[3].file_path, "rrf.rs");
     }
@@ -288,7 +291,10 @@ mod tests {
             result[..8].iter().map(|h| h.file_path.as_str()).collect();
         assert!(top8_files.contains("rrf.rs"), "rrf.rs in primary pass");
         assert!(top8_files.contains("mod.rs"), "mod.rs in primary pass");
-        assert!(top8_files.contains("diversify.rs"), "diversify.rs in primary pass");
+        assert!(
+            top8_files.contains("diversify.rs"),
+            "diversify.rs in primary pass"
+        );
     }
 
     #[test]
@@ -323,7 +329,9 @@ mod tests {
         // The file-level "reranker.rs" should NOT be in top 5
         // since we already have apply_reranker_scores from that file
         assert!(
-            !result.iter().any(|h| h.kind == "file" && h.file_path == "reranker.rs"),
+            !result
+                .iter()
+                .any(|h| h.kind == "file" && h.file_path == "reranker.rs"),
             "File symbol should be suppressed when function from same file exists"
         );
         // mod.rs function should fill the freed slot
@@ -352,7 +360,9 @@ mod tests {
         assert_eq!(result[1].name, "RepositoryRow");
         // File symbol deferred to overflow/backfill
         assert!(
-            result.iter().any(|h| h.kind == "file" && h.file_path == "schema.rs"),
+            result
+                .iter()
+                .any(|h| h.kind == "file" && h.file_path == "schema.rs"),
             "File symbol should still appear via overflow/backfill"
         );
     }
@@ -403,7 +413,9 @@ mod tests {
         let result = diversify_by_file(hits, 5);
         assert_eq!(result.len(), 3);
         assert!(
-            result.iter().any(|h| h.kind == "file" && h.file_path == "a.rs"),
+            result
+                .iter()
+                .any(|h| h.kind == "file" && h.file_path == "a.rs"),
             "File symbol should be kept when no function from same file"
         );
     }

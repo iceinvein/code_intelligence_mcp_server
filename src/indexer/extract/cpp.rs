@@ -199,9 +199,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                     // the field's type (e.g. `Dog d;` → Dog→d is not useful, but
                                     // recording the *field type* as a dependency of the class is).
                                     if !has_function_decl {
-                                        if let Some(type_node) =
-                                            child.child_by_field_name("type")
-                                        {
+                                        if let Some(type_node) = child.child_by_field_name("type") {
                                             if let Some(type_name) =
                                                 extract_cpp_type_name(type_node, source)
                                             {
@@ -262,9 +260,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     symbols.sort_by_key(|s| s.bytes.start);
     let todo_cursor = root.walk();
-    let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment"],
-    );
+    let todos = super::comments::extract_todo_from_tree(todo_cursor, source, "", &["comment"]);
     Ok(ExtractedFile {
         symbols,
         imports,
@@ -513,14 +509,9 @@ int main() {
     fn test_cpp_line_numbers_1_indexed() {
         let source = "class Foo {};\n";
         let extracted = extract_cpp_symbols(source).unwrap();
-        let foo = extracted
-            .symbols
-            .iter()
-            .find(|s| s.name == "Foo")
-            .unwrap();
+        let foo = extracted.symbols.iter().find(|s| s.name == "Foo").unwrap();
         assert_eq!(
-            foo.lines.start,
-            1,
+            foo.lines.start, 1,
             "Expected line 1, got {}",
             foo.lines.start
         );
@@ -578,10 +569,7 @@ public:
 "#;
         let extracted = extract_cpp_symbols(source).unwrap();
         assert!(
-            extracted
-                .symbols
-                .iter()
-                .any(|s| s.name == "Widget.render"),
+            extracted.symbols.iter().any(|s| s.name == "Widget.render"),
             "Expected Widget.render declaration, got: {:?}",
             extracted
                 .symbols
@@ -590,10 +578,7 @@ public:
                 .collect::<Vec<_>>()
         );
         assert!(
-            extracted
-                .symbols
-                .iter()
-                .any(|s| s.name == "Widget.width"),
+            extracted.symbols.iter().any(|s| s.name == "Widget.width"),
             "Expected Widget.width declaration"
         );
     }

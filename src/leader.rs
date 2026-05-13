@@ -186,9 +186,8 @@ impl LeaderElection {
         let interval_ms = self.heartbeat_interval_ms;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                tokio::time::Duration::from_millis(interval_ms),
-            );
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -220,9 +219,7 @@ impl LeaderElection {
         let is_leader = self.is_leader.clone();
         let role_tx = self.role_tx.clone();
         let ttl_seconds = self.leader_ttl_seconds;
-        let check_interval = tokio::time::Duration::from_secs(
-            (ttl_seconds / 3).max(1),
-        );
+        let check_interval = tokio::time::Duration::from_secs((ttl_seconds / 3).max(1));
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(check_interval);

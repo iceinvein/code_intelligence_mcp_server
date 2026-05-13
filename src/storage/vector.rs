@@ -1,3 +1,4 @@
+use crate::path::Utf8Path;
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{
     types::Float32Type, Array, BooleanArray, FixedSizeListArray, Float32Array, RecordBatch,
@@ -12,7 +13,6 @@ use lancedb::{
     Connection,
 };
 use std::sync::Arc;
-use crate::path::Utf8Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorRecord {
@@ -59,12 +59,12 @@ impl LanceDbStore {
         table_name: &str,
         vector_dim: usize,
     ) -> Result<LanceVectorTable> {
-        let existing = self
-            .db
-            .table_names()
-            .execute()
-            .await
-            .with_context(|| format!("Failed to list lancedb table names: table_name={}", table_name))?;
+        let existing = self.db.table_names().execute().await.with_context(|| {
+            format!(
+                "Failed to list lancedb table names: table_name={}",
+                table_name
+            )
+        })?;
 
         if !existing.iter().any(|n| n == table_name) {
             let schema = Arc::new(build_schema(vector_dim));
@@ -127,7 +127,11 @@ impl LanceDbStore {
     /// # Note
     /// This is a destructive operation - all existing embeddings will be lost
     /// and must be re-indexed. This is intentional when switching embedding models.
-    pub async fn migrate_vector_table(&self, table_name: &str, expected_dim: usize) -> Result<bool> {
+    pub async fn migrate_vector_table(
+        &self,
+        table_name: &str,
+        expected_dim: usize,
+    ) -> Result<bool> {
         let existing = self
             .db
             .table_names()
@@ -218,15 +222,12 @@ impl LanceVectorTable {
         let escaped = escape_lancedb_string(file_path);
         let predicate = format!("file_path = '{escaped}'");
 
-        self.table
-            .delete(&predicate)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to delete lancedb records by file_path: file_path={}, predicate={}",
-                    file_path, predicate
-                )
-            })?;
+        self.table.delete(&predicate).await.with_context(|| {
+            format!(
+                "Failed to delete lancedb records by file_path: file_path={}, predicate={}",
+                file_path, predicate
+            )
+        })?;
 
         Ok(())
     }
@@ -278,8 +279,12 @@ impl LanceVectorTable {
         // to reduce I/O. LanceDB reads entire column groups; excluding vectors avoids
         // reading ~10MB of vector data for a 2700-symbol table.
         let result_columns = Select::Columns(vec![
-            "id".into(), "name".into(), "kind".into(),
-            "file_path".into(), "exported".into(), "language".into(),
+            "id".into(),
+            "name".into(),
+            "kind".into(),
+            "file_path".into(),
+            "exported".into(),
+            "language".into(),
         ]);
 
         let stream = self
@@ -421,15 +426,12 @@ impl LanceVectorTable {
                 )
             })?;
 
-        let batches: Vec<RecordBatch> = stream
-            .try_collect()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to collect results for get_embedding_by_id: symbol_id={}",
-                    id
-                )
-            })?;
+        let batches: Vec<RecordBatch> = stream.try_collect().await.with_context(|| {
+            format!(
+                "Failed to collect results for get_embedding_by_id: symbol_id={}",
+                id
+            )
+        })?;
 
         if batches.is_empty() {
             return Err(anyhow::anyhow!("No embedding found for symbol ID: {}", id));
@@ -547,8 +549,12 @@ impl LanceVectorTable {
         }
 
         let result_columns = Select::Columns(vec![
-            "id".into(), "name".into(), "kind".into(),
-            "file_path".into(), "exported".into(), "language".into(),
+            "id".into(),
+            "name".into(),
+            "kind".into(),
+            "file_path".into(),
+            "exported".into(),
+            "language".into(),
         ]);
 
         let stream = self

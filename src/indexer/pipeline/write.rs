@@ -51,21 +51,22 @@ pub fn write_batch(
             // Delete old data for this file
             queries::symbols::delete_symbols_by_file(&tx, &file.rel_path)
                 .with_context(|| format!("Failed to delete symbols for file: {}", file.rel_path))?;
-            queries::misc::delete_usage_examples_by_file(&tx, &file.rel_path)
-                .with_context(|| {
-                    format!("Failed to delete usage examples for file: {}", file.rel_path)
-                })?;
-            queries::todos::delete_todos_by_file(&tx, &file.rel_path).with_context(|| {
-                format!("Failed to delete todos for file: {}", file.rel_path)
-            })?;
-            queries::docstrings::delete_docstrings_by_file(&tx, &file.rel_path)
-                .with_context(|| {
-                    format!("Failed to delete docstrings for file: {}", file.rel_path)
-                })?;
-            queries::decorators::delete_decorators_by_file(&tx, &file.rel_path)
-                .with_context(|| {
-                    format!("Failed to delete decorators for file: {}", file.rel_path)
-                })?;
+            queries::misc::delete_usage_examples_by_file(&tx, &file.rel_path).with_context(
+                || {
+                    format!(
+                        "Failed to delete usage examples for file: {}",
+                        file.rel_path
+                    )
+                },
+            )?;
+            queries::todos::delete_todos_by_file(&tx, &file.rel_path)
+                .with_context(|| format!("Failed to delete todos for file: {}", file.rel_path))?;
+            queries::docstrings::delete_docstrings_by_file(&tx, &file.rel_path).with_context(
+                || format!("Failed to delete docstrings for file: {}", file.rel_path),
+            )?;
+            queries::decorators::delete_decorators_by_file(&tx, &file.rel_path).with_context(
+                || format!("Failed to delete decorators for file: {}", file.rel_path),
+            )?;
             queries::framework::delete_framework_patterns_by_file(&tx, &file.rel_path)
                 .with_context(|| {
                     format!(
@@ -76,23 +77,21 @@ pub fn write_batch(
 
             // Batch upsert new data
             queries::symbols::batch_upsert_symbols(&tx, &file.symbol_rows).with_context(|| {
-                format!(
-                    "Failed to batch upsert symbols for file: {}",
-                    file.rel_path
-                )
+                format!("Failed to batch upsert symbols for file: {}", file.rel_path)
             })?;
 
             queries::edges::batch_upsert_edges(&tx, &file.edges).with_context(|| {
                 format!("Failed to batch upsert edges for file: {}", file.rel_path)
             })?;
 
-            queries::misc::batch_upsert_usage_examples(&tx, &file.usage_examples)
-                .with_context(|| {
+            queries::misc::batch_upsert_usage_examples(&tx, &file.usage_examples).with_context(
+                || {
                     format!(
                         "Failed to batch upsert usage examples for file: {}",
                         file.rel_path
                     )
-                })?;
+                },
+            )?;
 
             if !file.todos.is_empty() {
                 queries::todos::batch_upsert_todos(&tx, &file.todos).with_context(|| {
@@ -101,23 +100,25 @@ pub fn write_batch(
             }
 
             if !file.docstrings.is_empty() {
-                queries::docstrings::batch_upsert_docstrings(&tx, &file.docstrings)
-                    .with_context(|| {
+                queries::docstrings::batch_upsert_docstrings(&tx, &file.docstrings).with_context(
+                    || {
                         format!(
                             "Failed to batch upsert docstrings for file: {}",
                             file.rel_path
                         )
-                    })?;
+                    },
+                )?;
             }
 
             if !file.decorators.is_empty() {
-                queries::decorators::batch_upsert_decorators(&tx, &file.decorators)
-                    .with_context(|| {
+                queries::decorators::batch_upsert_decorators(&tx, &file.decorators).with_context(
+                    || {
                         format!(
                             "Failed to batch upsert decorators for file: {}",
                             file.rel_path
                         )
-                    })?;
+                    },
+                )?;
             }
 
             if !file.framework_patterns.is_empty() {
@@ -207,8 +208,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let pid = std::process::id();
-        std::env::temp_dir()
-            .join(format!("write_batch_test_{}_{}", pid, nanos))
+        std::env::temp_dir().join(format!("write_batch_test_{}_{}", pid, nanos))
     }
 
     #[test]
@@ -531,30 +531,24 @@ mod tests {
 
         // Verify old symbol "foo" is gone
         let foo_exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM symbols WHERE name = 'foo'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM symbols WHERE name = 'foo'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(foo_exists, 0);
 
         // Verify new symbols "bar" and "baz" exist
         let bar_exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM symbols WHERE name = 'bar'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM symbols WHERE name = 'bar'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(bar_exists, 1);
 
         let baz_exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM symbols WHERE name = 'baz'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM symbols WHERE name = 'baz'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(baz_exists, 1);
 

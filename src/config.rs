@@ -1,8 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -25,11 +24,9 @@ pub fn get_data_dir() -> Utf8PathBuf {
             Utf8PathBuf::from_path_buf(PathBuf::from(home).join(".code-intelligence")).ok()
         })
         .or_else(|| {
-            env::var("XDG_DATA_HOME")
-                .ok()
-                .and_then(|p| {
-                    Utf8PathBuf::from_path_buf(PathBuf::from(p).join("code-intelligence")).ok()
-                })
+            env::var("XDG_DATA_HOME").ok().and_then(|p| {
+                Utf8PathBuf::from_path_buf(PathBuf::from(p).join("code-intelligence")).ok()
+            })
         })
         .unwrap_or_else(|| {
             let fallback = Utf8PathBuf::from("/tmp/.code-intelligence");
@@ -169,8 +166,7 @@ impl Default for StandaloneConfig {
 impl StandaloneConfig {
     /// Parse standalone config from TOML string
     pub fn from_toml_str(toml_str: &str) -> Result<Self> {
-        let parsed: ServerToml = toml::from_str(toml_str)
-            .context("Failed to parse server.toml")?;
+        let parsed: ServerToml = toml::from_str(toml_str).context("Failed to parse server.toml")?;
 
         let mut config = Self::default();
 
@@ -218,7 +214,11 @@ impl StandaloneConfig {
     /// Load standalone config from ~/.code-intelligence/server.toml with env var and CLI overrides
     ///
     /// Priority: CLI args > env vars > server.toml > defaults
-    pub fn load(cli_host: Option<&str>, cli_port: Option<u16>, cli_discovery_port: Option<u16>) -> Result<Self> {
+    pub fn load(
+        cli_host: Option<&str>,
+        cli_port: Option<u16>,
+        cli_discovery_port: Option<u16>,
+    ) -> Result<Self> {
         let mut config = Self::default();
 
         // Try to load from server.toml
@@ -444,7 +444,7 @@ pub struct Config {
 
     // LLM description generation config
     pub llm_enabled: bool,
-    pub llm_device: EmbeddingsDevice,  // Reuse existing enum (Cpu/Metal)
+    pub llm_device: EmbeddingsDevice, // Reuse existing enum (Cpu/Metal)
     pub llm_model_dir: Option<Utf8PathBuf>,
     pub llm_max_tokens: u32,
     pub llm_batch_commit: usize,
@@ -1023,9 +1023,11 @@ fn required_env(key: &str) -> Result<String> {
 
 /// Convert a std::path::Path to Utf8PathBuf, returning PathError on non-UTF-8.
 fn to_utf8_pathbuf(path: &Path) -> Result<Utf8PathBuf> {
-    Utf8PathBuf::from_path_buf(path.to_path_buf()).map_err(|_| PathError::NonUtf8 {
-        path: path.to_path_buf(),
-    }).map_err(|e| anyhow::anyhow!("{}", e))
+    Utf8PathBuf::from_path_buf(path.to_path_buf())
+        .map_err(|_| PathError::NonUtf8 {
+            path: path.to_path_buf(),
+        })
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 fn optional_env(key: &str) -> Option<String> {
@@ -1276,10 +1278,16 @@ mod tests {
 
         // Paths should now use per-repo directory under ~/.code-intelligence/repos/<hash>/
         let repo_hash = crate::registry::RepoRegistry::path_hash(cfg.base_dir.as_str());
-        let expected_repo_dir = home.join(".code-intelligence").join("repos").join(&repo_hash);
+        let expected_repo_dir = home
+            .join(".code-intelligence")
+            .join("repos")
+            .join(&repo_hash);
         assert_eq!(cfg.db_path, expected_repo_dir.join("code-intelligence.db"));
         assert_eq!(cfg.vector_db_path, expected_repo_dir.join("vectors"));
-        assert_eq!(cfg.tantivy_index_path, expected_repo_dir.join("tantivy-index"));
+        assert_eq!(
+            cfg.tantivy_index_path,
+            expected_repo_dir.join("tantivy-index")
+        );
         assert_eq!(cfg.repo_roots, vec![cfg.base_dir.clone()]);
     }
 
@@ -1525,13 +1533,11 @@ warm_ttl_seconds = 600
     fn default_index_patterns_cover_all_supported_languages() {
         // All extensions that `language_id_for_path` handles
         let required_extensions = [
-            "ts", "tsx", "js", "jsx", "rs", "py", "go", "java", "c", "h",
-            "cpp", "cc", "cxx", "hpp",
+            "ts", "tsx", "js", "jsx", "rs", "py", "go", "java", "c", "h", "cpp", "cc", "cxx", "hpp",
         ];
 
         // ── Config::from_env defaults ────────────────────────────────────────
-        let env_defaults =
-            parse_csv_or_default(None, &["**/*.ts", "**/*.tsx", "**/*.rs"]);
+        let env_defaults = parse_csv_or_default(None, &["**/*.ts", "**/*.tsx", "**/*.rs"]);
         // (We read the actual default by calling parse_csv_or_default with None
         //  so this test stays in sync with the real code path.)
         let from_env_defaults: Vec<String> = {

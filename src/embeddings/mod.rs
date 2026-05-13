@@ -103,7 +103,9 @@ impl Embedder for DeferredEmbedder {
         let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
         match guard.as_mut() {
             Some(embedder) => embedder.embed(texts),
-            None => anyhow::bail!("Embedding model is still loading — search will use BM25-only until ready"),
+            None => anyhow::bail!(
+                "Embedding model is still loading — search will use BM25-only until ready"
+            ),
         }
     }
 
@@ -111,7 +113,9 @@ impl Embedder for DeferredEmbedder {
         let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
         match guard.as_mut() {
             Some(embedder) => embedder.query_embed(texts),
-            None => anyhow::bail!("Embedding model is still loading — search will use BM25-only until ready"),
+            None => anyhow::bail!(
+                "Embedding model is still loading — search will use BM25-only until ready"
+            ),
         }
     }
 }
@@ -151,10 +155,7 @@ impl TruncatingEmbedder {
     /// native dimension.
     pub fn new(inner: Box<dyn Embedder + Send>, target_dim: usize) -> Result<Self> {
         let full_dim = inner.dim();
-        anyhow::ensure!(
-            target_dim > 0,
-            "Target dimension must be > 0"
-        );
+        anyhow::ensure!(target_dim > 0, "Target dimension must be > 0");
         anyhow::ensure!(
             target_dim <= full_dim,
             "Target dimension ({target_dim}) exceeds model dimension ({full_dim})"
@@ -247,8 +248,7 @@ fn download_embedding_model(target_dir: &crate::path::Utf8Path) -> Result<()> {
         EMBEDDING_HF_REPO
     );
 
-    let api =
-        hf_hub::api::sync::Api::new().context("Failed to initialize HuggingFace Hub API")?;
+    let api = hf_hub::api::sync::Api::new().context("Failed to initialize HuggingFace Hub API")?;
     let repo = api.model(EMBEDDING_HF_REPO.to_string());
 
     tracing::info!(

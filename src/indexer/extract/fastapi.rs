@@ -147,7 +147,10 @@ fn extract_patterns_from_decorated_definition(
     // Determine the handler name from the definition (function_definition or
     // class_definition) — the last named child of the decorated_definition.
     let handler_name: Option<String> = children.iter().rev().find_map(|child| {
-        if matches!(child.kind(), "function_definition" | "async_function_definition") {
+        if matches!(
+            child.kind(),
+            "function_definition" | "async_function_definition"
+        ) {
             child
                 .child_by_field_name("name")
                 .and_then(|n| n.utf8_text(source.as_bytes()).ok())
@@ -431,10 +434,18 @@ mod tests {
             .filter(|p| p.kind == FrameworkPatternKind::Route)
             .collect();
 
-        assert_eq!(routes.len(), 2, "Expected 2 Route patterns, got: {routes:?}");
+        assert_eq!(
+            routes.len(),
+            2,
+            "Expected 2 Route patterns, got: {routes:?}"
+        );
 
-        let get_route = routes.iter().find(|p| p.http_method == Some("GET".to_string()));
-        let post_route = routes.iter().find(|p| p.http_method == Some("POST".to_string()));
+        let get_route = routes
+            .iter()
+            .find(|p| p.http_method == Some("GET".to_string()));
+        let post_route = routes
+            .iter()
+            .find(|p| p.http_method == Some("POST".to_string()));
 
         assert!(get_route.is_some(), "Expected a GET route");
         assert_eq!(get_route.unwrap().path, Some("/users".to_string()));
@@ -484,7 +495,8 @@ mod tests {
 
     #[test]
     fn test_fastapi_middleware_call() {
-        let source = "@app.middleware(\"http\")\nasync def log_requests(request, call_next): pass\n";
+        let source =
+            "@app.middleware(\"http\")\nasync def log_requests(request, call_next): pass\n";
         let patterns = parse_and_extract(source);
 
         let middleware: Vec<&ExtractedFrameworkPattern> = patterns
@@ -585,8 +597,7 @@ mod tests {
 
     #[test]
     fn test_async_fastapi_routes() {
-        let source =
-            "@router.get(\"/items/{item_id}\")\nasync def read_item(item_id: int): pass\n";
+        let source = "@router.get(\"/items/{item_id}\")\nasync def read_item(item_id: int): pass\n";
         let patterns = parse_and_extract(source);
         let routes: Vec<&ExtractedFrameworkPattern> = patterns
             .iter()
@@ -605,8 +616,7 @@ mod tests {
         assert!(!patterns.is_empty());
         // The decorator is on line 1 (1-indexed).
         assert_eq!(
-            patterns[0].line,
-            1,
+            patterns[0].line, 1,
             "Line numbers must be 1-indexed, got: {}",
             patterns[0].line
         );

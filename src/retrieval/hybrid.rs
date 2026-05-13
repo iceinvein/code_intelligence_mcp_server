@@ -1,7 +1,7 @@
 //! Hybrid search execution: single-query and multi-query paths with RRF fusion.
 
-use super::ranking::{self, get_graph_ranked_hits, rank_hits_with_signals, reciprocal_rank_fusion};
 use super::query::{contains_code_snippet, Intent};
+use super::ranking::{self, get_graph_ranked_hits, rank_hits_with_signals, reciprocal_rank_fusion};
 use super::{detect_language_from_query, HitSignals, RankedHit, Retriever};
 use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
@@ -71,11 +71,7 @@ async fn execute_single_query_search(
     let k = if contains_code_snippet(search_query) {
         retriever.config.vector_search_limit.max(limit).max(5)
     } else {
-        retriever
-            .config
-            .vector_search_limit
-            .max(limit * 3)
-            .max(40)
+        retriever.config.vector_search_limit.max(limit * 3).max(40)
     };
 
     let keyword_t = Instant::now();
@@ -93,45 +89,46 @@ async fn execute_single_query_search(
     let (vector_hits, _vector_degraded, embedding_ms) =
         match retriever.get_query_vector_cached(vector_query).await {
             Ok(query_vector) => {
-            let emb_ms = embed_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
-            match retriever.vectors.search(&query_vector, k).await {
-                Ok(mut hits) => {
-                    // HyDE: Add hypothetical document retrieval (best-effort)
-                    if retriever.config.hyde_enabled {
-                        if let Some(generator) = &retriever.hyde_generator {
-                            let language = detect_language_from_query(search_query);
-                            if let Ok(hyde_result) =
-                                generator.generate(search_query, language).await
-                            {
-                                let mut embedder = retriever.embedder.lock().await;
-                                if let Ok(hyde_embeddings) =
-                                    embedder.embed(&[hyde_result.hypothetical_code])
+                let emb_ms = embed_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                match retriever.vectors.search(&query_vector, k).await {
+                    Ok(mut hits) => {
+                        // HyDE: Add hypothetical document retrieval (best-effort)
+                        if retriever.config.hyde_enabled {
+                            if let Some(generator) = &retriever.hyde_generator {
+                                let language = detect_language_from_query(search_query);
+                                if let Ok(hyde_result) =
+                                    generator.generate(search_query, language).await
                                 {
-                                    if let Some(hyde_vector) = hyde_embeddings.first() {
-                                        if let Ok(mut hyde_hits) =
-                                            retriever.vectors.search(hyde_vector, k / 2).await
-                                        {
-                                            hits.append(&mut hyde_hits);
+                                    let mut embedder = retriever.embedder.lock().await;
+                                    if let Ok(hyde_embeddings) =
+                                        embedder.embed(&[hyde_result.hypothetical_code])
+                                    {
+                                        if let Some(hyde_vector) = hyde_embeddings.first() {
+                                            if let Ok(mut hyde_hits) =
+                                                retriever.vectors.search(hyde_vector, k / 2).await
+                                            {
+                                                hits.append(&mut hyde_hits);
+                                            }
                                         }
                                     }
                                 }
+                                // HyDE failures are silently ignored - it's a best-effort enhancement
                             }
-                            // HyDE failures are silently ignored - it's a best-effort enhancement
                         }
+                        (hits, false, emb_ms)
                     }
-                    (hits, false, emb_ms)
+                    Err(e) => {
+                        // Vector search failed - degrade gracefully
+                        tracing::warn!(
+                            query = %search_query,
+                            error = %e,
+                            "LanceDB vector search failed, degrading to keyword-only search"
+                        );
+                        retriever.metrics.search_errors_total.inc();
+                        (Vec::new(), true, emb_ms)
+                    }
                 }
-                Err(e) => {
-                    // Vector search failed - degrade gracefully
-                    tracing::warn!(
-                        query = %search_query,
-                        error = %e,
-                        "LanceDB vector search failed, degrading to keyword-only search"
-                    );
-                    retriever.metrics.search_errors_total.inc();
-                    (Vec::new(), true, emb_ms)
-                }
-            }},
+            }
             Err(e) => {
                 // Embedding generation failed - degrade gracefully
                 tracing::warn!(
@@ -260,11 +257,7 @@ async fn execute_multi_query_search(
     limit: usize,
 ) -> Result<HybridSearchResult> {
     // Always use larger pool for multi-query (compound NL queries)
-    let base_k = retriever
-        .config
-        .vector_search_limit
-        .max(limit * 3)
-        .max(40);
+    let base_k = retriever.config.vector_search_limit.max(limit * 3).max(40);
     // Cross-cutting intent queries (Error) need larger pools because
     // LLM descriptions dilute IDF for common terms like "error",
     // pushing specialized symbols (PathError) below normal k threshold.
@@ -324,9 +317,7 @@ async fn execute_multi_query_search(
                 let language = detect_language_from_query(sub_query);
                 if let Ok(hyde_result) = generator.generate(sub_query, language).await {
                     let mut embedder = retriever.embedder.lock().await;
-                    if let Ok(hyde_embeddings) =
-                        embedder.embed(&[hyde_result.hypothetical_code])
-                    {
+                    if let Ok(hyde_embeddings) = embedder.embed(&[hyde_result.hypothetical_code]) {
                         if let Some(hyde_vector) = hyde_embeddings.first() {
                             if let Ok(hyde_hits) =
                                 retriever.vectors.search(hyde_vector, k / 2).await
@@ -375,8 +366,7 @@ async fn execute_multi_query_search(
 
     let weights = rrf_weights(&retriever.config, is_nl_query);
 
-    let mut ranked =
-        reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
+    let mut ranked = reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
 
     normalize_rrf_scores(&mut ranked);
 
@@ -498,21 +488,12 @@ fn apply_structural_scoring(
             intent,
             query_without_controls,
         );
-        let intent_mult = ranking::intent_adjustment(
-            intent,
-            &hit.kind,
-            &hit.file_path,
-            hit.exported,
-            &hit.name,
-        );
+        let intent_mult =
+            ranking::intent_adjustment(intent, &hit.kind, &hit.file_path, hit.exported, &hit.name);
 
         let base_score = hit.score;
-        let def_bias = ranking::definition_bias(
-            query_without_controls,
-            &hit.name,
-            &hit.kind,
-            intent,
-        );
+        let def_bias =
+            ranking::definition_bias(query_without_controls, &hit.name, &hit.kind, intent);
         let body = symbol_texts.get(&hit.id).map(|s| s.as_str());
         let tc = ranking::term_coverage_adjustment(
             query_without_controls,
@@ -539,7 +520,9 @@ fn apply_structural_scoring(
         {
             let q_lower = query_without_controls.to_lowercase();
             let name_lower = hit.name.to_lowercase();
-            if q_lower.contains("access") && !q_lower.contains("accessibility") && !q_lower.contains("a11y")
+            if q_lower.contains("access")
+                && !q_lower.contains("accessibility")
+                && !q_lower.contains("a11y")
                 && name_lower.contains("accessibility")
             {
                 hit.score -= 5.0;

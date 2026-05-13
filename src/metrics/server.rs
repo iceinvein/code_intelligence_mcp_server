@@ -37,7 +37,10 @@ pub async fn spawn_metrics_server(
     };
 
     let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    tracing::info!("Metrics server listening on http://127.0.0.1:{}", actual_port);
+    tracing::info!(
+        "Metrics server listening on http://127.0.0.1:{}",
+        actual_port
+    );
 
     let handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {

@@ -214,13 +214,28 @@ mod tests {
         let repo_path = Utf8Path::new(dir.path().to_str().unwrap());
 
         // Commit 1: a.rs and b.rs changed together
-        commit_files(&repo, &[("src/a.rs", "fn a(){}"), ("src/b.rs", "fn b(){}")], "commit 1");
+        commit_files(
+            &repo,
+            &[("src/a.rs", "fn a(){}"), ("src/b.rs", "fn b(){}")],
+            "commit 1",
+        );
 
         // Commit 2: a.rs and c.rs changed together
-        commit_files(&repo, &[("src/a.rs", "fn a(){ // v2 }"), ("src/c.rs", "fn c(){}")], "commit 2");
+        commit_files(
+            &repo,
+            &[("src/a.rs", "fn a(){ // v2 }"), ("src/c.rs", "fn c(){}")],
+            "commit 2",
+        );
 
         // Commit 3: a.rs and b.rs changed together again
-        commit_files(&repo, &[("src/a.rs", "fn a(){ // v3 }"), ("src/b.rs", "fn b(){ // v2 }")], "commit 3");
+        commit_files(
+            &repo,
+            &[
+                ("src/a.rs", "fn a(){ // v3 }"),
+                ("src/b.rs", "fn b(){ // v2 }"),
+            ],
+            "commit 3",
+        );
 
         // Create an in-memory SQLite store
         let sqlite = SqliteStore::open_in_memory().unwrap();
@@ -241,7 +256,10 @@ mod tests {
             (c.file_a == "src/a.rs" && c.file_b == "src/b.rs")
                 || (c.file_a == "src/b.rs" && c.file_b == "src/a.rs")
         });
-        assert!(ab_pair.is_some(), "Should find a.rs <-> b.rs co-change pair");
+        assert!(
+            ab_pair.is_some(),
+            "Should find a.rs <-> b.rs co-change pair"
+        );
         let ab = ab_pair.unwrap();
         assert_eq!(ab.co_change_count, 2);
     }

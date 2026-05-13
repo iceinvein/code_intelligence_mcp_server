@@ -3,9 +3,9 @@
 pub mod cache;
 pub mod llamacpp;
 
+use crate::path::{Utf8Path, Utf8PathBuf};
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::path::{Utf8Path, Utf8PathBuf};
 use std::sync::Arc;
 
 /// Trait for reranking search results
@@ -72,7 +72,9 @@ pub fn create_reranker(
         let model_dir = resolved_model_path
             .parent()
             .map(|p| p.to_owned())
-            .unwrap_or_else(|| crate::config::get_data_dir().join("models/bge-reranker-v2-m3-gguf"));
+            .unwrap_or_else(|| {
+                crate::config::get_data_dir().join("models/bge-reranker-v2-m3-gguf")
+            });
 
         tracing::info!(
             model_path = %resolved_model_path,

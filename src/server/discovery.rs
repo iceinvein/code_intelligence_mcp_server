@@ -29,7 +29,14 @@ pub async fn spawn_discovery_server(
 
     let addr: SocketAddr = format!("{}:{}", mcp_host, discovery_port)
         .parse()
-        .map_err(|e| anyhow::anyhow!("Invalid discovery address {}:{}: {}", mcp_host, discovery_port, e))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid discovery address {}:{}: {}",
+                mcp_host,
+                discovery_port,
+                e
+            )
+        })?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!(
@@ -110,8 +117,14 @@ mod tests {
 
         // Capabilities
         let capabilities = mcp.get("capabilities").expect("missing 'capabilities' key");
-        assert_eq!(capabilities.get("tools").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(capabilities.get("roots").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            capabilities.get("tools").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            capabilities.get("roots").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     #[test]

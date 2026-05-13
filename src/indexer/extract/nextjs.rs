@@ -29,9 +29,7 @@ use super::framework_utils::{derive_nextjs_route_path, find_named_exports, text_
 use super::symbol::{ExtractedFrameworkPattern, FrameworkPatternKind};
 
 /// HTTP method names that are valid route handler exports in `route.ts` files.
-const ROUTE_HTTP_METHODS: &[&str] = &[
-    "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD",
-];
+const ROUTE_HTTP_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"];
 
 /// Return `true` when the file at `file_path` follows a Next.js App Router
 /// convention and should be processed by this extractor.
@@ -349,8 +347,7 @@ export async function POST(request: NextRequest) {
 }
 "#;
         let tree = parse_ts(source);
-        let patterns =
-            extract_nextjs_patterns(tree.root_node(), source, "app/api/users/route.ts");
+        let patterns = extract_nextjs_patterns(tree.root_node(), source, "app/api/users/route.ts");
 
         let route_patterns: Vec<_> = patterns
             .iter()
@@ -380,8 +377,7 @@ export default function DashboardPage() {
 }
 "#;
         let tree = parse_tsx(source);
-        let patterns =
-            extract_nextjs_patterns(tree.root_node(), source, "app/dashboard/page.tsx");
+        let patterns = extract_nextjs_patterns(tree.root_node(), source, "app/dashboard/page.tsx");
 
         let page = patterns
             .iter()
@@ -404,11 +400,8 @@ export async function GET(
 }
 "#;
         let tree = parse_ts(source);
-        let patterns = extract_nextjs_patterns(
-            tree.root_node(),
-            source,
-            "app/api/users/[id]/route.ts",
-        );
+        let patterns =
+            extract_nextjs_patterns(tree.root_node(), source, "app/api/users/[id]/route.ts");
 
         let routes: Vec<_> = patterns
             .iter()
@@ -437,8 +430,7 @@ export const config = {
 }
 "#;
         let tree = parse_ts(source);
-        let patterns =
-            extract_nextjs_patterns(tree.root_node(), source, "middleware.ts");
+        let patterns = extract_nextjs_patterns(tree.root_node(), source, "middleware.ts");
 
         let mw: Vec<_> = patterns
             .iter()
@@ -470,8 +462,7 @@ export default function ErrorBoundary({
 }
 "#;
         let tree = parse_tsx(source);
-        let patterns =
-            extract_nextjs_patterns(tree.root_node(), source, "app/dashboard/error.tsx");
+        let patterns = extract_nextjs_patterns(tree.root_node(), source, "app/dashboard/error.tsx");
 
         let error_handlers: Vec<_> = patterns
             .iter()

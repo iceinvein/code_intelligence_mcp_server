@@ -81,7 +81,11 @@ pub fn discover_manifests(config: &Config, root: &Utf8Path) -> anyhow::Result<Ve
 }
 
 /// Recursively walk a directory looking for manifest files.
-fn walk_dir(config: &Config, dir: &Utf8Path, manifests: &mut BTreeSet<Utf8PathBuf>) -> anyhow::Result<()> {
+fn walk_dir(
+    config: &Config,
+    dir: &Utf8Path,
+    manifests: &mut BTreeSet<Utf8PathBuf>,
+) -> anyhow::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) => {
@@ -248,9 +252,8 @@ mod tests {
         // We'll create a minimal config for testing
         // In real usage, this would come from Config::from_env()
         let temp_dir = std::env::temp_dir();
-        let temp_dir_utf8 = Utf8PathBuf::from_path_buf(temp_dir.clone()).unwrap_or_else(|_| {
-            Utf8PathBuf::from(temp_dir.to_string_lossy().as_ref())
-        });
+        let temp_dir_utf8 = Utf8PathBuf::from_path_buf(temp_dir.clone())
+            .unwrap_or_else(|_| Utf8PathBuf::from(temp_dir.to_string_lossy().as_ref()));
         Config {
             base_dir: temp_dir_utf8.clone(),
             db_path: temp_dir_utf8.join("test.db"),

@@ -161,9 +161,10 @@ Respond ONLY with the code snippet, no explanation."#,
         // the async executor. `LlamaModel` is Send but `LlamaContext` (created
         // inside `generate`) is !Send — that is fine since spawn_blocking runs
         // the entire closure on a dedicated OS thread.
-        let hypothetical_code = tokio::task::spawn_blocking(move || llm.generate(&prompt, max_tokens))
-            .await
-            .context("Local HyDE inference thread panicked")??;
+        let hypothetical_code =
+            tokio::task::spawn_blocking(move || llm.generate(&prompt, max_tokens))
+                .await
+                .context("Local HyDE inference thread panicked")??;
 
         let hypothetical_code = extract_code_from_markdown(&hypothetical_code);
 
@@ -431,7 +432,10 @@ mod tests {
         assert_eq!(hyde.original_query, "error handling patterns");
         assert_eq!(hyde.language, "rust");
         // MockLlmGenerator returns a non-empty string based on the prompt
-        assert!(!hyde.hypothetical_code.is_empty(), "hypothetical_code must not be empty");
+        assert!(
+            !hyde.hypothetical_code.is_empty(),
+            "hypothetical_code must not be empty"
+        );
     }
 
     /// When the `"local"` backend is selected but no `local_llm` is attached,
@@ -456,7 +460,10 @@ mod tests {
         let gen = HypotheticalCodeGenerator::new("local".to_string(), None, 64)
             .with_local_llm(Arc::clone(&llm));
 
-        assert!(gen.local_llm.is_some(), "local_llm should be Some after with_local_llm");
+        assert!(
+            gen.local_llm.is_some(),
+            "local_llm should be Some after with_local_llm"
+        );
     }
 
     /// Cloning a generator with a local LLM shares the same Arc (does not
@@ -472,7 +479,10 @@ mod tests {
         // Both clones reference the same Arc allocation
         let ptr1 = Arc::as_ptr(gen.local_llm.as_ref().unwrap());
         let ptr2 = Arc::as_ptr(gen2.local_llm.as_ref().unwrap());
-        assert_eq!(ptr1, ptr2, "clone should share the same Arc<dyn LlmGenerator>");
+        assert_eq!(
+            ptr1, ptr2,
+            "clone should share the same Arc<dyn LlmGenerator>"
+        );
     }
 
     /// The response from the local LLM is passed through `extract_code_from_markdown`.
@@ -491,8 +501,7 @@ mod tests {
 
         let result = gen.generate("example function", "rust").await.unwrap();
         assert_eq!(
-            result.hypothetical_code,
-            "fn example() -> u32 { 42 }",
+            result.hypothetical_code, "fn example() -> u32 { 42 }",
             "markdown fences should be stripped"
         );
     }
@@ -536,10 +545,14 @@ mod tests {
         let captured = Arc::new(AtomicU32::new(0));
         let llm = Arc::new(TokenCaptureLlm(Arc::clone(&captured)));
 
-        let gen = HypotheticalCodeGenerator::new("local".to_string(), None, 200)
-            .with_local_llm(llm);
+        let gen =
+            HypotheticalCodeGenerator::new("local".to_string(), None, 200).with_local_llm(llm);
 
         gen.generate("query", "rust").await.unwrap();
-        assert_eq!(captured.load(Ordering::SeqCst), 200, "max_tokens must be forwarded");
+        assert_eq!(
+            captured.load(Ordering::SeqCst),
+            200,
+            "max_tokens must be forwarded"
+        );
     }
 }

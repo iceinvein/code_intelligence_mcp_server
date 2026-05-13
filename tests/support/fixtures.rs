@@ -25,11 +25,7 @@ use code_intelligence_mcp_server::{
     metrics::MetricsRegistry,
     path::Utf8PathBuf,
     retrieval::Retriever,
-    storage::{
-        sqlite::SqliteStore,
-        tantivy::TantivyIndex,
-        vector::LanceDbStore,
-    },
+    storage::{sqlite::SqliteStore, tantivy::TantivyIndex, vector::LanceDbStore},
 };
 use rstest::*;
 use std::path::PathBuf;
@@ -74,9 +70,8 @@ pub fn tmp_dir() -> PathBuf {
 #[fixture]
 pub fn test_config(tmp_dir: PathBuf) -> Config {
     let base_dir = tmp_dir.canonicalize().unwrap_or_else(|_| tmp_dir.clone());
-    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone()).unwrap_or_else(|_| {
-        Utf8PathBuf::from(base_dir.to_string_lossy().as_ref())
-    });
+    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone())
+        .unwrap_or_else(|_| Utf8PathBuf::from(base_dir.to_string_lossy().as_ref()));
     Config {
         db_path: base_dir_utf8.join("code-intelligence.db"),
         vector_db_path: base_dir_utf8.join("vectors"),
@@ -88,7 +83,7 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         embedding_batch_size: 32,
         hash_embedding_dim: 32,
         vector_search_limit: 20,
-            vector_guaranteed_results: 3,
+        vector_guaranteed_results: 3,
         hybrid_alpha: 0.7,
         rank_vector_weight: 0.7,
         rank_keyword_weight: 0.3,
@@ -146,7 +141,7 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         leader_heartbeat_interval_ms: 10_000,
         leader_ttl_seconds: 30,
         embedding_truncate_dim: None,
-            embedding_dim_override: None,
+        embedding_dim_override: None,
     }
 }
 
@@ -156,10 +151,7 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
 /// a Tantivy index at the configured path.
 #[fixture]
 fn tantivy_index(test_config: Config) -> Arc<TantivyIndex> {
-    Arc::new(
-        TantivyIndex::open_or_create(&test_config.tantivy_index_path)
-            .unwrap()
-    )
+    Arc::new(TantivyIndex::open_or_create(&test_config.tantivy_index_path).unwrap())
 }
 
 /// Creates a HashEmbedder for fast embedding generation
@@ -170,9 +162,11 @@ fn tantivy_index(test_config: Config) -> Arc<TantivyIndex> {
 /// Hash embeddings are used for testing because they're fast and
 /// require no model downloads.
 #[fixture]
-pub fn hash_embedder(test_config: Config) -> Arc<AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>> {
+pub fn hash_embedder(
+    test_config: Config,
+) -> Arc<AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>> {
     Arc::new(AsyncMutex::new(
-        Box::new(HashEmbedder::new(test_config.hash_embedding_dim)) as _
+        Box::new(HashEmbedder::new(test_config.hash_embedding_dim)) as _,
     ))
 }
 
@@ -239,7 +233,9 @@ pub fn metrics() -> Arc<MetricsRegistry> {
 pub fn app_state(
     test_config: Config,
     tantivy_index: Arc<TantivyIndex>,
-    hash_embedder: Arc<AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>>,
+    hash_embedder: Arc<
+        AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>,
+    >,
     vector_store: Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable>,
     metrics: Arc<MetricsRegistry>,
 ) -> AppState {
@@ -265,8 +261,8 @@ pub fn app_state(
         tantivy_index,
         vector_store,
         hash_embedder,
-        None,  // No reranker for basic tests
-        None,  // No HyDE generator for basic tests
+        None, // No reranker for basic tests
+        None, // No HyDE generator for basic tests
         metrics,
     );
 
@@ -302,8 +298,12 @@ mod smoke_tests {
         // Verify all paths are absolute and valid
         assert!(test_config.base_dir.is_absolute());
         assert!(test_config.db_path.starts_with(&test_config.base_dir));
-        assert!(test_config.vector_db_path.starts_with(&test_config.base_dir));
-        assert!(test_config.tantivy_index_path.starts_with(&test_config.base_dir));
+        assert!(test_config
+            .vector_db_path
+            .starts_with(&test_config.base_dir));
+        assert!(test_config
+            .tantivy_index_path
+            .starts_with(&test_config.base_dir));
     }
 
     /// Verifies that tantivy_index fixture can be created
@@ -318,7 +318,9 @@ mod smoke_tests {
     #[rstest]
     #[tokio::test]
     #[ignore = "fixture smoke test - not needed for coverage"]
-    async fn vector_store_fixture_works(_vector_store: Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable>) {
+    async fn vector_store_fixture_works(
+        _vector_store: Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable>,
+    ) {
         // If we got here, the fixture was created successfully
     }
 

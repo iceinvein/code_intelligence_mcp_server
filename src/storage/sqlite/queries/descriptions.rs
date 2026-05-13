@@ -17,9 +17,13 @@ pub struct SymbolForDescription {
 
 /// Get cached description if content hash matches (symbol unchanged).
 /// Returns None if no description exists or if content changed.
-pub fn get_description(conn: &Connection, symbol_id: &str, content_hash: &str) -> Result<Option<String>> {
+pub fn get_description(
+    conn: &Connection,
+    symbol_id: &str,
+    content_hash: &str,
+) -> Result<Option<String>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT description FROM descriptions WHERE symbol_id = ?1 AND content_hash = ?2"
+        "SELECT description FROM descriptions WHERE symbol_id = ?1 AND content_hash = ?2",
     )?;
     let result = stmt
         .query_row(params![symbol_id, content_hash], |row| {
@@ -33,13 +37,10 @@ pub fn get_description(conn: &Connection, symbol_id: &str, content_hash: &str) -
 /// Get description for a symbol regardless of content hash.
 /// Used when re-upserting a symbol to Tantivy (we want whatever description exists).
 pub fn get_description_for_symbol(conn: &Connection, symbol_id: &str) -> Result<Option<String>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT description FROM descriptions WHERE symbol_id = ?1"
-    )?;
+    let mut stmt =
+        conn.prepare_cached("SELECT description FROM descriptions WHERE symbol_id = ?1")?;
     let result = stmt
-        .query_row(params![symbol_id], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_row(params![symbol_id], |row| row.get::<_, String>(0))
         .optional()
         .context("Failed to query description for symbol")?;
     Ok(result)
@@ -74,7 +75,7 @@ pub fn get_undescribed_symbols(conn: &Connection) -> Result<Vec<SymbolForDescrip
          LEFT JOIN descriptions d ON s.id = d.symbol_id
          WHERE d.symbol_id IS NULL
            AND s.kind != 'file'
-         ORDER BY s.exported DESC, (s.end_line - s.start_line) DESC"
+         ORDER BY s.exported DESC, (s.end_line - s.start_line) DESC",
     )?;
     let rows = stmt
         .query_map([], |row| {
@@ -100,7 +101,10 @@ pub fn get_undescribed_symbols(conn: &Connection) -> Result<Vec<SymbolForDescrip
 /// result set automatically, so each call returns the next batch.
 /// File-kind symbols are excluded at the SQL level; further filtering
 /// (test symbols, tiny private helpers) happens in the Rust caller.
-pub fn get_undescribed_symbols_batch(conn: &Connection, limit: usize) -> Result<Vec<SymbolForDescription>> {
+pub fn get_undescribed_symbols_batch(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<SymbolForDescription>> {
     let mut stmt = conn.prepare(
         "SELECT s.id, s.name, s.kind, s.file_path, s.text, s.exported, s.start_line, s.end_line
          FROM symbols s
@@ -108,7 +112,7 @@ pub fn get_undescribed_symbols_batch(conn: &Connection, limit: usize) -> Result<
          WHERE d.symbol_id IS NULL
            AND s.kind != 'file'
          ORDER BY s.exported DESC, (s.end_line - s.start_line) DESC
-         LIMIT ?1"
+         LIMIT ?1",
     )?;
     let rows = stmt
         .query_map(params![limit], |row| {
@@ -131,23 +135,27 @@ pub fn get_undescribed_symbols_batch(conn: &Connection, limit: usize) -> Result<
 /// Count symbols that don't have descriptions yet.
 /// Excludes file-kind symbols which are never described.
 pub fn count_undescribed_symbols(conn: &Connection) -> Result<usize> {
-    let count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM symbols s
+    let count: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM symbols s
          LEFT JOIN descriptions d ON s.id = d.symbol_id
          WHERE d.symbol_id IS NULL
            AND s.kind != 'file'",
-        [],
-        |row| row.get(0),
-    ).context("Failed to count undescribed symbols")?;
+            [],
+            |row| row.get(0),
+        )
+        .context("Failed to count undescribed symbols")?;
     Ok(count)
 }
 
 /// Delete descriptions for symbols that no longer exist.
 pub fn cleanup_orphaned_descriptions(conn: &Connection) -> Result<usize> {
-    let count = conn.execute(
-        "DELETE FROM descriptions WHERE symbol_id NOT IN (SELECT id FROM symbols)",
-        [],
-    ).context("Failed to cleanup orphaned descriptions")?;
+    let count = conn
+        .execute(
+            "DELETE FROM descriptions WHERE symbol_id NOT IN (SELECT id FROM symbols)",
+            [],
+        )
+        .context("Failed to cleanup orphaned descriptions")?;
     Ok(count)
 }
 
@@ -282,11 +290,9 @@ pub fn find_undocumented_symbols_filtered(
 
 /// Get count of described symbols (for stats/logging).
 pub fn count_descriptions(conn: &Connection) -> Result<usize> {
-    let count: usize = conn.query_row(
-        "SELECT COUNT(*) FROM descriptions",
-        [],
-        |row| row.get(0),
-    ).context("Failed to count descriptions")?;
+    let count: usize = conn
+        .query_row("SELECT COUNT(*) FROM descriptions", [], |row| row.get(0))
+        .context("Failed to count descriptions")?;
     Ok(count)
 }
 
@@ -296,7 +302,8 @@ mod tests {
 
     fn setup_test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::storage::sqlite::schema::SCHEMA_SQL).unwrap();
+        conn.execute_batch(crate::storage::sqlite::schema::SCHEMA_SQL)
+            .unwrap();
         // Insert a test symbol
         conn.execute(
             "INSERT INTO symbols (id, file_path, language, kind, name, exported, start_byte, end_byte, start_line, end_line, text)
@@ -374,7 +381,9 @@ mod tests {
         let removed = cleanup_orphaned_descriptions(&conn).unwrap();
         assert_eq!(removed, 1);
         assert!(get_description_for_symbol(&conn, "sym1").unwrap().is_some());
-        assert!(get_description_for_symbol(&conn, "sym_gone").unwrap().is_none());
+        assert!(get_description_for_symbol(&conn, "sym_gone")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -522,11 +531,13 @@ mod tests {
             [],
         ).unwrap();
 
-        let src_only = find_undocumented_symbols_filtered(&conn, 1, false, Some("src/"), 100).unwrap();
+        let src_only =
+            find_undocumented_symbols_filtered(&conn, 1, false, Some("src/"), 100).unwrap();
         assert_eq!(src_only.len(), 1);
         assert_eq!(src_only[0].name, "do_stuff");
 
-        let lib_only = find_undocumented_symbols_filtered(&conn, 1, false, Some("lib/"), 100).unwrap();
+        let lib_only =
+            find_undocumented_symbols_filtered(&conn, 1, false, Some("lib/"), 100).unwrap();
         assert_eq!(lib_only.len(), 1);
         assert_eq!(lib_only[0].name, "other_fn");
     }

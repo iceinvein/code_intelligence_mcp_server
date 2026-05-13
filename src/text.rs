@@ -26,8 +26,14 @@ static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
         "authorization",
         &["authz", "permissions", "access", "acl", "rbac", "role"][..],
     );
-    m.insert("role", &["rbac", "permission", "admin", "authz", "authorization"][..]);
-    m.insert("access", &["auth", "permission", "role", "authorize", "rbac"][..]);
+    m.insert(
+        "role",
+        &["rbac", "permission", "admin", "authz", "authorization"][..],
+    );
+    m.insert(
+        "access",
+        &["auth", "permission", "role", "authorize", "rbac"][..],
+    );
     m.insert(
         "transaction",
         &["commit", "rollback", "atomic", "begin_transaction"][..],
@@ -57,7 +63,10 @@ static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
         "circuit",
         &["breaker", "resilience", "half_open", "trip"][..],
     );
-    m.insert("breaker", &["circuit", "trip", "half_open", "resilience"][..]);
+    m.insert(
+        "breaker",
+        &["circuit", "trip", "half_open", "resilience"][..],
+    );
     m.insert("schema", &["table", "ddl", "migration", "create_table"][..]);
     m.insert("parse", &["parser", "parsing", "tokenize", "lex"][..]);
     m.insert("format", &["formatting", "render", "pretty"][..]);
@@ -71,7 +80,10 @@ static SYNONYMS: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::ne
     );
     m.insert("reindex", &["index", "rebuild", "refresh"][..]);
     // Cross-link serde ecosystem so import-injected "serde" bridges to query terms
-    m.insert("serde", &["serialize", "deserialize", "json", "serialization"][..]);
+    m.insert(
+        "serde",
+        &["serialize", "deserialize", "json", "serialization"][..],
+    );
     // Tree-sitter hyphenation bridging: "tree" alone is too generic,
     // but "sitter" as a token should link to parser/parsing concepts
     m.insert("sitter", &["tree_sitter", "parser", "parsing", "ast"][..]);
@@ -188,26 +200,18 @@ pub fn split_identifier_like(s: &str) -> String {
 /// Only applied to 3+ word queries to avoid removing meaningful short queries.
 static STOP_WORDS: &[&str] = &[
     // Articles
-    "a", "an", "the",
-    // Be-verbs
-    "is", "are", "was", "were", "be", "been", "being",
-    // Auxiliaries
-    "do", "does", "did", "has", "have", "had", "will", "would", "shall", "should",
-    "can", "could", "may", "might", "must",
-    // Pronouns
-    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
-    "my", "your", "his", "its", "our", "their",
-    "this", "that", "these", "those",
-    // Prepositions
-    "in", "on", "at", "to", "for", "of", "with", "by", "from", "about", "into",
-    "through", "during", "before", "after", "above", "below", "between", "under",
-    // Conjunctions
-    "and", "but", "or", "nor", "so", "yet",
-    // Question words
-    "how", "what", "where", "when", "who", "which", "why",
-    // Other function words
-    "not", "no", "all", "each", "every", "both", "few", "more", "most",
-    "other", "some", "such", "only", "own", "same", "than", "too", "very",
+    "a", "an", "the", // Be-verbs
+    "is", "are", "was", "were", "be", "been", "being", // Auxiliaries
+    "do", "does", "did", "has", "have", "had", "will", "would", "shall", "should", "can", "could",
+    "may", "might", "must", // Pronouns
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your",
+    "his", "its", "our", "their", "this", "that", "these", "those", // Prepositions
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "about", "into", "through",
+    "during", "before", "after", "above", "below", "between", "under", // Conjunctions
+    "and", "but", "or", "nor", "so", "yet", // Question words
+    "how", "what", "where", "when", "who", "which", "why", // Other function words
+    "not", "no", "all", "each", "every", "both", "few", "more", "most", "other", "some", "such",
+    "only", "own", "same", "than", "too", "very",
 ];
 
 /// Remove stop words from a query string.
@@ -282,11 +286,21 @@ pub fn expand_stems(query: &str) -> String {
         // Try suffix stripping in priority order (longest match first)
         let stem = if w.ends_with("ation") && w.len() > 7 {
             Some(w[..w.len() - 5].to_string()) // "serialization" → "serializ"
-        } else if w.len() > 6 && (w.ends_with("tion") || w.ends_with("ment") || w.ends_with("ness") || w.ends_with("ling") || w.ends_with("ting") || w.ends_with("ning") || w.ends_with("ding")) {
+        } else if w.len() > 6
+            && (w.ends_with("tion")
+                || w.ends_with("ment")
+                || w.ends_with("ness")
+                || w.ends_with("ling")
+                || w.ends_with("ting")
+                || w.ends_with("ning")
+                || w.ends_with("ding"))
+        {
             Some(w[..w.len() - 4].to_string()) // strip 4: "generation" → "genera", "handling" → "hand", etc.
         } else if w.len() > 5 && (w.ends_with("ing") || w.ends_with("ers")) {
             Some(w[..w.len() - 3].to_string()) // strip 3: "caching" → "cach", "handlers" → "handl"
-        } else if w.len() > 4 && (w.ends_with("er") || w.ends_with("ed") || w.ends_with("es") || w.ends_with("ly")) {
+        } else if w.len() > 4
+            && (w.ends_with("er") || w.ends_with("ed") || w.ends_with("es") || w.ends_with("ly"))
+        {
             Some(w[..w.len() - 2].to_string()) // strip 2: "watcher" → "watch", "cached" → "cach", etc.
         } else if w.ends_with("s") && w.len() > 4 && !w.ends_with("ss") {
             Some(w[..w.len() - 1].to_string()) // "requests" → "request"
@@ -301,9 +315,7 @@ pub fn expand_stems(query: &str) -> String {
             // that shouldn't prevent adding the stem — Tantivy tokenizes
             // each word individually and won't match "transactions" against
             // indexed "transaction".
-            let stem_already_present = lower
-                .split_whitespace()
-                .any(|w| w == s);
+            let stem_already_present = lower.split_whitespace().any(|w| w == s);
             if s.len() >= 5 && !stem_already_present {
                 result.push(' ');
                 result.push_str(&s);
@@ -340,9 +352,10 @@ pub fn get_related_terms(word: &str) -> Vec<&'static str> {
     // Reverse: word is a value (exact or stem match) → return the key + sibling values
     for (key, values) in SYNONYMS.iter() {
         let matched = values.contains(&word)
-            || (word.len() >= 6 && values.iter().any(|v| {
-                v.len() >= 6 && synonym_stems_match(word, v)
-            }));
+            || (word.len() >= 6
+                && values
+                    .iter()
+                    .any(|v| v.len() >= 6 && synonym_stems_match(word, v)));
         if matched {
             if *key != word && !related.contains(key) {
                 related.push(key);
@@ -568,23 +581,81 @@ pub fn build_framework_vocab_tags(patterns: &[(String, Option<String>)]) -> Stri
 /// These add noise without improving search recall.
 static LANG_KEYWORDS: &[&str] = &[
     // Rust
-    "let", "mut", "pub", "crate", "self", "super", "impl", "use", "mod",
-    "struct", "enum", "trait", "type", "where", "const", "static", "unsafe",
-    "async", "await", "move", "dyn", "ref",
-    "match", "return", "break", "continue",
-    "true", "false", "some", "none",
+    "let",
+    "mut",
+    "pub",
+    "crate",
+    "self",
+    "super",
+    "impl",
+    "use",
+    "mod",
+    "struct",
+    "enum",
+    "trait",
+    "type",
+    "where",
+    "const",
+    "static",
+    "unsafe",
+    "async",
+    "await",
+    "move",
+    "dyn",
+    "ref",
+    "match",
+    "return",
+    "break",
+    "continue",
+    "true",
+    "false",
+    "some",
+    "none",
     // Shared
-    "for", "while", "loop", "else", "then",
+    "for",
+    "while",
+    "loop",
+    "else",
+    "then",
     // TS/JS
-    "var", "class", "interface", "export", "import", "from", "extends",
-    "typeof", "instanceof", "void", "null", "undefined", "this",
+    "var",
+    "class",
+    "interface",
+    "export",
+    "import",
+    "from",
+    "extends",
+    "typeof",
+    "instanceof",
+    "void",
+    "null",
+    "undefined",
+    "this",
     // Python
-    "def", "try", "except", "with", "pass", "yield", "lambda", "elif",
-    "raise", "finally", "global", "nonlocal",
+    "def",
+    "try",
+    "except",
+    "with",
+    "pass",
+    "yield",
+    "lambda",
+    "elif",
+    "raise",
+    "finally",
+    "global",
+    "nonlocal",
     // Go
-    "func", "package", "defer", "chan", "range", "select",
+    "func",
+    "package",
+    "defer",
+    "chan",
+    "range",
+    "select",
     // Common but low-value
-    "string", "bool", "into", "that",
+    "string",
+    "bool",
+    "into",
+    "that",
 ];
 
 /// Check if a short word ending in CVC pattern should double its final consonant
@@ -679,10 +750,39 @@ pub(crate) fn generate_morphological_variants(word: &str) -> Vec<String> {
 
     // === PREFIX: re- for common programming verbs ===
     static RE_PREFIXABLE: &[&str] = &[
-        "index", "build", "load", "connect", "start", "run", "create", "write", "read",
-        "fetch", "init", "process", "compile", "render", "compute", "generate", "validate",
-        "scan", "parse", "format", "sync", "fresh", "name", "play", "bind", "configure",
-        "assemble", "quest", "solve", "open", "evaluate", "execute", "balance",
+        "index",
+        "build",
+        "load",
+        "connect",
+        "start",
+        "run",
+        "create",
+        "write",
+        "read",
+        "fetch",
+        "init",
+        "process",
+        "compile",
+        "render",
+        "compute",
+        "generate",
+        "validate",
+        "scan",
+        "parse",
+        "format",
+        "sync",
+        "fresh",
+        "name",
+        "play",
+        "bind",
+        "configure",
+        "assemble",
+        "quest",
+        "solve",
+        "open",
+        "evaluate",
+        "execute",
+        "balance",
     ];
     if RE_PREFIXABLE.contains(&word) {
         variants.push(format!("re{}", word));
@@ -732,9 +832,7 @@ pub fn generate_nl_description(name: &str, kind: &str, _body_text: &str) -> Stri
             continue;
         }
         for variant in generate_morphological_variants(word) {
-            if !name_set.contains(variant.as_str())
-                && !LANG_KEYWORDS.contains(&variant.as_str())
-            {
+            if !name_set.contains(variant.as_str()) && !LANG_KEYWORDS.contains(&variant.as_str()) {
                 new_words.insert(variant);
             }
         }
@@ -837,7 +935,8 @@ fn find_inline_comment(line: &str) -> Option<usize> {
             in_string = !in_string;
         } else if b == b'\'' && !in_string {
             in_char = !in_char;
-        } else if !in_string && !in_char && b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        } else if !in_string && !in_char && b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/'
+        {
             // Found // outside any string — only if there's code before it
             let before = &line[..i];
             if !before.trim().is_empty() {
@@ -1004,22 +1103,37 @@ mod tests {
     fn test_expand_synonyms_websocket() {
         let result = expand_synonyms("websocket handler");
         assert!(result.contains("ws"), "should expand websocket→ws");
-        assert!(result.contains("callback"), "should expand handler→callback");
+        assert!(
+            result.contains("callback"),
+            "should expand handler→callback"
+        );
     }
 
     #[test]
     fn test_expand_synonyms_serialization() {
         let result = expand_synonyms("serialization format");
-        assert!(result.contains("serde"), "should expand serialization→serde");
-        assert!(result.contains("serialize"), "should expand serialization→serialize");
-        assert!(result.contains("formatting"), "should expand format→formatting");
+        assert!(
+            result.contains("serde"),
+            "should expand serialization→serde"
+        );
+        assert!(
+            result.contains("serialize"),
+            "should expand serialization→serialize"
+        );
+        assert!(
+            result.contains("formatting"),
+            "should expand format→formatting"
+        );
     }
 
     #[test]
     fn test_expand_synonyms_watcher_debounce() {
         let result = expand_synonyms("watcher debounce");
         assert!(result.contains("watch"), "should expand watcher→watch");
-        assert!(result.contains("throttle"), "should expand debounce→throttle");
+        assert!(
+            result.contains("throttle"),
+            "should expand debounce→throttle"
+        );
     }
 
     #[test]
@@ -1027,7 +1141,10 @@ mod tests {
         // "degradation" is a synonym of "fallback", so querying "degradation"
         // should add the main term "fallback"
         let result = expand_synonyms("graceful degradation");
-        assert!(result.contains("fallback"), "should add fallback from degradation synonym");
+        assert!(
+            result.contains("fallback"),
+            "should add fallback from degradation synonym"
+        );
     }
 
     #[test]
@@ -1074,7 +1191,8 @@ mod tests {
     fn test_remove_stop_words_with_expanded_queries() {
         // Q7 expanded: "How does the Web Socket handler work? ws websocket callback listener hook delegate"
         // After stop word removal: Web Socket handler work? ws websocket callback listener hook delegate
-        let q7 = "How does the Web Socket handler work? ws websocket callback listener hook delegate";
+        let q7 =
+            "How does the Web Socket handler work? ws websocket callback listener hook delegate";
         let r7 = remove_stop_words(q7);
         assert!(!r7.contains("How "), "should remove 'How': {r7}");
         assert!(!r7.contains(" does "), "should remove 'does': {r7}");
@@ -1089,7 +1207,10 @@ mod tests {
         assert!(!r9.contains(" and "), "should remove 'and': {r9}");
         assert!(r9.contains("Error"), "should keep 'Error': {r9}");
         assert!(r9.contains("fallback"), "should keep 'fallback': {r9}");
-        assert!(r9.contains("degradation"), "should keep 'degradation': {r9}");
+        assert!(
+            r9.contains("degradation"),
+            "should keep 'degradation': {r9}"
+        );
     }
 
     #[test]
@@ -1101,20 +1222,32 @@ mod tests {
     #[test]
     fn test_expand_stems_er_suffix() {
         let result = expand_stems("file watcher debounce reindex");
-        assert!(result.contains("watch"), "should stem watcher→watch: {result}");
+        assert!(
+            result.contains("watch"),
+            "should stem watcher→watch: {result}"
+        );
     }
 
     #[test]
     fn test_expand_stems_ing_suffix() {
         let result = expand_stems("JSON serialization response formatting");
-        assert!(result.contains("format"), "should stem formatting→format: {result}");
+        assert!(
+            result.contains("format"),
+            "should stem formatting→format: {result}"
+        );
     }
 
     #[test]
     fn test_expand_stems_s_suffix() {
         let result = expand_stems("find function handles search requests");
-        assert!(result.contains("request"), "should stem requests→request: {result}");
-        assert!(result.contains("handle"), "should stem handles→handle: {result}");
+        assert!(
+            result.contains("request"),
+            "should stem requests→request: {result}"
+        );
+        assert!(
+            result.contains("handle"),
+            "should stem handles→handle: {result}"
+        );
     }
 
     #[test]
@@ -1123,14 +1256,20 @@ mod tests {
         let result = expand_stems("handle search code handler");
         let handle_count = result.matches("handle").count();
         // "handle" appears once naturally + "handler" stems to "handl" not "handle"
-        assert!(handle_count <= 3, "should not add duplicate stems: {result}");
+        assert!(
+            handle_count <= 3,
+            "should not add duplicate stems: {result}"
+        );
     }
 
     #[test]
     fn test_expand_stems_tion_suffix() {
         let result = expand_stems("vector embedding generation and storage");
         // "generation" → strip "ation" → "gener" (5 chars, valid)
-        assert!(result.contains("gener"), "should stem generation→gener: {result}");
+        assert!(
+            result.contains("gener"),
+            "should stem generation→gener: {result}"
+        );
     }
 
     #[test]
@@ -1138,7 +1277,10 @@ mod tests {
         let result = expand_stems("tree-sitter parser initialization and language");
         // "tree-sitter" should not be stemmed (hyphen skip)
         let words: Vec<&str> = result.split_whitespace().collect();
-        assert!(!words.contains(&"tree-sitt"), "should not stem hyphenated words: {result}");
+        assert!(
+            !words.contains(&"tree-sitt"),
+            "should not stem hyphenated words: {result}"
+        );
     }
 
     #[test]
@@ -1146,7 +1288,10 @@ mod tests {
         let result = expand_stems("caching and cache invalidation patterns");
         // "caching" → "cach" (4 chars) should be filtered by min stem length 5
         let words: Vec<&str> = result.split_whitespace().collect();
-        assert!(!words.contains(&"cach"), "should filter stems < 5 chars: {result}");
+        assert!(
+            !words.contains(&"cach"),
+            "should filter stems < 5 chars: {result}"
+        );
     }
 
     #[test]
@@ -1170,15 +1315,33 @@ use std::path::Path;
 use crate::storage::sqlite::SymbolRow;
 "#;
         let tags = extract_rust_import_tags(source);
-        assert!(tags.contains("tree_sitter"), "should extract tree_sitter: {tags}");
-        assert!(tags.contains("serde_json"), "should extract serde_json: {tags}");
+        assert!(
+            tags.contains("tree_sitter"),
+            "should extract tree_sitter: {tags}"
+        );
+        assert!(
+            tags.contains("serde_json"),
+            "should extract serde_json: {tags}"
+        );
         assert!(tags.contains("anyhow"), "should extract anyhow: {tags}");
         // Split forms
-        assert!(tags.contains("tree") && tags.contains("sitter"), "should split tree_sitter: {tags}");
-        assert!(tags.contains("serde") && tags.contains("json"), "should split serde_json: {tags}");
+        assert!(
+            tags.contains("tree") && tags.contains("sitter"),
+            "should split tree_sitter: {tags}"
+        );
+        assert!(
+            tags.contains("serde") && tags.contains("json"),
+            "should split serde_json: {tags}"
+        );
         // Should NOT include internal references or std
-        assert!(!tags.split_whitespace().any(|w| w == "crate"), "should skip crate: {tags}");
-        assert!(!tags.split_whitespace().any(|w| w == "std"), "should skip std: {tags}");
+        assert!(
+            !tags.split_whitespace().any(|w| w == "crate"),
+            "should skip crate: {tags}"
+        );
+        assert!(
+            !tags.split_whitespace().any(|w| w == "std"),
+            "should skip std: {tags}"
+        );
     }
 
     #[test]
@@ -1190,10 +1353,19 @@ use self::inner::Foo;
 use super::Bar;
 "#;
         let tags = extract_rust_import_tags(source);
-        assert!(tags.contains("once_cell"), "should extract once_cell: {tags}");
+        assert!(
+            tags.contains("once_cell"),
+            "should extract once_cell: {tags}"
+        );
         assert!(tags.contains("tokio"), "should extract tokio: {tags}");
-        assert!(!tags.split_whitespace().any(|w| w == "self"), "should skip self: {tags}");
-        assert!(!tags.split_whitespace().any(|w| w == "super"), "should skip super: {tags}");
+        assert!(
+            !tags.split_whitespace().any(|w| w == "self"),
+            "should skip self: {tags}"
+        );
+        assert!(
+            !tags.split_whitespace().any(|w| w == "super"),
+            "should skip super: {tags}"
+        );
     }
 
     #[test]
@@ -1207,7 +1379,10 @@ use super::Bar;
         let tags = build_import_tags_from_sources(&sources);
         assert!(tags.contains("express"), "should include express: {tags}");
         assert!(tags.contains("react"), "should include react: {tags}");
-        assert!(tags.contains("types"), "should include types (from @types/node): {tags}");
+        assert!(
+            tags.contains("types"),
+            "should include types (from @types/node): {tags}"
+        );
         // Dedup: express should appear only once
         let express_count = tags.split_whitespace().filter(|w| *w == "express").count();
         assert_eq!(express_count, 1, "express should be deduplicated: {tags}");
@@ -1217,40 +1392,70 @@ use super::Bar;
     fn test_concept_tags_json_macro() {
         let text = r#"pub fn build_response() { json!({"status": "ok"}) }"#;
         let tags = extract_concept_tags(text);
-        assert!(!tags.contains("serialization"), "R34: serialization removed as broad tag: {tags}");
-        assert!(tags.contains("response"), "json!( should trigger response: {tags}");
-        assert!(tags.contains("formatting"), "json!( should trigger formatting: {tags}");
+        assert!(
+            !tags.contains("serialization"),
+            "R34: serialization removed as broad tag: {tags}"
+        );
+        assert!(
+            tags.contains("response"),
+            "json!( should trigger response: {tags}"
+        );
+        assert!(
+            tags.contains("formatting"),
+            "json!( should trigger formatting: {tags}"
+        );
     }
 
     #[test]
     fn test_concept_tags_websocket() {
         let text = r#"app.ws("/ws", |ws| { ws.send("hello") })"#;
         let tags = extract_concept_tags(text);
-        assert!(tags.contains("websocket"), ".ws( should trigger websocket: {tags}");
+        assert!(
+            tags.contains("websocket"),
+            ".ws( should trigger websocket: {tags}"
+        );
     }
 
     #[test]
     fn test_concept_tags_websocket_name() {
         let text = "fn handle_WebSocket_connection() {}";
         let tags = extract_concept_tags(text);
-        assert!(tags.contains("websocket"), "WebSocket should trigger websocket: {tags}");
-        assert!(tags.contains("realtime"), "WebSocket should trigger realtime: {tags}");
+        assert!(
+            tags.contains("websocket"),
+            "WebSocket should trigger websocket: {tags}"
+        );
+        assert!(
+            tags.contains("realtime"),
+            "WebSocket should trigger realtime: {tags}"
+        );
     }
 
     #[test]
     fn test_concept_tags_async_concurrency() {
         let text = "tokio::spawn(async move { process_batch().await })";
         let tags = extract_concept_tags(text);
-        assert!(tags.contains("async"), "tokio::spawn should trigger async: {tags}");
-        assert!(tags.contains("concurrency"), "tokio::spawn should trigger concurrency: {tags}");
+        assert!(
+            tags.contains("async"),
+            "tokio::spawn should trigger async: {tags}"
+        );
+        assert!(
+            tags.contains("concurrency"),
+            "tokio::spawn should trigger concurrency: {tags}"
+        );
     }
 
     #[test]
     fn test_concept_tags_parallel() {
         let text = "items.par_iter().map(|x| process(x)).collect()";
         let tags = extract_concept_tags(text);
-        assert!(tags.contains("parallel"), "par_iter should trigger parallel: {tags}");
-        assert!(tags.contains("concurrency"), "par_iter should trigger concurrency: {tags}");
+        assert!(
+            tags.contains("parallel"),
+            "par_iter should trigger parallel: {tags}"
+        );
+        assert!(
+            tags.contains("concurrency"),
+            "par_iter should trigger concurrency: {tags}"
+        );
     }
 
     // R34: Removed tests for error_handling, fallback, graceful_degradation, serde —
@@ -1261,27 +1466,42 @@ use super::Bar;
         // Verify broad tags no longer fire
         let error_text = "result.map_err(|e| format!(\"failed: {e}\"))";
         let tags = extract_concept_tags(error_text);
-        assert!(tags.is_empty(), "R34: map_err should not produce tags: '{tags}'");
+        assert!(
+            tags.is_empty(),
+            "R34: map_err should not produce tags: '{tags}'"
+        );
 
         let fallback_text = "let val = opt.unwrap_or_else(|| default_value());";
         let tags = extract_concept_tags(fallback_text);
-        assert!(tags.is_empty(), "R34: unwrap_or_else should not produce tags: '{tags}'");
+        assert!(
+            tags.is_empty(),
+            "R34: unwrap_or_else should not produce tags: '{tags}'"
+        );
 
         let serde_text = "#[derive(Debug, Serialize, Deserialize)]\nstruct Foo {}";
         let tags = extract_concept_tags(serde_text);
-        assert!(tags.is_empty(), "R34: derive Serialize should not produce tags: '{tags}'");
+        assert!(
+            tags.is_empty(),
+            "R34: derive Serialize should not produce tags: '{tags}'"
+        );
     }
 
     #[test]
     fn test_concept_tags_empty_text() {
         let tags = extract_concept_tags("");
-        assert!(tags.is_empty(), "empty text should return empty tags: '{tags}'");
+        assert!(
+            tags.is_empty(),
+            "empty text should return empty tags: '{tags}'"
+        );
     }
 
     #[test]
     fn test_concept_tags_no_matches() {
         let tags = extract_concept_tags("fn add(a: i32, b: i32) -> i32 { a + b }");
-        assert!(tags.is_empty(), "plain function should return empty tags: '{tags}'");
+        assert!(
+            tags.is_empty(),
+            "plain function should return empty tags: '{tags}'"
+        );
     }
 
     // --- prepare_embedding_text tests ---
@@ -1290,15 +1510,32 @@ use super::Bar;
     fn test_prepare_embedding_text_basic() {
         let text = "/// Doc comment\nfn foo() { bar() }";
         let result = prepare_embedding_text("foo", "function", "src/handlers/mod.rs", text);
-        assert!(result.starts_with("function foo in mod.rs\n"), "should have semantic header: {result}");
-        assert!(!result.contains("Doc comment"), "should strip comments: {result}");
-        assert!(result.contains("fn foo() { bar() }"), "should preserve code: {result}");
+        assert!(
+            result.starts_with("function foo in mod.rs\n"),
+            "should have semantic header: {result}"
+        );
+        assert!(
+            !result.contains("Doc comment"),
+            "should strip comments: {result}"
+        );
+        assert!(
+            result.contains("fn foo() { bar() }"),
+            "should preserve code: {result}"
+        );
     }
 
     #[test]
     fn test_prepare_embedding_text_extracts_filename() {
-        let result = prepare_embedding_text("MyStruct", "struct", "src/storage/sqlite/mod.rs", "struct MyStruct {}");
-        assert!(result.starts_with("struct MyStruct in mod.rs\n"), "should extract filename: {result}");
+        let result = prepare_embedding_text(
+            "MyStruct",
+            "struct",
+            "src/storage/sqlite/mod.rs",
+            "struct MyStruct {}",
+        );
+        assert!(
+            result.starts_with("struct MyStruct in mod.rs\n"),
+            "should extract filename: {result}"
+        );
     }
 
     // --- strip_code_comments tests ---
@@ -1338,7 +1575,10 @@ use super::Bar;
     fn test_strip_code_comments_preserves_rust_attributes() {
         let text = "#[derive(Debug, Serialize)]\nstruct Foo {\n    // A field\n    pub x: i32,\n}";
         let stripped = strip_code_comments(text);
-        assert!(stripped.contains("#[derive(Debug, Serialize)]"), "Rust attributes preserved");
+        assert!(
+            stripped.contains("#[derive(Debug, Serialize)]"),
+            "Rust attributes preserved"
+        );
         assert!(!stripped.contains("A field"), "inline comment stripped");
     }
 
@@ -1346,8 +1586,14 @@ use super::Bar;
     fn test_strip_code_comments_preserves_python_shebangs() {
         let text = "#!/usr/bin/env python\n# This is a comment\ndef foo(): pass";
         let stripped = strip_code_comments(text);
-        assert!(stripped.contains("#!/usr/bin/env python"), "shebang preserved");
-        assert!(!stripped.contains("This is a comment"), "Python comment stripped");
+        assert!(
+            stripped.contains("#!/usr/bin/env python"),
+            "shebang preserved"
+        );
+        assert!(
+            !stripped.contains("This is a comment"),
+            "Python comment stripped"
+        );
     }
 
     // --- build_framework_vocab_tags tests ---
@@ -1356,7 +1602,10 @@ use super::Bar;
     fn test_framework_vocab_websocket() {
         let patterns = vec![("websocket".to_string(), None)];
         let tags = build_framework_vocab_tags(&patterns);
-        assert!(tags.contains("websocket"), "should include websocket: {tags}");
+        assert!(
+            tags.contains("websocket"),
+            "should include websocket: {tags}"
+        );
         assert!(tags.contains("handler"), "should include handler: {tags}");
         assert!(tags.contains("endpoint"), "should include endpoint: {tags}");
         assert!(tags.contains("realtime"), "should include realtime: {tags}");
@@ -1377,7 +1626,10 @@ use super::Bar;
     fn test_framework_vocab_empty_input() {
         let patterns: Vec<(String, Option<String>)> = vec![];
         let tags = build_framework_vocab_tags(&patterns);
-        assert!(tags.is_empty(), "empty patterns should produce empty tags: '{tags}'");
+        assert!(
+            tags.is_empty(),
+            "empty patterns should produce empty tags: '{tags}'"
+        );
     }
 
     #[test]
@@ -1391,9 +1643,15 @@ use super::Bar;
         let handler_count = tags.split_whitespace().filter(|w| *w == "handler").count();
         assert_eq!(handler_count, 1, "handler should be deduplicated: {tags}");
         // Both should still have their unique words
-        assert!(tags.contains("realtime"), "websocket's realtime should be present: {tags}");
+        assert!(
+            tags.contains("realtime"),
+            "websocket's realtime should be present: {tags}"
+        );
         assert!(tags.contains("route"), "route should be present: {tags}");
-        assert!(tags.contains("post"), "POST method should be present: {tags}");
+        assert!(
+            tags.contains("post"),
+            "POST method should be present: {tags}"
+        );
     }
 
     // --- NL description tests ---
@@ -1414,7 +1672,10 @@ use super::Bar;
 
         // -s stripping
         let v = generate_morphological_variants("requests");
-        assert!(v.contains(&"request".to_string()), "requests → request: {v:?}");
+        assert!(
+            v.contains(&"request".to_string()),
+            "requests → request: {v:?}"
+        );
 
         // -ing with e restoration
         let v = generate_morphological_variants("parsing");
@@ -1426,7 +1687,10 @@ use super::Bar;
         // -er addition
         let v = generate_morphological_variants("watch");
         assert!(v.contains(&"watcher".to_string()), "watch → watcher: {v:?}");
-        assert!(v.contains(&"watching".to_string()), "watch → watching: {v:?}");
+        assert!(
+            v.contains(&"watching".to_string()),
+            "watch → watching: {v:?}"
+        );
 
         // -e ending: parse → parser, parsing
         let v = generate_morphological_variants("parse");
@@ -1451,7 +1715,10 @@ use super::Bar;
     #[test]
     fn test_generate_morphological_variants_no_self_reference() {
         let v = generate_morphological_variants("watch");
-        assert!(!v.contains(&"watch".to_string()), "should not contain self: {v:?}");
+        assert!(
+            !v.contains(&"watch".to_string()),
+            "should not contain self: {v:?}"
+        );
     }
 
     #[test]
@@ -1464,12 +1731,19 @@ use super::Bar;
         // Should contain kind context
         assert!(desc.contains("function"), "should include kind: {desc}");
         // Name-only variants: "watch" → watcher/watching, "spawn" → spawner/spawning
-        assert!(desc.contains("watcher") || desc.contains("watching"),
-            "watch → watcher/watching: {desc}");
-        assert!(desc.contains("spawner") || desc.contains("spawning"),
-            "spawn → spawner/spawning: {desc}");
+        assert!(
+            desc.contains("watcher") || desc.contains("watching"),
+            "watch → watcher/watching: {desc}"
+        );
+        assert!(
+            desc.contains("spawner") || desc.contains("spawning"),
+            "spawn → spawner/spawning: {desc}"
+        );
         // Body tokens should NOT appear (name-only restriction from R41)
-        assert!(!desc.contains("change"), "body token 'changes' should not produce variants: {desc}");
+        assert!(
+            !desc.contains("change"),
+            "body token 'changes' should not produce variants: {desc}"
+        );
     }
 
     #[test]
@@ -1485,19 +1759,26 @@ use super::Bar;
         let words: HashSet<&str> = desc.split_whitespace().collect();
         // "config" (4 chars) is in body, but "configing" or "configer" (>= 3) might be
         // Main point: the description should NOT duplicate existing words
-        assert!(words.len() < 80, "should not produce excessive words: {desc}");
+        assert!(
+            words.len() < 80,
+            "should not produce excessive words: {desc}"
+        );
     }
 
     #[test]
     fn test_generate_nl_description_kind_context() {
         // "struct" kind when body doesn't contain "struct" as an identifier
-        let _desc = generate_nl_description("MyConfig", "struct", "pub name: String, pub value: i32,");
+        let _desc =
+            generate_nl_description("MyConfig", "struct", "pub name: String, pub value: i32,");
         // "struct" is in LANG_KEYWORDS, so it won't be added as kind context
         // But "struct" IS a valid kind... let me check: LANG_KEYWORDS has "struct"
         // This is actually OK — for structs, the kind is less useful than for functions
 
         let desc = generate_nl_description("process_events", "function", "for event in events {}");
-        assert!(desc.contains("function"), "function kind should be added: {desc}");
+        assert!(
+            desc.contains("function"),
+            "function kind should be added: {desc}"
+        );
     }
 
     #[test]
@@ -1511,11 +1792,19 @@ use super::Bar;
         // Name tokens: "check" (5), "for" (3), "changes" (7)
         // "changes" → backward stem "change", forward "changer/changing"
         // "check" → forward "checker/checking"
-        assert!(desc.contains("change"), "changes → change (backward stem): {desc}");
-        assert!(desc.contains("checker") || desc.contains("checking"),
-            "check → checker/checking: {desc}");
+        assert!(
+            desc.contains("change"),
+            "changes → change (backward stem): {desc}"
+        );
+        assert!(
+            desc.contains("checker") || desc.contains("checking"),
+            "check → checker/checking: {desc}"
+        );
         // "index" is only in body — should NOT produce "reindex"
-        assert!(!desc.contains("reindex"), "body token 'index' should not produce variants: {desc}");
+        assert!(
+            !desc.contains("reindex"),
+            "body token 'index' should not produce variants: {desc}"
+        );
     }
 
     #[test]
@@ -1533,11 +1822,20 @@ pub fn extract_concept_tags(text: &str) -> String {
 }"#;
         let stripped = strip_code_comments(text);
         // Comments mentioning "error_handling" and "serialization" should be gone
-        assert!(!stripped.contains("error_handling"), "doc comment keyword stripped");
-        assert!(!stripped.contains("serialization"), "inline comment keyword stripped");
+        assert!(
+            !stripped.contains("error_handling"),
+            "doc comment keyword stripped"
+        );
+        assert!(
+            !stripped.contains("serialization"),
+            "inline comment keyword stripped"
+        );
         // But code string literals should remain
         assert!(stripped.contains("json!("), "code string literal preserved");
-        assert!(stripped.contains("response"), "code string literal preserved");
+        assert!(
+            stripped.contains("response"),
+            "code string literal preserved"
+        );
     }
 
     #[test]
@@ -1547,10 +1845,22 @@ pub fn extract_concept_tags(text: &str) -> String {
 Some(w[..w.len() - 2].to_string()) // "gracefully" → "graceful"
 let x = 1; // this is a trailing comment"#;
         let stripped = strip_code_comments(text);
-        assert!(!stripped.contains("handling"), "inline comment word stripped");
-        assert!(!stripped.contains("gracefully"), "inline comment word stripped");
-        assert!(!stripped.contains("trailing comment"), "inline comment stripped");
-        assert!(stripped.contains("Some(w[..w.len() - 4].to_string())"), "code preserved");
+        assert!(
+            !stripped.contains("handling"),
+            "inline comment word stripped"
+        );
+        assert!(
+            !stripped.contains("gracefully"),
+            "inline comment word stripped"
+        );
+        assert!(
+            !stripped.contains("trailing comment"),
+            "inline comment stripped"
+        );
+        assert!(
+            stripped.contains("Some(w[..w.len() - 4].to_string())"),
+            "code preserved"
+        );
         assert!(stripped.contains("let x = 1;"), "code preserved");
     }
 
@@ -1560,22 +1870,40 @@ let x = 1; // this is a trailing comment"#;
         let text = r#"let url = "http://example.com"; // a comment
 let path = "file:///tmp/test";"#;
         let stripped = strip_code_comments(text);
-        assert!(stripped.contains("http://example.com"), "URL in string preserved");
+        assert!(
+            stripped.contains("http://example.com"),
+            "URL in string preserved"
+        );
         assert!(!stripped.contains("a comment"), "trailing comment stripped");
-        assert!(stripped.contains("file:///tmp/test"), "file URL in string preserved");
+        assert!(
+            stripped.contains("file:///tmp/test"),
+            "file URL in string preserved"
+        );
     }
 
     #[test]
     fn test_get_related_terms_stem_matching() {
         // "concurrency" should stem-match "concurrent" (value under "async")
         let related = get_related_terms("concurrency");
-        assert!(!related.is_empty(), "concurrency should find related terms via stem matching");
-        assert!(related.contains(&"async"), "concurrency should relate to async");
-        assert!(related.contains(&"parallel"), "concurrency should relate to parallel");
+        assert!(
+            !related.is_empty(),
+            "concurrency should find related terms via stem matching"
+        );
+        assert!(
+            related.contains(&"async"),
+            "concurrency should relate to async"
+        );
+        assert!(
+            related.contains(&"parallel"),
+            "concurrency should relate to parallel"
+        );
 
         // "processing" has no stem match in the table (too short shared prefix with anything)
         let related = get_related_terms("processing");
-        assert!(related.is_empty(), "processing should have no related terms");
+        assert!(
+            related.is_empty(),
+            "processing should have no related terms"
+        );
 
         // Exact matches still work
         let related = get_related_terms("concurrent");

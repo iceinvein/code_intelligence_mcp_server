@@ -247,7 +247,15 @@ pub fn rank_hits_with_signals(
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let kw = kw_scores.get(&h.id).copied().unwrap_or(0.0);
         let base_score = vector_w * v + keyword_w * kw;
-        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, &h.name, intent, query);
+        let structural = structural_adjustment(
+            config,
+            h.exported,
+            &h.file_path,
+            &h.kind,
+            &h.name,
+            intent,
+            query,
+        );
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
         let def_bias = definition_bias(query, &h.name, &h.kind, intent);
         let tc = term_coverage_adjustment(query, &h.name, &h.file_path, None);
@@ -293,7 +301,15 @@ pub fn rank_hits_with_signals(
         let v = vec_scores.get(&h.id).copied().unwrap_or(0.0);
         let v = if max_vec > 0.0 { v / max_vec } else { 0.0 };
         let base_score = vector_w * v + keyword_w * kw;
-        let structural = structural_adjustment(config, h.exported, &h.file_path, &h.kind, &h.name, intent, query);
+        let structural = structural_adjustment(
+            config,
+            h.exported,
+            &h.file_path,
+            &h.kind,
+            &h.name,
+            intent,
+            query,
+        );
         let intent_mult = intent_adjustment(intent, &h.kind, &h.file_path, h.exported, &h.name);
         let def_bias = definition_bias(query, &h.name, &h.kind, intent);
         let tc = term_coverage_adjustment(query, &h.name, &h.file_path, None);
@@ -560,21 +576,19 @@ pub(crate) fn definition_bias(
             // in "Error handling") from inflating a function literally named
             // "error" above more relevant results. (R65)
             if name_lower == token_lower
-                && (token.chars().skip(1).any(|c| c.is_uppercase())
-                    || token.contains('_'))
+                && (token.chars().skip(1).any(|c| c.is_uppercase()) || token.contains('_'))
             {
                 best = best.max(5.0);
             }
             // Symbol name contains the token (e.g. "EmbeddingCache" contains "cache")
             // Also try stemmed form so "transactions" matches "withTransaction"
             else if token.len() >= 4
-                && (name_lower.contains(&token_lower)
-                    || {
-                        let token_stem = simple_stem(&token_lower);
-                        token_stem.len() >= 4
-                            && token_stem != token_lower
-                            && name_lower.contains(&token_stem)
-                    })
+                && (name_lower.contains(&token_lower) || {
+                    let token_stem = simple_stem(&token_lower);
+                    token_stem.len() >= 4
+                        && token_stem != token_lower
+                        && name_lower.contains(&token_stem)
+                })
             {
                 best = best.max(0.5);
             }
@@ -587,9 +601,9 @@ pub(crate) fn definition_bias(
 /// These are common English words that appear in NL queries but carry no
 /// discriminative power for matching symbols or file paths.
 const STOPWORDS: &[&str] = &[
-    "the", "and", "for", "from", "how", "does", "what", "this", "that", "with",
-    "are", "was", "were", "been", "has", "have", "had", "not", "but", "its",
-    "can", "all", "will", "into", "when", "which", "where", "who", "why",
+    "the", "and", "for", "from", "how", "does", "what", "this", "that", "with", "are", "was",
+    "were", "been", "has", "have", "had", "not", "but", "its", "can", "all", "will", "into",
+    "when", "which", "where", "who", "why",
 ];
 
 /// Compute a term-coverage multiplier for multi-word NL queries.
@@ -685,17 +699,18 @@ pub(crate) fn term_coverage_adjustment(
         // in body, "serialization" matches "serde" in body, etc.
         // Worth less than direct matches to avoid false positives.
         let via_synonym = if !in_name && !in_path && !in_body && !synonyms.is_empty() {
-            let in_name_syn = synonyms.iter().any(|syn| {
-                name_lower.contains(syn)
-                    || name_parts.iter().any(|p| p == syn)
-            });
+            let in_name_syn = synonyms
+                .iter()
+                .any(|syn| name_lower.contains(syn) || name_parts.iter().any(|p| p == syn));
             let in_path_syn = synonyms.iter().any(|syn| {
-                path_parts.iter().any(|p| p.contains(syn) || syn.contains(p.as_str()))
+                path_parts
+                    .iter()
+                    .any(|p| p.contains(syn) || syn.contains(p.as_str()))
             });
             let in_body_syn = !body_tokens.is_empty()
-                && synonyms.iter().any(|syn| {
-                    body_tokens.split_whitespace().any(|tok| tok == *syn)
-                });
+                && synonyms
+                    .iter()
+                    .any(|syn| body_tokens.split_whitespace().any(|tok| tok == *syn));
             in_name_syn || in_path_syn || in_body_syn
         } else {
             false
@@ -835,7 +850,11 @@ pub(crate) fn symbol_importance_adjustment(line_count: u32, exported: bool) -> f
 /// R34: Increased from -5.0 to -10.0 so test helpers don't survive into
 /// the final top-5 via diversity backfill.
 pub(crate) fn test_symbol_penalty(is_test: bool) -> f32 {
-    if is_test { -10.0 } else { 0.0 }
+    if is_test {
+        -10.0
+    } else {
+        0.0
+    }
 }
 
 pub(crate) fn structural_adjustment(
@@ -1049,7 +1068,13 @@ pub(crate) fn structural_adjustment(
 
 // is_test_file and is_test_symbol moved to crate::classify
 
-pub(crate) fn intent_adjustment(intent: &Option<Intent>, kind: &str, file_path: &str, _exported: bool, name: &str) -> f32 {
+pub(crate) fn intent_adjustment(
+    intent: &Option<Intent>,
+    kind: &str,
+    file_path: &str,
+    _exported: bool,
+    name: &str,
+) -> f32 {
     // Test Penalty (0.01x multiplier): aggressively suppress test code in non-test queries.
     // Combined with final intent enforcement (double-applied for <1.0 multipliers),
     // effective suppression is 0.0001x — tests should never appear in production results.
@@ -1607,10 +1632,21 @@ mod tests {
     #[test]
     fn term_coverage_no_effect_on_short_queries() {
         // Single-word queries should return 0.0 (no effect)
-        assert_eq!(term_coverage_adjustment("EmbeddingCache", "EmbeddingCache", "src/storage/cache.rs", None), 0.0);
+        assert_eq!(
+            term_coverage_adjustment(
+                "EmbeddingCache",
+                "EmbeddingCache",
+                "src/storage/cache.rs",
+                None
+            ),
+            0.0
+        );
         // 2-word queries now DO get term_coverage (threshold lowered to 2)
         let adj = term_coverage_adjustment("get put", "get", "src/cache.rs", None);
-        assert!(adj != 0.0, "2-word queries should now have term_coverage effect, got {adj}");
+        assert!(
+            adj != 0.0,
+            "2-word queries should now have term_coverage effect, got {adj}"
+        );
     }
 
     #[test]
@@ -1622,7 +1658,10 @@ mod tests {
             "src/storage/sqlite/queries/files.rs",
             None,
         );
-        assert!(adj < 0.0, "expected penalty for single-term match, got {adj}");
+        assert!(
+            adj < 0.0,
+            "expected penalty for single-term match, got {adj}"
+        );
     }
 
     #[test]
@@ -1642,7 +1681,10 @@ mod tests {
             "src/storage/sqlite/operations.rs",
             None,
         );
-        assert!(multi > single, "multi-term match ({multi}) should score higher than single-term ({single})");
+        assert!(
+            multi > single,
+            "multi-term match ({multi}) should score higher than single-term ({single})"
+        );
     }
 
     #[test]
@@ -1656,7 +1698,10 @@ mod tests {
         );
         // "ranking" matches path "ranking", "scoring" matches path "score" via stem
         // That's 2/4 = 0.50 coverage → should be close to 0 or slightly positive
-        assert!(adj > -2.0, "good coverage match should not be strongly penalized, got {adj}");
+        assert!(
+            adj > -2.0,
+            "good coverage match should not be strongly penalized, got {adj}"
+        );
 
         // Compare against a result that matches nothing
         let bad = term_coverage_adjustment(
@@ -1665,7 +1710,10 @@ mod tests {
             "src/package/parsers/go.rs",
             None,
         );
-        assert!(adj > bad, "matched result ({adj}) should score higher than unmatched ({bad})");
+        assert!(
+            adj > bad,
+            "matched result ({adj}) should score higher than unmatched ({bad})"
+        );
     }
 
     #[test]
@@ -1678,7 +1726,10 @@ mod tests {
             None,
         );
         // "embedding" and "cache" both match the name parts
-        assert!(adj > -1.0, "CamelCase name matching multiple terms should score well, got {adj}");
+        assert!(
+            adj > -1.0,
+            "CamelCase name matching multiple terms should score well, got {adj}"
+        );
     }
 
     #[test]
@@ -1699,8 +1750,10 @@ mod tests {
         // parser.rs should do better because "parser" stem-matches "parsing" and "indexer" is related
         // Both have some matching but parser.rs path matches more terms
         // At minimum, neither should be strongly penalized
-        assert!(adj >= adj2 || (adj - adj2).abs() < 1.0,
-            "parser.rs ({adj}) should score >= go.rs ({adj2}) or be close");
+        assert!(
+            adj >= adj2 || (adj - adj2).abs() < 1.0,
+            "parser.rs ({adj}) should score >= go.rs ({adj2}) or be close"
+        );
     }
 
     #[test]
@@ -1718,8 +1771,10 @@ mod tests {
             "src/indexer/pipeline/mod.rs",
             None,
         );
-        assert!(with_body > without_body,
-            "body text should boost coverage: with={with_body}, without={without_body}");
+        assert!(
+            with_body > without_body,
+            "body text should boost coverage: with={with_body}, without={without_body}"
+        );
     }
 
     #[test]
@@ -1734,24 +1789,36 @@ mod tests {
         );
         // "websocket" matches body (WebSocket splits to web socket), "handler" no match,
         // "connection" no match, "protocol" no match → low coverage but not zero
-        assert!(body_only > -3.0, "body text match should reduce penalty, got {body_only}");
+        assert!(
+            body_only > -3.0,
+            "body text match should reduce penalty, got {body_only}"
+        );
     }
 
     #[test]
     fn split_camel_case_works() {
         assert_eq!(split_camel_case("embeddingcache"), vec!["embeddingcache"]);
-        assert_eq!(split_camel_case("EmbeddingCache"), vec!["embedding", "cache"]);
-        assert_eq!(split_camel_case("upsert_file_fingerprint"), vec!["upsert", "file", "fingerprint"]);
+        assert_eq!(
+            split_camel_case("EmbeddingCache"),
+            vec!["embedding", "cache"]
+        );
+        assert_eq!(
+            split_camel_case("upsert_file_fingerprint"),
+            vec!["upsert", "file", "fingerprint"]
+        );
         // All-caps sequences split into individual chars (expected for acronyms)
-        assert_eq!(split_camel_case("HTMLParser"), vec!["h", "t", "m", "l", "parser"]);
+        assert_eq!(
+            split_camel_case("HTMLParser"),
+            vec!["h", "t", "m", "l", "parser"]
+        );
     }
 
     #[test]
     fn stems_match_works() {
         assert!(stems_match("rank", "rank"));
         assert!(stems_match("scor", "score")); // "scoring" stem vs "score" stem
-        assert!(stems_match("pars", "pars"));  // "parsing" and "parser" share stem
-        assert!(!stems_match("ab", "abc"));    // too short prefix
+        assert!(stems_match("pars", "pars")); // "parsing" and "parser" share stem
+        assert!(!stems_match("ab", "abc")); // too short prefix
         assert!(!stems_match("rank", "file")); // unrelated
     }
 
@@ -1762,11 +1829,19 @@ mod tests {
 
         // "parallel" in name → 1.5, "async" via synonym → 0.25, "concurrency" via stem synonym → 0.25
         let tc = term_coverage_adjustment(query, "parallel", "pipeline/mod.rs", None);
-        assert!(tc > -1.0, "stem synonym matching should improve coverage, got {tc}");
+        assert!(
+            tc > -1.0,
+            "stem synonym matching should improve coverage, got {tc}"
+        );
 
         // Body containing "async" keyword should get body-match credit
         let body = "pub fn spawn_description_worker() -> tokio::task::JoinHandle<()> { tokio::spawn(async move { run().await }) }";
-        let tc = term_coverage_adjustment(query, "IndexPipeline::spawn_description_worker", "pipeline/mod.rs", Some(body));
+        let tc = term_coverage_adjustment(
+            query,
+            "IndexPipeline::spawn_description_worker",
+            "pipeline/mod.rs",
+            Some(body),
+        );
         assert!(tc > -2.5, "async body match should improve tc, got {tc}");
     }
 
@@ -1782,12 +1857,21 @@ mod tests {
     fn symbol_importance_penalizes_tiny_functions() {
         // 5-line function: log2(5) ≈ 2.32 → (2.32 - 5.5) * 0.4 ≈ -1.27
         let adj = symbol_importance_adjustment(5, true);
-        assert!(adj < -1.0, "5-line exported function should be penalized, got {adj}");
+        assert!(
+            adj < -1.0,
+            "5-line exported function should be penalized, got {adj}"
+        );
 
         // Private 5-line helper gets additional -0.5 penalty
         let adj_priv = symbol_importance_adjustment(5, false);
-        assert!(adj_priv < adj, "private helper ({adj_priv}) should be penalized more than exported ({adj})");
-        assert!((adj_priv - (adj - 0.5)).abs() < 0.01, "private penalty should be -0.5 extra");
+        assert!(
+            adj_priv < adj,
+            "private helper ({adj_priv}) should be penalized more than exported ({adj})"
+        );
+        assert!(
+            (adj_priv - (adj - 0.5)).abs() < 0.01,
+            "private penalty should be -0.5 extra"
+        );
     }
 
     #[test]
@@ -1802,7 +1886,10 @@ mod tests {
     fn symbol_importance_neutral_around_45_lines() {
         // 45 lines: log2(45) ≈ 5.49 → (5.49 - 5.5) * 0.4 ≈ -0.004 ≈ 0
         let adj = symbol_importance_adjustment(45, true);
-        assert!(adj.abs() < 0.1, "45-line function should be near-neutral, got {adj}");
+        assert!(
+            adj.abs() < 0.1,
+            "45-line function should be near-neutral, got {adj}"
+        );
     }
 
     #[test]
@@ -1815,7 +1902,10 @@ mod tests {
         // Private 11 lines does NOT get extra penalty
         let exported_11 = symbol_importance_adjustment(11, true);
         let private_11 = symbol_importance_adjustment(11, false);
-        assert_eq!(exported_11, private_11, "private >10 lines should not get extra penalty");
+        assert_eq!(
+            exported_11, private_11,
+            "private >10 lines should not get extra penalty"
+        );
     }
 
     #[test]
@@ -1920,14 +2010,26 @@ mod tests {
             let test_set = sqlite.batch_check_test_symbols(&ids).unwrap();
 
             // test_helper: inside mod tests → detected
-            assert!(test_set.contains("test_helper"), "helper inside mod tests should be detected");
+            assert!(
+                test_set.contains("test_helper"),
+                "helper inside mod tests should be detected"
+            );
             // test_fn: has #[test] in text → detected
-            assert!(test_set.contains("test_fn"), "#[test] function should be detected");
+            assert!(
+                test_set.contains("test_fn"),
+                "#[test] function should be detected"
+            );
             // mod_tests itself: NOT inside itself (excluded by m.id != s.id) — this is correct
             // because we only want to penalize functions inside the mod, not the mod declaration
-            assert!(!test_set.contains("mod_tests"), "mod tests declaration should not self-match");
+            assert!(
+                !test_set.contains("mod_tests"),
+                "mod tests declaration should not self-match"
+            );
             // prod_fn: outside mod tests, no #[test] → NOT detected
-            assert!(!test_set.contains("prod_fn"), "production function should not be detected");
+            assert!(
+                !test_set.contains("prod_fn"),
+                "production function should not be detected"
+            );
         }
 
         let _ = std::fs::remove_file(&db_path);
@@ -1985,7 +2087,11 @@ mod tests {
             );
             // sym_b should have a smaller boost
             let b_boost = hit_signals.get("sym_b").unwrap().learning_boost;
-            assert!(b_boost > 0.0 && b_boost < 0.1, "sym_b boost should be >0 and <0.1, got {}", b_boost);
+            assert!(
+                b_boost > 0.0 && b_boost < 0.1,
+                "sym_b boost should be >0 and <0.1, got {}",
+                b_boost
+            );
         }
 
         let _ = std::fs::remove_file(&db_path);
@@ -2062,13 +2168,9 @@ mod tests {
             config.learning_enabled = true;
             config.learning_file_affinity_boost = 0.05;
 
-            let result = apply_file_affinity_boost_with_signals(
-                &sqlite,
-                hits,
-                &mut hit_signals,
-                &config,
-            )
-            .unwrap();
+            let result =
+                apply_file_affinity_boost_with_signals(&sqlite, hits, &mut hit_signals, &config)
+                    .unwrap();
 
             // sym_1 had more edits (2x weighted) → higher affinity → first
             assert_eq!(result[0].id, "sym_1");
@@ -2081,7 +2183,11 @@ mod tests {
             );
             // sym_2 should have a smaller boost
             let boost_2 = hit_signals.get("sym_2").unwrap().affinity_boost;
-            assert!(boost_2 > 0.0 && boost_2 < 0.05, "sym_2 boost should be >0 and <0.05, got {}", boost_2);
+            assert!(
+                boost_2 > 0.0 && boost_2 < 0.05,
+                "sym_2 boost should be >0 and <0.05, got {}",
+                boost_2
+            );
         }
 
         let _ = std::fs::remove_file(&db_path);

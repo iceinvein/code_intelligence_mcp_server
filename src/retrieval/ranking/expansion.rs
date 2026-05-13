@@ -1,7 +1,7 @@
-use crate::retrieval::RankedHit;
-use crate::retrieval::query::Intent;
 use crate::classify::{is_test_file, is_test_symbol};
+use crate::retrieval::query::Intent;
 use crate::retrieval::ranking::score::{intent_adjustment, symbol_importance_adjustment};
+use crate::retrieval::RankedHit;
 use crate::storage::sqlite::SqliteStore;
 use crate::text;
 use anyhow::Result;
@@ -63,10 +63,9 @@ fn query_relevance_discount(name: &str, file_path: &str, query_terms: &[String])
 /// Extract significant query terms (3+ chars, no stopwords) for relevance checking.
 fn extract_query_terms(query: &str) -> Vec<String> {
     static STOPWORDS: &[&str] = &[
-        "the", "and", "for", "how", "does", "what", "this", "that", "with", "from",
-        "are", "was", "were", "has", "have", "had", "not", "but", "can", "will",
-        "would", "should", "could", "its", "all", "any", "each", "which", "when",
-        "where", "who", "why", "work", "works",
+        "the", "and", "for", "how", "does", "what", "this", "that", "with", "from", "are", "was",
+        "were", "has", "have", "had", "not", "but", "can", "will", "would", "should", "could",
+        "its", "all", "any", "each", "which", "when", "where", "who", "why", "work", "works",
     ];
     query
         .split_whitespace()
@@ -133,7 +132,8 @@ pub fn expand_with_edges(
                         "heuristic" => 0.75,
                         _ => 0.8,
                     };
-                    let expansion_score = base_score * 0.8 * edge.confidence * evidence_boost * resolution_multiplier;
+                    let expansion_score =
+                        base_score * 0.8 * edge.confidence * evidence_boost * resolution_multiplier;
 
                     if is_new {
                         if let Some(row) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? {
@@ -146,7 +146,8 @@ pub fn expand_with_edges(
                                 continue;
                             }
                             let lv_disc = local_variable_discount(&row.kind, &row.name);
-                            let qr_disc = query_relevance_discount(&row.name, &row.file_path, &query_terms);
+                            let qr_disc =
+                                query_relevance_discount(&row.name, &row.file_path, &query_terms);
                             out.push(RankedHit {
                                 id: row.id.clone(),
                                 score: expansion_score * lv_disc * qr_disc,
@@ -209,7 +210,8 @@ pub fn expand_with_edges(
                                 continue;
                             }
                             let lv_disc = local_variable_discount(&row.kind, &row.name);
-                            let qr_disc = query_relevance_discount(&row.name, &row.file_path, &query_terms);
+                            let qr_disc =
+                                query_relevance_discount(&row.name, &row.file_path, &query_terms);
                             out.push(RankedHit {
                                 id: row.id.clone(),
                                 score: expansion_score * lv_disc * qr_disc,
@@ -224,7 +226,8 @@ pub fn expand_with_edges(
                     } else {
                         // Symbol already in pool — boost its score if expansion
                         // derives a higher score from the parent relationship.
-                        if let Some(existing) = out.iter_mut().find(|h| h.id == edge.from_symbol_id) {
+                        if let Some(existing) = out.iter_mut().find(|h| h.id == edge.from_symbol_id)
+                        {
                             if expansion_score > existing.score {
                                 existing.score = expansion_score;
                             }

@@ -70,7 +70,8 @@ fn is_todo_comment(line: &str) -> Option<(TodoKind, String)> {
 
     if let Some(pos) = lower.find("fixme") {
         let after = &lower[pos..];
-        if after.starts_with("fixme:") || after.starts_with("fixme ") || after.starts_with("fixme(") {
+        if after.starts_with("fixme:") || after.starts_with("fixme ") || after.starts_with("fixme(")
+        {
             let text = extract_todo_text(line, pos, "FIXME");
             return Some((TodoKind::Fixme, text));
         }

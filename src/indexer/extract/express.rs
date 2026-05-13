@@ -95,11 +95,17 @@ fn classify_express_method(
             // Express error handlers conventionally have 4 parameters:
             // `(err, req, res, next)`.  Find the first function-like argument.
             let mut cursor = args_node.walk();
-            let named: Vec<Node> = args_node.children(&mut cursor).filter(|n| n.is_named()).collect();
+            let named: Vec<Node> = args_node
+                .children(&mut cursor)
+                .filter(|n| n.is_named())
+                .collect();
 
             // The callback may be the first or second argument (after an optional path).
             let callback = named.iter().find(|n| {
-                matches!(n.kind(), "arrow_function" | "function_expression" | "function_declaration")
+                matches!(
+                    n.kind(),
+                    "arrow_function" | "function_expression" | "function_declaration"
+                )
             });
 
             if let Some(cb) = callback {
@@ -121,7 +127,12 @@ fn extract_express_pattern_details(
     kind: FrameworkPatternKind,
     args_node: Node,
     source: &str,
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let mut path = None;
     let mut name = None;
     let mut handler = None;
@@ -153,8 +164,7 @@ fn extract_express_pattern_details(
                     if let Some(second) = named.get(1) {
                         name = extract_plugin_name(**second, source);
                         if name.is_none() {
-                            arguments =
-                                Some(truncate_text(&text_for_node(**second, source), 200));
+                            arguments = Some(truncate_text(&text_for_node(**second, source), 200));
                         }
                     }
                 } else {
@@ -190,11 +200,7 @@ fn extract_express_pattern_details(
 
 /// Walk the entire AST to find `express.Router()` or bare `Router()` call
 /// expressions, emitting a `Router` pattern for each.
-fn detect_router_creation(
-    root: Node,
-    source: &str,
-    patterns: &mut Vec<ExtractedFrameworkPattern>,
-) {
+fn detect_router_creation(root: Node, source: &str, patterns: &mut Vec<ExtractedFrameworkPattern>) {
     detect_router_creation_recursive(root, source, patterns);
 }
 
@@ -369,11 +375,15 @@ app.listen(3000)
 "#;
         let patterns = parse_and_extract(source);
 
-        let state = patterns.iter().find(|p| p.kind == FrameworkPatternKind::State);
+        let state = patterns
+            .iter()
+            .find(|p| p.kind == FrameworkPatternKind::State);
         assert!(state.is_some(), "Expected a State pattern for .set()");
         assert_eq!(state.unwrap().name, Some("view engine".to_string()));
 
-        let listen = patterns.iter().find(|p| p.kind == FrameworkPatternKind::Listen);
+        let listen = patterns
+            .iter()
+            .find(|p| p.kind == FrameworkPatternKind::Listen);
         assert!(listen.is_some(), "Expected a Listen pattern for .listen()");
         assert_eq!(listen.unwrap().name, Some("3000".to_string()));
     }

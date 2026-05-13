@@ -3,11 +3,11 @@
 //! This module provides functionality to discover git repository roots
 //! and extract repository metadata including remote URLs.
 
+use crate::path::Utf8PathBuf;
 use anyhow::{Context, Result};
 use git2::Repository;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use crate::path::Utf8PathBuf;
 
 /// Information about a discovered git repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,10 +35,7 @@ impl RepositoryInfo {
         let id = format!("{:x}", hash);
 
         // Extract name from directory name
-        let name = root_path
-            .file_name()
-            .unwrap_or("unknown")
-            .to_string();
+        let name = root_path.file_name().unwrap_or("unknown").to_string();
 
         RepositoryInfo {
             id,
@@ -152,14 +149,12 @@ fn discover_single_root(manifest_path: &Utf8PathBuf) -> Result<Option<Repository
     };
 
     // Get the workdir (repository root)
-    let workdir = repo
-        .workdir()
-        .with_context(|| {
-            format!(
-                "Repository is bare, cannot determine root path: manifest_path={}",
-                manifest_path
-            )
-        })?;
+    let workdir = repo.workdir().with_context(|| {
+        format!(
+            "Repository is bare, cannot determine root path: manifest_path={}",
+            manifest_path
+        )
+    })?;
 
     // Convert PathBuf back to Utf8PathBuf, fall back to string if path is not valid UTF-8
     let root_path = Utf8PathBuf::from_path_buf(workdir.to_path_buf())
@@ -188,12 +183,7 @@ mod tests {
             .arg("init")
             .current_dir(dir)
             .status()
-            .with_context(|| {
-                format!(
-                    "Failed to run git init: dir={}",
-                    dir.display()
-                )
-            })?;
+            .with_context(|| format!("Failed to run git init: dir={}", dir.display()))?;
 
         if !status.success() {
             return Err(anyhow::anyhow!("git init failed"));

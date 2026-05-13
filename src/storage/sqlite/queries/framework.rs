@@ -124,7 +124,9 @@ LIMIT ?
         where_clause
     );
 
-    let mut stmt = conn.prepare(&sql).context("Failed to prepare search query")?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .context("Failed to prepare search query")?;
 
     let mut param_refs: Vec<&dyn rusqlite::ToSql> =
         param_values.iter().map(|p| p.as_ref()).collect();

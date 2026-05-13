@@ -245,7 +245,9 @@ mod tests {
         // Verify symbol was created
         let db_path_utf8 = Utf8PathBuf::from_path_buf(db_path).unwrap();
         let sqlite = SqliteStore::open(&db_path_utf8).unwrap();
-        let symbols = sqlite.search_symbols_by_exact_name("testFunction", None, 10).unwrap();
+        let symbols = sqlite
+            .search_symbols_by_exact_name("testFunction", None, 10)
+            .unwrap();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "testFunction");
         assert!(symbols[0].exported);

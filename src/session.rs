@@ -9,15 +9,14 @@ use crate::{
     path::Utf8PathBuf,
     registry::{RepoEntry, RepoRegistry},
     retrieval::Retriever,
-    storage::{
-        sqlite::SqliteStore,
-        tantivy::TantivyIndex,
-        vector::LanceDbStore,
-    },
+    storage::{sqlite::SqliteStore, tantivy::TantivyIndex, vector::LanceDbStore},
 };
 use anyhow::{Context, Result};
 use dashmap::DashMap;
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -40,8 +39,7 @@ impl SessionManager {
         registry: RepoRegistry,
         embedder: Box<dyn Embedder + Send>,
     ) -> Result<Self> {
-        let metrics = Arc::new(MetricsRegistry::new()
-            .context("Failed to create MetricsRegistry")?);
+        let metrics = Arc::new(MetricsRegistry::new().context("Failed to create MetricsRegistry")?);
 
         Ok(Self {
             standalone_config: Arc::new(standalone_config),
@@ -66,7 +64,8 @@ impl SessionManager {
 
         // Slow path: acquire per-key init lock to prevent TOCTOU race
         // (two sessions binding to the same repo simultaneously)
-        let lock = self.init_locks
+        let lock = self
+            .init_locks
             .entry(canonical.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
@@ -79,14 +78,19 @@ impl SessionManager {
             return Ok(entry.0.clone());
         }
 
-        let repo_entry = self.registry.register(&canonical)
+        let repo_entry = self
+            .registry
+            .register(&canonical)
             .context("Failed to register repository")?;
 
-        let (state, watch_cancel) = self.init_repo_state(repo_path.clone(), &repo_entry).await
+        let (state, watch_cancel) = self
+            .init_repo_state(repo_path.clone(), &repo_entry)
+            .await
             .context("Failed to initialize repository state")?;
 
         let state_arc = Arc::new(state);
-        self.repos.insert(canonical.clone(), (state_arc.clone(), watch_cancel));
+        self.repos
+            .insert(canonical.clone(), (state_arc.clone(), watch_cancel));
         self.last_accessed.insert(canonical, Instant::now());
 
         Ok(state_arc)
@@ -147,15 +151,15 @@ impl SessionManager {
         entry: &RepoEntry,
     ) -> Result<(AppState, CancellationToken)> {
         // Build per-repo config
-        let config = self.standalone_config.repo_config(repo_path, &entry.data_dir);
+        let config = self
+            .standalone_config
+            .repo_config(repo_path, &entry.data_dir);
         let config_arc = Arc::new(config);
 
         // Create storage directories
-        std::fs::create_dir_all(&entry.data_dir)
-            .context("Failed to create repo data directory")?;
+        std::fs::create_dir_all(&entry.data_dir).context("Failed to create repo data directory")?;
         if let Some(db_parent) = config_arc.db_path.parent() {
-            std::fs::create_dir_all(db_parent)
-                .context("Failed to create db parent directory")?;
+            std::fs::create_dir_all(db_parent).context("Failed to create db parent directory")?;
         }
         std::fs::create_dir_all(&config_arc.vector_db_path)
             .context("Failed to create vector db directory")?;
@@ -163,9 +167,10 @@ impl SessionManager {
             .context("Failed to create tantivy index directory")?;
 
         // Open SQLite and initialize schema
-        let sqlite = SqliteStore::open(&config_arc.db_path)
-            .context("Failed to open SQLite store")?;
-        sqlite.init()
+        let sqlite =
+            SqliteStore::open(&config_arc.db_path).context("Failed to open SQLite store")?;
+        sqlite
+            .init()
             .context("Failed to initialize SQLite schema")?;
         let sqlite_arc = Arc::new(sqlite);
 
@@ -181,11 +186,16 @@ impl SessionManager {
         };
 
         // Connect LanceDB, migrate if embedding dimension changed, then open table
-        let lancedb = LanceDbStore::connect(&config_arc.vector_db_path).await
+        let lancedb = LanceDbStore::connect(&config_arc.vector_db_path)
+            .await
             .context("Failed to connect to LanceDB")?;
-        let _migrated = lancedb.migrate_vector_table("symbols", embedding_dim).await
+        let _migrated = lancedb
+            .migrate_vector_table("symbols", embedding_dim)
+            .await
             .context("Failed to migrate vector table")?;
-        let vectors = lancedb.open_or_create_table("symbols", embedding_dim).await
+        let vectors = lancedb
+            .open_or_create_table("symbols", embedding_dim)
+            .await
             .context("Failed to open or create LanceDB table")?;
         let vectors_arc = Arc::new(vectors);
 
@@ -217,6 +227,8 @@ impl SessionManager {
             is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             role_rx: tokio::sync::watch::channel(crate::leader::Role::Leader).1,
             mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+            answer_generator: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+            ask_code_cache: std::sync::Arc::new(Default::default()),
         };
 
         // Start file watcher for auto-reindexing.
@@ -239,7 +251,12 @@ impl SessionManager {
         to_repo_hash: &str,
         to_symbol_name: &str,
         to_symbol_file: Option<&str>,
-    ) -> anyhow::Result<Option<(std::sync::Arc<crate::storage::sqlite::SqliteStore>, crate::storage::sqlite::SymbolRow)>> {
+    ) -> anyhow::Result<
+        Option<(
+            std::sync::Arc<crate::storage::sqlite::SqliteStore>,
+            crate::storage::sqlite::SymbolRow,
+        )>,
+    > {
         // Look up the repo entry by hash to get its canonical path
         let entry = self.registry.get_by_hash(to_repo_hash)?;
         let entry = match entry {
@@ -254,11 +271,10 @@ impl SessionManager {
         };
 
         // Search for the symbol by name, optionally scoped to file
-        let symbols = state.sqlite.search_symbols_by_exact_name(
-            to_symbol_name,
-            to_symbol_file,
-            1,
-        )?;
+        let symbols =
+            state
+                .sqlite
+                .search_symbols_by_exact_name(to_symbol_name, to_symbol_file, 1)?;
 
         match symbols.into_iter().next() {
             Some(sym) => Ok(Some((state.sqlite.clone(), sym))),
@@ -277,10 +293,7 @@ impl SessionManager {
             ..StandaloneConfig::default()
         };
 
-        let registry = RepoRegistry::new(
-            data_dir.join("registry.json"),
-            data_dir.join("repos"),
-        );
+        let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
 
         let embedder = Box::new(HashEmbedder::new(64));
 
@@ -302,10 +315,7 @@ impl SessionManager {
             ..StandaloneConfig::default()
         };
 
-        let registry = RepoRegistry::new(
-            data_dir.join("registry.json"),
-            data_dir.join("repos"),
-        );
+        let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
 
         let embedder = Box::new(HashEmbedder::new(64));
 
@@ -321,7 +331,12 @@ impl crate::graph::CrossRepoResolver for SessionManager {
         to_repo_hash: &str,
         to_symbol_name: &str,
         to_symbol_file: Option<&str>,
-    ) -> anyhow::Result<Option<(std::sync::Arc<crate::storage::sqlite::SqliteStore>, crate::storage::sqlite::SymbolRow)>> {
+    ) -> anyhow::Result<
+        Option<(
+            std::sync::Arc<crate::storage::sqlite::SqliteStore>,
+            crate::storage::sqlite::SymbolRow,
+        )>,
+    > {
         self.resolve_symbol_in_loaded_repo(to_repo_hash, to_symbol_name, to_symbol_file)
     }
 
@@ -383,7 +398,10 @@ mod tests {
         let manager = SessionManager::new_for_test(data_dir).await;
         let (_repo, repo_path) = temp_repo_dir();
 
-        assert!(manager.last_accessed.is_empty(), "no entries before first access");
+        assert!(
+            manager.last_accessed.is_empty(),
+            "no entries before first access"
+        );
 
         manager.get_or_create_repo(&repo_path).await.unwrap();
 
@@ -432,7 +450,9 @@ mod tests {
         let key = repo_path.as_str().to_string();
 
         // Overwrite last_accessed with a timestamp far in the past
-        manager.last_accessed.insert(key.clone(), Instant::now() - Duration::from_secs(10));
+        manager
+            .last_accessed
+            .insert(key.clone(), Instant::now() - Duration::from_secs(10));
 
         manager.evict_idle_repos().await;
 
@@ -484,7 +504,9 @@ mod tests {
         let key = repo_path.as_str().to_string();
 
         // Backdate to look very old
-        manager.last_accessed.insert(key.clone(), Instant::now() - Duration::from_secs(86400));
+        manager
+            .last_accessed
+            .insert(key.clone(), Instant::now() - Duration::from_secs(86400));
 
         manager.evict_idle_repos().await;
 

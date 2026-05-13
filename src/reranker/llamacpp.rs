@@ -22,14 +22,14 @@ use async_trait::async_trait;
 use llama_cpp_2::{
     context::params::{LlamaContextParams, LlamaPoolingType},
     llama_batch::LlamaBatch,
-    model::{AddBos, LlamaModel},
     model::params::LlamaModelParams,
+    model::{AddBos, LlamaModel},
 };
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use crate::path::Utf8Path;
 use super::{RerankDocument, Reranker};
+use crate::path::Utf8Path;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,9 +86,8 @@ impl LlamaCppReranker {
         // Offload all transformer layers to Metal GPU.
         let model_params = LlamaModelParams::default().with_n_gpu_layers(99);
 
-        let model =
-            LlamaModel::load_from_file(backend, model_path.as_std_path(), &model_params)
-                .map_err(|e| anyhow!("Failed to load reranker GGUF model: {:?}", e))?;
+        let model = LlamaModel::load_from_file(backend, model_path.as_std_path(), &model_params)
+            .map_err(|e| anyhow!("Failed to load reranker GGUF model: {:?}", e))?;
 
         tracing::info!(
             vocab = model.n_vocab(),
@@ -245,14 +244,10 @@ pub fn download_reranker_model(target_dir: &Utf8Path) -> Result<()> {
 
     tracing::info!("Downloading reranker model from huggingface.co/{}", HF_REPO);
 
-    let api = hf_hub::api::sync::Api::new()
-        .context("Failed to initialize HuggingFace Hub API")?;
+    let api = hf_hub::api::sync::Api::new().context("Failed to initialize HuggingFace Hub API")?;
     let repo = api.model(HF_REPO.to_string());
 
-    tracing::info!(
-        "Downloading {} (~636 MB)...",
-        HF_MODEL_FILE
-    );
+    tracing::info!("Downloading {} (~636 MB)...", HF_MODEL_FILE);
     let cached = repo
         .get(HF_MODEL_FILE)
         .context("Failed to download reranker GGUF model file")?;
@@ -319,11 +314,7 @@ mod tests {
 
     #[async_trait]
     impl Reranker for StubReranker {
-        async fn rerank(
-            &self,
-            _query: &str,
-            documents: &[RerankDocument],
-        ) -> Result<Vec<f32>> {
+        async fn rerank(&self, _query: &str, documents: &[RerankDocument]) -> Result<Vec<f32>> {
             let mut out = Vec::with_capacity(documents.len());
             for i in 0..documents.len() {
                 out.push(self.scores.get(i).copied().unwrap_or(FALLBACK_SCORE));

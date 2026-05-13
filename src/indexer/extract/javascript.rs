@@ -6,8 +6,8 @@ use super::elysia::extract_elysia_patterns;
 use super::express::extract_express_patterns;
 use super::fastify::extract_fastify_patterns;
 use super::hono::extract_hono_patterns;
-use super::trpc::extract_trpc_patterns;
 use super::symbol::{ByteSpan, ExtractedFile, ExtractedSymbol, Import, LineSpan, SymbolKind};
+use super::trpc::extract_trpc_patterns;
 
 pub fn extract_javascript_symbols(source: &str) -> Result<ExtractedFile> {
     let mut parser = parser_for_id(LanguageId::Javascript)?;
@@ -81,7 +81,10 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     let todo_cursor = root.walk();
     let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment", "block_comment"],
+        todo_cursor,
+        source,
+        "",
+        &["comment", "block_comment"],
     );
 
     Ok(ExtractedFile {
@@ -383,20 +386,47 @@ class Service {
         let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
 
         // Module-level symbols ARE extracted
-        assert!(names.contains(&"MODULE_CONST"), "module const should be extracted");
-        assert!(names.contains(&"GLOBAL_VAR"), "top-level var should be extracted");
+        assert!(
+            names.contains(&"MODULE_CONST"),
+            "module const should be extracted"
+        );
+        assert!(
+            names.contains(&"GLOBAL_VAR"),
+            "top-level var should be extracted"
+        );
         assert!(names.contains(&"handler"), "function should be extracted");
-        assert!(names.contains(&"topArrow"), "top-level arrow should be extracted");
+        assert!(
+            names.contains(&"topArrow"),
+            "top-level arrow should be extracted"
+        );
         assert!(names.contains(&"Service"), "class should be extracted");
         assert!(names.contains(&"process"), "method should be extracted");
 
         // Local variables inside function bodies are NOT extracted
-        assert!(!names.contains(&"startTime"), "local const in function should be skipped");
-        assert!(!names.contains(&"url"), "local let in function should be skipped");
-        assert!(!names.contains(&"legacy"), "local var in function should be skipped");
-        assert!(!names.contains(&"inner"), "local const in arrow should be skipped");
-        assert!(!names.contains(&"local"), "local const in method should be skipped");
-        assert!(!names.contains(&"temp"), "local let in method should be skipped");
+        assert!(
+            !names.contains(&"startTime"),
+            "local const in function should be skipped"
+        );
+        assert!(
+            !names.contains(&"url"),
+            "local let in function should be skipped"
+        );
+        assert!(
+            !names.contains(&"legacy"),
+            "local var in function should be skipped"
+        );
+        assert!(
+            !names.contains(&"inner"),
+            "local const in arrow should be skipped"
+        );
+        assert!(
+            !names.contains(&"local"),
+            "local const in method should be skipped"
+        );
+        assert!(
+            !names.contains(&"temp"),
+            "local let in method should be skipped"
+        );
     }
 
     #[test]
@@ -416,8 +446,14 @@ export function process() {
         let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
 
         assert!(names.contains(&"process"), "function should be extracted");
-        assert!(!names.contains(&"condVar"), "var inside if-block should be skipped");
-        assert!(!names.contains(&"loopVar"), "var inside for-loop should be skipped");
+        assert!(
+            !names.contains(&"condVar"),
+            "var inside if-block should be skipped"
+        );
+        assert!(
+            !names.contains(&"loopVar"),
+            "var inside for-loop should be skipped"
+        );
         assert!(!names.contains(&"i"), "loop counter should be skipped");
     }
 }

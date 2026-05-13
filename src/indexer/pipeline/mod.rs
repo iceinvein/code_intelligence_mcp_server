@@ -88,10 +88,7 @@ pub struct IndexPipeline {
 impl IndexPipeline {
     /// Get repository name for logging purposes
     fn repo_name(&self) -> &str {
-        self.config
-            .base_dir
-            .file_name()
-            .unwrap_or("unknown")
+        self.config.base_dir.file_name().unwrap_or("unknown")
     }
 
     pub fn new(
@@ -117,8 +114,7 @@ impl IndexPipeline {
         ));
 
         // Create per-repo logger
-        let repo_data_dir = config.db_path.parent()
-            .unwrap_or(&config.db_path);
+        let repo_data_dir = config.db_path.parent().unwrap_or(&config.db_path);
         let repo_logger = RepoLogger::new(repo_data_dir).map(Arc::new);
 
         Self {
@@ -500,7 +496,7 @@ impl IndexPipeline {
         cancel: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let db = std::sync::Arc::new(
-            SqliteStore::open(&self.db_path).expect("Failed to open SQLite for description worker")
+            SqliteStore::open(&self.db_path).expect("Failed to open SQLite for description worker"),
         );
         let tantivy = self.tantivy.clone();
         let max_tokens = self.config.llm_max_tokens;
@@ -509,7 +505,9 @@ impl IndexPipeline {
         tokio::spawn(async move {
             if let Err(e) = describe::run_description_worker(
                 db, tantivy, llm, max_tokens, batch_size, cancel, false,
-            ).await {
+            )
+            .await
+            {
                 tracing::error!("Description worker failed: {}", e);
             }
         })
@@ -556,11 +554,25 @@ impl IndexPipeline {
             ..Default::default()
         };
 
+        // Open a single SQLite handle for the prep work below. Both branches
+        // here used to open (and drop) a fresh connection per call/iteration,
+        // which under WAL mode opens three FDs each (.db, -wal, -shm) and
+        // could pile up alongside the parallel parse pool.
+        let needs_setup_sqlite = self.tantivy.was_recreated() || cleanup_deleted;
+        let setup_sqlite = if needs_setup_sqlite {
+            let s = SqliteStore::open(&self.db_path)?;
+            s.init()?;
+            Some(s)
+        } else {
+            None
+        };
+
         // If Tantivy was recreated (schema version mismatch), clear file fingerprints
         // so every file is treated as "changed" and gets re-indexed into the new index.
         if self.tantivy.was_recreated() {
-            let sqlite = SqliteStore::open(&self.db_path)?;
-            sqlite.init()?;
+            let sqlite = setup_sqlite
+                .as_ref()
+                .expect("setup_sqlite is Some when was_recreated is true");
             let cleared = sqlite.clear_all_file_fingerprints()?;
             tracing::warn!(
                 repo = %self.repo_name(),
@@ -571,16 +583,16 @@ impl IndexPipeline {
 
         // Cleanup deleted files first
         if cleanup_deleted {
+            let sqlite = setup_sqlite
+                .as_ref()
+                .expect("setup_sqlite is Some when cleanup_deleted is true");
+
             let mut scanned_rel: HashSet<String> = HashSet::new();
             for file in &uniq {
                 scanned_rel.insert(file_key_path(&self.config, file));
             }
 
-            let existing = {
-                let sqlite = SqliteStore::open(&self.db_path)?;
-                sqlite.init()?;
-                sqlite.list_all_file_fingerprints(1_000_000)?
-            };
+            let existing = sqlite.list_all_file_fingerprints(1_000_000)?;
 
             let to_delete = existing
                 .into_iter()
@@ -590,18 +602,14 @@ impl IndexPipeline {
 
             let mut any = false;
             for file_path in to_delete {
-                {
-                    let sqlite = SqliteStore::open(&self.db_path)?;
-                    sqlite.init()?;
-
-                    // Delete symbols first - test_links have ON DELETE CASCADE, so they auto-delete
-                    sqlite.delete_symbols_by_file(&file_path)?;
-                    sqlite.delete_usage_examples_by_file(&file_path)?;
-                    sqlite.delete_todos_by_file(&file_path)?;
-                    sqlite.delete_docstrings_by_file(&file_path)?;
-                    sqlite.delete_decorators_by_file(&file_path)?;
-                    sqlite.delete_file_fingerprint(&file_path)?;
-                }
+                // Reuse the single SQLite connection across all deletions
+                // instead of opening one per file (each open = 3 WAL FDs).
+                sqlite.delete_symbols_by_file(&file_path)?;
+                sqlite.delete_usage_examples_by_file(&file_path)?;
+                sqlite.delete_todos_by_file(&file_path)?;
+                sqlite.delete_docstrings_by_file(&file_path)?;
+                sqlite.delete_decorators_by_file(&file_path)?;
+                sqlite.delete_file_fingerprint(&file_path)?;
 
                 self.tantivy.delete_symbols_by_file(&file_path)?;
                 self.vectors.delete_records_by_file_path(&file_path).await?;
@@ -614,13 +622,15 @@ impl IndexPipeline {
                 self.tantivy.commit()?;
             }
         }
+        drop(setup_sqlite);
 
         // Unified pipeline: parse → write → embed
         use crate::storage::sqlite::pool::SqlitePool;
 
-        let pool = std::sync::Arc::new(
-            SqlitePool::new(&self.db_path, self.config.parallel_workers + 2)?
-        );
+        let pool = std::sync::Arc::new(SqlitePool::new(
+            &self.db_path,
+            self.config.parallel_workers + 2,
+        )?);
 
         // Phase 1: Parse (Rayon, parallel)
         let parse_results = {
@@ -680,13 +690,12 @@ impl IndexPipeline {
                 tokio::task::spawn_blocking(move || {
                     let sqlite = SqliteStore::open(&db_path)?;
                     sqlite.init()?;
-                    pagerank::compute_and_store_pagerank(&sqlite, &config)
-                        .with_context(|| {
-                            format!(
-                                "Failed to compute PageRank scores: files_indexed={}, files_deleted={}",
-                                fi, fd
-                            )
-                        })
+                    pagerank::compute_and_store_pagerank(&sqlite, &config).with_context(|| {
+                        format!(
+                            "Failed to compute PageRank scores: files_indexed={}, files_deleted={}",
+                            fi, fd
+                        )
+                    })
                 })
                 .await
                 .context("Join error in PageRank computation")?
@@ -823,11 +832,12 @@ impl IndexPipeline {
             // Wait for the previous background write to finish before starting
             // a new one — limits concurrency to one in-flight write at a time.
             if let Some(handle) = pending_write.take() {
-                handle.await.context(
-                    "Background write task panicked",
-                )?.context(
-                    "Failed to add vector records for parallel indexing (pipelined write)",
-                )?;
+                handle
+                    .await
+                    .context("Background write task panicked")?
+                    .context(
+                        "Failed to add vector records for parallel indexing (pipelined write)",
+                    )?;
             }
 
             if to_embed.is_empty() {
@@ -846,7 +856,8 @@ impl IndexPipeline {
                 .with_context(|| {
                     format!(
                         "Failed to embed symbols batch: batch_size={}, total_so_far={}",
-                        to_embed.len(), total_embedded
+                        to_embed.len(),
+                        total_embedded
                     )
                 })?;
 
@@ -878,11 +889,10 @@ impl IndexPipeline {
 
         // Flush the final pending write
         if let Some(handle) = pending_write.take() {
-            handle.await.context(
-                "Background write task panicked",
-            )?.context(
-                "Failed to add vector records for parallel indexing (final flush)",
-            )?;
+            handle
+                .await
+                .context("Background write task panicked")?
+                .context("Failed to add vector records for parallel indexing (final flush)")?;
         }
 
         if total_embedded > 0 || total_skipped > 0 {
@@ -971,33 +981,75 @@ mod tests {
 
     #[test]
     fn skips_file_kind() {
-        assert!(!should_generate_embedding("file", "mod.rs", "src/mod.rs", true, 0, 100));
+        assert!(!should_generate_embedding(
+            "file",
+            "mod.rs",
+            "src/mod.rs",
+            true,
+            0,
+            100
+        ));
     }
 
     #[test]
     fn skips_tiny_private_helper() {
         // 2 lines, not exported
-        assert!(!should_generate_embedding("function", "helper", "src/lib.rs", false, 10, 12));
+        assert!(!should_generate_embedding(
+            "function",
+            "helper",
+            "src/lib.rs",
+            false,
+            10,
+            12
+        ));
     }
 
     #[test]
     fn keeps_tiny_exported() {
         // 2 lines but exported — should be kept
-        assert!(should_generate_embedding("function", "get_name", "src/lib.rs", true, 10, 12));
+        assert!(should_generate_embedding(
+            "function",
+            "get_name",
+            "src/lib.rs",
+            true,
+            10,
+            12
+        ));
     }
 
     #[test]
     fn skips_test_file() {
-        assert!(!should_generate_embedding("function", "run", "src/lib.test.ts", true, 0, 50));
+        assert!(!should_generate_embedding(
+            "function",
+            "run",
+            "src/lib.test.ts",
+            true,
+            0,
+            50
+        ));
     }
 
     #[test]
     fn skips_test_symbol() {
-        assert!(!should_generate_embedding("function", "test_something", "src/lib.rs", true, 0, 50));
+        assert!(!should_generate_embedding(
+            "function",
+            "test_something",
+            "src/lib.rs",
+            true,
+            0,
+            50
+        ));
     }
 
     #[test]
     fn keeps_normal_exported_function() {
-        assert!(should_generate_embedding("function", "parse_config", "src/config.rs", true, 0, 30));
+        assert!(should_generate_embedding(
+            "function",
+            "parse_config",
+            "src/config.rs",
+            true,
+            0,
+            30
+        ));
     }
 }

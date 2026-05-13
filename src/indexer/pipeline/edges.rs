@@ -1,12 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
+use rusqlite::Connection;
+
 use crate::indexer::extract::symbol::{DataFlowEdge, DataFlowType, Import};
-use crate::storage::sqlite::{EdgeEvidenceRow, EdgeRow, SqliteStore, SymbolRow};
+use crate::storage::sqlite::{EdgeEvidenceRow, EdgeRow, SymbolRow};
 
 use super::parsing::{
     extract_callee_names, extract_identifiers, identifier_evidence, parse_type_relations,
 };
-use super::utils::{build_import_map, resolve_imported_symbol_id, resolve_imported_symbol_id_with_db};
+use super::utils::{
+    build_import_map, resolve_imported_symbol_id, resolve_imported_symbol_id_with_db,
+};
 
 pub fn upsert_name_mapping(name_to_id: &mut HashMap<String, String>, row: &SymbolRow) {
     if let Some(existing) = name_to_id.get(&row.name) {
@@ -19,16 +23,20 @@ pub fn upsert_name_mapping(name_to_id: &mut HashMap<String, String>, row: &Symbo
 }
 
 /// Resolution context for edge creation
-struct ResolutionContext<'a> {
+struct ResolutionContext<'a, 'f> {
     from_file_path: &'a str,
     from_package_id: Option<String>,
     row_name: &'a str,
-    get_package_fn: Option<&'a PackageLookupFn>,
+    get_package_fn: Option<&'a PackageLookupFn<'f>>,
     id_to_symbol: &'a HashMap<String, &'a SymbolRow>,
 }
 
 /// Compute resolution for an edge to a target symbol
-fn compute_resolution_for_target(ctx: &ResolutionContext, to_id: &str, was_import: bool) -> String {
+fn compute_resolution_for_target(
+    ctx: &ResolutionContext<'_, '_>,
+    to_id: &str,
+    was_import: bool,
+) -> String {
     if let Some(to_symbol) = ctx.id_to_symbol.get(to_id) {
         let to_package_id = get_package_for_symbol(ctx.get_package_fn, &to_symbol.file_path);
 
@@ -67,11 +75,14 @@ fn compute_resolution_for_target(ctx: &ResolutionContext, to_id: &str, was_impor
     }
 }
 
-/// Package lookup function type for resolving symbol package membership
+/// Package lookup function type for resolving symbol package membership.
 ///
-/// This is a boxed function pointer to allow capturing state (like db_path)
-/// in the closure for package lookup during edge extraction.
-pub type PackageLookupFn = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// Boxed so it can capture borrowed state (e.g. a pooled SQLite `&Connection`)
+/// for the duration of a single `extract_edges_for_symbol` call. The `'a`
+/// lifetime parameter lets the closure hold non-`'static` references; we don't
+/// require `Send`/`Sync` because the closure is constructed per-thread inside
+/// the parallel parse loop and never crosses threads.
+pub type PackageLookupFn<'a> = Box<dyn Fn(&str) -> Option<String> + 'a>;
 
 /// Helper to create None package lookup
 pub fn no_package_lookup(_: &str) -> Option<String> {
@@ -79,21 +90,8 @@ pub fn no_package_lookup(_: &str) -> Option<String> {
 }
 
 /// Get the package ID for a symbol's file path.
-///
-/// This function attempts to find which package contains a given symbol
-/// by looking up the package for the symbol's file path.
-///
-/// # Arguments
-///
-/// * `get_package_fn` - Optional reference to function that returns package_id for a file_path
-/// * `symbol_file_path` - The file path of the symbol
-///
-/// # Returns
-///
-/// * `Some(package_id)` if the file belongs to a package
-/// * `None` if the file is not in any package
 fn get_package_for_symbol(
-    get_package_fn: Option<&PackageLookupFn>,
+    get_package_fn: Option<&PackageLookupFn<'_>>,
     symbol_file_path: &str,
 ) -> Option<String> {
     get_package_fn.and_then(|f| f(symbol_file_path))
@@ -165,8 +163,8 @@ pub fn extract_edges_for_symbol(
     imports: &[Import],
     type_edges: &[(String, String)],
     dataflow_edges: &[DataFlowEdge],
-    get_package_fn: Option<&PackageLookupFn>,
-    sqlite: Option<&SqliteStore>,
+    get_package_fn: Option<&PackageLookupFn<'_>>,
+    conn: Option<&Connection>,
 ) -> Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> {
     let mut out: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
     let mut used_edges: HashSet<(String, String)> = HashSet::new();
@@ -197,8 +195,8 @@ pub fn extract_edges_for_symbol(
 
     // Helper to resolve import with DB or path-based fallback
     let resolve_import = |file_path: &str, imp: &Import| -> Option<String> {
-        if let Some(db) = sqlite {
-            resolve_imported_symbol_id_with_db(file_path, imp, db)
+        if let Some(c) = conn {
+            resolve_imported_symbol_id_with_db(file_path, imp, c)
         } else {
             resolve_imported_symbol_id(file_path, imp)
         }
@@ -513,8 +511,7 @@ pub fn extract_edges_for_symbol(
             // Local variable — create synthetic ID for scope-aware tracking.
             // SQLite FK enforcement is OFF during batch writes, so synthetic IDs
             // without corresponding symbol rows are safe.
-            let synthetic_id =
-                format!("local:{}#{}::{}", row.file_path, scope, actual_from);
+            let synthetic_id = format!("local:{}#{}::{}", row.file_path, scope, actual_from);
             (Some(synthetic_id), false)
         } else if async_kind.is_some() {
             // Async edge without scope — create a synthetic boundary ID
@@ -808,11 +805,11 @@ mod tests {
             &row,
             &name_to_id,
             &id_to_symbol,
-            &[],        // no imports
-            &[],        // no type edges
+            &[], // no imports
+            &[], // no type edges
             &dataflow_edges,
-            None,       // no package lookup
-            None,       // no sqlite
+            None, // no package lookup
+            None, // no sqlite
         );
 
         // The "foo" reads edge must resolve to fn-2 with normal resolution
@@ -1165,9 +1162,7 @@ mod tests {
             "async edge with unknown callee must not be dropped"
         );
 
-        let async_edge = edges
-            .iter()
-            .find(|(e, _)| e.edge_type == "async_call");
+        let async_edge = edges.iter().find(|(e, _)| e.edge_type == "async_call");
 
         assert!(
             async_edge.is_some(),

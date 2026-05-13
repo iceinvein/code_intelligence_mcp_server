@@ -60,9 +60,7 @@ pub fn should_skip_dir(config: &Config, path: &Path) -> bool {
         // VCS
         ".git" | ".worktrees" => return true,
         // Build output
-        "dist" | "build" | "target" | ".output" | ".next" | ".nuxt" | ".svelte-kit" => {
-            return true
-        }
+        "dist" | "build" | "target" | ".output" | ".next" | ".nuxt" | ".svelte-kit" => return true,
         // Caches
         "__pycache__" | ".mypy_cache" | ".pytest_cache" | ".turbo" | ".cache" => return true,
         // Test coverage output
@@ -87,7 +85,10 @@ pub fn should_skip_dir(config: &Config, path: &Path) -> bool {
 fn pattern_matches_dir(path: &str, pattern: &str) -> bool {
     let pat = pattern.replace('\\', "/");
     // Extract the directory name from patterns like **/dirname/** or **/dirname
-    let stripped = pat.trim_start_matches("**/").trim_end_matches("/**").trim_end_matches("/*");
+    let stripped = pat
+        .trim_start_matches("**/")
+        .trim_end_matches("/**")
+        .trim_end_matches("/*");
     if !stripped.contains('*') && !stripped.is_empty() {
         let needle = format!("/{stripped}");
         if path.ends_with(&needle) || path.contains(&format!("{needle}/")) {

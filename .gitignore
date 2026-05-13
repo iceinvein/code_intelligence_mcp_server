@@ -28,6 +28,21 @@ npm/bin/code-intelligence-mcp-server.exe
 # Benchmarking
 docs/benchmark_rounds/*round_*.md
 docs/benchmark_rounds/*round_*.json
+# Experimental / per-feature benchmark output; canonical rounds live under
+# docs/benchmark_rounds/agent/ as RNNN.{json,md}.
+docs/benchmark_rounds/agent_smoke/
+docs/benchmark_rounds/agent_smoke_v2/
+docs/benchmark_rounds/agent_v3_1_0_full/
+docs/benchmark_rounds/agent_v3_1_0_optionB_full/
+docs/benchmark_rounds/agent_v3_1_0_optionB_smoke/
+docs/benchmark_rounds/agent_v3_1_0_smoke/
+docs/benchmark_rounds/agent_v3_2_0_full/
+docs/benchmark_rounds/agent_v3_2_0_smoke/
+docs/benchmark_rounds/agent_v3_full_default/
+
+# Python bytecode (bench harness lives in scripts/)
+__pycache__/
+*.pyc
 
 docs/plans
 

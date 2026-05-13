@@ -147,7 +147,10 @@ fn try_bare_call(
     let args_node = call_node.child_by_field_name("arguments")?;
 
     // `router({...})` or `createTRPCRouter({...})`
-    if ROUTER_NAMES.iter().any(|&n| n.eq_ignore_ascii_case(&func_name)) {
+    if ROUTER_NAMES
+        .iter()
+        .any(|&n| n.eq_ignore_ascii_case(&func_name))
+    {
         if let Some(obj_keys) = extract_first_object_keys(args_node, source) {
             return Some(ExtractedFrameworkPattern {
                 line,
@@ -167,7 +170,10 @@ fn try_bare_call(
     }
 
     // `middleware(fn)` or `createMiddleware(fn)`
-    if MIDDLEWARE_NAMES.iter().any(|&n| n.eq_ignore_ascii_case(&func_name)) {
+    if MIDDLEWARE_NAMES
+        .iter()
+        .any(|&n| n.eq_ignore_ascii_case(&func_name))
+    {
         let handler_text = extract_first_arg_text(args_node, source);
         return Some(ExtractedFrameworkPattern {
             line,

@@ -154,12 +154,8 @@ pub(super) fn handle_callers_intent(
         .filter_map(|h| sqlite.get_symbol_by_id(&h.id).ok().flatten())
         .collect::<Vec<_>>();
 
-    let (context, _context_items) = retriever.assemble_context_cached(
-        sqlite,
-        &rows,
-        &[],
-        Some(query_without_controls),
-    )?;
+    let (context, _context_items) =
+        retriever.assemble_context_cached(sqlite, &rows, &[], Some(query_without_controls))?;
 
     let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     let run = crate::storage::sqlite::SearchRunRow {

@@ -114,3 +114,34 @@ The savings came from a different path: the rewritten descriptions discouraged g
 **Decision gate for Spec 2 (ToolSearch tax investigation):** R002 closed the gap to +31% (target was <30% to deprioritise). It is borderline. Adopting Spec 2 next would target the residual `ToolSearch` round-trips (8 in R002) and the cache-creation overhead they impose (~20-25k cached tokens per round-trip). Estimated upside: another 100-150k tokens off the round average if the deferred-loading mechanism can be bypassed.
 
 **Recommended next move:** keep Spec 2 (ToolSearch investigation) as the next planned work, but treat its priority as roughly equal to broadening the Q-set with impact-style questions that exercise `find_references` / `get_call_hierarchy` / `predict_impact` directly. The current set is too lookup-heavy to give those code-intel tools a fair shot. Either pick wins the right next round.
+
+### Rounds 003-006 (exploratory, not shipped)
+
+R003 expanded the self-repo Q-set from 12 to 18 questions (q13-q18) to surface impact-style flows. R004 added the recommend-only `plan_code_investigation` tool. R005 advertised planner routing through MCP initialization instructions. R006 ran two competing variants (`Full` default flip + `investigate` tool; `None` default + `investigate` + keyword tweaks) — both regressed quality on lookup questions while winning tokens on multi-hop. The full per-round data sits under `docs/benchmark_rounds/agent/RNNN.{json,md}`; the design docs that drove each variant are local-only in `docs/plans/`. None of those variants shipped. The takeaway: description and routing tweaks could not move the code_intel-vs-default judge delta past the R005 baseline (+0.44), and the agent's verify-by-grep reflex was invariant to tool-surface marketing.
+
+### Round 007 (v3.2.0 validation, shipped)
+
+Adds two new MCP tools and a citation validator:
+
+- `investigate(question, ...)` — runs the full retrieval chain server-side (planner -> first specialist hop -> shape-driven second hop). Returns one bundled response with `verified_locations`, `primary_symbol`, `context_chain`, and an answer hint.
+- `ask_code(question, ...)` — runs `investigate` internally, drafts an answer with the local Qwen 1.5B, and validates every citation against retrieved evidence before returning. Citations that do not resolve are dropped server-side; `confidence: high|medium|low` reflects resolution rate.
+- LRU cache keyed on `(question_hash, repo_index_version, quality)` (capacity 256). `llm_unavailable` responses are not cached; everything else is deterministic given the cache key.
+
+| | default | code_intel | delta |
+|---|---:|---:|---:|
+| avg mech | 0.88 | 0.88 | 0.00 |
+| avg judge (0-10) | 8.11 | 8.00 | -0.11 |
+| avg total_input_tokens | 195,829 | 296,094 | +100,265 (+51%) |
+| avg tool calls | 4.6 | 7.3 | +2.7 |
+
+R005 (no v3.2.0 tools) -> R007 (with) on the same 18-Q self-repo set:
+
+- code_intel tokens: 5.92M -> 5.33M (**-10.0%**).
+- code_intel judge avg: 8.17 -> 8.00 (-0.17, within typical inter-round noise).
+- code_intel mech avg: 0.88 -> 0.88 (stable).
+
+`ask_code` adoption: 6 of 18 questions (q6, q7, q8, q12, q14, q15). Wins are concentrated on token-heavy multi-hop questions (q8 -22%, q10 -31%, q11 -19%, q12 -69%, q16 -11%, q18 -15%). Losses are concentrated on questions where the LLM-synthesised answer was less specific than the R005 Grep-based one (q14 -3 judge, q11 -2 judge, q18 -1).
+
+The citation validator did its job on q12 — the hallucinated `LlamaCppGenerator`/`HypotheticalCodeGenerator` claim from earlier R006A regression was prevented in R007: judge climbed 8 -> 9 because no fabricated file paths reached the agent. Mech dropped 1.00 -> 0.60 on q12 because the LLM's grounded answer names fewer specific paths than the original Grep-and-list approach; this is a structural tradeoff of the validator.
+
+**Verdict for v3.2.0:** the two new tools land as additive capabilities, not as a Pareto improvement over R005 baseline. Defaults are unchanged; clients that ignore the new tools see no behaviour change. Net effect on the agent benchmark is small enough that round-to-round variance covers it. Shipped as v3.2.0 with this caveat documented.

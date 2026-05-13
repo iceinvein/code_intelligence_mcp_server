@@ -168,12 +168,8 @@ impl Tokenizer for CodeNgramTokenizer {
 
 impl TantivyIndex {
     pub fn open_or_create(index_dir: &Utf8Path) -> Result<Self> {
-        std::fs::create_dir_all(index_dir).with_context(|| {
-            format!(
-                "Failed to create tantivy index directory: {}",
-                index_dir
-            )
-        })?;
+        std::fs::create_dir_all(index_dir)
+            .with_context(|| format!("Failed to create tantivy index directory: {}", index_dir))?;
 
         // Clean up stale lock files from previous crashes
         // These can remain after abnormal termination and prevent writer creation
@@ -203,10 +199,7 @@ impl TantivyIndex {
                 )
             })?;
             std::fs::create_dir_all(index_dir).with_context(|| {
-                format!(
-                    "Failed to create tantivy index directory: {}",
-                    index_dir
-                )
+                format!("Failed to create tantivy index directory: {}", index_dir)
             })?;
         }
 
@@ -261,15 +254,11 @@ impl TantivyIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
-            .with_context(|| {
-                format!("Failed to create tantivy reader: index_dir={}", index_dir)
-            })?;
+            .with_context(|| format!("Failed to create tantivy reader: index_dir={}", index_dir))?;
 
         let writer = index
             .writer(64 * 1024 * 1024)
-            .with_context(|| {
-                format!("Failed to create tantivy writer: index_dir={}", index_dir)
-            })?;
+            .with_context(|| format!("Failed to create tantivy writer: index_dir={}", index_dir))?;
 
         Ok(Self {
             index,
@@ -293,33 +282,50 @@ impl TantivyIndex {
     /// Does NOT clean up stale lock files (the leader may be using them).
     /// Does NOT check/write schema version (follower shouldn't wipe the index).
     pub fn open_readonly(index_dir: &Utf8Path) -> Result<Self> {
-        let index = Index::open_in_dir(index_dir).with_context(|| {
-            format!("Failed to open tantivy index for reading: {}", index_dir)
-        })?;
+        let index = Index::open_in_dir(index_dir)
+            .with_context(|| format!("Failed to open tantivy index for reading: {}", index_dir))?;
 
         register_tokenizers(&index);
 
         let schema = index.schema();
         let fields = Fields {
-            id: schema.get_field("id").context("Missing tantivy field: id")?,
-            name: schema.get_field("name").context("Missing tantivy field: name")?,
-            name_ngram: schema.get_field("name_ngram").context("Missing tantivy field: name_ngram")?,
-            display_name: schema.get_field("display_name").context("Missing tantivy field: display_name")?,
-            file_path: schema.get_field("file_path").context("Missing tantivy field: file_path")?,
-            kind: schema.get_field("kind").context("Missing tantivy field: kind")?,
-            exported: schema.get_field("exported").context("Missing tantivy field: exported")?,
-            text: schema.get_field("text").context("Missing tantivy field: text")?,
-            text_ngram: schema.get_field("text_ngram").context("Missing tantivy field: text_ngram")?,
-            description: schema.get_field("description").context("Missing tantivy field: description")?,
+            id: schema
+                .get_field("id")
+                .context("Missing tantivy field: id")?,
+            name: schema
+                .get_field("name")
+                .context("Missing tantivy field: name")?,
+            name_ngram: schema
+                .get_field("name_ngram")
+                .context("Missing tantivy field: name_ngram")?,
+            display_name: schema
+                .get_field("display_name")
+                .context("Missing tantivy field: display_name")?,
+            file_path: schema
+                .get_field("file_path")
+                .context("Missing tantivy field: file_path")?,
+            kind: schema
+                .get_field("kind")
+                .context("Missing tantivy field: kind")?,
+            exported: schema
+                .get_field("exported")
+                .context("Missing tantivy field: exported")?,
+            text: schema
+                .get_field("text")
+                .context("Missing tantivy field: text")?,
+            text_ngram: schema
+                .get_field("text_ngram")
+                .context("Missing tantivy field: text_ngram")?,
+            description: schema
+                .get_field("description")
+                .context("Missing tantivy field: description")?,
         };
 
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
-            .with_context(|| {
-                format!("Failed to create tantivy reader: index_dir={}", index_dir)
-            })?;
+            .with_context(|| format!("Failed to create tantivy reader: index_dir={}", index_dir))?;
 
         Ok(Self {
             index,
@@ -341,7 +347,9 @@ impl TantivyIndex {
 
     /// Reload the reader to pick up commits from the leader.
     pub fn reload_reader(&self) -> Result<()> {
-        self.reader.reload().context("Failed to reload tantivy reader")
+        self.reader
+            .reload()
+            .context("Failed to reload tantivy reader")
     }
 
     /// Returns true if this index has a writer (leader instance).
@@ -359,17 +367,35 @@ impl TantivyIndex {
             })?;
         }
         let index_dir_utf8 = Utf8PathBuf::from_path_buf(index_dir.to_path_buf()).map_err(|_| {
-            anyhow!("Tantivy index path contains non-UTF-8 characters: {}", index_dir.display())
+            anyhow!(
+                "Tantivy index path contains non-UTF-8 characters: {}",
+                index_dir.display()
+            )
         })?;
         Self::open_or_create(&index_dir_utf8)
     }
 
-    pub fn upsert_symbol(&self, symbol: &SymbolRow, import_tags: &str, framework_tags: &str, llm_description: Option<&str>) -> Result<()> {
+    pub fn upsert_symbol(
+        &self,
+        symbol: &SymbolRow,
+        import_tags: &str,
+        framework_tags: &str,
+        llm_description: Option<&str>,
+    ) -> Result<()> {
         let writer = self.writer_lock()?;
 
         writer.delete_term(Term::from_field_text(self.fields.id, &symbol.id));
 
-        let expanded_text = expand_index_text(&symbol.name, &symbol.kind, &symbol.text, &symbol.file_path, import_tags, framework_tags, llm_description, symbol.exported);
+        let expanded_text = expand_index_text(
+            &symbol.name,
+            &symbol.kind,
+            &symbol.text,
+            &symbol.file_path,
+            import_tags,
+            framework_tags,
+            llm_description,
+            symbol.exported,
+        );
 
         // Enrich the indexed name with concept tags to bridge vocabulary gaps.
         // Concept tags like "async concurrency" or "websocket handler" get injected
@@ -382,11 +408,8 @@ impl TantivyIndex {
         // to prevent self-referential tagging.
         let stripped_for_tags = text::strip_code_comments(&symbol.text);
         let concept_tags = text::extract_concept_tags(&stripped_for_tags);
-        let enriched_name = enrich_name_with_concepts(
-            &symbol.name,
-            &symbol.file_path,
-            &concept_tags,
-        );
+        let enriched_name =
+            enrich_name_with_concepts(&symbol.name, &symbol.file_path, &concept_tags);
 
         // LLM description goes into a separate field to prevent IDF dilution.
         let description_text = llm_description.unwrap_or("");
@@ -460,11 +483,23 @@ impl TantivyIndex {
         //   field providing vocabulary-gap bridging without IDF dilution
         let words = query.split_whitespace().count();
         let field_boosts: &[(Field, f32)] = if words >= 3 {
-            &[(self.fields.name, 0.2), (self.fields.text, 3.0), (self.fields.description, 1.5)]
+            &[
+                (self.fields.name, 0.2),
+                (self.fields.text, 3.0),
+                (self.fields.description, 1.5),
+            ]
         } else if words == 2 {
-            &[(self.fields.name, 0.5), (self.fields.text, 2.0), (self.fields.description, 1.0)]
+            &[
+                (self.fields.name, 0.5),
+                (self.fields.text, 2.0),
+                (self.fields.description, 1.0),
+            ]
         } else {
-            &[(self.fields.name, 1.5), (self.fields.text, 1.0), (self.fields.description, 0.5)]
+            &[
+                (self.fields.name, 1.5),
+                (self.fields.text, 1.0),
+                (self.fields.description, 0.5),
+            ]
         };
 
         let mut out = self.search_in_fields(
@@ -671,7 +706,16 @@ fn enrich_name_with_concepts(name: &str, file_path: &str, concept_tags: &str) ->
 }
 
 #[allow(clippy::too_many_arguments)]
-fn expand_index_text(name: &str, kind: &str, text: &str, file_path: &str, import_tags: &str, framework_tags: &str, llm_description: Option<&str>, exported: bool) -> String {
+fn expand_index_text(
+    name: &str,
+    kind: &str,
+    text: &str,
+    file_path: &str,
+    import_tags: &str,
+    framework_tags: &str,
+    llm_description: Option<&str>,
+    exported: bool,
+) -> String {
     // Strip comment lines from body text before BM25 indexing.
     // Comments describe concepts but don't implement them — e.g.,
     // extract_concept_tags's doc comments mention "error_handling" and
@@ -847,66 +891,115 @@ mod tests {
     fn enrich_name_injects_concept_tags() {
         // Normal symbol gets concept tags injected
         let name = enrich_name_with_concepts(
-            "index_files", "src/indexer/pipeline/mod.rs", "async concurrency",
+            "index_files",
+            "src/indexer/pipeline/mod.rs",
+            "async concurrency",
         );
         assert!(name.contains("async"), "should inject async: {name}");
-        assert!(name.contains("concurrency"), "should inject concurrency: {name}");
-        assert!(name.starts_with("index_files"), "should preserve original name: {name}");
+        assert!(
+            name.contains("concurrency"),
+            "should inject concurrency: {name}"
+        );
+        assert!(
+            name.starts_with("index_files"),
+            "should preserve original name: {name}"
+        );
     }
 
     #[test]
     fn enrich_name_blocks_meta_matching_files() {
         // text.rs contains detection patterns as string literals — must not enrich
         let name = enrich_name_with_concepts(
-            "extract_concept_tags", "src/text.rs", "async concurrency parallel",
+            "extract_concept_tags",
+            "src/text.rs",
+            "async concurrency parallel",
         );
-        assert_eq!(name, "extract_concept_tags", "text.rs should be excluded: {name}");
+        assert_eq!(
+            name, "extract_concept_tags",
+            "text.rs should be excluded: {name}"
+        );
 
         // score.rs has test patterns
         let name = enrich_name_with_concepts(
-            "term_coverage_adjustment", "src/retrieval/ranking/score.rs", "async concurrency",
+            "term_coverage_adjustment",
+            "src/retrieval/ranking/score.rs",
+            "async concurrency",
         );
-        assert_eq!(name, "term_coverage_adjustment", "score.rs should be excluded: {name}");
+        assert_eq!(
+            name, "term_coverage_adjustment",
+            "score.rs should be excluded: {name}"
+        );
 
         // extract/rust.rs detects tokio::spawn in user code
         let name = enrich_name_with_concepts(
-            "extract_rust_symbols", "src/indexer/extract/rust.rs", "async concurrency",
+            "extract_rust_symbols",
+            "src/indexer/extract/rust.rs",
+            "async concurrency",
         );
-        assert_eq!(name, "extract_rust_symbols", "extract/rust.rs should be excluded: {name}");
+        assert_eq!(
+            name, "extract_rust_symbols",
+            "extract/rust.rs should be excluded: {name}"
+        );
     }
 
     #[test]
     fn enrich_name_websocket_still_works_for_extractors() {
         // Non-rust extractor files with websocket tags get general enrichment
         let name = enrich_name_with_concepts(
-            "classify_elysia_method", "src/indexer/extract/elysia.rs", "websocket realtime",
+            "classify_elysia_method",
+            "src/indexer/extract/elysia.rs",
+            "websocket realtime",
         );
-        assert!(name.contains("websocket"), "elysia.rs should get websocket: {name}");
-        assert!(name.contains("realtime"), "elysia.rs should get realtime: {name}");
+        assert!(
+            name.contains("websocket"),
+            "elysia.rs should get websocket: {name}"
+        );
+        assert!(
+            name.contains("realtime"),
+            "elysia.rs should get realtime: {name}"
+        );
 
         // extract/rust.rs is excluded (meta-matching risk) but gets websocket_handler
         let name = enrich_name_with_concepts(
-            "detect_spawn", "src/indexer/extract/rust.rs", "websocket async concurrency",
+            "detect_spawn",
+            "src/indexer/extract/rust.rs",
+            "websocket async concurrency",
         );
-        assert!(name.contains("websocket_handler"), "rust.rs with websocket gets handler: {name}");
-        assert!(!name.contains("async"), "rust.rs should NOT get async: {name}");
+        assert!(
+            name.contains("websocket_handler"),
+            "rust.rs with websocket gets handler: {name}"
+        );
+        assert!(
+            !name.contains("async"),
+            "rust.rs should NOT get async: {name}"
+        );
     }
 
     #[test]
     fn enrich_name_skips_duplicates() {
         // If name already contains the concept term, don't duplicate
         let name = enrich_name_with_concepts(
-            "spawn_description_worker", "src/indexer/pipeline/mod.rs", "async concurrency",
+            "spawn_description_worker",
+            "src/indexer/pipeline/mod.rs",
+            "async concurrency",
         );
         // "spawn" doesn't match "async" or "concurrency", so both get added
         assert!(name.contains("async"), "should inject: {name}");
 
         let name = enrich_name_with_concepts(
-            "parallel_parse", "src/indexer/pipeline/parse.rs", "parallel concurrency",
+            "parallel_parse",
+            "src/indexer/pipeline/parse.rs",
+            "parallel concurrency",
         );
         // "parallel" is already in name
-        assert!(!name.contains("parallel parallel"), "should not duplicate parallel: {name}");
-        assert!(name.contains("concurrency"), "should inject concurrency: {name}");
+        assert!(
+            !name.contains("parallel parallel"),
+            "should not duplicate parallel: {name}"
+        );
+        assert!(
+            name.contains("concurrency"),
+            "should inject concurrency: {name}"
+        );
     }
 
     fn tmp_index_dir() -> Utf8PathBuf {
@@ -941,14 +1034,20 @@ mod tests {
 
         let index = TantivyIndex::open_or_create(&dir).unwrap();
         index
-            .upsert_symbol(&sample_symbol("id1", "alpha", "export function alpha() {}"), "", "", None)
+            .upsert_symbol(
+                &sample_symbol("id1", "alpha", "export function alpha() {}"),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         index
-            .upsert_symbol(&sample_symbol(
-                "id2",
-                "beta",
-                "export const beta = { nested: { a: 1 } }",
-            ), "", "", None)
+            .upsert_symbol(
+                &sample_symbol("id2", "beta", "export const beta = { nested: { a: 1 } }"),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         index.commit().unwrap();
 
@@ -968,11 +1067,12 @@ mod tests {
         let index = TantivyIndex::open_or_create(&dir).unwrap();
 
         index
-            .upsert_symbol(&sample_symbol(
-                "id1",
-                "DBConnection",
-                "class DBConnection {}",
-            ), "", "", None)
+            .upsert_symbol(
+                &sample_symbol("id1", "DBConnection", "class DBConnection {}"),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         index.commit().unwrap();
 
@@ -994,11 +1094,12 @@ mod tests {
         let index = TantivyIndex::open_or_create(&dir).unwrap();
 
         index
-            .upsert_symbol(&sample_symbol(
-                "id1",
-                "HTTP2Server_v1",
-                "class HTTP2Server_v1 {}",
-            ), "", "", None)
+            .upsert_symbol(
+                &sample_symbol("id1", "HTTP2Server_v1", "class HTTP2Server_v1 {}"),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         index.commit().unwrap();
 
@@ -1016,11 +1117,16 @@ mod tests {
         let index = TantivyIndex::open_or_create(&dir).unwrap();
 
         index
-            .upsert_symbol(&sample_symbol(
-                "id1",
-                "alpha",
-                "export function alpha() { return foo_bar(); }",
-            ), "", "", None)
+            .upsert_symbol(
+                &sample_symbol(
+                    "id1",
+                    "alpha",
+                    "export function alpha() { return foo_bar(); }",
+                ),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         index.commit().unwrap();
 
@@ -1034,11 +1140,12 @@ mod tests {
         let index = TantivyIndex::open_or_create(&dir).unwrap();
 
         index
-            .upsert_symbol(&sample_symbol(
-                "id1",
-                "DBConnection",
-                "class DBConnection { connect() {} }",
-            ), "", "", None)
+            .upsert_symbol(
+                &sample_symbol("id1", "DBConnection", "class DBConnection { connect() {} }"),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         index.commit().unwrap();
 
@@ -1140,7 +1247,12 @@ mod tests {
         // Create the index with a writer first
         let index = TantivyIndex::open_or_create(&dir).unwrap();
         index
-            .upsert_symbol(&sample_symbol("id1", "alpha", "fn alpha() {}"), "", "", None)
+            .upsert_symbol(
+                &sample_symbol("id1", "alpha", "fn alpha() {}"),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         index.commit().unwrap();
         drop(index);
@@ -1150,9 +1262,8 @@ mod tests {
         assert!(!readonly.has_writer());
 
         // Writes should fail
-        let result = readonly.upsert_symbol(
-            &sample_symbol("id2", "beta", "fn beta() {}"), "", "", None,
-        );
+        let result =
+            readonly.upsert_symbol(&sample_symbol("id2", "beta", "fn beta() {}"), "", "", None);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("read-only"),
@@ -1171,7 +1282,12 @@ mod tests {
         // Create the index and write initial data
         let writer_index = TantivyIndex::open_or_create(&dir).unwrap();
         writer_index
-            .upsert_symbol(&sample_symbol("id1", "alpha", "fn alpha() {}"), "", "", None)
+            .upsert_symbol(
+                &sample_symbol("id1", "alpha", "fn alpha() {}"),
+                "",
+                "",
+                None,
+            )
             .unwrap();
         writer_index.commit().unwrap();
 

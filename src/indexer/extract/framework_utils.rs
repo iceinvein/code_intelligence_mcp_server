@@ -121,7 +121,10 @@ pub fn find_chain_root(member_expr: Node, source: &str) -> Option<String> {
 /// Returns the unquoted string value and the node.
 pub fn first_string_arg<'a>(args_node: Node<'a>, source: &str) -> Option<(String, Node<'a>)> {
     let mut cursor = args_node.walk();
-    let named: Vec<Node<'a>> = args_node.children(&mut cursor).filter(|n| n.is_named()).collect();
+    let named: Vec<Node<'a>> = args_node
+        .children(&mut cursor)
+        .filter(|n| n.is_named())
+        .collect();
     let first_named = named.into_iter().next()?;
     if first_named.kind() == "string" || first_named.kind() == "template_string" {
         Some((extract_string_value(first_named, source), first_named))
@@ -133,7 +136,10 @@ pub fn first_string_arg<'a>(args_node: Node<'a>, source: &str) -> Option<(String
 /// Get the Nth named child from an arguments node (0-indexed).
 pub fn nth_named_arg<'a>(args_node: Node<'a>, n: usize) -> Option<Node<'a>> {
     let mut cursor = args_node.walk();
-    let named: Vec<Node<'a>> = args_node.children(&mut cursor).filter(|c| c.is_named()).collect();
+    let named: Vec<Node<'a>> = args_node
+        .children(&mut cursor)
+        .filter(|c| c.is_named())
+        .collect();
     named.into_iter().nth(n)
 }
 
@@ -169,7 +175,10 @@ pub fn count_function_params(node: Node) -> usize {
         "arrow_function" | "function_expression" | "function_declaration" => {
             if let Some(params) = node.child_by_field_name("parameters") {
                 let mut cursor = params.walk();
-                params.children(&mut cursor).filter(|c| c.is_named()).count()
+                params
+                    .children(&mut cursor)
+                    .filter(|c| c.is_named())
+                    .count()
             } else {
                 0
             }

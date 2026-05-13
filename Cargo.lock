@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "code-intelligence-mcp-server"
-version = "3.0.0"
+version = "3.2.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -1325,7 +1325,9 @@ dependencies = [
  "http-body-util",
  "lancedb",
  "lazy_static",
+ "libc",
  "llama-cpp-2",
+ "lru",
  "notify",
  "num_cpus",
  "once_cell",

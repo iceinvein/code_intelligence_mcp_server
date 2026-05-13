@@ -29,7 +29,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         "class_declaration" => {
             if let Some(name) = symbol_name(node, source) {
                 let exported = is_public(node);
-                symbols.push(symbol_from_node(name.clone(), SymbolKind::Class, exported, node));
+                symbols.push(symbol_from_node(
+                    name.clone(),
+                    SymbolKind::Class,
+                    exported,
+                    node,
+                ));
 
                 // extends — superclass field wraps `extends <type>` as a child sequence;
                 // the type is NOT a named sub-field, so we iterate children of the
@@ -75,8 +80,18 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                     is_public(child),
                                     child,
                                 ));
-                                extract_method_type_edges(child, source, &prefixed, &mut type_edges);
-                                extract_java_dataflow(child, source, &prefixed, &mut dataflow_edges);
+                                extract_method_type_edges(
+                                    child,
+                                    source,
+                                    &prefixed,
+                                    &mut type_edges,
+                                );
+                                extract_java_dataflow(
+                                    child,
+                                    source,
+                                    &prefixed,
+                                    &mut dataflow_edges,
+                                );
                             }
                         }
                         if child.kind() == "constructor_declaration" {
@@ -88,8 +103,18 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                     is_public(child),
                                     child,
                                 ));
-                                extract_method_type_edges(child, source, &prefixed, &mut type_edges);
-                                extract_java_dataflow(child, source, &prefixed, &mut dataflow_edges);
+                                extract_method_type_edges(
+                                    child,
+                                    source,
+                                    &prefixed,
+                                    &mut type_edges,
+                                );
+                                extract_java_dataflow(
+                                    child,
+                                    source,
+                                    &prefixed,
+                                    &mut dataflow_edges,
+                                );
                             }
                         }
                         if child.kind() == "field_declaration" {
@@ -142,11 +167,15 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                             if ext_child.kind() == "type_list" {
                                 let mut tl_cursor = ext_child.walk();
                                 for type_node in ext_child.children(&mut tl_cursor) {
-                                    if let Some(type_name) = extract_java_type_name(type_node, source) {
+                                    if let Some(type_name) =
+                                        extract_java_type_name(type_node, source)
+                                    {
                                         type_edges.push((name.clone(), type_name));
                                     }
                                 }
-                            } else if let Some(type_name) = extract_java_type_name(ext_child, source) {
+                            } else if let Some(type_name) =
+                                extract_java_type_name(ext_child, source)
+                            {
                                 type_edges.push((name.clone(), type_name));
                             }
                         }
@@ -166,7 +195,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                     is_public(child),
                                     child,
                                 ));
-                                extract_method_type_edges(child, source, &prefixed, &mut type_edges);
+                                extract_method_type_edges(
+                                    child,
+                                    source,
+                                    &prefixed,
+                                    &mut type_edges,
+                                );
                             }
                         }
                     }
@@ -176,7 +210,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         "enum_declaration" => {
             if let Some(name) = symbol_name(node, source) {
                 let exported = is_public(node);
-                symbols.push(symbol_from_node(name.clone(), SymbolKind::Enum, exported, node));
+                symbols.push(symbol_from_node(
+                    name.clone(),
+                    SymbolKind::Enum,
+                    exported,
+                    node,
+                ));
 
                 // Walk enum body for method declarations inside enum_body_declarations
                 if let Some(body) = node.child_by_field_name("body") {
@@ -235,7 +274,10 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     // Extract TODO/FIXME from Java line and block comments
     let todo_cursor = root.walk();
     let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["line_comment", "block_comment"],
+        todo_cursor,
+        source,
+        "",
+        &["line_comment", "block_comment"],
     );
 
     Ok(ExtractedFile {
@@ -289,9 +331,7 @@ fn walk_java_dataflow(node: Node, source: &str, method_name: &str, edges: &mut V
                             // i++ or ++i → reads and writes i
                             if let Some(operand) = sub.child(0).or_else(|| sub.child(1)) {
                                 if operand.kind() == "identifier" {
-                                    if let Ok(name) =
-                                        operand.utf8_text(source.as_bytes())
-                                    {
+                                    if let Ok(name) = operand.utf8_text(source.as_bytes()) {
                                         if !is_java_keyword(name) {
                                             let line = operand.start_position().row as u32 + 1;
                                             edges.push(DataFlowEdge {
@@ -481,12 +521,7 @@ fn extract_java_call_reads(
     }
 }
 
-fn collect_java_reads(
-    node: Node,
-    source: &str,
-    method_name: &str,
-    edges: &mut Vec<DataFlowEdge>,
-) {
+fn collect_java_reads(node: Node, source: &str, method_name: &str, edges: &mut Vec<DataFlowEdge>) {
     match node.kind() {
         "identifier" => {
             if let Ok(name) = node.utf8_text(source.as_bytes()) {
@@ -549,14 +584,55 @@ fn collect_java_reads(
 fn is_java_keyword(name: &str) -> bool {
     matches!(
         name,
-        "this" | "super" | "null" | "true" | "false"
-        | "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "default"
-        | "return" | "break" | "continue" | "throw" | "throws"
-        | "try" | "catch" | "finally" | "new" | "instanceof"
-        | "class" | "interface" | "enum" | "extends" | "implements"
-        | "public" | "private" | "protected" | "static" | "final" | "abstract"
-        | "void" | "int" | "long" | "float" | "double" | "boolean" | "char" | "byte" | "short"
-        | "import" | "package" | "synchronized" | "volatile" | "transient" | "native"
+        "this"
+            | "super"
+            | "null"
+            | "true"
+            | "false"
+            | "if"
+            | "else"
+            | "for"
+            | "while"
+            | "do"
+            | "switch"
+            | "case"
+            | "default"
+            | "return"
+            | "break"
+            | "continue"
+            | "throw"
+            | "throws"
+            | "try"
+            | "catch"
+            | "finally"
+            | "new"
+            | "instanceof"
+            | "class"
+            | "interface"
+            | "enum"
+            | "extends"
+            | "implements"
+            | "public"
+            | "private"
+            | "protected"
+            | "static"
+            | "final"
+            | "abstract"
+            | "void"
+            | "int"
+            | "long"
+            | "float"
+            | "double"
+            | "boolean"
+            | "char"
+            | "byte"
+            | "short"
+            | "import"
+            | "package"
+            | "synchronized"
+            | "volatile"
+            | "transient"
+            | "native"
     )
 }
 
@@ -604,7 +680,8 @@ fn extract_java_type_name(node: Node, source: &str) -> Option<String> {
         }
         "generic_type" => {
             // `List<User>` — first child is the base type (`type_identifier`)
-            node.child(0).and_then(|n| extract_java_type_name(n, source))
+            node.child(0)
+                .and_then(|n| extract_java_type_name(n, source))
         }
         "array_type" => {
             // `User[]` — element type is under field "element" or is the first child
@@ -840,13 +917,16 @@ public enum Color {
         let source = "public class Foo {\n    public void bar() {}\n}\n";
         let extracted = extract_java_symbols(source).unwrap();
         let foo = extracted.symbols.iter().find(|s| s.name == "Foo").unwrap();
-        assert_eq!(foo.lines.start, 1, "Expected line 1, got {}", foo.lines.start);
+        assert_eq!(
+            foo.lines.start, 1,
+            "Expected line 1, got {}",
+            foo.lines.start
+        );
     }
 
     #[test]
     fn test_interface_methods_exported() {
-        let source =
-            "public interface Service {\n    void process();\n    String getName();\n}\n";
+        let source = "public interface Service {\n    void process();\n    String getName();\n}\n";
         let extracted = extract_java_symbols(source).unwrap();
         let process = extracted
             .symbols
@@ -872,7 +952,10 @@ public class UserService {
 "#;
         let extracted = extract_java_symbols(source).unwrap();
         assert!(
-            extracted.symbols.iter().any(|s| s.name == "UserService.save"),
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "UserService.save"),
             "Expected UserService.save, got: {:?}",
             extracted
                 .symbols
@@ -881,7 +964,10 @@ public class UserService {
                 .collect::<Vec<_>>()
         );
         assert!(
-            extracted.symbols.iter().any(|s| s.name == "UserService.validate"),
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "UserService.validate"),
             "Expected UserService.validate"
         );
         // Standalone names should NOT exist
@@ -934,11 +1020,17 @@ public interface Repository {
 "#;
         let extracted = extract_java_symbols(source).unwrap();
         assert!(
-            extracted.symbols.iter().any(|s| s.name == "Repository.save"),
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Repository.save"),
             "Expected Repository.save"
         );
         assert!(
-            extracted.symbols.iter().any(|s| s.name == "Repository.findById"),
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "Repository.findById"),
             "Expected Repository.findById"
         );
     }
@@ -982,31 +1074,46 @@ public class UserService extends BaseService implements Serializable {
 
         // extends
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "UserService" && e.1 == "BaseService"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "UserService" && e.1 == "BaseService"),
             "Expected type edge UserService->BaseService, got: {:?}",
             extracted.type_edges
         );
         // implements
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "UserService" && e.1 == "Serializable"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "UserService" && e.1 == "Serializable"),
             "Expected type edge UserService->Serializable, got: {:?}",
             extracted.type_edges
         );
         // Method return type
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "UserService.findById" && e.1 == "User"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "UserService.findById" && e.1 == "User"),
             "Expected type edge UserService.findById->User, got: {:?}",
             extracted.type_edges
         );
         // Method parameter type
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "UserService.findById" && e.1 == "Long"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "UserService.findById" && e.1 == "Long"),
             "Expected type edge UserService.findById->Long, got: {:?}",
             extracted.type_edges
         );
         // Field type
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "UserService" && e.1 == "UserRepository"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "UserService" && e.1 == "UserRepository"),
             "Expected type edge UserService->UserRepository, got: {:?}",
             extracted.type_edges
         );
@@ -1022,12 +1129,18 @@ public interface ReadableRepository extends Repository, Closeable {
         let extracted = extract_java_symbols(source).unwrap();
 
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "ReadableRepository" && e.1 == "Repository"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "ReadableRepository" && e.1 == "Repository"),
             "Expected type edge ReadableRepository->Repository, got: {:?}",
             extracted.type_edges
         );
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "ReadableRepository" && e.1 == "Closeable"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "ReadableRepository" && e.1 == "Closeable"),
             "Expected type edge ReadableRepository->Closeable, got: {:?}",
             extracted.type_edges
         );
@@ -1044,7 +1157,9 @@ public class Calculator {
         let extracted = extract_java_symbols(source).unwrap();
 
         // Primitive types (int, double, boolean) must not appear in type_edges
-        let primitives = ["int", "double", "boolean", "float", "long", "char", "byte", "short"];
+        let primitives = [
+            "int", "double", "boolean", "float", "long", "char", "byte", "short",
+        ];
         for primitive in primitives {
             assert!(
                 !extracted.type_edges.iter().any(|e| e.1 == primitive),
@@ -1067,17 +1182,26 @@ public class OrderService {
 
         // Generic base types should be extracted (stripped of type parameters)
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "OrderService" && e.1 == "List"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "OrderService" && e.1 == "List"),
             "Expected type edge OrderService->List (from List<Order> field), got: {:?}",
             extracted.type_edges
         );
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "OrderService.findUser" && e.1 == "Optional"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "OrderService.findUser" && e.1 == "Optional"),
             "Expected type edge OrderService.findUser->Optional (return type), got: {:?}",
             extracted.type_edges
         );
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "OrderService.findUser" && e.1 == "Map"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "OrderService.findUser" && e.1 == "Map"),
             "Expected type edge OrderService.findUser->Map (param type), got: {:?}",
             extracted.type_edges
         );
@@ -1095,20 +1219,26 @@ public class Service {
 "#;
         let extracted = extract_java_symbols(source).unwrap();
         assert!(
-            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "user"
-                && e.flow_type == DataFlowType::Writes),
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "user" && e.flow_type == DataFlowType::Writes),
             "Expected writes edge for user, got: {:?}",
             extracted.dataflow_edges
         );
         assert!(
-            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "findUser"
-                && e.flow_type == DataFlowType::Reads),
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "findUser" && e.flow_type == DataFlowType::Reads),
             "Expected reads edge for findUser, got: {:?}",
             extracted.dataflow_edges
         );
         assert!(
-            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "save"
-                && e.flow_type == DataFlowType::Reads),
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "save" && e.flow_type == DataFlowType::Reads),
             "Expected reads edge for save, got: {:?}",
             extracted.dataflow_edges
         );
@@ -1130,7 +1260,11 @@ public class Config {
                 .iter()
                 .any(|s| s.name == "Config.MAX_RETRIES" && s.kind == SymbolKind::Const),
             "Expected Config.MAX_RETRIES constant, got: {:?}",
-            extracted.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
         );
         assert!(
             extracted
@@ -1138,7 +1272,11 @@ public class Config {
                 .iter()
                 .any(|s| s.name == "Config.SECRET" && s.kind == SymbolKind::Const),
             "Expected Config.SECRET constant, got: {:?}",
-            extracted.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
         );
         let secret = extracted
             .symbols

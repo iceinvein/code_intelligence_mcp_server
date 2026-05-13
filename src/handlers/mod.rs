@@ -10,10 +10,13 @@
 //! - `learning`: report_selection, report_file_access
 
 mod analysis;
+mod ask_code;
+mod ask_code_cache;
 mod budget;
 mod cross_repo;
 mod graph;
 mod index;
+mod investigation;
 mod learning;
 mod navigation;
 mod planning;
@@ -29,16 +32,18 @@ pub use state::AppState;
 // Re-export all handlers for use by server dispatch
 pub use analysis::{
     handle_find_affected_code, handle_find_dead_code, handle_find_duplicates,
-    handle_find_stale_descriptions, handle_find_tests_for_symbol,
-    handle_find_undocumented_symbols, handle_get_context_bundle, handle_predict_impact,
-    handle_search_decorators, handle_search_framework_patterns, handle_search_todos,
+    handle_find_stale_descriptions, handle_find_tests_for_symbol, handle_find_undocumented_symbols,
+    handle_get_context_bundle, handle_predict_impact, handle_search_decorators,
+    handle_search_framework_patterns, handle_search_todos,
 };
+pub use ask_code::handle_ask_code;
 pub use cross_repo::{handle_explore_cross_repo_dependencies, handle_search_across_repos};
 pub use graph::{
     handle_explore_dependency_graph, handle_get_call_hierarchy, handle_get_similarity_cluster,
     handle_get_type_graph, handle_trace_data_flow,
 };
 pub use index::{handle_get_index_stats, handle_refresh_index};
+pub use investigation::handle_investigate;
 pub use learning::{handle_report_file_access, handle_report_selection};
 pub use navigation::{
     handle_find_references, handle_get_definition, handle_get_file_symbols,

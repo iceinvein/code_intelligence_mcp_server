@@ -55,7 +55,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             if let Some(name) = symbol_name(node, source) {
                 let is_dunder = name.starts_with("__") && name.ends_with("__");
                 let exported = is_dunder || !name.starts_with('_');
-                symbols.push(symbol_from_node(name.clone(), SymbolKind::Function, exported, node));
+                symbols.push(symbol_from_node(
+                    name.clone(),
+                    SymbolKind::Function,
+                    exported,
+                    node,
+                ));
                 extract_function_type_edges(node, source, &name, &mut type_edges);
                 extract_python_dataflow(node, source, &name, &mut dataflow_edges);
             }
@@ -151,9 +156,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                                     // Python constant convention: ALL_CAPS with optional underscores,
                                     // at least 2 characters, no lowercase letters.
                                     if name.len() >= 2
-                                        && name
-                                            .chars()
-                                            .all(|c| c.is_ascii_uppercase() || c == '_')
+                                        && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
                                     {
                                         let exported = !name.starts_with('_');
                                         symbols.push(symbol_from_node(
@@ -180,9 +183,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     // Extract TODO/FIXME from Python # comments
     let todo_cursor = root.walk();
-    let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment"],
-    );
+    let todos = super::comments::extract_todo_from_tree(todo_cursor, source, "", &["comment"]);
 
     Ok(ExtractedFile {
         symbols,
@@ -331,15 +332,8 @@ fn walk_dataflow(node: Node<'_>, source: &str, fn_name: &str, edges: &mut Vec<Da
                 }
             }
             // Recurse into compound statement bodies.
-            "if_statement"
-            | "for_statement"
-            | "while_statement"
-            | "try_statement"
-            | "with_statement"
-            | "block"
-            | "else_clause"
-            | "elif_clause"
-            | "except_clause"
+            "if_statement" | "for_statement" | "while_statement" | "try_statement"
+            | "with_statement" | "block" | "else_clause" | "elif_clause" | "except_clause"
             | "finally_clause" => {
                 walk_dataflow_children(child, source, fn_name, edges);
             }
@@ -482,12 +476,7 @@ fn extract_augmented_assignment_dataflow(
 ///
 /// Also detects `asyncio.create_task(...)` and `asyncio.gather(...)` patterns,
 /// emitting `spawn:asyncio.<method>` edges to signal concurrent task spawning.
-fn extract_call_reads(
-    node: Node<'_>,
-    source: &str,
-    fn_name: &str,
-    edges: &mut Vec<DataFlowEdge>,
-) {
+fn extract_call_reads(node: Node<'_>, source: &str, fn_name: &str, edges: &mut Vec<DataFlowEdge>) {
     let line = node.start_position().row as u32 + 1;
 
     // Function name / callee → read
@@ -555,9 +544,7 @@ fn extract_asyncio_spawn_label(attribute_node: Node<'_>, source: &str) -> Option
     let attr = attribute_node.child_by_field_name("attribute")?;
     let obj_text = obj.utf8_text(source.as_bytes()).ok()?;
     let attr_text = attr.utf8_text(source.as_bytes()).ok()?;
-    if obj_text == "asyncio"
-        && matches!(attr_text, "create_task" | "gather" | "ensure_future")
-    {
+    if obj_text == "asyncio" && matches!(attr_text, "create_task" | "gather" | "ensure_future") {
         Some(format!("spawn:asyncio.{attr_text}"))
     } else {
         None
@@ -577,12 +564,7 @@ fn extract_asyncio_spawn_label(attribute_node: Node<'_>, source: &str) -> Option
 /// an `await:<callee>` edge is emitted.  For any other expression kind the raw
 /// text is used.  Recursion into the inner expression also captures regular
 /// reads from arguments.
-fn extract_await_edges(
-    node: Node<'_>,
-    source: &str,
-    fn_name: &str,
-    edges: &mut Vec<DataFlowEdge>,
-) {
+fn extract_await_edges(node: Node<'_>, source: &str, fn_name: &str, edges: &mut Vec<DataFlowEdge>) {
     let line = node.start_position().row as u32 + 1;
 
     // Walk children, skipping the "await" keyword token.
@@ -648,7 +630,11 @@ fn extract_python_callee_name(func_node: Node<'_>, source: &str) -> Option<Strin
     match func_node.kind() {
         "identifier" => {
             let name = func_node.utf8_text(source.as_bytes()).ok()?.to_string();
-            if is_python_keyword(&name) { None } else { Some(name) }
+            if is_python_keyword(&name) {
+                None
+            } else {
+                Some(name)
+            }
         }
         "attribute" => {
             // obj.method → "obj.method"
@@ -660,7 +646,11 @@ fn extract_python_callee_name(func_node: Node<'_>, source: &str) -> Option<Strin
         }
         _ => {
             let text = func_node.utf8_text(source.as_bytes()).ok()?.to_string();
-            if text.is_empty() { None } else { Some(text) }
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
         }
     }
 }
@@ -848,7 +838,9 @@ fn extract_python_type_name(node: Node<'_>, source: &str) -> Option<String> {
             extract_python_type_name(first, source)
         }
         // The `type` wrapper node — recurse into its single child.
-        "type" => node.child(0).and_then(|n| extract_python_type_name(n, source)),
+        "type" => node
+            .child(0)
+            .and_then(|n| extract_python_type_name(n, source)),
         // type_parameter is the `[X, Y]` bracket — recurse into its first `type` child.
         "type_parameter" => {
             let mut cursor = node.walk();
@@ -1074,7 +1066,11 @@ def _private():
     fn test_line_numbers_are_1_indexed() {
         let source = "def hello():\n    pass\n";
         let extracted = extract_python_symbols(source).unwrap();
-        let hello = extracted.symbols.iter().find(|s| s.name == "hello").unwrap();
+        let hello = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "hello")
+            .unwrap();
         assert_eq!(hello.lines.start, 1); // line 1, not 0
         assert_eq!(hello.lines.end, 2);
     }
@@ -1163,12 +1159,18 @@ class Child(Parent, Mixin):
 
         // Function signature types (int is primitive, skipped)
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "process" && e.1 == "User"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "process" && e.1 == "User"),
             "Expected type edge process->User, got: {:?}",
             extracted.type_edges
         );
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "process" && e.1 == "Result"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "process" && e.1 == "Result"),
             "Expected type edge process->Result, got: {:?}",
             extracted.type_edges
         );
@@ -1181,19 +1183,28 @@ class Child(Parent, Mixin):
 
         // Class field annotations
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "MyClass" && e.1 == "List"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "MyClass" && e.1 == "List"),
             "Expected type edge MyClass->List, got: {:?}",
             extracted.type_edges
         );
 
         // Inheritance
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "Child" && e.1 == "Parent"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Child" && e.1 == "Parent"),
             "Expected type edge Child->Parent, got: {:?}",
             extracted.type_edges
         );
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "Child" && e.1 == "Mixin"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Child" && e.1 == "Mixin"),
             "Expected type edge Child->Mixin, got: {:?}",
             extracted.type_edges
         );
@@ -1209,13 +1220,19 @@ def fetch(items: List[Item]) -> Optional[Result]:
 
         // List[Item] → List (outer type for subscript)
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "fetch" && e.1 == "List"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "fetch" && e.1 == "List"),
             "Expected type edge fetch->List, got: {:?}",
             extracted.type_edges
         );
         // Optional[Result] → Result (unwrapped)
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "fetch" && e.1 == "Result"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "fetch" && e.1 == "Result"),
             "Expected type edge fetch->Result (unwrapped from Optional), got: {:?}",
             extracted.type_edges
         );
@@ -1282,9 +1299,7 @@ regular_var = "not a constant"
         let async_edges: Vec<_> = file
             .dataflow_edges
             .iter()
-            .filter(|e| {
-                e.from_symbol.starts_with("await:") || e.from_symbol.starts_with("spawn:")
-            })
+            .filter(|e| e.from_symbol.starts_with("await:") || e.from_symbol.starts_with("spawn:"))
             .collect();
         assert!(
             !async_edges.is_empty(),
@@ -1322,8 +1337,10 @@ def process(data):
 
         // result = transform(data) → writes("result")
         assert!(
-            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "result"
-                && matches!(e.flow_type, DataFlowType::Writes)),
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "result" && matches!(e.flow_type, DataFlowType::Writes)),
             "Expected writes edge for result, got: {:?}",
             extracted.dataflow_edges
         );
@@ -1338,8 +1355,10 @@ def process(data):
 
         // save(result) → reads("save")
         assert!(
-            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "save"
-                && matches!(e.flow_type, DataFlowType::Reads)),
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "save" && matches!(e.flow_type, DataFlowType::Reads)),
             "Expected reads edge for save, got: {:?}",
             extracted.dataflow_edges
         );

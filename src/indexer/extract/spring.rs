@@ -160,9 +160,7 @@ fn collect_from_modifiers(
     for child in modifiers.children(&mut cursor) {
         match child.kind() {
             "marker_annotation" | "annotation" => {
-                if let Some(pattern) =
-                    parse_spring_annotation(child, source, decl_node, scope)
-                {
+                if let Some(pattern) = parse_spring_annotation(child, source, decl_node, scope) {
                     patterns.push(pattern);
                 }
             }
@@ -282,20 +280,18 @@ fn parse_spring_annotation(
                 parent_chain: None,
             })
         }
-        ("Configuration", DeclarationScope::Class) => {
-            Some(ExtractedFrameworkPattern {
-                line,
-                column,
-                framework: "spring".to_string(),
-                kind: FrameworkPatternKind::Module,
-                http_method: None,
-                path: None,
-                name: handler,
-                handler: None,
-                arguments: None,
-                parent_chain: None,
-            })
-        }
+        ("Configuration", DeclarationScope::Class) => Some(ExtractedFrameworkPattern {
+            line,
+            column,
+            framework: "spring".to_string(),
+            kind: FrameworkPatternKind::Module,
+            http_method: None,
+            path: None,
+            name: handler,
+            handler: None,
+            arguments: None,
+            parent_chain: None,
+        }),
 
         // Unknown or scope-mismatched annotation — skip.
         _ => None,
@@ -499,16 +495,24 @@ class Ctrl {
             .filter(|p| p.kind == FrameworkPatternKind::Route)
             .collect();
 
-        assert_eq!(routes.len(), 2, "Expected 2 Route patterns, got: {routes:?}");
+        assert_eq!(
+            routes.len(),
+            2,
+            "Expected 2 Route patterns, got: {routes:?}"
+        );
 
-        let get_route = routes.iter().find(|r| r.http_method == Some("GET".to_string()));
+        let get_route = routes
+            .iter()
+            .find(|r| r.http_method == Some("GET".to_string()));
         assert!(get_route.is_some(), "Expected a GET route");
         let get = get_route.unwrap();
         assert_eq!(get.path, Some("/users".to_string()));
         assert_eq!(get.handler, Some("getUsers".to_string()));
         assert_eq!(get.framework, "spring");
 
-        let post_route = routes.iter().find(|r| r.http_method == Some("POST".to_string()));
+        let post_route = routes
+            .iter()
+            .find(|r| r.http_method == Some("POST".to_string()));
         assert!(post_route.is_some(), "Expected a POST route");
         let post = post_route.unwrap();
         assert_eq!(post.path, Some("/items".to_string()));
@@ -530,7 +534,11 @@ public class UserController {}
             .iter()
             .filter(|p| p.kind == FrameworkPatternKind::Controller)
             .collect();
-        assert_eq!(controllers.len(), 1, "Expected 1 Controller pattern, got: {controllers:?}");
+        assert_eq!(
+            controllers.len(),
+            1,
+            "Expected 1 Controller pattern, got: {controllers:?}"
+        );
         assert_eq!(controllers[0].framework, "spring");
         assert_eq!(controllers[0].name, Some("UserController".to_string()));
 
@@ -566,11 +574,15 @@ public class UserRepo {}
             "Expected 2 Injectable patterns, got: {injectables:?}"
         );
 
-        let service = injectables.iter().find(|p| p.name == Some("UserService".to_string()));
+        let service = injectables
+            .iter()
+            .find(|p| p.name == Some("UserService".to_string()));
         assert!(service.is_some(), "Expected Injectable for UserService");
         assert_eq!(service.unwrap().framework, "spring");
 
-        let repo = injectables.iter().find(|p| p.name == Some("UserRepo".to_string()));
+        let repo = injectables
+            .iter()
+            .find(|p| p.name == Some("UserRepo".to_string()));
         assert!(repo.is_some(), "Expected Injectable for UserRepo");
     }
 
@@ -591,14 +603,21 @@ class Api {
             .iter()
             .filter(|p| p.kind == FrameworkPatternKind::Route)
             .collect();
-        assert_eq!(routes.len(), 5, "Expected 5 Route patterns, got: {routes:?}");
+        assert_eq!(
+            routes.len(),
+            5,
+            "Expected 5 Route patterns, got: {routes:?}"
+        );
 
         let methods: Vec<&str> = routes
             .iter()
             .filter_map(|r| r.http_method.as_deref())
             .collect();
         for m in &["GET", "POST", "PUT", "DELETE", "PATCH"] {
-            assert!(methods.contains(m), "Missing HTTP method {m} in {methods:?}");
+            assert!(
+                methods.contains(m),
+                "Missing HTTP method {m} in {methods:?}"
+            );
         }
     }
 
@@ -620,7 +639,9 @@ public class AppConfig {}
         assert!(injectable.is_some(), "Expected Injectable for @Component");
         assert_eq!(injectable.unwrap().name, Some("AuditLogger".to_string()));
 
-        let module = patterns.iter().find(|p| p.kind == FrameworkPatternKind::Module);
+        let module = patterns
+            .iter()
+            .find(|p| p.kind == FrameworkPatternKind::Module);
         assert!(module.is_some(), "Expected Module for @Configuration");
         assert_eq!(module.unwrap().name, Some("AppConfig".to_string()));
     }

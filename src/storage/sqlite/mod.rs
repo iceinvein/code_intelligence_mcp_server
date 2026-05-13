@@ -111,13 +111,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<EdgeEvidenceRow>> {
         let conn = self.read()?;
-        queries::edges::list_edge_evidence(
-            &conn,
-            from_symbol_id,
-            to_symbol_id,
-            edge_type,
-            limit,
-        )
+        queries::edges::list_edge_evidence(&conn, from_symbol_id, to_symbol_id, edge_type, limit)
     }
 
     pub fn list_edges_from(&self, from_symbol_id: &str, limit: usize) -> Result<Vec<EdgeRow>> {
@@ -272,18 +266,12 @@ impl SqliteStore {
         queries::misc::clear_similarity_clusters(&conn)
     }
 
-    pub fn list_symbols_without_similarity_clusters(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<SymbolRow>> {
+    pub fn list_symbols_without_similarity_clusters(&self, limit: usize) -> Result<Vec<SymbolRow>> {
         let conn = self.read()?;
         queries::misc::list_symbols_without_similarity_clusters(&conn, limit)
     }
 
-    pub fn list_duplicate_clusters(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<(String, usize)>> {
+    pub fn list_duplicate_clusters(&self, limit: usize) -> Result<Vec<(String, usize)>> {
         let conn = self.read()?;
         queries::misc::list_duplicate_clusters(&conn, limit)
     }
@@ -429,10 +417,7 @@ impl SqliteStore {
         queries::todos::delete_todos_by_file(&conn, file_path)
     }
 
-    pub fn batch_upsert_docstrings(
-        &self,
-        entries: &[schema::JSDocEntry],
-    ) -> Result<()> {
+    pub fn batch_upsert_docstrings(&self, entries: &[schema::JSDocEntry]) -> Result<()> {
         let conn = self.write()?;
         queries::docstrings::batch_upsert_docstrings(&conn, entries)
     }
@@ -472,12 +457,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<Vec<DecoratorRow>> {
         let conn = self.read()?;
-        queries::decorators::search_decorators_by_name_filtered(
-            &conn,
-            name,
-            decorator_type,
-            limit,
-        )
+        queries::decorators::search_decorators_by_name_filtered(&conn, name, decorator_type, limit)
     }
 
     pub fn is_test_file(&self, path: &str) -> bool {
@@ -529,12 +509,7 @@ impl SqliteStore {
     ) -> Result<()> {
         let conn = self.write()?;
         queries::cache::put_cached_embedding(
-            &conn,
-            cache_key,
-            model_name,
-            text_hash,
-            embedding,
-            vector_dim,
+            &conn, cache_key, model_name, text_hash, embedding, vector_dim,
         )
     }
 
@@ -604,10 +579,7 @@ impl SqliteStore {
     }
 
     // Framework pattern operations
-    pub fn batch_upsert_framework_patterns(
-        &self,
-        patterns: &[FrameworkPatternRow],
-    ) -> Result<()> {
+    pub fn batch_upsert_framework_patterns(&self, patterns: &[FrameworkPatternRow]) -> Result<()> {
         let conn = self.write()?;
         queries::framework::batch_upsert_framework_patterns(&conn, patterns)
     }
@@ -670,7 +642,14 @@ impl SqliteStore {
         total_b: u32,
     ) -> Result<()> {
         let conn = self.write()?;
-        queries::cochange::upsert_co_change(&conn, file_a, file_b, co_change_count, total_a, total_b)
+        queries::cochange::upsert_co_change(
+            &conn,
+            file_a,
+            file_b,
+            co_change_count,
+            total_a,
+            total_b,
+        )
     }
 
     pub fn get_co_changes_for_file(
@@ -705,7 +684,14 @@ impl SqliteStore {
     ) -> Result<Vec<FrameworkPatternRow>> {
         let conn = self.read()?;
         queries::framework::search_framework_patterns(
-            &conn, framework, kind, http_method, path, name, file_path, limit,
+            &conn,
+            framework,
+            kind,
+            http_method,
+            path,
+            name,
+            file_path,
+            limit,
         )
     }
 }

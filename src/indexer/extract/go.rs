@@ -28,7 +28,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         "function_declaration" => {
             if let Some(name) = symbol_name(node, source) {
                 let exported = is_exported(&name);
-                symbols.push(symbol_from_node(name.clone(), SymbolKind::Function, exported, node));
+                symbols.push(symbol_from_node(
+                    name.clone(),
+                    SymbolKind::Function,
+                    exported,
+                    node,
+                ));
                 // Extract param/return type edges (Task 6)
                 extract_func_signature_types(node, source, &name, &mut type_edges);
             }
@@ -98,9 +103,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     // Extract TODO/FIXME from Go comments
     let todo_cursor = root.walk();
-    let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment"],
-    );
+    let todos = super::comments::extract_todo_from_tree(todo_cursor, source, "", &["comment"]);
 
     Ok(ExtractedFile {
         symbols,
@@ -160,13 +163,8 @@ fn extract_struct_body(
                         has_field_identifier = true;
                     }
                     // Type nodes we care about
-                    "type_identifier"
-                    | "pointer_type"
-                    | "slice_type"
-                    | "array_type"
-                    | "map_type"
-                    | "channel_type"
-                    | "qualified_type" => {
+                    "type_identifier" | "pointer_type" | "slice_type" | "array_type"
+                    | "map_type" | "channel_type" | "qualified_type" => {
                         if type_node.is_none() {
                             type_node = Some(fchild);
                         }
@@ -237,12 +235,8 @@ fn extract_interface_body(
                         "parameter_list" => {
                             result_opt = Some(mchild);
                         }
-                        "type_identifier"
-                        | "pointer_type"
-                        | "slice_type"
-                        | "array_type"
-                        | "map_type"
-                        | "qualified_type" => {
+                        "type_identifier" | "pointer_type" | "slice_type" | "array_type"
+                        | "map_type" | "qualified_type" => {
                             result_opt = Some(mchild);
                         }
                         _ => {}
@@ -602,7 +596,11 @@ fn extract_go_call_callee(call_node: Node<'_>, source: &str) -> Option<String> {
         }
         _ => {
             let t = text_for_node(func, source);
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         }
     }
 }
@@ -623,8 +621,7 @@ fn enclosing_function_name(node: Node<'_>, source: &str) -> Option<String> {
                     .map(|n| text_for_node(n, source));
             }
             "method_declaration" => {
-                let recv = receiver_type_name(current, source)
-                    .unwrap_or_else(|| "_".to_string());
+                let recv = receiver_type_name(current, source).unwrap_or_else(|| "_".to_string());
                 let meth = current
                     .child_by_field_name("name")
                     .map(|n| text_for_node(n, source))
@@ -680,7 +677,10 @@ mod tests {
     #[allow(dead_code)]
     fn debug_print_tree(node: Node<'_>, source: &str, depth: usize) {
         let indent = "  ".repeat(depth);
-        let text = node.utf8_text(source.as_bytes()).unwrap_or("").replace('\n', "\\n");
+        let text = node
+            .utf8_text(source.as_bytes())
+            .unwrap_or("")
+            .replace('\n', "\\n");
         let short = if text.len() > 40 { &text[..40] } else { &text };
         println!("{indent}[{depth}] kind={} text={short:?}", node.kind());
         let mut cursor = node.walk();
@@ -752,7 +752,10 @@ type MyInterface interface {
 
         // Task 8: interface method extracted as qualified symbol
         assert!(
-            extracted.symbols.iter().any(|s| s.name == "MyInterface.Method"),
+            extracted
+                .symbols
+                .iter()
+                .any(|s| s.name == "MyInterface.Method"),
             "MyInterface.Method should be extracted"
         );
 
@@ -832,7 +835,10 @@ func Process(u User, count int) (string, error) {
         let extracted = extract_go_symbols(source).unwrap();
         let has_edge = |p: &str, t: &str| extracted.type_edges.iter().any(|e| e.0 == p && e.1 == t);
 
-        assert!(has_edge("User", "Address"), "User → Address struct field edge");
+        assert!(
+            has_edge("User", "Address"),
+            "User → Address struct field edge"
+        );
         assert!(has_edge("Process", "User"), "Process → User param edge");
         // error is a Go built-in interface and should appear as a type edge
         assert!(has_edge("Process", "error"), "Process → error return edge");

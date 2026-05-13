@@ -92,9 +92,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                         if child.kind() == "function_signature_item"
                             || child.kind() == "function_item"
                         {
-                            if let Some(method_name) =
-                                symbol_name_from_declaration(child, source)
-                            {
+                            if let Some(method_name) = symbol_name_from_declaration(child, source) {
                                 let prefixed = format!("{name}::{method_name}");
                                 symbols.push(symbol_from_node(
                                     prefixed.clone(),
@@ -220,7 +218,10 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     // Extract TODO/FIXME comments from Rust line_comment and block_comment nodes
     let todo_cursor = root.walk();
     let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["line_comment", "block_comment"],
+        todo_cursor,
+        source,
+        "",
+        &["line_comment", "block_comment"],
     );
 
     Ok(ExtractedFile {
@@ -409,11 +410,7 @@ fn extract_use_tree(node: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Im
         "scoped_identifier" => {
             let full = text_for_node(node, source);
             // The last segment after the final `::` is the imported name.
-            let name = full
-                .rsplit("::")
-                .next()
-                .unwrap_or(&full)
-                .to_string();
+            let name = full.rsplit("::").next().unwrap_or(&full).to_string();
             // `source` is the full path; if there is a prefix from a parent
             // scoped_use_list we join it, otherwise use the full scoped text.
             let source_path = if prefix.is_empty() {
@@ -720,7 +717,11 @@ fn extract_rust_dataflow_from_node(
                         .map(|f| text_for_node(f, source)),
                     _ => {
                         let t = text_for_node(inner, source);
-                        if t.is_empty() { None } else { Some(t) }
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t)
+                        }
                     }
                 };
                 if let Some(name) = callee_name {
@@ -743,13 +744,12 @@ fn extract_rust_dataflow_from_node(
             // Detect tokio::spawn / tokio::spawn_blocking before the generic handler.
             if let Some(func) = node.child_by_field_name("function") {
                 let func_text = text_for_node(func, source);
-                let spawn_label = if func_text == "tokio::spawn"
-                    || func_text == "tokio::spawn_blocking"
-                {
-                    Some(format!("spawn:{func_text}"))
-                } else {
-                    None
-                };
+                let spawn_label =
+                    if func_text == "tokio::spawn" || func_text == "tokio::spawn_blocking" {
+                        Some(format!("spawn:{func_text}"))
+                    } else {
+                        None
+                    };
 
                 if let Some(label) = spawn_label {
                     out.push(DataFlowEdge {
@@ -1057,11 +1057,7 @@ pub type Result<T> = std::result::Result<T, Error>;
             .iter()
             .find(|s| s.name == "INSTANCE")
             .expect("INSTANCE symbol");
-        assert_eq!(
-            instance.kind,
-            SymbolKind::Const,
-            "INSTANCE should be Const"
-        );
+        assert_eq!(instance.kind, SymbolKind::Const, "INSTANCE should be Const");
         assert!(
             !instance.exported,
             "INSTANCE should not be exported (no pub)"
@@ -1295,9 +1291,7 @@ async fn process() {
         let async_edges: Vec<_> = file
             .dataflow_edges
             .iter()
-            .filter(|e| {
-                e.from_symbol.starts_with("await:") || e.from_symbol.starts_with("spawn:")
-            })
+            .filter(|e| e.from_symbol.starts_with("await:") || e.from_symbol.starts_with("spawn:"))
             .collect();
         assert!(
             async_edges.len() >= 1,
@@ -1338,14 +1332,16 @@ fn process(data: Vec<u8>) -> String {
         let extracted = extract_rust_symbols(source).unwrap();
 
         let has_read = |sym: &str| {
-            extracted.dataflow_edges.iter().any(|e| {
-                e.from_symbol == sym && matches!(e.flow_type, DataFlowType::Reads)
-            })
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == sym && matches!(e.flow_type, DataFlowType::Reads))
         };
         let has_write = |sym: &str| {
-            extracted.dataflow_edges.iter().any(|e| {
-                e.from_symbol == sym && matches!(e.flow_type, DataFlowType::Writes)
-            })
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == sym && matches!(e.flow_type, DataFlowType::Writes))
         };
 
         // let result = transform(data)
@@ -1363,5 +1359,4 @@ fn process(data: Vec<u8>) -> String {
             "expected read edge for 'format_output'"
         );
     }
-
 }

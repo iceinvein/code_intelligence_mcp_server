@@ -77,10 +77,7 @@ impl RepoLogger {
         let appender = tracing_appender::rolling::daily(logs_dir.as_std_path(), "index.log");
         let (writer, guard) = tracing_appender::non_blocking(appender);
 
-        let repo_name = repo_data_dir
-            .file_name()
-            .unwrap_or("unknown")
-            .to_string();
+        let repo_name = repo_data_dir.file_name().unwrap_or("unknown").to_string();
 
         Some(Self {
             writer,
@@ -108,7 +105,11 @@ impl RepoLogger {
         use std::io::Write;
         let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
         let mut writer = self.writer.clone();
-        let _ = writeln!(writer, "{} {} [{}] {}", timestamp, level, self.repo_name, message);
+        let _ = writeln!(
+            writer,
+            "{} {} [{}] {}",
+            timestamp, level, self.repo_name, message
+        );
     }
 }
 
@@ -130,13 +131,10 @@ mod tests {
         // Create an "old" log file and backdate its mtime
         let old = dir_path.join("server.log.2026-01-01");
         fs::write(&old, "old").unwrap();
-        let thirty_days_ago = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(30 * 24 * 3600);
-        filetime::set_file_mtime(
-            &old,
-            filetime::FileTime::from_system_time(thirty_days_ago),
-        )
-        .unwrap();
+        let thirty_days_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 3600);
+        filetime::set_file_mtime(&old, filetime::FileTime::from_system_time(thirty_days_ago))
+            .unwrap();
 
         // Create a non-log file (should NOT be deleted even if old)
         let other = dir_path.join("config.toml");
@@ -163,9 +161,8 @@ mod tests {
     #[test]
     fn test_repo_logger_creates_log_dir_and_writes() {
         let dir = TempDir::new().unwrap();
-        let repo_data_dir = crate::path::Utf8PathBuf::from_path_buf(
-            dir.path().to_path_buf()
-        ).unwrap();
+        let repo_data_dir =
+            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
 
         let logger = RepoLogger::new(&repo_data_dir).expect("should create logger");
 
@@ -186,7 +183,13 @@ mod tests {
 
         // Read and verify contents
         let content = std::fs::read_to_string(entries[0].path()).unwrap();
-        assert!(content.contains("Index started"), "Should contain first message");
-        assert!(content.contains("Indexed 42 files"), "Should contain second message");
+        assert!(
+            content.contains("Index started"),
+            "Should contain first message"
+        );
+        assert!(
+            content.contains("Indexed 42 files"),
+            "Should contain second message"
+        );
     }
 }

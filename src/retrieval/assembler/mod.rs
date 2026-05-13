@@ -582,7 +582,13 @@ mod tests {
 
         // Both should produce some output and not panic
         let (with_query, _) = assembler
-            .format_context(&store, std::slice::from_ref(&large_func), &[], &[], Some("x100"))
+            .format_context(
+                &store,
+                std::slice::from_ref(&large_func),
+                &[],
+                &[],
+                Some("x100"),
+            )
             .unwrap();
 
         let (without_query, _) = assembler

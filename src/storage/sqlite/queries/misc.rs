@@ -162,10 +162,7 @@ pub struct ClusterMemberRow {
 }
 
 /// List cluster keys that have 2+ members, ordered by member count descending.
-pub fn list_duplicate_clusters(
-    conn: &Connection,
-    limit: usize,
-) -> Result<Vec<(String, usize)>> {
+pub fn list_duplicate_clusters(conn: &Connection, limit: usize) -> Result<Vec<(String, usize)>> {
     let mut stmt = conn
         .prepare(
             r#"

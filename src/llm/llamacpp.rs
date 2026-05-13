@@ -42,9 +42,8 @@ impl LlamaCppGenerator {
         // 99 > actual layer count (28), so llama.cpp caps at the model's max.
         let model_params = LlamaModelParams::default().with_n_gpu_layers(99);
 
-        let model =
-            LlamaModel::load_from_file(backend, model_path.as_std_path(), &model_params)
-                .map_err(|e| anyhow!("Failed to load GGUF model: {:?}", e))?;
+        let model = LlamaModel::load_from_file(backend, model_path.as_std_path(), &model_params)
+            .map_err(|e| anyhow!("Failed to load GGUF model: {:?}", e))?;
 
         tracing::info!(
             "LLM loaded successfully (vocab={}, params={}, ctx_train={})",
@@ -72,8 +71,7 @@ impl LlmGenerator for LlamaCppGenerator {
 
         // Create a fresh context per call (LlamaContext is !Send).
         // n_ctx=512 fits our prompts (~275-425 tokens + 30 generated).
-        let ctx_params =
-            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(512));
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(512));
         let mut ctx = self
             .model
             .new_context(self.backend, ctx_params)
@@ -137,4 +135,3 @@ impl LlmGenerator for LlamaCppGenerator {
         Ok(output.trim().to_string())
     }
 }
-

@@ -72,7 +72,10 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     let todo_cursor = root.walk();
     let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment", "multiline_comment"],
+        todo_cursor,
+        source,
+        "",
+        &["comment", "multiline_comment"],
     );
 
     Ok(ExtractedFile {
@@ -160,7 +163,12 @@ fn extract_protocol_declaration(
     };
 
     let exported = is_exported_node(node, source);
-    symbols.push(symbol_from_node(name.clone(), SymbolKind::Interface, exported, node));
+    symbols.push(symbol_from_node(
+        name.clone(),
+        SymbolKind::Interface,
+        exported,
+        node,
+    ));
 
     // Protocol inheritance
     let mut cursor = node.walk();
@@ -256,7 +264,12 @@ fn extract_function(
     let is_test = is_test_function(node, source);
     let exported = exported && !is_test;
 
-    symbols.push(symbol_from_node(qualified, SymbolKind::Function, exported, node));
+    symbols.push(symbol_from_node(
+        qualified,
+        SymbolKind::Function,
+        exported,
+        node,
+    ));
 }
 
 /// Return `true` if the function has a `@Test`, `@testCase`, or name starts

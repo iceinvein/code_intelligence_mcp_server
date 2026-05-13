@@ -155,6 +155,8 @@ async fn create_app_state(
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
         mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: std::sync::Arc::new(Default::default()),
     }
 }
 
@@ -438,6 +440,8 @@ mod get_module_summary_tests {
             )
             .1,
             mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+            answer_generator: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+            ask_code_cache: std::sync::Arc::new(Default::default()),
         };
 
         (app_state, base_dir)
@@ -1099,6 +1103,8 @@ async fn test_find_similar_code_by_symbol_name() {
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
         mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: std::sync::Arc::new(Default::default()),
     };
 
     // The handler might fail if embedding isn't found, so check both success and error cases
@@ -1181,6 +1187,8 @@ async fn test_find_similar_code_by_code_snippet() {
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
         mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: std::sync::Arc::new(Default::default()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();
@@ -1243,6 +1251,8 @@ async fn test_find_similar_code_not_found() {
         is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         role_rx: tokio::sync::watch::channel(code_intelligence_mcp_server::leader::Role::Leader).1,
         mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: std::sync::Arc::new(Default::default()),
     };
 
     let result = handle_find_similar_code(&state, params).await.unwrap();

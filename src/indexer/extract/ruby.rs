@@ -76,9 +76,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     symbols.sort_by_key(|s| s.bytes.start);
 
     let todo_cursor = root.walk();
-    let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment"],
-    );
+    let todos = super::comments::extract_todo_from_tree(todo_cursor, source, "", &["comment"]);
 
     Ok(ExtractedFile {
         symbols,
@@ -105,7 +103,12 @@ fn extract_module(
     let Some(name) = module_or_class_constant(node, source) else {
         return;
     };
-    symbols.push(symbol_from_node(name.clone(), SymbolKind::Module, true, node));
+    symbols.push(symbol_from_node(
+        name.clone(),
+        SymbolKind::Module,
+        true,
+        node,
+    ));
 
     // Walk the body_statement for nested classes and methods
     let Some(body) = node.child_by_field_name("body") else {
@@ -127,7 +130,12 @@ fn extract_class(
     let Some(name) = module_or_class_constant(node, source) else {
         return;
     };
-    symbols.push(symbol_from_node(name.clone(), SymbolKind::Class, true, node));
+    symbols.push(symbol_from_node(
+        name.clone(),
+        SymbolKind::Class,
+        true,
+        node,
+    ));
 
     // Superclass type edge
     if let Some(superclass) = node.child_by_field_name("superclass") {
@@ -217,7 +225,9 @@ fn extract_body_statement(
                     if let Some(superclass) = child.child_by_field_name("superclass") {
                         let mut sc_cursor = superclass.walk();
                         for sc_child in superclass.children(&mut sc_cursor) {
-                            if sc_child.kind() == "constant" || sc_child.kind() == "scope_resolution" {
+                            if sc_child.kind() == "constant"
+                                || sc_child.kind() == "scope_resolution"
+                            {
                                 let sc_name = text_for_node(sc_child, source);
                                 if !sc_name.is_empty() && sc_name != "<" {
                                     type_edges.push((qualified.clone(), sc_name));
@@ -489,7 +499,9 @@ end
 
         // Superclass type edge
         assert!(
-            file.type_edges.iter().any(|e| e.0 == "MyClass" && e.1 == "BaseClass"),
+            file.type_edges
+                .iter()
+                .any(|e| e.0 == "MyClass" && e.1 == "BaseClass"),
             "MyClass should have type edge to BaseClass"
         );
 
@@ -554,7 +566,9 @@ end
             "Singleton method should be extracted as Builder.create"
         );
         assert!(
-            file.symbols.iter().any(|s| s.name == "Builder.instance_method"),
+            file.symbols
+                .iter()
+                .any(|s| s.name == "Builder.instance_method"),
             "Instance method should be extracted"
         );
     }
@@ -603,7 +617,9 @@ end
         assert!(file.symbols.iter().any(|s| s.name == "Outer"));
         assert!(file.symbols.iter().any(|s| s.name == "Outer::Inner"));
         assert!(
-            file.symbols.iter().any(|s| s.name == "Outer::Inner::Container")
+            file.symbols
+                .iter()
+                .any(|s| s.name == "Outer::Inner::Container")
                 || file.symbols.iter().any(|s| s.name.contains("Container")),
             "Nested class should be extracted"
         );

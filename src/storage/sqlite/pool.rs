@@ -1,7 +1,7 @@
+use crate::path::{Utf8Path, Utf8PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::sync::Mutex;
-use crate::path::{Utf8Path, Utf8PathBuf};
 
 /// Simple SQLite connection pool backed by Mutex<Vec<Connection>>.
 ///
@@ -166,10 +166,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let pid = std::process::id();
-        Utf8PathBuf::from(format!(
-            "/tmp/sqlite_pool_test_{}_{}.db",
-            pid, nanos
-        ))
+        Utf8PathBuf::from(format!("/tmp/sqlite_pool_test_{}_{}.db", pid, nanos))
     }
 
     #[test]

@@ -18,50 +18,27 @@ pub enum PathError {
         base: Utf8PathBuf,
     },
     /// Path contains invalid characters.
-    InvalidChars {
-        path: String,
-        invalid: char,
-    },
+    InvalidChars { path: String, invalid: char },
     /// UNC paths are not supported on this platform.
-    UncNotSupported {
-        path: String,
-    },
+    UncNotSupported { path: String },
     /// Path contains non-UTF-8 characters.
-    NonUtf8 {
-        path: std::path::PathBuf,
-    },
+    NonUtf8 { path: std::path::PathBuf },
 }
 
 impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PathError::OutsideRepo { path, base } => {
-                write!(
-                    f,
-                    "Path '{}' is outside repository base '{}'",
-                    path, base
-                )
+                write!(f, "Path '{}' is outside repository base '{}'", path, base)
             }
             PathError::InvalidChars { path, invalid } => {
-                write!(
-                    f,
-                    "Path contains invalid character '{}': {}",
-                    invalid, path
-                )
+                write!(f, "Path contains invalid character '{}': {}", invalid, path)
             }
             PathError::UncNotSupported { path } => {
-                write!(
-                    f,
-                    "UNC paths not supported: {} (use regular path)",
-                    path
-                )
+                write!(f, "UNC paths not supported: {} (use regular path)", path)
             }
             PathError::NonUtf8 { path } => {
-                write!(
-                    f,
-                    "Path contains non-UTF-8 characters: {}",
-                    path.display()
-                )
+                write!(f, "Path contains non-UTF-8 characters: {}", path.display())
             }
         }
     }
@@ -138,18 +115,16 @@ impl PathNormalizer {
     /// ).unwrap();
     /// assert_eq!(normalized.as_str(), "C:/repo/src/main.rs");
     /// ```
-    pub fn normalize_for_compare(
-        &self,
-        path: &Utf8Path,
-    ) -> Result<Utf8PathBuf, PathError> {
+    pub fn normalize_for_compare(&self, path: &Utf8Path) -> Result<Utf8PathBuf, PathError> {
         // First use dunce to simplify UNC paths on Windows
         let simplified = dunce::simplified(path.as_std_path());
 
         // Convert back to Utf8PathBuf, handling non-UTF-8 paths
-        let utf8_path = Utf8PathBuf::from_path_buf(simplified.to_path_buf())
-            .map_err(|_| PathError::NonUtf8 {
+        let utf8_path = Utf8PathBuf::from_path_buf(simplified.to_path_buf()).map_err(|_| {
+            PathError::NonUtf8 {
                 path: simplified.to_path_buf(),
-            })?;
+            }
+        })?;
 
         // Normalize backslashes to forward slashes for Windows compatibility
         let normalized_str = utf8_path.as_str().replace('\\', "/");
@@ -278,10 +253,9 @@ impl PathNormalizer {
     ///
     /// A Utf8PathBuf or an error if the path contains non-UTF-8 characters.
     pub fn from_std_path(path: &std::path::Path) -> Result<Utf8PathBuf, PathError> {
-        Utf8PathBuf::from_path_buf(path.to_path_buf())
-            .map_err(|_| PathError::NonUtf8 {
-                path: path.to_path_buf(),
-            })
+        Utf8PathBuf::from_path_buf(path.to_path_buf()).map_err(|_| PathError::NonUtf8 {
+            path: path.to_path_buf(),
+        })
     }
 
     /// Convert a Utf8Path to std::path::PathBuf.
@@ -357,7 +331,10 @@ mod tests {
         assert!(result.is_err(), "Expected error for path: {}", path);
         // Verify helpful error message contains both path and base
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("outside repository"), "Error message should mention being outside repo");
+        assert!(
+            err_msg.contains("outside repository"),
+            "Error message should mention being outside repo"
+        );
     }
 
     // Backslash normalization (defensive: handles paths from external tools)
@@ -383,7 +360,12 @@ mod tests {
         let normalizer = PathNormalizer::new(base);
         let input_path = Utf8Path::new(path);
         let result = normalizer.validate_within_base(input_path);
-        assert_eq!(result.is_ok(), should_pass, "Path '{}' validation result mismatch", path);
+        assert_eq!(
+            result.is_ok(),
+            should_pass,
+            "Path '{}' validation result mismatch",
+            path
+        );
     }
 
     // Similar prefix but outside base tests (security: detect path confusion)
@@ -399,8 +381,10 @@ mod tests {
         assert!(result.is_err(), "Path '{}' should be outside base", path);
 
         let err_msg = format!("{}", result.unwrap_err());
-        assert!(err_msg.contains("outside") || err_msg.contains("repository"),
-                "Error should mention being outside repository");
+        assert!(
+            err_msg.contains("outside") || err_msg.contains("repository"),
+            "Error should mention being outside repository"
+        );
     }
 
     // Note: The PathNormalizer uses string-based prefix checking via strip_prefix.
@@ -435,12 +419,16 @@ mod tests {
         let err_msg = format!("{}", err);
 
         // Error should mention the problematic path
-        assert!(err_msg.contains(path) || err_msg.contains("outside"),
-                "Error should reference the problematic path");
+        assert!(
+            err_msg.contains(path) || err_msg.contains("outside"),
+            "Error should reference the problematic path"
+        );
 
         // Error should mention the base directory for context
-        assert!(err_msg.contains(base) || err_msg.contains("repository"),
-                "Error should reference the base directory");
+        assert!(
+            err_msg.contains(base) || err_msg.contains("repository"),
+            "Error should reference the base directory"
+        );
     }
 
     // Case sensitivity comparison tests
@@ -456,8 +444,11 @@ mod tests {
         let b_normalized = b.replace('\\', "/");
 
         let equal = a_normalized == b_normalized;
-        assert_eq!(equal, case_sensitive_equal,
-                   "Case comparison failed for '{}' vs '{}'", a, b);
+        assert_eq!(
+            equal, case_sensitive_equal,
+            "Case comparison failed for '{}' vs '{}'",
+            a, b
+        );
     }
 
     // Platform-specific case behavior
@@ -478,7 +469,11 @@ mod tests {
 
         // After normalization, string comparison is case-sensitive (macOS)
         let strings_equal = n1.as_str() == n2.as_str();
-        assert!(!strings_equal, "Paths are case-sensitive: {} != {}", path1, path2);
+        assert!(
+            !strings_equal,
+            "Paths are case-sensitive: {} != {}",
+            path1, path2
+        );
     }
 
     // Empty and edge case path tests

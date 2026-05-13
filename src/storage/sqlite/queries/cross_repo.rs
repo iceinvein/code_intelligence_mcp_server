@@ -132,11 +132,7 @@ LIMIT ?2
 }
 
 /// Mark a cross-repo edge as resolved, setting the target symbol ID.
-pub fn resolve_cross_repo_edge(
-    conn: &Connection,
-    edge_id: i64,
-    to_symbol_id: &str,
-) -> Result<()> {
+pub fn resolve_cross_repo_edge(conn: &Connection, edge_id: i64, to_symbol_id: &str) -> Result<()> {
     conn.execute(
         r#"
 UPDATE cross_repo_edges
@@ -157,11 +153,9 @@ WHERE id = ?2
 /// Count total cross-repo edges in this repo's database.
 pub fn count_cross_repo_edges(conn: &Connection) -> Result<u64> {
     let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM cross_repo_edges",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM cross_repo_edges", [], |row| {
+            row.get(0)
+        })
         .context("Failed to count cross-repo edges")?;
     Ok(count.max(0) as u64)
 }

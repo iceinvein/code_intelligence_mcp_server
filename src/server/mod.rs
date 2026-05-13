@@ -23,12 +23,21 @@ use std::sync::Arc;
 /// give the model enough up-front routing context to discover the planner tool
 /// before it commits to lower-level search tools.
 pub fn server_instructions() -> &'static str {
-    "Code Intelligence provides plan_code_investigation, a recommend-only routing tool. \
-For any nontrivial codebase investigation, first load and call plan_code_investigation before \
-Grep/Read or before selecting individual code-intelligence specialists, then decide whether to \
-follow its recommended tool calls. Use this routing step for call-site, caller/callee, impact \
-analysis, data-flow, dependency, dead-code, tests, module overview, and file-summary questions. \
-Prefer the specialist code-intelligence tools over Grep/Read when they answer the question directly."
+    "Code Intelligence provides `ask_code(question)` as the primary entry point for any \
+natural-language question about the codebase. The server retrieves relevant evidence, \
+drafts a grounded answer with the local LLM, and validates every citation against \
+retrieved code bodies before returning. The response carries the answer text, a \
+citations[] list of resolved {file:line, symbol_id} pairs (citations the LLM emitted \
+that did not resolve are dropped server-side), an evidence[] array with the source \
+bodies, and a confidence label. Call `ask_code` first; only fall through to \
+`investigate` (raw evidence without LLM synthesis) or specialist tools (`search_code`, \
+`get_definition`, `find_references`, `get_call_hierarchy`, `find_affected_code`, \
+`trace_data_flow`, `explore_dependency_graph`) when ask_code returns \
+confidence=\"low\" or you need raw structured data for custom orchestration. \
+`plan_code_investigation` remains available for recommendation-only routing. These \
+tools cover call-site, caller/callee, impact analysis, data-flow, dependency, \
+dead-code, tests, module overview, and file-summary questions. Prefer them over \
+Grep/Read for any question they answer directly."
 }
 
 /// Error message returned when `search_across_repos` is called in embedded (stdio) mode.
@@ -148,6 +157,8 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         GetIndexStatsTool::tool(),
         HydrateSymbolsTool::tool(),
         PlanCodeInvestigationTool::tool(),
+        InvestigateTool::tool(),
+        AskCodeTool::tool(),
         ReportSelectionTool::tool(),
         ReportFileAccessTool::tool(),
         ExplainSearchTool::tool(),
@@ -261,6 +272,14 @@ pub async fn dispatch_tool_call(
             dispatch_sync!(params, PlanCodeInvestigationTool, |tool| {
                 handle_plan_code_investigation(tool)
             })
+        }
+        "investigate" => {
+            dispatch_async!(params, InvestigateTool, |tool| handle_investigate(
+                state, tool
+            ))
+        }
+        "ask_code" => {
+            dispatch_async!(params, AskCodeTool, |tool| handle_ask_code(state, tool))
         }
         "explore_dependency_graph" => dispatch_sync!(params, ExploreDependencyGraphTool, |tool| {
             handle_explore_dependency_graph(state, tool)
@@ -429,11 +448,23 @@ mod tests {
     }
 
     #[test]
-    fn server_instructions_advertise_planner_routing() {
+    fn server_instructions_advertise_ask_code_as_primary_entry_point() {
         let instructions = server_instructions();
         assert!(
+            instructions.contains("ask_code"),
+            "server instructions must name ask_code as the primary entry point (v3.2.0), got: {instructions}"
+        );
+        assert!(
+            instructions.contains("citations"),
+            "server instructions must mention validated citations, got: {instructions}"
+        );
+        assert!(
             instructions.contains("plan_code_investigation"),
-            "server instructions must name the planner tool, got: {instructions}"
+            "server instructions must still mention the planner tool, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("investigate"),
+            "server instructions must still mention investigate (raw evidence path), got: {instructions}"
         );
         assert!(
             instructions.contains("impact analysis"),
@@ -454,6 +485,44 @@ mod tests {
         assert!(
             instructions.contains("dead-code"),
             "server instructions must advertise dead-code routing, got: {instructions}"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_ask_code() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"ask_code"),
+            "all_tools() must include 'ask_code', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_routes_ask_code() {
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains(r#""ask_code" =>"#),
+            "dispatch_tool_call must route ask_code"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_investigate() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"investigate"),
+            "all_tools() must include 'investigate', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_routes_investigate() {
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains(r#""investigate" =>"#),
+            "dispatch_tool_call must route investigate"
         );
     }
 

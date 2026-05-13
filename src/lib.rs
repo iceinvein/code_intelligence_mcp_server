@@ -9,6 +9,7 @@ pub mod leader;
 pub mod llm;
 pub mod logging;
 pub mod metrics;
+pub mod os;
 pub mod path;
 pub mod registry;
 pub mod reranker;

@@ -42,9 +42,7 @@ const PUBLIC_BUILDERS: &[&str] = &["query", "mutation", "action"];
 const INTERNAL_BUILDERS: &[&str] = &["internalQuery", "internalMutation", "internalAction"];
 
 /// Cron schedule method names on the `crons` object.
-const CRON_METHODS: &[&str] = &[
-    "interval", "cron", "hourly", "daily", "weekly", "monthly",
-];
+const CRON_METHODS: &[&str] = &["interval", "cron", "hourly", "daily", "weekly", "monthly"];
 
 /// Map a builder function name to its `FrameworkPatternKind`.
 fn builder_to_kind(name: &str) -> Option<FrameworkPatternKind> {
@@ -286,16 +284,12 @@ fn try_extract_http_route(
                 if let Some(val_node) = child.child_by_field_name("value") {
                     match key.as_str() {
                         "path" | "pathPrefix" => {
-                            if val_node.kind() == "string"
-                                || val_node.kind() == "template_string"
-                            {
+                            if val_node.kind() == "string" || val_node.kind() == "template_string" {
                                 path = Some(extract_string_value(val_node, source));
                             }
                         }
                         "method" => {
-                            if val_node.kind() == "string"
-                                || val_node.kind() == "template_string"
-                            {
+                            if val_node.kind() == "string" || val_node.kind() == "template_string" {
                                 method =
                                     Some(extract_string_value(val_node, source).to_uppercase());
                             }
@@ -494,7 +488,10 @@ fn is_schema_file(file_path: &str) -> bool {
 /// Get the Nth named child of a node (0-indexed).
 fn nth_named_child(node: Node, n: usize) -> Option<Node> {
     let mut cursor = node.walk();
-    let children: Vec<_> = node.children(&mut cursor).filter(|c| c.is_named()).collect();
+    let children: Vec<_> = node
+        .children(&mut cursor)
+        .filter(|c| c.is_named())
+        .collect();
     children.into_iter().nth(n)
 }
 
@@ -536,7 +533,10 @@ export const getTask = query({
             .collect();
         assert_eq!(queries.len(), 1, "Expected 1 query pattern");
         assert_eq!(queries[0].framework, "convex");
-        assert!(queries[0].name.is_none(), "Public query should have no name");
+        assert!(
+            queries[0].name.is_none(),
+            "Public query should have no name"
+        );
     }
 
     #[test]
@@ -671,14 +671,17 @@ export default http;
             .filter(|p| p.kind == FrameworkPatternKind::Route)
             .collect();
         // httpAction() inline produces 1 Route, plus 2 http.route() calls
-        assert!(routes.len() >= 2, "Expected at least 2 route patterns, got {}", routes.len());
-
-        let webhook = routes.iter().find(|r| r.path == Some("/webhook".to_string()));
-        assert!(webhook.is_some(), "Expected /webhook route");
-        assert_eq!(
-            webhook.unwrap().http_method,
-            Some("POST".to_string())
+        assert!(
+            routes.len() >= 2,
+            "Expected at least 2 route patterns, got {}",
+            routes.len()
         );
+
+        let webhook = routes
+            .iter()
+            .find(|r| r.path == Some("/webhook".to_string()));
+        assert!(webhook.is_some(), "Expected /webhook route");
+        assert_eq!(webhook.unwrap().http_method, Some("POST".to_string()));
 
         let users = routes.iter().find(|r| r.path == Some("/users".to_string()));
         assert!(users.is_some(), "Expected /users route");

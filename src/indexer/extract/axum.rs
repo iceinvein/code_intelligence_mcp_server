@@ -298,11 +298,7 @@ fn extract_route_patterns(
 /// pairs from axum routing verb calls.
 ///
 /// Handles both simple `get(handler)` and chained `get(h1).post(h2)`.
-fn collect_verb_handlers(
-    node: Node,
-    source: &str,
-    out: &mut Vec<(String, Option<String>)>,
-) {
+fn collect_verb_handlers(node: Node, source: &str, out: &mut Vec<(String, Option<String>)>) {
     if node.kind() == "call_expression" {
         let Some(func) = node.child_by_field_name("function") else {
             return;
@@ -391,11 +387,7 @@ fn try_extract_nest(
 
 /// Extract a [`FrameworkPatternKind::Middleware`] pattern from a
 /// `.layer(mw)` call.
-fn extract_layer(
-    _call_node: Node,
-    func_node: Node,
-    _source: &str,
-) -> ExtractedFrameworkPattern {
+fn extract_layer(_call_node: Node, func_node: Node, _source: &str) -> ExtractedFrameworkPattern {
     let pos = func_node.start_position();
     ExtractedFrameworkPattern {
         line: pos.row as u32 + 1,
@@ -439,7 +431,10 @@ fn axum_verb_to_method(verb: &str) -> Option<String> {
 /// Return an iterator over the named (non-punctuation) children of a node.
 fn named_children(node: Node<'_>) -> impl Iterator<Item = Node<'_>> {
     let mut cursor = node.walk();
-    let children: Vec<Node<'_>> = node.children(&mut cursor).filter(|n| n.is_named()).collect();
+    let children: Vec<Node<'_>> = node
+        .children(&mut cursor)
+        .filter(|n| n.is_named())
+        .collect();
     children.into_iter()
 }
 
@@ -549,9 +544,9 @@ fn build_app() -> Router {
             .collect();
 
         // At minimum the simple case must be present.
-        let get_users = routes
-            .iter()
-            .find(|p| p.path == Some("/users".to_string()) && p.http_method == Some("GET".to_string()));
+        let get_users = routes.iter().find(|p| {
+            p.path == Some("/users".to_string()) && p.http_method == Some("GET".to_string())
+        });
         assert!(
             get_users.is_some(),
             "Expected GET /users route, got: {:?}",
@@ -562,12 +557,12 @@ fn build_app() -> Router {
 
         // Bonus: chained `.route("/users/:id", get(get_user).post(update_user))`
         // should produce both GET and POST.
-        let get_by_id = routes
-            .iter()
-            .find(|p| p.path == Some("/users/:id".to_string()) && p.http_method == Some("GET".to_string()));
-        let post_by_id = routes
-            .iter()
-            .find(|p| p.path == Some("/users/:id".to_string()) && p.http_method == Some("POST".to_string()));
+        let get_by_id = routes.iter().find(|p| {
+            p.path == Some("/users/:id".to_string()) && p.http_method == Some("GET".to_string())
+        });
+        let post_by_id = routes.iter().find(|p| {
+            p.path == Some("/users/:id".to_string()) && p.http_method == Some("POST".to_string())
+        });
 
         if get_by_id.is_some() || post_by_id.is_some() {
             // Chain handling is supported — verify both are present.
@@ -698,19 +693,27 @@ fn build_app() -> Router {
             .collect();
 
         assert!(
-            routes.iter().any(|r| r.http_method == Some("POST".to_string())),
+            routes
+                .iter()
+                .any(|r| r.http_method == Some("POST".to_string())),
             "Expected POST route"
         );
         assert!(
-            routes.iter().any(|r| r.http_method == Some("PUT".to_string())),
+            routes
+                .iter()
+                .any(|r| r.http_method == Some("PUT".to_string())),
             "Expected PUT route"
         );
         assert!(
-            routes.iter().any(|r| r.http_method == Some("DELETE".to_string())),
+            routes
+                .iter()
+                .any(|r| r.http_method == Some("DELETE".to_string())),
             "Expected DELETE route"
         );
         assert!(
-            routes.iter().any(|r| r.http_method == Some("PATCH".to_string())),
+            routes
+                .iter()
+                .any(|r| r.http_method == Some("PATCH".to_string())),
             "Expected PATCH route"
         );
     }

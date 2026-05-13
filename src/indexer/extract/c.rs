@@ -131,9 +131,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
 
     symbols.sort_by_key(|s| s.bytes.start);
     let todo_cursor = root.walk();
-    let todos = super::comments::extract_todo_from_tree(
-        todo_cursor, source, "", &["comment"],
-    );
+    let todos = super::comments::extract_todo_from_tree(todo_cursor, source, "", &["comment"]);
     Ok(ExtractedFile {
         symbols,
         imports,
@@ -376,17 +374,32 @@ void main() {
         let source = "int add(int a, int b) {\n    return a + b;\n}\n";
         let extracted = extract_c_symbols(source).unwrap();
         let add = extracted.symbols.iter().find(|s| s.name == "add").unwrap();
-        assert_eq!(add.lines.start, 1, "Expected line 1, got {}", add.lines.start);
+        assert_eq!(
+            add.lines.start, 1,
+            "Expected line 1, got {}",
+            add.lines.start
+        );
     }
 
     #[test]
     fn test_c_static_not_exported() {
         let source = "static int helper(int x) { return x; }\nint public_fn() { return 0; }\n";
         let extracted = extract_c_symbols(source).unwrap();
-        let helper = extracted.symbols.iter().find(|s| s.name == "helper").unwrap();
+        let helper = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "helper")
+            .unwrap();
         assert!(!helper.exported, "static functions should not be exported");
-        let public_fn = extracted.symbols.iter().find(|s| s.name == "public_fn").unwrap();
-        assert!(public_fn.exported, "non-static functions should be exported");
+        let public_fn = extracted
+            .symbols
+            .iter()
+            .find(|s| s.name == "public_fn")
+            .unwrap();
+        assert!(
+            public_fn.exported,
+            "non-static functions should be exported"
+        );
     }
 
     #[test]
@@ -399,7 +412,11 @@ void main() {
                 .iter()
                 .any(|s| s.name == "Data" && s.kind == SymbolKind::Struct),
             "Expected union Data as Struct, got: {:?}",
-            extracted.symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+            extracted
+                .symbols
+                .iter()
+                .map(|s| &s.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -419,24 +436,36 @@ int process(User *user, Config *cfg) {
 
         // Struct field types: Database and Logger are type_identifiers
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "Config" && e.1 == "Database"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Config" && e.1 == "Database"),
             "Expected Config->Database, got: {:?}",
             extracted.type_edges
         );
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "Config" && e.1 == "Logger"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Config" && e.1 == "Logger"),
             "Expected Config->Logger, got: {:?}",
             extracted.type_edges
         );
 
         // Function param types
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "process" && e.1 == "User"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "process" && e.1 == "User"),
             "Expected process->User, got: {:?}",
             extracted.type_edges
         );
         assert!(
-            extracted.type_edges.iter().any(|e| e.0 == "process" && e.1 == "Config"),
+            extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "process" && e.1 == "Config"),
             "Expected process->Config, got: {:?}",
             extracted.type_edges
         );

@@ -108,7 +108,12 @@ fn extract_fastify_pattern_details(
     kind: FrameworkPatternKind,
     args_node: Node,
     source: &str,
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let mut path = None;
     let mut name = None;
     let mut handler = None;

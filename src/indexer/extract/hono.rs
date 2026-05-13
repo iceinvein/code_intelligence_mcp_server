@@ -48,7 +48,10 @@ fn try_extract_hono_call(node: Node, source: &str) -> Option<ExtractedFrameworkP
     // Route and Group patterns must have an HTTP-path-like first argument.
     // This prevents generic `.get(key)` / `.delete(id)` calls from being
     // misidentified as HTTP routes.
-    if matches!(kind, FrameworkPatternKind::Route | FrameworkPatternKind::Group) {
+    if matches!(
+        kind,
+        FrameworkPatternKind::Route | FrameworkPatternKind::Group
+    ) {
         match &path {
             Some(p) if is_http_path(p) => {}
             _ => return None,
@@ -99,7 +102,12 @@ fn extract_hono_pattern_details(
     kind: FrameworkPatternKind,
     args_node: Node,
     source: &str,
-) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let mut path = None;
     let mut name = None;
     let mut handler = None;

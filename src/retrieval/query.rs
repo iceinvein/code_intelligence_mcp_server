@@ -75,10 +75,7 @@ pub fn detect_intent(query: &str) -> Option<Intent> {
     // Note: "database" alone is too broad — it triggers for "database transactions",
     // "database connection pool", etc. Only match when combined with schema-specific terms
     // or when there are no action-oriented terms alongside it.
-    if q.contains("schema")
-        || q.contains("db table")
-        || q.contains("entity")
-    {
+    if q.contains("schema") || q.contains("db table") || q.contains("entity") {
         return Some(Intent::Schema);
     }
     // "database" or "db" only trigger Schema if NOT accompanied by action terms
@@ -571,9 +568,7 @@ mod tests {
         assert!(!contains_code_snippet(
             "PathNormalizer struct definition and methods"
         ));
-        assert!(!contains_code_snippet(
-            "how does the async pipeline work"
-        ));
+        assert!(!contains_code_snippet("how does the async pipeline work"));
         assert!(!contains_code_snippet(
             "class hierarchy for the error types"
         ));
@@ -667,7 +662,8 @@ mod tests {
         // normalize splits WebSocket → "Web Socket"
         // synonym: "socket" → adds "ws", "websocket"
         // synonym: "handler" (is synonym of callback) → adds "callback"
-        let result = normalize_and_expand_query("How does the WebSocket handler work?", true, false);
+        let result =
+            normalize_and_expand_query("How does the WebSocket handler work?", true, false);
         assert!(result.contains("ws"), "Should expand socket→ws: {result}");
     }
 
@@ -677,11 +673,8 @@ mod tests {
         // decompose splits into ["Error handling ...", "graceful degradation ..."]
         // synonym: "error" → adds "exception failure err fault"
         // synonym: "degradation" (is synonym of fallback) → adds "fallback"
-        let expanded = normalize_and_expand_query(
-            "Error handling and graceful degradation",
-            true,
-            false,
-        );
+        let expanded =
+            normalize_and_expand_query("Error handling and graceful degradation", true, false);
         // The full expanded query should contain fallback
         assert!(
             expanded.contains("fallback"),
@@ -692,11 +685,8 @@ mod tests {
     #[test]
     fn test_full_pipeline_serialization_query() {
         // Q10: "JSON serialization and response formatting"
-        let expanded = normalize_and_expand_query(
-            "JSON serialization and response formatting",
-            true,
-            false,
-        );
+        let expanded =
+            normalize_and_expand_query("JSON serialization and response formatting", true, false);
         assert!(
             expanded.contains("serde"),
             "Should expand serialization→serde: {expanded}"
@@ -706,12 +696,12 @@ mod tests {
     #[test]
     fn test_full_pipeline_watcher_query() {
         // Q15: "File watcher debounce reindex on change"
-        let expanded = normalize_and_expand_query(
-            "File watcher debounce reindex on change",
-            true,
-            false,
+        let expanded =
+            normalize_and_expand_query("File watcher debounce reindex on change", true, false);
+        assert!(
+            expanded.contains("watch"),
+            "Should expand watcher→watch: {expanded}"
         );
-        assert!(expanded.contains("watch"), "Should expand watcher→watch: {expanded}");
         assert!(
             expanded.contains("throttle"),
             "Should expand debounce→throttle: {expanded}"

@@ -56,9 +56,7 @@ const GIN_ECHO_VERBS: &[&str] = &[
 ];
 
 /// TitleCase HTTP verbs used by Chi.
-const CHI_VERBS: &[&str] = &[
-    "Get", "Post", "Put", "Delete", "Patch", "Options", "Head",
-];
+const CHI_VERBS: &[&str] = &["Get", "Post", "Put", "Delete", "Patch", "Options", "Head"];
 
 // ---------------------------------------------------------------------------
 // Public entry-point
@@ -190,9 +188,7 @@ fn try_extract_go_call(node: Node, source: &str) -> Option<ExtractedFrameworkPat
 ///
 /// Returns `None` when the method name is not recognised as a Go framework
 /// method.
-fn classify_go_method(
-    method: &str,
-) -> Option<(FrameworkPatternKind, Option<String>, String)> {
+fn classify_go_method(method: &str) -> Option<(FrameworkPatternKind, Option<String>, String)> {
     // Gin / Echo: uppercase HTTP verbs.
     if GIN_ECHO_VERBS.contains(&method) {
         let http = if method == "Any" {
@@ -281,14 +277,18 @@ func main() {
 
         assert_eq!(routes.len(), 2, "Expected 2 Gin route patterns");
 
-        let get_route = routes.iter().find(|p| p.http_method.as_deref() == Some("GET"));
+        let get_route = routes
+            .iter()
+            .find(|p| p.http_method.as_deref() == Some("GET"));
         assert!(get_route.is_some(), "Expected a GET route");
         let get_route = get_route.unwrap();
         assert_eq!(get_route.path, Some("/users".to_string()));
         assert_eq!(get_route.handler, Some("getUsers".to_string()));
         assert_eq!(get_route.framework, "gin");
 
-        let post_route = routes.iter().find(|p| p.http_method.as_deref() == Some("POST"));
+        let post_route = routes
+            .iter()
+            .find(|p| p.http_method.as_deref() == Some("POST"));
         assert!(post_route.is_some(), "Expected a POST route");
         let post_route = post_route.unwrap();
         assert_eq!(post_route.path, Some("/users".to_string()));

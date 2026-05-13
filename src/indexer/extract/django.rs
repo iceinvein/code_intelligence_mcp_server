@@ -332,9 +332,7 @@ fn try_extract_class_pattern(
 fn extract_action_routes(body: Node, source: &str, patterns: &mut Vec<ExtractedFrameworkPattern>) {
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
-        if child.kind() == "decorated_definition"
-            && has_action_decorator(child, source)
-        {
+        if child.kind() == "decorated_definition" && has_action_decorator(child, source) {
             // The last child of a `decorated_definition` is the actual
             // `function_definition`.
             if let Some(fn_def) = find_named_child_of_kind(child, "function_definition") {
@@ -585,9 +583,7 @@ fn extract_string_literal(node: Node, source: &str) -> Option<String> {
         return Some(value);
     }
     // Last resort: remove the outermost pair of quote characters manually.
-    let content = stripped
-        .trim_matches('"')
-        .trim_matches('\'');
+    let content = stripped.trim_matches('"').trim_matches('\'');
     if content.is_empty() && !stripped.is_empty() {
         // The quotes were the whole token — return empty path.
         Some(String::new())
@@ -785,7 +781,11 @@ class UserAPIView(APIView):
             .iter()
             .filter(|p| p.kind == FrameworkPatternKind::Controller)
             .collect();
-        assert_eq!(controllers.len(), 1, "Expected 1 Controller for APIView subclass");
+        assert_eq!(
+            controllers.len(),
+            1,
+            "Expected 1 Controller for APIView subclass"
+        );
         assert_eq!(controllers[0].name, Some("UserAPIView".to_string()));
     }
 
@@ -900,15 +900,21 @@ urlpatterns = [
         let patterns = parse_and_extract(source);
 
         assert!(
-            patterns.iter().any(|p| p.kind == FrameworkPatternKind::Controller),
+            patterns
+                .iter()
+                .any(|p| p.kind == FrameworkPatternKind::Controller),
             "Expected Controller pattern"
         );
         assert!(
-            patterns.iter().any(|p| p.kind == FrameworkPatternKind::Route),
+            patterns
+                .iter()
+                .any(|p| p.kind == FrameworkPatternKind::Route),
             "Expected Route pattern"
         );
         assert!(
-            patterns.iter().any(|p| p.kind == FrameworkPatternKind::Group),
+            patterns
+                .iter()
+                .any(|p| p.kind == FrameworkPatternKind::Group),
             "Expected Group pattern"
         );
     }

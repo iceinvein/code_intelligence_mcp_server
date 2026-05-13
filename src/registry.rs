@@ -156,18 +156,14 @@ impl RepoRegistry {
 
         let tmp_path = self.registry_path.with_extension("json.tmp");
 
-        let contents = serde_json::to_string_pretty(file)
-            .context("Failed to serialize registry to JSON")?;
+        let contents =
+            serde_json::to_string_pretty(file).context("Failed to serialize registry to JSON")?;
 
         std::fs::write(&tmp_path, contents)
             .with_context(|| format!("Failed to write temporary registry file: {}", tmp_path))?;
 
-        std::fs::rename(&tmp_path, &self.registry_path).with_context(|| {
-            format!(
-                "Failed to rename {} to {}",
-                tmp_path, self.registry_path
-            )
-        })?;
+        std::fs::rename(&tmp_path, &self.registry_path)
+            .with_context(|| format!("Failed to rename {} to {}", tmp_path, self.registry_path))?;
 
         Ok(())
     }
@@ -189,8 +185,7 @@ mod tests {
     #[test]
     fn register_and_lookup_repo() {
         let dir = tempfile::tempdir().unwrap();
-        let dir_path =
-            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let registry_path = dir_path.join("registry.json");
         let repos_dir = dir_path.join("repos");
 
@@ -213,8 +208,7 @@ mod tests {
     #[test]
     fn register_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        let dir_path =
-            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
 
         let e1 = reg.register("/Users/dev/project").unwrap();
@@ -226,8 +220,7 @@ mod tests {
     #[test]
     fn list_all_returns_sorted_by_last_accessed() {
         let dir = tempfile::tempdir().unwrap();
-        let dir_path =
-            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
 
         // Register three repos (register sets last_accessed = now)
@@ -248,8 +241,7 @@ mod tests {
     #[test]
     fn get_by_hash_returns_registered_repo() {
         let dir = tempfile::tempdir().unwrap();
-        let dir_path =
-            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
 
         reg.register("/Users/dev/my-project").unwrap();
@@ -263,8 +255,7 @@ mod tests {
     #[test]
     fn get_by_hash_returns_none_for_unknown_hash() {
         let dir = tempfile::tempdir().unwrap();
-        let dir_path =
-            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
 
         let entry = reg.get_by_hash("0000000000000000").unwrap();
@@ -274,8 +265,7 @@ mod tests {
     #[test]
     fn list_all_empty_registry() {
         let dir = tempfile::tempdir().unwrap();
-        let dir_path =
-            crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
         let all = reg.list_all().unwrap();
         assert!(all.is_empty());

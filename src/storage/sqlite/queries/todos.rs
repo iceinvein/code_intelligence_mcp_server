@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::storage::sqlite::schema::{TodoEntry, TodoKind};
 use crate::storage::sqlite::schema::TodoRow;
+use crate::storage::sqlite::schema::{TodoEntry, TodoKind};
 
 /// Upsert a single TODO entry
 pub fn upsert_todo(conn: &Connection, todo: &TodoRow) -> Result<()> {

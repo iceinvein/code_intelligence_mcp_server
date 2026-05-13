@@ -104,9 +104,7 @@ fn extract_attribute_routes_in_scope(
             "function_item" => {
                 // Inspect pending attribute items for Actix HTTP method macros.
                 for attr_node in &pending_attrs {
-                    if let Some(pattern) =
-                        try_extract_attribute_route(*attr_node, *child, source)
-                    {
+                    if let Some(pattern) = try_extract_attribute_route(*attr_node, *child, source) {
                         patterns.push(pattern);
                         // One route pattern per function — first match wins.
                         break;
@@ -242,11 +240,7 @@ fn extract_path_from_token_tree(attribute: Node, source: &str) -> Option<String>
 /// - `web::resource("/path")` → `Route`
 /// - `web::scope("/path")` → `Group`
 /// - `.app_data(...)` → `State`
-fn extract_builder_calls(
-    node: Node,
-    source: &str,
-    patterns: &mut Vec<ExtractedFrameworkPattern>,
-) {
+fn extract_builder_calls(node: Node, source: &str, patterns: &mut Vec<ExtractedFrameworkPattern>) {
     if node.kind() == "call_expression" {
         if let Some(pattern) = try_extract_web_call(node, source) {
             patterns.push(pattern);
@@ -413,9 +407,7 @@ fn first_string_arg_rust(args_node: Node, source: &str) -> Option<String> {
 /// Return the source text for a node.
 #[inline]
 fn text_for_node<'a>(node: Node, source: &'a str) -> &'a str {
-    source
-        .get(node.start_byte()..node.end_byte())
-        .unwrap_or("")
+    source.get(node.start_byte()..node.end_byte()).unwrap_or("")
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +461,9 @@ async fn delete_user() -> impl Responder {
         assert_eq!(routes.len(), 4, "Expected 4 route patterns, got {routes:?}");
 
         // GET /users → get_users
-        let get_route = routes.iter().find(|p| p.http_method == Some("GET".to_string()));
+        let get_route = routes
+            .iter()
+            .find(|p| p.http_method == Some("GET".to_string()));
         assert!(get_route.is_some(), "Expected a GET route");
         let get_route = get_route.unwrap();
         assert_eq!(get_route.path, Some("/users".to_string()));
@@ -477,19 +471,25 @@ async fn delete_user() -> impl Responder {
         assert_eq!(get_route.framework, "actix");
 
         // POST /items → create_item
-        let post_route = routes.iter().find(|p| p.http_method == Some("POST".to_string()));
+        let post_route = routes
+            .iter()
+            .find(|p| p.http_method == Some("POST".to_string()));
         assert!(post_route.is_some(), "Expected a POST route");
         let post_route = post_route.unwrap();
         assert_eq!(post_route.path, Some("/items".to_string()));
         assert_eq!(post_route.handler, Some("create_item".to_string()));
 
         // PUT /users/{id}
-        let put_route = routes.iter().find(|p| p.http_method == Some("PUT".to_string()));
+        let put_route = routes
+            .iter()
+            .find(|p| p.http_method == Some("PUT".to_string()));
         assert!(put_route.is_some(), "Expected a PUT route");
         assert_eq!(put_route.unwrap().path, Some("/users/{id}".to_string()));
 
         // DELETE /users/{id}
-        let delete_route = routes.iter().find(|p| p.http_method == Some("DELETE".to_string()));
+        let delete_route = routes
+            .iter()
+            .find(|p| p.http_method == Some("DELETE".to_string()));
         assert!(delete_route.is_some(), "Expected a DELETE route");
     }
 
@@ -572,7 +572,10 @@ fn configure(cfg: &mut web::ServiceConfig) {
             .filter(|p| p.kind == FrameworkPatternKind::State)
             .collect();
 
-        assert!(!state.is_empty(), "Expected at least one State pattern for .app_data()");
+        assert!(
+            !state.is_empty(),
+            "Expected at least one State pattern for .app_data()"
+        );
         assert_eq!(state[0].framework, "actix");
     }
 
@@ -619,7 +622,10 @@ mod tests {
             .filter(|p| p.kind == FrameworkPatternKind::Route)
             .collect();
 
-        assert!(routes.is_empty(), "Non-HTTP attributes must not produce Route patterns");
+        assert!(
+            routes.is_empty(),
+            "Non-HTTP attributes must not produce Route patterns"
+        );
     }
 
     /// `#[patch]` and `#[head]` are also recognised.
@@ -644,7 +650,11 @@ async fn head_ping() -> impl Responder {
             .collect();
 
         assert_eq!(routes.len(), 2);
-        assert!(routes.iter().any(|r| r.http_method == Some("PATCH".to_string())));
-        assert!(routes.iter().any(|r| r.http_method == Some("HEAD".to_string())));
+        assert!(routes
+            .iter()
+            .any(|r| r.http_method == Some("PATCH".to_string())));
+        assert!(routes
+            .iter()
+            .any(|r| r.http_method == Some("HEAD".to_string())));
     }
 }

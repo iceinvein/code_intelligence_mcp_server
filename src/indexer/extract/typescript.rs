@@ -9,11 +9,11 @@ use super::fastify::extract_fastify_patterns;
 use super::hono::extract_hono_patterns;
 use super::nestjs::extract_nestjs_patterns;
 use super::nextjs;
-use super::trpc::extract_trpc_patterns;
 use super::symbol::{
     ByteSpan, DataFlowEdge, DataFlowType, DecoratorEntry, DecoratorType, ExtractedFile,
     ExtractedSymbol, Import, JSDocEntry, JSDocParam, LineSpan, SymbolKind, TodoEntry, TodoKind,
 };
+use super::trpc::extract_trpc_patterns;
 
 pub fn extract_typescript_symbols(language_id: LanguageId, source: &str) -> Result<ExtractedFile> {
     extract_typescript_symbols_with_path(language_id, source, "<unknown>")
@@ -754,19 +754,18 @@ fn extract_dataflow_from_node(
         }
         "call_expression" => {
             // Before delegating to the generic call handler, check for Promise.all/race/allSettled.
-            let is_promise_combinator =
-                if let Some(func) = node.child_by_field_name("function") {
-                    if let Some(full_name) = extract_member_expression_full_name(func, source) {
-                        matches!(
-                            full_name.as_str(),
-                            "Promise.all" | "Promise.race" | "Promise.allSettled" | "Promise.any"
-                        )
-                    } else {
-                        false
-                    }
+            let is_promise_combinator = if let Some(func) = node.child_by_field_name("function") {
+                if let Some(full_name) = extract_member_expression_full_name(func, source) {
+                    matches!(
+                        full_name.as_str(),
+                        "Promise.all" | "Promise.race" | "Promise.allSettled" | "Promise.any"
+                    )
                 } else {
                     false
-                };
+                }
+            } else {
+                false
+            };
 
             if is_promise_combinator {
                 if let Some(func) = node.child_by_field_name("function") {
@@ -1703,18 +1702,39 @@ class Service {
         let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
 
         // Module-level symbols ARE extracted
-        assert!(names.contains(&"MODULE_CONST"), "module const should be extracted");
+        assert!(
+            names.contains(&"MODULE_CONST"),
+            "module const should be extracted"
+        );
         assert!(names.contains(&"handler"), "function should be extracted");
-        assert!(names.contains(&"topArrow"), "top-level arrow should be extracted");
+        assert!(
+            names.contains(&"topArrow"),
+            "top-level arrow should be extracted"
+        );
         assert!(names.contains(&"Service"), "class should be extracted");
         assert!(names.contains(&"process"), "method should be extracted");
 
         // Local variables inside function bodies are NOT extracted
-        assert!(!names.contains(&"startTime"), "local var in function should be skipped");
-        assert!(!names.contains(&"url"), "local var in function should be skipped");
-        assert!(!names.contains(&"result"), "local let in function should be skipped");
-        assert!(!names.contains(&"inner"), "local var in arrow should be skipped");
-        assert!(!names.contains(&"local"), "local var in method should be skipped");
+        assert!(
+            !names.contains(&"startTime"),
+            "local var in function should be skipped"
+        );
+        assert!(
+            !names.contains(&"url"),
+            "local var in function should be skipped"
+        );
+        assert!(
+            !names.contains(&"result"),
+            "local let in function should be skipped"
+        );
+        assert!(
+            !names.contains(&"inner"),
+            "local var in arrow should be skipped"
+        );
+        assert!(
+            !names.contains(&"local"),
+            "local var in method should be skipped"
+        );
     }
 
     #[test]
@@ -1736,7 +1756,10 @@ export function handler() {
 
         // But dataflow edges should still reference buildUrl
         assert!(
-            extracted.dataflow_edges.iter().any(|e| e.from_symbol == "buildUrl"),
+            extracted
+                .dataflow_edges
+                .iter()
+                .any(|e| e.from_symbol == "buildUrl"),
             "dataflow edges should still be extracted for local vars"
         );
     }
@@ -1803,7 +1826,13 @@ namespace Config {
         let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
 
         // Namespace-level consts should be extracted (namespace/internal_module is transparent)
-        assert!(names.contains(&"API_URL"), "namespace const should be extracted");
-        assert!(names.contains(&"TIMEOUT"), "namespace const should be extracted");
+        assert!(
+            names.contains(&"API_URL"),
+            "namespace const should be extracted"
+        );
+        assert!(
+            names.contains(&"TIMEOUT"),
+            "namespace const should be extracted"
+        );
     }
 }

@@ -164,12 +164,27 @@ const HF_REPO: &str = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF";
 /// so no separate tokenizer.json download is needed.
 const HF_MODEL_FILE: &str = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
 
-/// Create an LLM generator based on config.
+/// Context size for description-pipeline prompts (single symbol, ~275-425 tokens).
+pub const DESCRIPTION_LLM_N_CTX: u32 = 512;
+
+/// Create an LLM generator sized for description-pipeline prompts (n_ctx=512).
 ///
 /// Returns `None` if LLM is disabled or model directory is not configured.
 /// Auto-downloads the model from HuggingFace on first launch if not present.
 pub fn create_llm_generator(
     config: &crate::config::Config,
+) -> anyhow::Result<Option<Arc<dyn LlmGenerator>>> {
+    create_llm_generator_with_ctx(config, DESCRIPTION_LLM_N_CTX)
+}
+
+/// Create an LLM generator with an explicit `n_ctx`.
+///
+/// `ask_code` uses this with `config.answer_llm_n_ctx` so the answer LLM
+/// can hold a full evidence-bearing prompt. The description pipeline uses
+/// the smaller default via [`create_llm_generator`].
+pub fn create_llm_generator_with_ctx(
+    config: &crate::config::Config,
+    n_ctx: u32,
 ) -> anyhow::Result<Option<Arc<dyn LlmGenerator>>> {
     if !config.llm_enabled {
         tracing::info!("LLM descriptions disabled (LLM_ENABLED=false)");
@@ -208,7 +223,7 @@ pub fn create_llm_generator(
     }
 
     // LLM_DEVICE is ignored — llama.cpp auto-detects Metal on macOS.
-    let generator = llamacpp::LlamaCppGenerator::new(&model_file)?;
+    let generator = llamacpp::LlamaCppGenerator::new(&model_file, n_ctx)?;
     Ok(Some(Arc::new(generator)))
 }
 

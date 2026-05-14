@@ -250,7 +250,11 @@ fn parse_citation_inner(s: &str) -> Option<CitationForm> {
     if !file.contains('/') && !file.contains('.') {
         return None;
     }
-    let line: u32 = line_str.parse().ok()?;
+    // Accept either `file:LINE` (preferred) or `file:START-END` (3B Qwen often
+    // copies the evidence header's range; we keep the start line which the
+    // resolver already validates against the symbol's [start, end] span).
+    let line_part = line_str.split_once('-').map(|(s, _)| s).unwrap_or(line_str);
+    let line: u32 = line_part.trim().parse().ok()?;
     Some(CitationForm::FileLine {
         file: file.to_string(),
         line,
@@ -427,6 +431,21 @@ mod tests {
             CitationForm::FileLine {
                 file: "src/path/mod.rs".to_string(),
                 line: 42
+            }
+        );
+    }
+
+    #[test]
+    fn parse_accepts_file_line_range_using_start() {
+        // 3B Qwen often copies the evidence-header range form `file:START-END`
+        // instead of the requested `file:LINE`. Treat it as the start line.
+        let cites = parse_citations("See [src/handlers/search.rs:53-99] for the handler body.");
+        assert_eq!(cites.len(), 1);
+        assert_eq!(
+            cites[0].form,
+            CitationForm::FileLine {
+                file: "src/handlers/search.rs".into(),
+                line: 53
             }
         );
     }

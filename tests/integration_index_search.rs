@@ -106,6 +106,7 @@ fn test_config(base_dir: &std::path::Path) -> Config {
         llm_model_dir: None,
         llm_max_tokens: 30,
         llm_batch_commit: 10,
+        answer_llm_n_ctx: 16384,
         sampling_descriptions_enabled: true,
         leader_election_enabled: false,
         leader_heartbeat_interval_ms: 10_000,

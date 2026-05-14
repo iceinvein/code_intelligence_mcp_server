@@ -20,7 +20,7 @@ use crate::llm::answer::{
     build_answer_prompt, compute_confidence, parse_citations, validate_citations, Confidence,
     EvidenceItem, ResolvedSpan,
 };
-use crate::llm::create_llm_generator;
+use crate::llm::create_llm_generator_with_ctx;
 use crate::llm::LlmGenerator;
 use crate::tools::{AskCodeTool, InvestigateTool};
 
@@ -250,11 +250,16 @@ fn citation_to_json(claim_index: usize, raw: &str, span: &ResolvedSpan) -> Value
 }
 
 /// Lazy-load (or return cached) answer LLM. On miss, attempts to construct
-/// one via `create_llm_generator`. If construction fails or LLM is disabled
-/// via config, caches `None` so subsequent calls short-circuit immediately.
+/// one via `create_llm_generator_with_ctx`. The answer LLM uses
+/// `config.answer_llm_n_ctx` (default 16384), not the 512 used by the
+/// description pipeline — `build_answer_prompt` embeds retrieved code
+/// evidence so prompts routinely exceed several thousand tokens. If
+/// construction fails or LLM is disabled, caches `None` so subsequent calls
+/// short-circuit immediately.
 fn get_or_init_answer_generator(state: &AppState) -> Option<std::sync::Arc<dyn LlmGenerator>> {
     let cell = &state.answer_generator;
-    let slot = cell.get_or_init(|| match create_llm_generator(&state.config) {
+    let n_ctx = state.config.answer_llm_n_ctx;
+    let slot = cell.get_or_init(|| match create_llm_generator_with_ctx(&state.config, n_ctx) {
         Ok(maybe) => maybe,
         Err(err) => {
             tracing::warn!(
@@ -290,6 +295,7 @@ fn build_unavailable_response(
         "evidence_count": evidence.len(),
     })
 }
+
 
 fn follow_up_hint(
     confidence: Confidence,

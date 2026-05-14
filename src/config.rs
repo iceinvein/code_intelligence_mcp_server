@@ -354,6 +354,7 @@ impl StandaloneConfig {
             llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
             llm_max_tokens: 50,
             llm_batch_commit: 10,
+            answer_llm_n_ctx: 32768,
             sampling_descriptions_enabled: true,
             // Standalone mode has SessionManager for coordination — no need for flock
             leader_election_enabled: false,
@@ -448,6 +449,11 @@ pub struct Config {
     pub llm_model_dir: Option<Utf8PathBuf>,
     pub llm_max_tokens: u32,
     pub llm_batch_commit: usize,
+
+    /// llama.cpp context size for the `ask_code` answer LLM. Must accommodate
+    /// the full evidence-bearing prompt plus generated answer (default 32768,
+    /// matching Qwen 2.5 Coder 1.5B's native training context).
+    pub answer_llm_n_ctx: u32,
 
     // MCP sampling-based descriptions
     /// When true, attempt to use the MCP client's LLM (via sampling/createMessage)
@@ -848,6 +854,11 @@ impl Config {
             .map(parse_usize)
             .transpose()?
             .unwrap_or(10);
+        let answer_llm_n_ctx: u32 = optional_env("ANSWER_LLM_N_CTX")
+            .as_deref()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &u32| n >= 512)
+            .unwrap_or(32768);
 
         // MCP sampling-based descriptions (uses client's LLM via sampling/createMessage)
         let sampling_descriptions_enabled = optional_env("SAMPLING_DESCRIPTIONS_ENABLED")
@@ -976,6 +987,7 @@ impl Config {
             llm_model_dir,
             llm_max_tokens,
             llm_batch_commit,
+            answer_llm_n_ctx,
 
             // MCP sampling-based descriptions
             sampling_descriptions_enabled,

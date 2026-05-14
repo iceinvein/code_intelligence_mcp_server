@@ -59,6 +59,21 @@ AGENT_SYSTEM_PROMPT = (
 )
 
 
+def _system_prompt_for(toolset: str) -> str:
+    """Build the system prompt, optionally appending an env-var extra.
+
+    AGENT_SYSTEM_PROMPT_EXTRA_<TOOLSET> (uppercase) overrides per-toolset.
+    AGENT_SYSTEM_PROMPT_EXTRA applies to all toolsets if the specific one is unset.
+    Use this to test instruction-layer changes (e.g., 'always prefer MCP tools').
+    """
+    import os as _os
+    key_specific = f"AGENT_SYSTEM_PROMPT_EXTRA_{toolset.upper()}"
+    extra = _os.environ.get(key_specific) or _os.environ.get("AGENT_SYSTEM_PROMPT_EXTRA", "")
+    if extra:
+        return AGENT_SYSTEM_PROMPT + "\n\n" + extra.strip()
+    return AGENT_SYSTEM_PROMPT
+
+
 def _build_default_mcp_config() -> Dict[str, Any]:
     return {"mcpServers": {}}
 
@@ -123,6 +138,13 @@ def main() -> None:
         "code_intel": _build_code_intel_mcp_config(args.binary, base_dir),
     }
 
+    wanted_toolsets = _os.environ.get("BENCH_TOOLSETS")
+    if wanted_toolsets:
+        keep = {s.strip() for s in wanted_toolsets.split(",")}
+        toolset_configs = {k: v for k, v in toolset_configs.items() if k in keep}
+        if not toolset_configs:
+            sys.exit(f"BENCH_TOOLSETS={wanted_toolsets} matched no known toolsets")
+
     print(f"Bench round {args.round} on {args.repo} ({base_dir})", file=sys.stderr)
     print(f"Agent: {agent_model}  Judge: {judge_model}", file=sys.stderr)
 
@@ -134,7 +156,7 @@ def main() -> None:
             t0 = time.time()
             opts = ClaudeRunOptions(
                 question=entry.question,
-                system_prompt=AGENT_SYSTEM_PROMPT,
+                system_prompt=_system_prompt_for(toolset_name),
                 allowed_tools=_allowed_tools_for(toolset_name),
                 mcp_config=mcp_cfg,
                 model=agent_model,
@@ -156,15 +178,17 @@ def main() -> None:
             raw_runs.append(d)
             per_q_records[toolset_name] = d
 
-        default_rec = per_q_records["default"]
-        ci_rec = per_q_records["code_intel"]
+        default_rec = per_q_records.get("default")
+        ci_rec = per_q_records.get("code_intel")
 
-        mech_def = mech_score(entry, default_rec["final_answer"]).combined
-        mech_ci = mech_score(entry, ci_rec["final_answer"]).combined
+        if default_rec is not None:
+            default_rec["mech_score"] = mech_score(entry, default_rec["final_answer"]).combined
+        if ci_rec is not None:
+            ci_rec["mech_score"] = mech_score(entry, ci_rec["final_answer"]).combined
 
-        if args.skip_judge:
-            judge_def = judge_ci = 0
-        else:
+        # Judge requires both records; skip if either is missing or skip-judge requested.
+        can_judge = (default_rec is not None) and (ci_rec is not None) and not args.skip_judge
+        if can_judge:
             seed = random.randint(0, 1)
             try:
                 jr = judge_pair(
@@ -177,23 +201,24 @@ def main() -> None:
                     code_intel_answer=ci_rec["final_answer"],
                     seed=seed,
                 )
-                judge_def = jr.default_score
-                judge_ci = jr.code_intel_score
                 default_rec["judge_justification"] = jr.default_justification
                 ci_rec["judge_justification"] = jr.code_intel_justification
+                default_rec["judge_score"] = jr.default_score
+                ci_rec["judge_score"] = jr.code_intel_score
             except Exception as e:
                 print(f"  judge failed: {e}", file=sys.stderr)
-                judge_def = judge_ci = 0
+                if default_rec is not None:
+                    default_rec["judge_score"] = 0
+                if ci_rec is not None:
+                    ci_rec["judge_score"] = 0
+        else:
+            if default_rec is not None:
+                default_rec["judge_score"] = 0
+            if ci_rec is not None:
+                ci_rec["judge_score"] = 0
 
-        default_rec["mech_score"] = mech_def
-        default_rec["judge_score"] = judge_def
-        ci_rec["mech_score"] = mech_ci
-        ci_rec["judge_score"] = judge_ci
-
-        for rec, mech_v, judge_v in (
-            (default_rec, mech_def, judge_def),
-            (ci_rec, mech_ci, judge_ci),
-        ):
+        rec_pairs = [(r, r["mech_score"], r["judge_score"]) for r in (default_rec, ci_rec) if r is not None]
+        for rec, mech_v, judge_v in rec_pairs:
             # input_tokens here is the TOTAL the model saw (uncached + cache write + cache read)
             # because Claude Code's default-system-prompt overhead lands almost entirely in
             # cache_creation/read; comparing only the uncached fraction would be misleading.

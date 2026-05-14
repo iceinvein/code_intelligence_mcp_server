@@ -1,0 +1,612 @@
+{
+  "runs": [
+    {
+      "question_id": "self-q1",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The score-gap detection threshold is defined in **`src/retrieval/mod.rs` at line 1023**:\n\n```rust\nif hits[i - 1].score > 0.0 && hits[i].score / hits[i - 1].score < 0.4 {\n```\n\nThe threshold is **0.4** (a ratio). When the ratio of consecutive result scores drops below 0.4 (i.e., a 2.5x+ drop between adjacent results), the trailing results are truncated as noise. The check only applies starting at position 3+ (per the comment at line 1014). After truncation, a post-gap fill at line 1038 uses the same `0.4` multiplier as a floor: candidates must score above `last_kept_score * 0.4` to be re-injected.",
+      "input_tokens": 8,
+      "output_tokens": 600,
+      "wall_ms": 40398,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 22477,
+      "cache_read_input_tokens": 143446,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "score-gap detection threshold ratio",
+            "context": "snippets"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "score.gap|gap.*ratio|gap.*threshold|0\\.4",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src",
+            "type": "rust",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 165931,
+      "mech_score": 1.0,
+      "judge_score": 0
+    },
+    {
+      "question_id": "self-q8",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Here is a complete walkthrough of what happens when `refresh_index` is invoked:\n\n---\n\n## `refresh_index` call chain\n\n### 1. Entry point: MCP dispatch (`src/server/mod.rs`, line 79/222)\n\nTwo paths reach the handler:\n\n- **Task-augmented path** (`dispatch_task_augmented_call`, line 79): Used by the MCP Task extension. A `tokio::spawn` wraps the handler call so the client gets a task ID immediately and polls for completion.\n- **Synchronous path** (`dispatch_async!` macro, line 222): Awaits `handle_refresh_index` directly.\n\nBoth converge on `handle_refresh_index`.\n\n---\n\n### 2. Handler (`src/handlers/index.rs:9`)\n\n**Leader guard** (line 14): Followers return early with `FOLLOWER_INSTANCE` -- only the leader process is allowed to write.\n\n**Routing** (lines 24-44):\n- If `tool.files` is `Some`, it validates each path is within `base_dir` (via `PathNormalizer::validate_within_base`), then calls `state.indexer.index_paths(&paths)`.\n- Otherwise calls `state.indexer.index_all()`.\n\n---\n\n### 3. `index_all` (`src/indexer/pipeline/mod.rs:133`)\n\n1. **Package/repo detection** (line 144): If `package_detection_enabled`, runs `index_packages_and_repositories()` which discovers `Cargo.toml`/`package.json`/etc. and upserts `repositories` + `packages` tables in SQLite.\n2. **File scan** (line 155-157): Calls `scan_files(&config, root)` for each `repo_root` to collect matching `PathBuf`s via glob patterns.\n3. Delegates to `index_files(files, cleanup_deleted=true)`.\n\n`index_paths` is similar but skips the package step and the cleanup pass; it adds individual files/dirs to the list and calls `index_files(files, cleanup_deleted=false)`.\n\n---\n\n### 4. `index_files` (`src/indexer/pipeline/mod.rs:538`) -- the three-phase pipeline\n\n#### Pre-pass: deleted file cleanup (lines 584-624)\nOnly when `cleanup_deleted=true` (i.e., `index_all`). Compares currently-scanned files against `list_all_file_fingerprints`. For each file no longer on disk:\n- `sqlite.delete_symbols_by_file`, `delete_usage_examples_by_file`, `delete_todos_by_file`, etc.\n- `tantivy.delete_symbols_by_file`\n- `vectors.delete_records_by_file_path`\n- A single `tantivy.commit()` after all deletions.\n\n#### Phase 1: Parse (lines 636-664, Rayon parallel)\n\n`parse::parse_files` is called via `spawn_blocking`. Internally it builds a Rayon thread pool (size = `parallel_workers`) and runs `parse_single_file` on each file in parallel. Each worker:\n1. Fetches a SQLite connection from the `SqlitePool`.\n2. Computes a file fingerprint (mtime + size); if unchanged vs stored fingerprint, returns `ParseResult::Unchanged`.\n3. Reads the file, runs Tree-Sitter parsing, extracts symbols, edges, usage examples, import tags, framework tags, TODOs, docstrings, decorators, and framework patterns.\n4. Returns `ParseResult::Parsed(Box<ParsedFile>)`.\n\nUnchanged files increment `files_unchanged`; parsed files contribute to `symbols_indexed` and `files_indexed`.\n\n#### Phase 2: Write (lines 667-671, single-threaded batched)\n\n`write::write_batch` processes parsed files in chunks of 50 via a single SQLite connection:\n- Per chunk: one `BEGIN` transaction, deletes old symbol/usage/todo/etc rows for that file, batch-upserts new rows, commits.\n- Also calls `tantivy.upsert` per chunk to update the BM25 full-text index; a single `tantivy.commit()` at the end.\n\n#### Phase 3: Embed + PageRank (lines 673-712, concurrent futures)\n\n`tokio::join!` runs two futures concurrently:\n\n**Embedding** (`generate_embeddings_for_orphaned_symbols`):\n- Acquires `embedding_generation_lock` (mutex to prevent race with startup recovery).\n- Loops in batches of 200: fetches symbols missing from `similarity_clusters`.\n- Filters via `should_generate_embedding`: skips file-kind symbols, tiny private unexported helpers (<3 lines), test files, and test symbols.\n- Skipped symbols get a placeholder `__skipped__` cluster entry so they aren't re-fetched.\n- For symbols to embed: calls `embed_and_build_vector_records`, which:\n  - Runs `text::prepare_embedding_text` (semantic header + comment-stripped body).\n  - Checks the `EmbeddingCache` (SQLite-backed LRU).\n  - Embeds uncached texts by calling the `Embedder` (llama.cpp Metal GPU, jina-code-embeddings-1.5b Q8_0).\n  - Stores new embeddings in cache.\n- Pipelined I/O: while embedding batch N, a `tokio::spawn` writes batch N-1's `VectorRecord`s to LanceDB and upserts `similarity_clusters` in SQLite.\n\n**PageRank** (if any files were indexed or deleted):\n- `spawn_blocking` calls `pagerank::compute_and_store_pagerank`, reading call/reference edges from SQLite and writing scores back.\n\n---\n\n### 5. Post-pipeline (back in `index_all`)\n\n- Updates Prometheus gauges (symbol count, index size).\n- If any files changed: calls `vectors.optimize()` to compact LanceDB fragments and prune old versions.\n- Calls `persist_index_run_metrics` to insert an `IndexRunRow` into SQLite.\n- Returns `IndexRunStats` (files scanned/indexed/unchanged/skipped/deleted, symbols indexed) which the handler wraps as `{ ok: true, stats: ... }`.\n\n---\n\n**Summary table:**\n\n| Step | Where | What |\n|------|-------|------|\n| Leader guard | `handlers/index.rs:14` | Followers bail out |\n| File scan | `pipeline/scan.rs` via `index_all` | Glob matching per `repo_roots` |\n| Package detection | `pipeline/mod.rs:145` | Upsert repos/packages in SQLite |\n| Deleted file cleanup | `pipeline/mod.rs:585` | Remove from SQLite + Tantivy + LanceDB |\n| Parse (parallel) | `pipeline/parse.rs` via Rayon | Tree-Sitter + fingerprint skip |\n| Write (batched) | `pipeline/write.rs` | SQLite transactions + Tantivy upserts |\n| Embed | `pipeline/mod.rs:756` | llama.cpp Metal GPU, LanceDB write, cache |\n| PageRank | `graph/pagerank.rs` | Edge scores written back to SQLite |\n| LanceDB optimize | `pipeline/mod.rs:191` | Compact fragments after writes |\n| Metrics persist | `pipeline/mod.rs:183` | `index_runs` row in SQLite |",
+      "input_tokens": 13,
+      "output_tokens": 3125,
+      "wall_ms": 69005,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 38896,
+      "cache_read_input_tokens": 374893,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Walk through the full call chain when refresh_index is invoked: from the MCP handler entry point, through the indexing pipeline, to completion. Include file scanning, parsing, symbol extraction, embedding generation, and storage writes.",
+            "mode": "trace",
+            "max_evidence": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/handlers/index.rs",
+            "output_mode": "content",
+            "context": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "refresh_index",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/server/mod.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/handlers/index.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub async fn index_all|pub async fn index_paths",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/indexer/pipeline/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub fn parse_files",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/indexer/pipeline/parse.rs",
+            "output_mode": "content",
+            "context": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub fn write_batch",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/indexer/pipeline/write.rs",
+            "output_mode": "content",
+            "context": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 413802,
+      "mech_score": 1.0,
+      "judge_score": 0
+    },
+    {
+      "question_id": "self-q12",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "Now I have enough. Here's the answer:\n\n---\n\n**Three consumers of the Qwen 2.5 Coder model, with different lifetimes:**\n\n### 1. Description pipeline (freed after use)\n`src/indexer/pipeline/describe.rs`, line 221:\n```rust\n// Explicitly drop the LLM to free ~1.1 GB of GPU memory.\ndrop(llm);\n```\nThe description worker (`run_description_worker`) creates an `Arc<dyn LlmGenerator>` via `create_llm_generator` (n_ctx=512, `DESCRIPTION_LLM_N_CTX`), generates keyword tags for every un-described symbol, then **explicitly drops it** when done. It does not stay resident.\n\n### 2. Answer LLM for `ask_code` (stays loaded after first call)\n`src/handlers/ask_code.rs:259-272`, `get_or_init_answer_generator`:\nThe answer LLM is lazy-initialized into `AppState.answer_generator` (an `Arc<OnceCell<...>>`). It uses `create_llm_generator_with_ctx` with `config.answer_llm_n_ctx` (default 32 768 tokens, vs 512 for descriptions). Once initialized on the first `ask_code` call it **stays resident** in the OnceCell for the process lifetime.\n\n### 3. HyDE generator (stays loaded if enabled)\n`src/main.rs:567-609`, `src/retrieval/hyde/generator.rs`:\nWhen `HYDE_ENABLED=true` and `HYDE_LLM_BACKEND=local`, a `HypotheticalCodeGenerator` is constructed with the same model (via `create_llm_generator`, n_ctx=512) and stored in the `Retriever`. It **stays loaded** for the server's lifetime, used on every hybrid search to generate a hypothetical code snippet before the vector query.\n\n### Summary\n\n| Component | File | n_ctx | Lifetime |\n|---|---|---|---|\n| Description worker | `indexer/pipeline/describe.rs` | 512 | Freed after indexing pass |\n| `ask_code` answer LLM | `handlers/ask_code.rs` | 32 768 | Resident after first call |\n| HyDE local LLM | `retrieval/hyde/generator.rs` via `main.rs` | 512 | Resident for server lifetime |\n\nThe description worker is the only one explicitly dropped; the other two stay in memory as long as the server runs. The `LlamaBackend` itself (`src/llm/mod.rs:25`) is a `Box::leak`ed static singleton that **never drops**, as freeing it would invalidate all loaded models.",
+      "input_tokens": 14,
+      "output_tokens": 2253,
+      "wall_ms": 47183,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 33610,
+      "cache_read_input_tokens": 432807,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "What components depend on the description LLM (Qwen 2.5 Coder / LlamaCppGenerator for descriptions), and which components stay loaded in memory after descriptions are generated versus which are freed?",
+            "mode": "dependency"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "LlamaCppGenerator|description_llm|answer_llm|DescriptionGenerator",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "description_llm|answer_llm|LlamaCppGenerator",
+            "type": "rust",
+            "output_mode": "content",
+            "glob": "src/llm/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "drop|free|description_llm|answer_llm",
+            "type": "rust",
+            "output_mode": "content",
+            "glob": "src/llm/llamacpp.rs",
+            "head_limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/llm/mod.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "description_llm|answer_llm|create_llm_generator|llm_generator",
+            "type": "rust",
+            "output_mode": "content",
+            "glob": "src/indexer/pipeline/utils.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "description_llm|answer_llm|create_llm_generator|llm.*drop|drop.*llm",
+            "type": "rust",
+            "output_mode": "content",
+            "glob": "src/**/*.rs",
+            "head_limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/indexer/pipeline/describe.rs",
+            "offset": 200,
+            "limit": 50
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/main.rs",
+            "offset": 560,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/main.rs",
+            "offset": 700,
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/handlers/ask_code.rs",
+            "offset": 245,
+            "limit": 40
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "HypotheticalCodeGenerator|hyde_generator|HyDE",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 466431,
+      "mech_score": 0.4666666666666667,
+      "judge_score": 0
+    },
+    {
+      "question_id": "self-q14",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The complete chain is:\n\n1. **`src/server/mod.rs:225`** \u2014 MCP dispatch layer receives the `search_code` tool call and routes it via `dispatch_async!` macro\n2. **`src/handlers/search.rs:53` \u2014 `handle_search_code`** \u2014 the public async handler; when `context_mode == ContextMode::Snippets`, calls...\n3. **`src/handlers/search.rs:92` \u2014 `attach_hit_snippets`** (private fn, same file)\n\nSo the canonical chain is:\n\n```\nMCP dispatch (server/mod.rs:225)\n  \u2192 handle_search_code (handlers/search.rs:53)\n    \u2192 attach_hit_snippets (handlers/search.rs:92)  [only when context=\"snippets\"]\n```\n\n`attach_hit_snippets` is also reachable indirectly via `handlers/investigation.rs:298` and `handlers/analysis.rs:1410`, both of which call `handle_search_code` and could trigger the snippets branch if they pass `context=\"snippets\"`. The MCP dispatch path is the primary public entry point.",
+      "input_tokens": 10,
+      "output_tokens": 908,
+      "wall_ms": 23470,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 23391,
+      "cache_read_input_tokens": 228118,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__get_call_hierarchy",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_call_hierarchy",
+          "args": {
+            "symbol_name": "attach_hit_snippets",
+            "direction": "callers",
+            "depth": 10
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "attach_hit_snippets",
+            "output_mode": "content",
+            "type": "rust",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/handlers/search.rs",
+            "limit": 110
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "handle_search_code",
+            "output_mode": "content",
+            "type": "rust",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 251519,
+      "mech_score": 1.0,
+      "judge_score": 0
+    },
+    {
+      "question_id": "self-q15",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "self",
+      "final_answer": "The full picture is now clear. Here is the end-to-end flow:\n\n---\n\n**1. MCP handler \u2014 `src/handlers/search.rs:53` (`handle_search_code`)**\n\nThe raw query string from the tool input arrives as `tool.query`. The handler calls `retriever.search(&tool.query, limit, exported_only, context_mode)` (line 63) with no transformation \u2014 the query goes in as-is.\n\n**2. Retriever entry point \u2014 `src/retrieval/mod.rs:295` (`Retriever::search`)**\n\nInside `search`:\n- `parse_query_controls` strips inline filter tokens (e.g., `lang:rust`, `file:foo`) off the query, producing `query_without_controls` (line 343).\n- `normalize_and_expand_query(&query_without_controls, false, false)` runs the query through lowercasing/trimming and produces the normalized form used to build `sub_queries` via `decompose_query` (lines 372-373). Synonym expansion is *off* at this stage.\n- `detect_intent` classifies the query (Definition, Schema, Error, Callers, etc.) (line 362).\n\n**3. Hybrid search dispatch \u2014 `src/retrieval/hybrid.rs:27` (`execute_hybrid_search`)**\n\nIf there is one sub-query it calls `execute_single_query_search`; multiple sub-queries call `execute_multi_query_search`. In both paths `query_without_controls` (not the synonym-expanded form) is what is forwarded to Tantivy, because synonym expansion helps BM25 but hurts embeddings and is handled inside the Tantivy layer itself.\n\n**4. Tantivy BM25 call \u2014 `src/retrieval/hybrid.rs:78`**\n\n```rust\nlet keyword_hits = retriever.tantivy.search(search_query, k)?;\n```\n\n**5. Tantivy `search` \u2014 `src/storage/tantivy.rs:470`**\n\nInside `TantivyIndex::search`:\n- `text::remove_stop_words(query)` strips function words (line 476).\n- Word count determines field-boost tiers: 1 word \u2192 name-biased (1.5\u00d7/1.0\u00d7/0.5\u00d7), 2 words \u2192 balanced, 3+ words \u2192 body text-heavy (0.2\u00d7/3.0\u00d7/1.5\u00d7) across `name`, `text`, and `description` fields (lines 484-503).\n- `search_in_fields` is called (line 505), which builds a Tantivy `QueryParser` for those fields with those boosts, calls `query_parser.parse_query(query)` (line 561), and then `searcher.search(&parsed_query, &TopDocs::with_limit(limit))` (line 565) \u2014 that is the actual BM25 index hit.\n- If results are fewer than `limit` and the query looks like a partial token (`looks_like_partial`), a second pass runs against the n-gram fields `name_ngram`/`text_ngram` at 0.35\u00d7 score (lines 514-542).\n\n**Summary of the chain:**\n\n```\ntool.query\n  \u2192 handle_search_code (handlers/search.rs:63)\n    \u2192 Retriever::search (retrieval/mod.rs:295)\n      \u2192 parse_query_controls \u2192 query_without_controls\n      \u2192 normalize_and_expand_query \u2192 sub_queries\n      \u2192 execute_hybrid_search (retrieval/hybrid.rs:27)\n        \u2192 tantivy.search(query_without_controls, k) (hybrid.rs:78)\n          \u2192 TantivyIndex::search (storage/tantivy.rs:470)\n            \u2192 remove_stop_words\n            \u2192 field-boost tier selection\n            \u2192 search_in_fields \u2192 QueryParser::parse_query \u2192 searcher.search (BM25)\n```",
+      "input_tokens": 17,
+      "output_tokens": 2544,
+      "wall_ms": 103151,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 45994,
+      "cache_read_input_tokens": 651472,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "How does a query string flow from search_code's tool input to the actual Tantivy index lookup? Trace the full call chain from the MCP handler through retrieval to the Tantivy search call.",
+            "mode": "trace",
+            "max_evidence": 12
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "fn handle_search_code|search_code|SearchCode",
+            "type": "rust",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/handlers/search.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/retrieval/mod.rs",
+            "limit": 100
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/retrieval/mod.rs",
+            "limit": 200,
+            "offset": 100
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/retrieval/mod.rs",
+            "limit": 200,
+            "offset": 300
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/retrieval/hybrid.rs"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub fn search",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/storage/tantivy.rs",
+            "output_mode": "content",
+            "context": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/storage/tantivy.rs",
+            "offset": 470,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/storage/tantivy.rs",
+            "offset": 548,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "pub fn normalize_and_expand_query|pub fn parse_query_controls",
+            "path": "/Users/dikrana/Documents/trae_projects/code_intelligence_mcp_server/src/retrieval/query.rs",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 697483,
+      "mech_score": 1.0,
+      "judge_score": 0
+    }
+  ],
+  "round": 9897,
+  "repo": "self",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

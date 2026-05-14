@@ -322,13 +322,14 @@ fn build_unavailable_response(
 /// answer quality. Set `ASK_CODE_LLM_SYNTHESIS=true` (or `1`) to restore the
 /// LLM path -- intended for experiments with stronger models.
 fn llm_synthesis_enabled() -> bool {
+    parse_synthesis_flag(std::env::var("ASK_CODE_LLM_SYNTHESIS").ok().as_deref())
+}
+
+/// Parse the truthy-string contract used by `ASK_CODE_LLM_SYNTHESIS`. Factored
+/// out so unit tests can exercise the parsing without touching process env.
+fn parse_synthesis_flag(raw: Option<&str>) -> bool {
     matches!(
-        std::env::var("ASK_CODE_LLM_SYNTHESIS")
-            .ok()
-            .as_deref()
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
+        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
         Some("1") | Some("true") | Some("yes") | Some("on")
     )
 }
@@ -558,5 +559,111 @@ mod tests {
     #[test]
     fn follow_up_hint_high_returns_none() {
         assert!(follow_up_hint(Confidence::High, 5, 3, 0).is_none());
+    }
+
+    #[test]
+    fn evidence_only_response_carries_evidence_and_stop_reason() {
+        let evidence = vec![
+            ev("sym_a", "src/a.rs", 1, 5),
+            ev("sym_b", "src/b.rs", 10, 20),
+            ev("sym_c", "src/c.rs", 30, 40),
+        ];
+        let investigate_response = json!({"mode_used": "discover"});
+        let response = build_evidence_only_response(
+            "where is fn_x defined?",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &evidence,
+            evidence.len(),
+        );
+        assert_eq!(response["stop_reason"], "evidence_only");
+        assert_eq!(response["answer"], "");
+        assert_eq!(response["dropped_citation_count"], 0);
+        assert_eq!(response["evidence_count"], 3);
+        assert_eq!(response["mode_used"], "discover");
+        assert_eq!(
+            response["citations"].as_array().map(|a| a.len()),
+            Some(0),
+            "evidence-only path never emits citations",
+        );
+        let evj = response["evidence"].as_array().unwrap();
+        assert_eq!(evj.len(), 3);
+        assert_eq!(evj[0]["symbol_id"], "sym_a");
+        let follow_up = response["follow_up"].as_str().unwrap();
+        assert!(
+            follow_up.contains("evidence"),
+            "follow_up must direct the agent at evidence[], got: {follow_up}",
+        );
+    }
+
+    #[test]
+    fn evidence_only_confidence_scales_with_count() {
+        let investigate_response = json!({});
+        // 0 items -> low + no_evidence stop reason
+        let r0 = build_evidence_only_response(
+            "q",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &[],
+            0,
+        );
+        assert_eq!(r0["confidence"], "low");
+        assert_eq!(r0["stop_reason"], "no_evidence");
+
+        // 1 item -> low + evidence_only
+        let one = vec![ev("a", "src/a.rs", 1, 2)];
+        let r1 = build_evidence_only_response(
+            "q",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &one,
+            1,
+        );
+        assert_eq!(r1["confidence"], "low");
+        assert_eq!(r1["stop_reason"], "evidence_only");
+
+        // 3 items -> medium
+        let three = vec![
+            ev("a", "src/a.rs", 1, 2),
+            ev("b", "src/b.rs", 1, 2),
+            ev("c", "src/c.rs", 1, 2),
+        ];
+        let r3 = build_evidence_only_response(
+            "q",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &three,
+            3,
+        );
+        assert_eq!(r3["confidence"], "medium");
+        assert_eq!(r3["stop_reason"], "evidence_only");
+    }
+
+    #[test]
+    fn parse_synthesis_flag_accepts_truthy_values() {
+        for raw in ["1", "true", "yes", "on", "TRUE", "  YES  ", "On"] {
+            assert!(
+                parse_synthesis_flag(Some(raw)),
+                "{raw:?} should enable synthesis",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_synthesis_flag_rejects_falsy_and_unset() {
+        for raw in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("no"),
+            Some("off"),
+            Some("maybe"),
+        ] {
+            assert!(
+                !parse_synthesis_flag(raw),
+                "{raw:?} should keep evidence-only default",
+            );
+        }
     }
 }

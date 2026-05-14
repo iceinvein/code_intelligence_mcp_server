@@ -70,6 +70,8 @@ The standalone server auto-detects each session's workspace root via the MCP `ro
 
 Once connected, Claude Code gains access to 32 MCP tools including:
 
+- **`ask_code`** — Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
+- **`investigate`** — Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
 - **`search_code`** — Primary semantic + keyword hybrid search (e.g., "how does auth work?" or "class User")
 - **`get_definition`** / **`find_references`** — Jump to definitions and find all usages
 - **`get_call_hierarchy`** / **`get_type_graph`** — Navigate call chains and type hierarchies
@@ -183,6 +185,10 @@ The server reads configuration from environment variables. Key ones:
 | `LEARNING_ENABLED` | `true` | Enable selection/affinity learning |
 | `LEARNING_SELECTION_BOOST` | `0.1` | Max boost from user selection history |
 | `LEARNING_FILE_AFFINITY_BOOST` | `0.05` | Max boost from file access frequency |
+| `ASK_CODE_LLM_SYNTHESIS` | unset (false) | Opt back into local-LLM prose synthesis in `ask_code`. Default behaviour returns verified evidence and leaves synthesis to the calling agent (see `feat(ask_code)` in v3.3). Accepts `1`, `true`, `yes`, `on`. |
+| `ANSWER_LLM_N_CTX` | `32768` | llama.cpp context size for the `ask_code` answer LLM when synthesis is enabled. Sized to fit a full evidence-bearing prompt plus the generated answer. Minimum `512`. |
+| `LLM_HF_REPO` | `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` | Override the HuggingFace repository for the local LLM (e.g. `Qwen/Qwen2.5-Coder-3B-Instruct-GGUF` for the 3B variant). |
+| `LLM_HF_MODEL_FILE` | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | Override the GGUF filename within the configured repo. |
 
 ## Path Handling
 

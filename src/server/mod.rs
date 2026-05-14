@@ -23,21 +23,22 @@ use std::sync::Arc;
 /// give the model enough up-front routing context to discover the planner tool
 /// before it commits to lower-level search tools.
 pub fn server_instructions() -> &'static str {
-    "Code Intelligence provides `ask_code(question)` as the primary entry point for any \
-natural-language question about the codebase. The server retrieves relevant evidence, \
-drafts a grounded answer with the local LLM, and validates every citation against \
-retrieved code bodies before returning. The response carries the answer text, a \
-citations[] list of resolved {file:line, symbol_id} pairs (citations the LLM emitted \
-that did not resolve are dropped server-side), an evidence[] array with the source \
-bodies, and a confidence label. Call `ask_code` first; only fall through to \
-`investigate` (raw evidence without LLM synthesis) or specialist tools (`search_code`, \
-`get_definition`, `find_references`, `get_call_hierarchy`, `find_affected_code`, \
-`trace_data_flow`, `explore_dependency_graph`) when ask_code returns \
-confidence=\"low\" or you need raw structured data for custom orchestration. \
-`plan_code_investigation` remains available for recommendation-only routing. These \
-tools cover call-site, caller/callee, impact analysis, data-flow, dependency, \
-dead-code, tests, module overview, and file-summary questions. Prefer them over \
-Grep/Read for any question they answer directly."
+    "Code Intelligence is a retrieval engine for code questions. `ask_code(question)` is the \
+fastest path to grounded evidence: it runs `investigate` server-side, returns the \
+verified `evidence[]` array (symbol name, file path, line range, code body) and a \
+`mode_used` shape classification, then YOU synthesise the user-facing answer from that \
+evidence. The `answer` field in the response is intentionally empty -- local-model \
+prose was found to introduce hallucinations the agent then anchored on. \
+\
+For specialist queries call `investigate` (composite multi-hop), `search_code` \
+(hybrid search), `get_definition`, `find_references`, `get_call_hierarchy`, \
+`find_affected_code`, `trace_data_flow`, or `explore_dependency_graph` directly. \
+`plan_code_investigation` is recommendation-only. \
+\
+Prefer these tools over Grep/Read for any question they answer directly -- they carry \
+semantic context (definitions, edges, intent classification) that text search cannot. \
+Fall back to Grep only for exact literal strings (error messages, config values) or \
+files the index does not cover (markdown, JSON, TOML)."
 }
 
 /// Error message returned when `search_across_repos` is called in embedded (stdio) mode.
@@ -448,15 +449,19 @@ mod tests {
     }
 
     #[test]
-    fn server_instructions_advertise_ask_code_as_primary_entry_point() {
+    fn server_instructions_describe_ask_code_as_evidence_retriever() {
         let instructions = server_instructions();
         assert!(
             instructions.contains("ask_code"),
-            "server instructions must name ask_code as the primary entry point (v3.2.0), got: {instructions}"
+            "server instructions must name ask_code, got: {instructions}"
         );
         assert!(
-            instructions.contains("citations"),
-            "server instructions must mention validated citations, got: {instructions}"
+            instructions.contains("evidence"),
+            "server instructions must describe evidence-only contract, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("synthesise") || instructions.contains("synthesize"),
+            "server instructions must direct the agent to synthesise the final answer, got: {instructions}"
         );
         assert!(
             instructions.contains("plan_code_investigation"),
@@ -467,24 +472,8 @@ mod tests {
             "server instructions must still mention investigate (raw evidence path), got: {instructions}"
         );
         assert!(
-            instructions.contains("impact analysis"),
-            "server instructions must advertise impact routing, got: {instructions}"
-        );
-        assert!(
-            instructions.contains("data-flow"),
-            "server instructions must advertise data-flow routing, got: {instructions}"
-        );
-        assert!(
-            instructions.contains("Grep/Read"),
-            "server instructions must position specialists against Grep/Read, got: {instructions}"
-        );
-        assert!(
-            instructions.contains("call-site"),
-            "server instructions must advertise call-site routing, got: {instructions}"
-        );
-        assert!(
-            instructions.contains("dead-code"),
-            "server instructions must advertise dead-code routing, got: {instructions}"
+            instructions.contains("Grep"),
+            "server instructions must position specialists against Grep, got: {instructions}"
         );
     }
 

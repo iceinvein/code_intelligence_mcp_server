@@ -158,11 +158,23 @@ pub fn compute_content_hash(name: &str, kind: &str, body: &str) -> String {
     hex::encode(result)
 }
 
-/// HuggingFace repository for the GGUF-format Qwen2.5-Coder model.
-const HF_REPO: &str = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF";
-/// Q4_K_M quantized GGUF model (~2.1 GB). GGUF embeds the tokenizer,
-/// so no separate tokenizer.json download is needed.
-const HF_MODEL_FILE: &str = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
+/// Default HuggingFace repository for the GGUF-format Qwen2.5-Coder model.
+/// Override with `LLM_HF_REPO` (e.g. switch between the 1.5B and 3B variants).
+/// The 1.5B variant is the description-pipeline default (fast, fits 512-token
+/// context). The 3B variant exists for experiments but produced worse agent
+/// answers in ask_code use during v3.3 evaluation.
+const DEFAULT_HF_REPO: &str = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF";
+/// Default Q4_K_M quantized GGUF filename. GGUF embeds the tokenizer, so no
+/// separate tokenizer.json download is needed. Override with `LLM_HF_MODEL_FILE`.
+const DEFAULT_HF_MODEL_FILE: &str = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
+
+fn hf_repo() -> String {
+    std::env::var("LLM_HF_REPO").unwrap_or_else(|_| DEFAULT_HF_REPO.to_string())
+}
+
+fn hf_model_file() -> String {
+    std::env::var("LLM_HF_MODEL_FILE").unwrap_or_else(|_| DEFAULT_HF_MODEL_FILE.to_string())
+}
 
 /// Context size for description-pipeline prompts (single symbol, ~275-425 tokens).
 pub const DESCRIPTION_LLM_N_CTX: u32 = 512;
@@ -200,7 +212,8 @@ pub fn create_llm_generator_with_ctx(
     };
 
     // GGUF model file path
-    let model_file = model_dir.join(HF_MODEL_FILE);
+    let model_filename = hf_model_file();
+    let model_file = model_dir.join(&model_filename);
 
     // Auto-download if model not found
     if !model_file.exists() {
@@ -227,26 +240,31 @@ pub fn create_llm_generator_with_ctx(
     Ok(Some(Arc::new(generator)))
 }
 
-/// Download the Qwen2.5-Coder-1.5B-Instruct GGUF model from HuggingFace.
+/// Download the configured Qwen2.5-Coder GGUF model from HuggingFace.
 ///
-/// Downloads a single GGUF file (~1.1 GB) into the HuggingFace cache
-/// (`~/.cache/huggingface/hub/`), then creates a symlink in `target_dir`.
-/// GGUF embeds the tokenizer, so only one file is needed.
+/// Repository is resolved via [`hf_repo`] (default: 1.5B-Instruct), filename
+/// via [`hf_model_file`] (default: `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf`).
+/// Override either with `LLM_HF_REPO` / `LLM_HF_MODEL_FILE` to swap variants
+/// without rebuilding. The file is downloaded into the HuggingFace cache
+/// (`~/.cache/huggingface/hub/`) and then symlinked into `target_dir`.
 pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
     use anyhow::Context;
 
-    tracing::info!("Downloading LLM model from huggingface.co/{}", HF_REPO);
+    let repo_name = hf_repo();
+    let model_filename = hf_model_file();
+
+    tracing::info!("Downloading LLM model from huggingface.co/{}", repo_name);
 
     let api = hf_hub::api::sync::Api::new().context("Failed to initialize HuggingFace Hub API")?;
-    let repo = api.model(HF_REPO.to_string());
+    let repo = api.model(repo_name);
 
-    // Download GGUF model (~1.1 GB) — includes weights + tokenizer
+    // Download GGUF model — includes weights + tokenizer
     tracing::info!(
-        "Downloading {} (~1.1 GB, this may take a few minutes)...",
-        HF_MODEL_FILE
+        "Downloading {} (a few minutes on first launch)...",
+        model_filename
     );
     let model_cached = repo
-        .get(HF_MODEL_FILE)
+        .get(&model_filename)
         .context("Failed to download GGUF model file")?;
 
     // Create target directory
@@ -254,7 +272,7 @@ pub fn download_model(target_dir: &Utf8Path) -> anyhow::Result<()> {
         .context("Failed to create model directory")?;
 
     // Symlink from HF cache into our model directory
-    let target_model = target_dir.join(HF_MODEL_FILE);
+    let target_model = target_dir.join(&model_filename);
     symlink_or_copy(&model_cached, target_model.as_std_path())
         .context("Failed to link GGUF model file")?;
 

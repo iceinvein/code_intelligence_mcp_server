@@ -108,6 +108,25 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
     let mut evidence = extract_evidence_from_investigate(&investigate_response, max_evidence);
     let evidence_count = evidence.len();
 
+    // ---- Path 2 (default): evidence-only response ----------------------
+    // Local-LLM synthesis routinely emits hallucinated or shallow prose that
+    // the agent then anchors on, producing worse final answers than if it
+    // had read the structured evidence directly. We default to skipping the
+    // local synthesis step entirely; set `ASK_CODE_LLM_SYNTHESIS=true` to
+    // restore the LLM path (e.g. for experiments with a stronger model).
+    if !llm_synthesis_enabled() {
+        evidence.truncate(max_evidence as usize);
+        let response = build_evidence_only_response(
+            &question,
+            quality,
+            &investigate_response,
+            &evidence,
+            evidence_count,
+        );
+        state.ask_code_cache.put(cache_key, response.clone());
+        return Ok(response);
+    }
+
     // ---- Step 2: try to obtain an answer LLM ---------------------------
     let generator = get_or_init_answer_generator(state);
 
@@ -296,6 +315,67 @@ fn build_unavailable_response(
     })
 }
 
+/// Has local-LLM prose synthesis been re-enabled? Default is `false`: ask_code
+/// returns retrieved + verified evidence and lets the agent synthesise the
+/// final answer. The local Qwen 1.5B / 3B variants produced hallucinated prose
+/// during v3.3 evaluation that the agent then anchored on, worsening final
+/// answer quality. Set `ASK_CODE_LLM_SYNTHESIS=true` (or `1`) to restore the
+/// LLM path -- intended for experiments with stronger models.
+fn llm_synthesis_enabled() -> bool {
+    matches!(
+        std::env::var("ASK_CODE_LLM_SYNTHESIS")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// Evidence-only response (Path 2). No prose is generated; the agent receives
+/// the question, the retrieved + verified evidence, and a clear instruction
+/// to synthesise the user-facing answer itself. Confidence is derived from
+/// evidence count alone since no LLM citations exist to validate.
+fn build_evidence_only_response(
+    question: &str,
+    quality: AnswerQuality,
+    investigate_response: &Value,
+    evidence: &[EvidenceItem],
+    evidence_count: usize,
+) -> Value {
+    let confidence = if evidence_count >= 3 {
+        Confidence::Medium
+    } else if evidence_count > 0 {
+        Confidence::Low
+    } else {
+        Confidence::Low
+    };
+    let stop_reason = if evidence_count == 0 {
+        "no_evidence"
+    } else {
+        "evidence_only"
+    };
+    json!({
+        "question": question,
+        "answer": "",
+        "citations": [],
+        "evidence": evidence_to_json(evidence),
+        "confidence": confidence.as_str(),
+        "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
+        "stop_reason": stop_reason,
+        "quality": quality.as_str(),
+        "follow_up": "ask_code returned verified evidence without LLM prose (Path 2 default). \
+            Synthesise the final answer yourself from the `evidence[]` array below: each item carries \
+            symbol_name, file_path, line range, and the actual code body. Use these as the source of \
+            truth -- they were already retrieved and shape-classified by `investigate`. If you need \
+            more context call specialist tools (find_references, get_call_hierarchy, get_definition) \
+            with the symbol_ids from evidence.",
+        "dropped_citation_count": 0,
+        "evidence_count": evidence_count,
+        "cached": false,
+    })
+}
 
 fn follow_up_hint(
     confidence: Confidence,

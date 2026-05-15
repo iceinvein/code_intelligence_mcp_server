@@ -40,12 +40,95 @@ impl StandaloneHandler {
         }
     }
 
-    /// Resolve the AppState for the current session's repo
+    /// Parse a workspace-root URI into a UTF-8 path.
+    ///
+    /// Handles `file://` URIs (including Windows `file:///C:/...`) and falls
+    /// back to treating the URI as a plain path when it does not parse.
+    fn parse_root_uri(uri: &str) -> Utf8PathBuf {
+        match url::Url::parse(uri) {
+            Ok(parsed) => match parsed.to_file_path() {
+                Ok(std_path) => Utf8PathBuf::from_path_buf(std_path).unwrap_or_else(|_| {
+                    Utf8PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri))
+                }),
+                Err(_) => Utf8PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri)),
+            },
+            Err(_) => Utf8PathBuf::from(uri),
+        }
+    }
+
+    /// Bind a session to its workspace root via the MCP `roots/list` request.
+    ///
+    /// Idempotent and safe to call concurrently. Returns the bound path on
+    /// success, `None` if the client did not (yet) supply a root. The deferred
+    /// retry exists because `on_initialized` fires before the client opens its
+    /// server-to-client SSE stream in Streamable HTTP transport; in that
+    /// window any server-initiated request fails with "transport stream does
+    /// not exists or is closed". By the time the first tool call arrives the
+    /// stream is up.
+    async fn try_bind_session(
+        &self,
+        runtime: &Arc<dyn McpServer>,
+        session_id: &SessionId,
+    ) -> Option<Utf8PathBuf> {
+        if let Some(existing) = self.session_repos.get(session_id) {
+            return Some(existing.value().clone());
+        }
+
+        #[allow(deprecated)] // list_roots deprecated in 0.8.0 in favor of request_root_list
+        let roots_result = match runtime.request_root_list(None).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(
+                    session = %session_id,
+                    error = %e,
+                    "roots/list request failed; will retry on next tool call"
+                );
+                return None;
+            }
+        };
+
+        let root = roots_result.roots.first()?;
+        let repo_path = Self::parse_root_uri(&root.uri);
+
+        // Atomic insert-if-absent so concurrent tool calls cannot bind twice.
+        let entry = self
+            .session_repos
+            .entry(session_id.clone())
+            .or_insert_with(|| repo_path.clone());
+        let bound_path = entry.value().clone();
+        let we_inserted = bound_path == repo_path;
+        drop(entry);
+
+        if we_inserted {
+            tracing::info!(
+                session = %session_id,
+                repo = %repo_path,
+                "Session bound to repo"
+            );
+
+            // Pre-warm: trigger repo initialization in background so the
+            // first tool call does not pay the indexer-startup cost.
+            let sm = self.session_manager.clone();
+            let rp = repo_path.clone();
+            tokio::spawn(async move {
+                match sm.get_or_create_repo(&rp).await {
+                    Ok(_) => tracing::info!(repo = %rp, "Repo initialized successfully"),
+                    Err(e) => {
+                        tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo")
+                    }
+                }
+            });
+        }
+
+        Some(bound_path)
+    }
+
+    /// Resolve the AppState for the current session's repo, binding lazily
+    /// if `on_initialized` did not manage to during the race window.
     async fn resolve_state(
         &self,
         runtime: &Arc<dyn McpServer>,
     ) -> Result<Arc<AppState>, CallToolError> {
-        // Get session ID from the hyper-server runtime
         let session_id = runtime.session_id().ok_or_else(|| {
             CallToolError::from_message(
                 "No session ID — standalone mode requires Streamable HTTP transport".to_string(),
@@ -53,9 +136,8 @@ impl StandaloneHandler {
         })?;
 
         let repo_path = self
-            .session_repos
-            .get(&session_id)
-            .map(|entry| entry.value().clone())
+            .try_bind_session(runtime, &session_id)
+            .await
             .ok_or_else(|| {
                 CallToolError::from_message(
                     "Session not bound to a repo. Ensure your MCP client supports roots capability."
@@ -73,78 +155,25 @@ impl StandaloneHandler {
 #[async_trait]
 impl ServerHandler for StandaloneHandler {
     async fn on_initialized(&self, runtime: Arc<dyn McpServer>) {
-        let session_id = match runtime.session_id() {
-            Some(id) => id,
-            None => {
-                tracing::warn!("on_initialized called without session_id");
-                return;
-            }
+        let Some(session_id) = runtime.session_id() else {
+            tracing::warn!("on_initialized called without session_id");
+            return;
         };
 
-        tracing::info!(session = %session_id, "Session initialized, requesting workspace roots");
+        tracing::info!(
+            session = %session_id,
+            "Session initialized, attempting workspace root bind"
+        );
 
-        // Ask the client for its workspace roots (MCP roots capability)
-        #[allow(deprecated)] // list_roots deprecated in 0.8.0 in favor of request_root_list
-        match runtime.request_root_list(None).await {
-            Ok(roots_result) => {
-                if let Some(root) = roots_result.roots.first() {
-                    // Parse file:// URI properly (handles Windows paths like file:///C:/...)
-                    let repo_path = match url::Url::parse(&root.uri) {
-                        Ok(parsed) => match parsed.to_file_path() {
-                            Ok(std_path) => match Utf8PathBuf::from_path_buf(std_path) {
-                                Ok(p) => p,
-                                Err(non_utf8) => {
-                                    tracing::warn!(
-                                        session = %session_id,
-                                        path = ?non_utf8,
-                                        "Root URI contains non-UTF-8 path, using raw URI"
-                                    );
-                                    Utf8PathBuf::from(
-                                        root.uri.strip_prefix("file://").unwrap_or(&root.uri),
-                                    )
-                                }
-                            },
-                            Err(_) => Utf8PathBuf::from(
-                                root.uri.strip_prefix("file://").unwrap_or(&root.uri),
-                            ),
-                        },
-                        Err(_) => Utf8PathBuf::from(&root.uri),
-                    };
-
-                    tracing::info!(
-                        session = %session_id,
-                        repo = %repo_path,
-                        "Session bound to repo"
-                    );
-
-                    self.session_repos
-                        .insert(session_id.clone(), repo_path.clone());
-
-                    // Pre-warm: trigger repo initialization in background
-                    let sm = self.session_manager.clone();
-                    let rp = repo_path.clone();
-                    tokio::spawn(async move {
-                        match sm.get_or_create_repo(&rp).await {
-                            Ok(_) => tracing::info!(repo = %rp, "Repo initialized successfully"),
-                            Err(e) => {
-                                tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo")
-                            }
-                        }
-                    });
-                } else {
-                    tracing::warn!(
-                        session = %session_id,
-                        "Client returned empty roots list — session has no repo"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    session = %session_id,
-                    error = %e,
-                    "Failed to list roots from client (client may not support roots capability)"
-                );
-            }
+        // Best-effort eager bind. In Streamable HTTP transport `on_initialized`
+        // can fire before the client opens its server-to-client SSE stream, so
+        // this request may fail with a closed-stream error. `resolve_state`
+        // retries on the first tool call, by which time the stream is up.
+        if self.try_bind_session(&runtime, &session_id).await.is_none() {
+            tracing::info!(
+                session = %session_id,
+                "Workspace root not yet available; will retry on first tool call"
+            );
         }
     }
 
@@ -237,5 +266,23 @@ mod tests {
 
         let handler = StandaloneHandler::new(Arc::new(session_manager), server_details);
         assert_eq!(handler.session_repos.len(), 0);
+    }
+
+    #[test]
+    fn parse_root_uri_handles_unix_file_url() {
+        let parsed = StandaloneHandler::parse_root_uri("file:///Users/me/projects/foo");
+        assert_eq!(parsed.as_str(), "/Users/me/projects/foo");
+    }
+
+    #[test]
+    fn parse_root_uri_handles_plain_path() {
+        let parsed = StandaloneHandler::parse_root_uri("/Users/me/projects/foo");
+        assert_eq!(parsed.as_str(), "/Users/me/projects/foo");
+    }
+
+    #[test]
+    fn parse_root_uri_handles_file_url_with_spaces() {
+        let parsed = StandaloneHandler::parse_root_uri("file:///Users/me/My%20Projects/foo");
+        assert_eq!(parsed.as_str(), "/Users/me/My Projects/foo");
     }
 }

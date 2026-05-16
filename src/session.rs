@@ -224,8 +224,6 @@ impl SessionManager {
             indexer,
             retriever,
             sqlite: sqlite_arc,
-            is_leader: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            role_rx: tokio::sync::watch::channel(crate::leader::Role::Leader).1,
             mcp_runtime: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
             answer_generator: std::sync::Arc::new(once_cell::sync::OnceCell::new()),
             ask_code_cache: std::sync::Arc::new(Default::default()),

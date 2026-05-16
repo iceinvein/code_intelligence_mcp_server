@@ -9,7 +9,7 @@ use std::time::Duration;
 fn standalone_server_starts_and_responds_to_http() {
     // Start server in background with hash embedder (fast, no model download)
     let mut child = Command::new(env!("CARGO_BIN_EXE_code-intelligence-mcp-server"))
-        .args(["--standalone", "--port", "13333"])
+        .args(["--port", "13333"])
         .env("EMBEDDINGS_BACKEND", "hash")
         .spawn()
         .expect("Failed to start standalone server");

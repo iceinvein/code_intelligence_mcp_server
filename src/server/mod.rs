@@ -5,13 +5,8 @@ pub mod standalone;
 
 use crate::handlers::*;
 use crate::tools::*;
-use async_trait::async_trait;
 use rust_mcp_sdk::{
-    mcp_server::ServerHandler,
-    schema::{
-        CallToolError, CallToolRequestParams, CallToolResult, CreateTaskResult, ListToolsResult,
-        PaginatedRequestParams, RpcError,
-    },
+    schema::{CallToolError, CallToolRequestParams, CallToolResult, CreateTaskResult},
     task_store::ServerTaskCreator,
     McpServer,
 };
@@ -390,46 +385,6 @@ pub async fn dispatch_tool_call(
     result
 }
 
-#[derive(Clone)]
-pub struct CodeIntelligenceHandler {
-    pub state: Arc<AppState>,
-}
-
-#[async_trait]
-impl ServerHandler for CodeIntelligenceHandler {
-    async fn handle_list_tools_request(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _runtime: Arc<dyn McpServer>,
-    ) -> std::result::Result<ListToolsResult, RpcError> {
-        Ok(ListToolsResult {
-            tools: all_tools(),
-            meta: None,
-            next_cursor: None,
-        })
-    }
-
-    async fn handle_task_augmented_tool_call(
-        &self,
-        params: CallToolRequestParams,
-        task_creator: ServerTaskCreator,
-        runtime: Arc<dyn McpServer>,
-    ) -> std::result::Result<CreateTaskResult, CallToolError> {
-        dispatch_task_augmented_call(self.state.clone(), params, task_creator, runtime).await
-    }
-
-    async fn handle_call_tool_request(
-        &self,
-        params: CallToolRequestParams,
-        runtime: Arc<dyn McpServer>,
-    ) -> std::result::Result<CallToolResult, CallToolError> {
-        // Store the MCP runtime on first tool call so the description worker
-        // can use it for sampling-based description generation.
-        self.state.mcp_runtime.get_or_init(|| runtime.clone());
-        dispatch_tool_call(&self.state, params).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,14 +471,14 @@ mod tests {
     }
 
     #[test]
-    fn initialize_results_use_server_instructions() {
+    fn initialize_result_uses_server_instructions() {
         let main_source = include_str!("../main.rs");
         let uses = main_source
             .matches("instructions: Some(code_intelligence_mcp_server::server::server_instructions().into())")
             .count();
         assert_eq!(
-            uses, 2,
-            "both embedded and standalone InitializeResult blocks must use server_instructions()"
+            uses, 1,
+            "standalone InitializeResult block must use server_instructions()"
         );
     }
 

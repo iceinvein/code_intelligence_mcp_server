@@ -257,25 +257,49 @@ async fn handle_repo_reindex(
 
     let job_id_log = job_id.clone();
     let registry = state.job_registry.clone();
-    tokio::spawn(async move {
-        let app_state = match sm.get_or_create_repo(&path).await {
+
+    // Spawn the worker that runs the indexer and records its result.
+    let worker_registry = registry.clone();
+    let worker_job_id = job_id_log.clone();
+    let worker_path = path.clone();
+    let task = tokio::spawn(async move {
+        let app_state = match sm.get_or_create_repo(&worker_path).await {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!(error = %e, path = %path, "reindex: failed to load repo");
-                jobs::mark_failed(&registry, &job_id_log, format!("load repo: {e}"));
+                tracing::error!(error = %e, path = %worker_path, "reindex: failed to load repo");
+                jobs::mark_failed(&worker_registry, &worker_job_id, format!("load repo: {e}"));
                 return;
             }
         };
         let tool = crate::tools::RefreshIndexTool { files: None };
         match crate::handlers::handle_refresh_index(&app_state, tool).await {
             Ok(stats) => {
-                tracing::info!(job = %job_id_log, path = %path, stats = %stats, "reindex completed");
-                jobs::mark_succeeded(&registry, &job_id_log, stats);
+                tracing::info!(job = %worker_job_id, path = %worker_path, stats = %stats, "reindex completed");
+                jobs::mark_succeeded(&worker_registry, &worker_job_id, stats);
             }
             Err(e) => {
-                tracing::error!(job = %job_id_log, error = %e, path = %path, "reindex failed");
-                jobs::mark_failed(&registry, &job_id_log, e.to_string());
+                tracing::error!(job = %worker_job_id, error = %e, path = %worker_path, "reindex failed");
+                jobs::mark_failed(&worker_registry, &worker_job_id, e.to_string());
             }
+        }
+    });
+
+    // Watchdog: if the worker task panics or is cancelled, the worker's
+    // own `mark_failed` never fires and the job would stay at Running
+    // forever. Awaiting the JoinHandle gives us the only signal we have
+    // about an aborted task, and `mark_failed_if_running` is a no-op when
+    // the worker already recorded its own outcome.
+    tokio::spawn(async move {
+        if let Err(join_err) = task.await {
+            let reason = if join_err.is_panic() {
+                format!("reindex task panicked: {join_err}")
+            } else if join_err.is_cancelled() {
+                "reindex task cancelled before completion".to_string()
+            } else {
+                format!("reindex task aborted: {join_err}")
+            };
+            tracing::error!(job = %job_id_log, reason = %reason, "reindex watchdog");
+            jobs::mark_failed_if_running(&registry, &job_id_log, reason);
         }
     });
 

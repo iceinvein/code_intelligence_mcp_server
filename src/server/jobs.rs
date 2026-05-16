@@ -130,6 +130,25 @@ pub fn mark_failed(registry: &JobRegistry, job_id: &str, error: String) {
     }
 }
 
+/// Mark a job as failed only if it is still `Running`. Used by the
+/// panic-watchdog so we do not overwrite a normal `Succeeded`/`Failed`
+/// result with a spurious "task panicked" entry when the JoinHandle
+/// resolves after the worker has already recorded its outcome.
+pub fn mark_failed_if_running(registry: &JobRegistry, job_id: &str, error: String) {
+    if let Some(mut entry) = registry.get_mut(job_id) {
+        if entry.status == JobStatus::Running {
+            let now = unix_now();
+            entry.status = JobStatus::Failed;
+            entry.finished_at_unix_s = Some(now);
+            entry.duration_ms = Some(
+                now.saturating_sub(entry.started_at_unix_s)
+                    .saturating_mul(1000),
+            );
+            entry.error = Some(error);
+        }
+    }
+}
+
 /// Snapshot the registry sorted newest-first.
 pub fn snapshot(registry: &JobRegistry) -> Vec<Job> {
     let mut items: Vec<Job> = registry.iter().map(|e| e.value().clone()).collect();
@@ -233,7 +252,45 @@ mod tests {
         // Must not panic.
         mark_succeeded(&reg, "nope", json!({}));
         mark_failed(&reg, "nope", "x".to_string());
+        mark_failed_if_running(&reg, "nope", "x".to_string());
         assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn mark_failed_if_running_skips_already_completed_jobs() {
+        let reg = new_job_registry();
+        register_running(
+            &reg,
+            "ok".to_string(),
+            JobKind::ManualReindex,
+            "h".to_string(),
+            "/p".to_string(),
+        );
+        mark_succeeded(&reg, "ok", json!({ "files_indexed": 1 }));
+
+        // Watchdog later resolves; must not overwrite the Succeeded result.
+        mark_failed_if_running(&reg, "ok", "watchdog: panic".to_string());
+
+        let after = reg.get("ok").unwrap().clone();
+        assert_eq!(after.status, JobStatus::Succeeded);
+        assert!(after.error.is_none());
+    }
+
+    #[test]
+    fn mark_failed_if_running_promotes_running_to_failed() {
+        let reg = new_job_registry();
+        register_running(
+            &reg,
+            "stuck".to_string(),
+            JobKind::ManualReindex,
+            "h".to_string(),
+            "/p".to_string(),
+        );
+        mark_failed_if_running(&reg, "stuck", "task panicked".to_string());
+
+        let after = reg.get("stuck").unwrap().clone();
+        assert_eq!(after.status, JobStatus::Failed);
+        assert_eq!(after.error.as_deref(), Some("task panicked"));
     }
 
     #[test]

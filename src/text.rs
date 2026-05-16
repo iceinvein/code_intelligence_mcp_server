@@ -863,9 +863,17 @@ pub fn prepare_embedding_text(name: &str, kind: &str, file_path: &str, text: &st
     // The Jina model supports 8192 tokens (~4 chars/token), but attention is O(n²).
     // At 8K chars (~2K tokens), semantic content is captured without blowing ORT's
     // BFCArena past available memory on large repos (7500+ symbols).
-    const MAX_BODY_CHARS: usize = 8000;
-    if stripped.len() > MAX_BODY_CHARS {
-        format!("{}{}", header, &stripped[..MAX_BODY_CHARS])
+    const MAX_BODY_BYTES: usize = 8000;
+    if stripped.len() > MAX_BODY_BYTES {
+        // Find the nearest char boundary at or below the cap. Slicing a
+        // `&str` on a non-boundary byte index panics, which we hit in the
+        // wild on files with multi-byte chars (UTF-8 strings, emoji, etc.)
+        // straddling the 8000-byte mark.
+        let mut end = MAX_BODY_BYTES;
+        while end > 0 && !stripped.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}{}", header, &stripped[..end])
     } else {
         format!("{}{}", header, stripped)
     }
@@ -1522,6 +1530,27 @@ use super::Bar;
             result.contains("fn foo() { bar() }"),
             "should preserve code: {result}"
         );
+    }
+
+    #[test]
+    fn test_prepare_embedding_text_truncates_on_utf8_boundary() {
+        // A body whose 8000th byte falls in the middle of a multi-byte
+        // character used to panic with "byte index N is not a char
+        // boundary." Mix ASCII padding with a 4-byte emoji straddling the
+        // cap to verify truncation rounds DOWN to a char boundary.
+        let mut body = String::new();
+        body.push_str(&"a".repeat(7998)); // bytes 0..7998
+        body.push('🦀'); // bytes 7998..8002 (4-byte UTF-8)
+        body.push_str(&"b".repeat(100));
+
+        // Must not panic.
+        let result = prepare_embedding_text("crab", "function", "lib.rs", &body);
+        // Truncation should have dropped the partial crab and kept only
+        // the leading ASCII run.
+        assert!(result.is_char_boundary(result.len()));
+        // Body section starts after the header; it must be valid UTF-8
+        // (implied by being a String) and shorter than the original.
+        assert!(result.len() < body.len() + 64);
     }
 
     #[test]

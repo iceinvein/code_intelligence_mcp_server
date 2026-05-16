@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>code-intelligence-mcp</title>
+    <style>
+      :root {
+        --ink:        #1f1d1b;
+        --ink-dim:    #5a554f;
+        --ink-faint:  #9d978f;
+        --paper:      #fbfaf8;
+        --paper-deep: #f4f1ec;
+        --line:       #e8e3da;
+        --line-soft:  #efeae0;
+        --accent:     #b6633a;
+        --good:       #2f7a45;
+        --warn:       #c25b1f;
+        --bad:        #b03a2e;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12.5px;
+      }
+      header {
+        padding: 36px 48px 24px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: baseline;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      header .meta {
+        color: var(--ink-faint);
+        font-size: 12.5px;
+      }
+      header .dot {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--good);
+        vertical-align: middle;
+        margin-right: 6px;
+      }
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 32px 48px 80px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin-bottom: 40px;
+      }
+      .card {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 18px 20px;
+      }
+      .card .label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--ink-faint);
+        margin-bottom: 8px;
+      }
+      .card .value {
+        font-size: 24px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+      }
+      .card .value.mono {
+        font-size: 16px;
+      }
+      .card .sub {
+        margin-top: 4px;
+        color: var(--ink-dim);
+        font-size: 12.5px;
+      }
+      section {
+        margin-bottom: 48px;
+      }
+      section h2 {
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--ink-dim);
+        margin: 0 0 14px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      thead th {
+        text-align: left;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 500;
+        color: var(--ink-faint);
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      tbody tr {
+        border-bottom: 1px solid var(--line-soft);
+      }
+      tbody tr:hover {
+        background: var(--paper-deep);
+      }
+      tbody td {
+        padding: 12px;
+        vertical-align: top;
+      }
+      tbody td.path {
+        color: var(--ink-dim);
+        max-width: 520px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      tbody td.timestamp {
+        color: var(--ink-faint);
+        white-space: nowrap;
+      }
+      .empty {
+        padding: 32px;
+        text-align: center;
+        color: var(--ink-faint);
+        border: 1px dashed var(--line);
+        border-radius: 6px;
+      }
+      .error {
+        padding: 18px 20px;
+        background: #fff4ef;
+        border: 1px solid #ecc4b5;
+        color: var(--bad);
+        border-radius: 6px;
+        margin-bottom: 24px;
+      }
+      footer {
+        padding: 0 48px 48px;
+        color: var(--ink-faint);
+        font-size: 12px;
+      }
+      footer a {
+        color: inherit;
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>code-intelligence-mcp</h1>
+      <span class="meta" id="version-line">loading...</span>
+      <span class="meta" id="uptime-line"></span>
+    </header>
+
+    <main>
+      <div id="error-banner" class="error" style="display: none"></div>
+
+      <div class="grid">
+        <div class="card">
+          <div class="label">Daemon</div>
+          <div class="value"><span class="dot"></span>running</div>
+          <div class="sub mono" id="status-port">localhost</div>
+        </div>
+        <div class="card">
+          <div class="label">Registered repos</div>
+          <div class="value" id="status-repo-count">--</div>
+          <div class="sub">across all sessions</div>
+        </div>
+        <div class="card">
+          <div class="label">Started</div>
+          <div class="value mono" id="status-started">--</div>
+          <div class="sub" id="status-uptime">--</div>
+        </div>
+      </div>
+
+      <section>
+        <h2>Repositories</h2>
+        <div id="repos-container">
+          <div class="empty">loading repositories...</div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>api: <a href="/api/status">/api/status</a></span>
+      &nbsp;&middot;&nbsp;
+      <span>repos: <a href="/api/repos">/api/repos</a></span>
+      &nbsp;&middot;&nbsp;
+      <span>refresh: <kbd>R</kbd></span>
+    </footer>
+
+    <script>
+      // No innerHTML with dynamic data anywhere in this file: everything from
+      // the API is inserted via textContent or attribute setters. Static HTML
+      // structure is built with createElement.
+
+      const fmtTs = (unix) => {
+        if (!unix) return "--";
+        const d = new Date(unix * 1000);
+        return d.toISOString().replace("T", " ").substring(0, 16) + "Z";
+      };
+      const fmtUptime = (secs) => {
+        if (secs < 60) return secs + "s";
+        if (secs < 3600) return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
+        if (secs < 86400) {
+          const h = Math.floor(secs / 3600);
+          const m = Math.floor((secs % 3600) / 60);
+          return h + "h " + m + "m";
+        }
+        const d = Math.floor(secs / 86400);
+        const h = Math.floor((secs % 86400) / 3600);
+        return d + "d " + h + "h";
+      };
+
+      async function fetchJson(path) {
+        const res = await fetch(path, { headers: { accept: "application/json" } });
+        if (!res.ok) throw new Error(path + " returned " + res.status);
+        return res.json();
+      }
+
+      function showError(msg) {
+        const el = document.getElementById("error-banner");
+        el.textContent = "API error: " + msg;
+        el.style.display = "block";
+      }
+      function clearError() {
+        document.getElementById("error-banner").style.display = "none";
+      }
+
+      function renderRepos(reposJson) {
+        const container = document.getElementById("repos-container");
+        // Wipe the container with safe DOM ops (no innerHTML).
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        if (!reposJson.repos || reposJson.repos.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.appendChild(document.createTextNode(
+            "No repositories indexed yet. Connect an MCP client and call "
+          ));
+          const code = document.createElement("span");
+          code.className = "mono";
+          code.textContent = "bind_workspace";
+          empty.appendChild(code);
+          empty.appendChild(document.createTextNode("."));
+          container.appendChild(empty);
+          return;
+        }
+
+        const sorted = reposJson.repos
+          .slice()
+          .sort((a, b) => (b.last_accessed || "").localeCompare(a.last_accessed || ""));
+
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        ["Name", "Path", "Last accessed"].forEach((label) => {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        sorted.forEach((r) => {
+          const tr = document.createElement("tr");
+
+          const nameTd = document.createElement("td");
+          nameTd.textContent = r.name || "";
+          tr.appendChild(nameTd);
+
+          const pathTd = document.createElement("td");
+          pathTd.className = "path mono";
+          pathTd.textContent = r.path || "";
+          tr.appendChild(pathTd);
+
+          const tsTd = document.createElement("td");
+          tsTd.className = "timestamp mono";
+          tsTd.textContent = String(r.last_accessed || "")
+            .substring(0, 16)
+            .replace("T", " ");
+          tr.appendChild(tsTd);
+
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        container.appendChild(table);
+      }
+
+      async function loadAll() {
+        try {
+          clearError();
+          const [status, repos] = await Promise.all([
+            fetchJson("/api/status"),
+            fetchJson("/api/repos"),
+          ]);
+
+          document.getElementById("version-line").textContent = "v" + status.version;
+          document.getElementById("uptime-line").textContent =
+            "uptime " + fmtUptime(status.uptime_s);
+          document.getElementById("status-port").textContent = location.host;
+          document.getElementById("status-repo-count").textContent = status.registered_repos;
+          document.getElementById("status-started").textContent = fmtTs(status.started_at_unix_s);
+          document.getElementById("status-uptime").textContent =
+            "running " + fmtUptime(status.uptime_s);
+
+          renderRepos(repos);
+        } catch (e) {
+          showError(e.message || String(e));
+        }
+      }
+
+      loadAll();
+      setInterval(loadAll, 5000);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "r" || e.key === "R") {
+          loadAll();
+        }
+      });
+    </script>
+  </body>
+</html>

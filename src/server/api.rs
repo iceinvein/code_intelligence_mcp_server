@@ -19,11 +19,13 @@ use axum::{
     extract::{Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{IntoResponse, Json, Response},
+    response::{Html, IntoResponse, Json, Response},
     routing::get,
     Router,
 };
 use serde_json::{json, Value};
+
+const DASHBOARD_HTML: &str = include_str!("../../ui/dashboard.html");
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,6 +56,7 @@ pub async fn spawn_api_server(
     });
 
     let app = Router::new()
+        .route("/", get(handle_dashboard))
         .route("/api/version", get(handle_version))
         .route("/api/status", get(handle_status))
         .route("/api/repos", get(handle_repos))
@@ -67,7 +70,7 @@ pub async fn spawn_api_server(
 
     tracing::info!(
         api_port,
-        "API endpoint available at http://{host}:{api_port}/api/status"
+        "Dashboard at http://{host}:{api_port}/ (API: /api/status, /api/repos, /api/version)"
     );
 
     tokio::spawn(async move {
@@ -110,6 +113,10 @@ fn is_local_origin(origin: &str) -> bool {
     }
     let host = host_port.split(':').next().unwrap_or("");
     host == "localhost" || host == "127.0.0.1"
+}
+
+async fn handle_dashboard() -> Html<&'static str> {
+    Html(DASHBOARD_HTML)
 }
 
 async fn handle_version(State(state): State<Arc<ApiState>>) -> Json<Value> {

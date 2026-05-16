@@ -15,60 +15,106 @@ A local code indexing engine that gives LLM agents like **Claude Code**, **Curso
 
 ## Install
 
-### Claude Code
+> **v4.0 is a breaking change.** The server now runs as a single shared HTTP daemon instead of an stdio process spawned per MCP client. Existing v3 configs (`command: npx ...`) need to migrate. The binary ships a `migrate` subcommand that rewrites your `~/.claude.json` in place.
+
+### Quickstart
+
+**Homebrew (recommended on macOS):**
 
 ```bash
-claude mcp add code-intelligence -- npx -y @iceinvein/code-intelligence-mcp
+brew tap iceinvein/tap
+brew install code-intelligence-mcp
+brew services start code-intelligence-mcp
+
+# Migrate existing ~/.claude.json entries (one-time, optional)
+code-intelligence-mcp-server migrate
 ```
 
-<details>
-<summary>Or add manually to <code>~/.claude.json</code></summary>
+**npm (or `npx`, if you prefer):**
 
-```json
-{
-  "mcpServers": {
-    "code-intelligence": {
-      "command": "npx",
-      "args": ["-y", "@iceinvein/code-intelligence-mcp"],
-      "env": {}
-    }
-  }
-}
-```
-</details>
+```bash
+# Install the binary, write the launchd plist, bootstrap the daemon
+npx -y @iceinvein/code-intelligence-mcp install
 
-### Cursor
-
-Add to `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "code-intelligence": {
-      "command": "npx",
-      "args": ["-y", "@iceinvein/code-intelligence-mcp"]
-    }
-  }
-}
+# Migrate existing ~/.claude.json entries (or use `--dry-run` to preview)
+npx -y @iceinvein/code-intelligence-mcp migrate
 ```
 
-### OpenCode / Trae
+Both paths produce the same daemon listening on `http://127.0.0.1:17800/mcp`. Pass `--port` to override.
 
-Add to `opencode.json`:
+> **Don't mix paths.** Homebrew manages launchd via `brew services`; the binary's own `install` subcommand writes a separate `com.iceinvein.code-intelligence.plist`. Pick one. The Homebrew path is the long-term home for v4+. The npm path stays supported for users already wired to `npx ...` from v3.
+
+### Binding a workspace per client
+
+Every session needs a bound workspace. v4 tries four sources in order; first match wins.
+
+1. **`?repo=/abs/path` URL query** — *primary, works on every MCP client.* The daemon's proxy captures the query, pairs it with the session id, and binds before the first tool call.
+2. **MCP `roots/list`** — Claude Code negotiates this automatically.
+3. **Single-repo fallback** — when only one repo is registered, sessions auto-bind to it.
+4. **Hard error** — actionable message pointing at the URL form and `bind_workspace`.
+
+**Claude Code**: nothing extra; roots is auto-negotiated.
+
+**Every other client (Cursor, OpenCode, Codex, Continue, Windsurf, Trae)**: add `?repo=...` to the URL. Example for OpenCode:
 
 ```json
 {
   "mcp": {
     "code-intelligence": {
-      "type": "local",
-      "command": ["npx", "-y", "@iceinvein/code-intelligence-mcp"],
+      "type": "remote",
+      "url": "http://127.0.0.1:17800/mcp?repo=/Users/me/projects/my-app",
       "enabled": true
     }
   }
 }
 ```
 
-> On first launch, the server downloads three models, ~3.2 GB total: the embedding model (Jina Code 1.5b, ~1.5 GB), the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB), and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB). Indexing then runs in the background. Models are cached in `~/.code-intelligence/models/`.
+Multiple workspaces in one client: define one MCP server entry per workspace, each with its own `?repo=` value. The daemon multiplexes them onto the same backend.
+
+For full per-client recipes (including the manual `bind_workspace` fallback), see [docs/MIGRATION-v3-to-v4.md](docs/MIGRATION-v3-to-v4.md).
+
+### Lifecycle commands
+
+```bash
+code-intelligence-mcp-server install      # one-time setup
+code-intelligence-mcp-server status       # daemon state, PID, port
+code-intelligence-mcp-server start        # kickstart
+code-intelligence-mcp-server stop         # bootout
+code-intelligence-mcp-server uninstall    # remove plist + bootout
+code-intelligence-mcp-server migrate      # rewrite v3 stdio configs
+```
+
+> First-time `install` downloads three models (~3.2 GB total): the embedding model (Jina Code 1.5b, ~1.5 GB), the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB), and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB). Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
+
+### Dashboard
+
+![Dashboard](docs/dashboard.png)
+
+Open `http://127.0.0.1:17802/` once the daemon is up. The dashboard shows:
+
+- **Repositories**: every registered repo, sortable by last-accessed. Click the row to expand per-repo stats (symbols, edges, descriptions, coverage %, latest run timings). Re-index and Delete actions inline.
+- **MCP sessions**: connected vs bound count, with a five-minute inactivity TTL so dead sessions evict themselves.
+- **Jobs**: in-flight and recently finished background indexing jobs with status badge, live elapsed, files/symbols summary on success, error message on failure.
+- **Logs**: live tail over SSE with pause/clear and level filtering.
+- **Theme**: system / light / dark toggle in the header.
+
+The dashboard, the JSON API at `/api/*`, and the discovery endpoint all bind 127.0.0.1 only and enforce same-origin checks so a malicious web page cannot reach the daemon via DNS rebinding.
+
+### JSON API
+
+For scripting outside the dashboard, every UI surface has a structured endpoint at port `mcp_port + 2` (default 17802):
+
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/api/version` | daemon version, uptime |
+| `GET` | `/api/status` | daemon overview |
+| `GET` | `/api/repos` | registered repos |
+| `GET` | `/api/repos/:id` | per-repo metadata + stats |
+| `POST` | `/api/repos/:id/reindex` | spawn a background re-index, returns `job_id` |
+| `DELETE` | `/api/repos/:id` | drop the index, registry entry, and data dir |
+| `GET` | `/api/sessions` | bound + connected MCP sessions |
+| `GET` | `/api/jobs` | running + recent (≤15 min) jobs |
+| `GET` | `/api/logs/stream` | SSE stream of log lines |
 
 ---
 
@@ -133,7 +179,7 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 | `find_undocumented_symbols` | Symbols missing LLM-generated descriptions, ranked by importance |
 | `find_stale_descriptions` | Symbols whose LLM descriptions are out of sync with the current code (content-hash mismatch) |
 
-### Cross-Repo (standalone mode)
+### Cross-Repo
 
 | Tool | What It Does |
 |---|---|
@@ -158,71 +204,44 @@ Rust, TypeScript/TSX, JavaScript, Python, Go, Java, C, C++
 
 ---
 
-## Standalone Mode (Multi-Client)
+## Architecture
 
-By default each MCP client spawns its own server process. If you run multiple clients (e.g. 5 Claude Code sessions across 3 repos), standalone mode loads the models **once** and shares them:
-
-```bash
-npx @iceinvein/code-intelligence-mcp-standalone
-```
-
-Then point all clients to `http://localhost:3333/mcp`:
-
-<details>
-<summary>Claude Code</summary>
-
-```bash
-claude mcp add --transport http code-intelligence http://localhost:3333/mcp
-```
-</details>
-
-<details>
-<summary>Cursor</summary>
-
-```json
-{
-  "mcpServers": {
-    "code-intelligence": {
-      "url": "http://localhost:3333/mcp"
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary>OpenCode</summary>
-
-```json
-{
-  "mcp": {
-    "code-intelligence": {
-      "type": "remote",
-      "url": "http://localhost:3333/mcp",
-      "enabled": true
-    }
-  }
-}
-```
-</details>
-
-The server auto-detects each client's workspace via the MCP `roots` capability. Separate indexes are maintained per repo, models are shared.
+Since v4.0, the server runs as a single HTTP daemon managed by launchd. Every MCP client connects to the same daemon over Streamable HTTP. Models load once and are shared. Per-repo indexes live under `~/.code-intelligence/repos/<hash>/`.
 
 ```
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│ Claude A  │  │ Cursor B │  │  Trae C  │
-└─────┬─────┘  └─────┬─────┘  └─────┬─────┘
-      │              │              │
-      └──────── POST /mcp ─────────┘
-                     │
-        ┌────────────┴────────────┐
-        │   Standalone Server     │
-        │  (shared models, once)  │
-        ├─────────────────────────┤
-        │ Repo A   Repo B  Repo C│
-        │ indexes  indexes indexes│
-        └─────────────────────────┘
+                      ┌──────────┐  ┌──────────┐  ┌──────────┐
+                      │ Claude A │  │ Cursor B │  │  Trae C  │
+                      └─────┬────┘  └─────┬────┘  └─────┬────┘
+                            │             │             │
+                            │ POST /mcp?repo=/abs/path  │
+                            └────────────┬──────────────┘
+                                         │
+   public port 17800       ┌─────────────┴──────────────┐
+   (MCP proxy + dashboard) │  axum proxy reads ?repo=,  │
+                           │  forwards to SDK on 17900, │
+                           │  pairs session_id ⇄ repo   │
+                           └─────────────┬──────────────┘
+                                         │
+   internal port 17900     ┌─────────────┴──────────────┐
+   (rust-mcp-sdk transport)│  StandaloneHandler routes  │
+                           │  each session to per-repo  │
+                           │  AppState (lazy init)      │
+                           └─────────────┬──────────────┘
+                                         │
+                           ┌─────────────┴──────────────┐
+                           │ Repo A  Repo B  Repo C ... │
+                           │ index   index   index      │
+                           └────────────────────────────┘
 ```
+
+Sessions bind to a repo through one of four mechanisms, tried in order; first match wins:
+
+1. **`?repo=/abs/path` URL query** — primary. The proxy captures the query, pairs it with the SDK-assigned `mcp-session-id`, and binds before the first tool call.
+2. **MCP `roots/list`** — Claude Code negotiates this automatically. Opportunistic upgrade if no URL was provided.
+3. **`bind_workspace` tool call** — manual escape hatch for clients that can't set query strings.
+4. **Single-repo registry fallback** — when the registry has exactly one repo, sessions auto-bind to it.
+
+Beyond the MCP transport, the daemon exposes a discovery endpoint at `mcp_port + 1` and a JSON API + embedded dashboard at `mcp_port + 2`. All three bind 127.0.0.1 only.
 
 ---
 
@@ -281,7 +300,7 @@ Works out of the box with no configuration. All settings are optional environmen
 ```toml
 [server]
 host = "127.0.0.1"
-port = 3333
+port = 17800
 
 [embeddings]
 backend = "llamacpp"
@@ -374,6 +393,17 @@ src/
 </details>
 
 ---
+
+## Migration: v3 → v4
+
+v4.0 is a hard pivot from stdio-per-client to a single shared HTTP daemon. The TL;DR:
+
+```bash
+npx -y @iceinvein/code-intelligence-mcp install    # writes plist + bootstraps daemon
+npx -y @iceinvein/code-intelligence-mcp migrate    # rewrites ~/.claude.json
+```
+
+For per-client recipes (Cursor, OpenCode, Codex, Continue, Windsurf, Trae), the new `?repo=` URL pattern, common breakage points, and a rollback procedure, see [docs/MIGRATION-v3-to-v4.md](docs/MIGRATION-v3-to-v4.md).
 
 ## Migration: v2 → v3
 

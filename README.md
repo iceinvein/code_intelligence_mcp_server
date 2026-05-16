@@ -17,7 +17,20 @@ A local code indexing engine that gives LLM agents like **Claude Code**, **Curso
 
 > **v4.0 is a breaking change.** The server now runs as a single shared HTTP daemon instead of an stdio process spawned per MCP client. Existing v3 configs (`command: npx ...`) need to migrate. The binary ships a `migrate` subcommand that rewrites your `~/.claude.json` in place.
 
-### Quickstart (all clients)
+### Quickstart
+
+**Homebrew (recommended on macOS):**
+
+```bash
+brew tap iceinvein/tap
+brew install code-intelligence-mcp
+brew services start code-intelligence-mcp
+
+# Migrate existing ~/.claude.json entries (one-time, optional)
+code-intelligence-mcp-server migrate
+```
+
+**npm (or `npx`, if you prefer):**
 
 ```bash
 # Install the binary, write the launchd plist, bootstrap the daemon
@@ -27,7 +40,9 @@ npx -y @iceinvein/code-intelligence-mcp install
 npx -y @iceinvein/code-intelligence-mcp migrate
 ```
 
-The daemon binds `http://127.0.0.1:17800/mcp` by default. Pass `--port` to override. The `install` subcommand prompts before patching `~/.claude.json`; pass `--patch-claude-json` to skip the prompt and patch automatically, or `--no-patch-claude-json` to leave it alone.
+Both paths produce the same daemon listening on `http://127.0.0.1:17800/mcp`. Pass `--port` to override.
+
+> **Don't mix paths.** Homebrew manages launchd via `brew services`; the binary's own `install` subcommand writes a separate `com.iceinvein.code-intelligence.plist`. Pick one. The Homebrew path is the long-term home for v4+. The npm path stays supported for users already wired to `npx ...` from v3.
 
 ### Binding a workspace per client
 

@@ -1,86 +1,106 @@
 #!/usr/bin/env node
+//
+// Thin shim that locates the `code-intelligence-mcp-server` binary and
+// execs it with the user's arguments. v4 introduced Homebrew as the
+// primary distribution path; this wrapper exists so the v3-era
+// `npx -y @iceinvein/code-intelligence-mcp ...` muscle memory keeps
+// working.
+//
+// Resolution order:
+//   1. CODE_INTELLIGENCE_MCP_BINARY env var (escape hatch for dev).
+//   2. `code-intelligence-mcp-server` on PATH (typical Homebrew
+//      install at /opt/homebrew/bin/).
+//   3. Bundled binary at npm/bin/code-intelligence-mcp-server, which
+//      the package's postinstall script downloaded from GitHub
+//      Releases.
+//
+// We deliberately do not inject the v3 environment defaults
+// (BASE_DIR, EMBEDDINGS_BACKEND=jinacode, EMBEDDINGS_MODEL_REPO,
+// EMBEDDINGS_MAX_THREADS, METRICS_ENABLED). The v4 daemon ignores
+// those, and overriding them would mask real configuration issues.
 
-const { spawn } = require("node:child_process");
+"use strict";
+
+const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
-const os = require("node:os");
 const fs = require("node:fs");
 
 const BINARY_NAME = "code-intelligence-mcp-server";
-const BINARY_PATH = path.join(__dirname, BINARY_NAME);
+const BUNDLED_BINARY = path.join(__dirname, BINARY_NAME);
 
-if (!fs.existsSync(BINARY_PATH)) {
-	console.error(`Binary not found at ${BINARY_PATH}`);
+function exists(filePath) {
+	try {
+		fs.accessSync(filePath, fs.constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function findOnPath() {
+	const result = spawnSync("which", [BINARY_NAME], { encoding: "utf8" });
+	if (result.status !== 0) return null;
+	const candidate = result.stdout.trim();
+	if (!candidate) return null;
+	// `which` returns the bundled binary too if `npm/bin/` happens to be
+	// on PATH (rare but possible with `npm link`). Skip that case so we
+	// don't loop back into ourselves.
+	if (candidate === BUNDLED_BINARY) return null;
+	return candidate;
+}
+
+function resolveBinary() {
+	const override = process.env.CODE_INTELLIGENCE_MCP_BINARY;
+	if (override) {
+		if (!exists(override)) {
+			console.error(
+				`[code-intelligence-mcp] CODE_INTELLIGENCE_MCP_BINARY=${override} is not executable.`,
+			);
+			process.exit(1);
+		}
+		return override;
+	}
+
+	const onPath = findOnPath();
+	if (onPath) return onPath;
+
+	if (exists(BUNDLED_BINARY)) return BUNDLED_BINARY;
+
 	console.error(
-		"Please try reinstalling the package: npm install -g code-intelligence-mcp",
+		`[code-intelligence-mcp] Binary not found.
+
+Tried:
+  - CODE_INTELLIGENCE_MCP_BINARY env var (not set)
+  - ${BINARY_NAME} on PATH
+  - ${BUNDLED_BINARY}
+
+Install via Homebrew (recommended):
+  brew tap iceinvein/tap
+  brew install code-intelligence-mcp
+
+Or reinstall the npm package to re-trigger the postinstall download:
+  npm install -g @iceinvein/code-intelligence-mcp
+`,
 	);
 	process.exit(1);
 }
 
-// Setup Environment
-const env = { ...process.env };
-
-// 1. Default BASE_DIR to current working directory if not set
-if (!env.BASE_DIR) {
-	env.BASE_DIR = process.cwd();
-}
-
-// 2. Default to JinaCode backend (matches Rust defaults)
-if (!env.EMBEDDINGS_BACKEND) {
-	env.EMBEDDINGS_BACKEND = "jinacode";
-}
-
-// 3. Enable Auto Download
-if (!env.EMBEDDINGS_AUTO_DOWNLOAD) {
-	env.EMBEDDINGS_AUTO_DOWNLOAD = "true";
-}
-
-// 4. Set Better Default Model (Jina V2 Base Code)
-if (!env.EMBEDDINGS_MODEL_REPO) {
-	env.EMBEDDINGS_MODEL_REPO = "jinaai/jina-embeddings-v2-base-code";
-}
-
-// 5. Metal GPU Acceleration
-if (!env.EMBEDDINGS_DEVICE) {
-	env.EMBEDDINGS_DEVICE = "metal";
-}
-
-// 6. Limit CPU threads for embedding model (helps reduce CPU usage)
-// For example, set to 50% of available cores: EMBEDDINGS_MAX_THREADS=4
-// Default is 0 (auto, use all available CPUs)
-if (!env.EMBEDDINGS_MAX_THREADS) {
-	// Set a sensible default based on CPU count to avoid 100% CPU usage
-	const cpuCount = os.cpus().length;
-	// Use 50% of available CPUs, minimum 2, maximum 8
-	const defaultThreads = Math.max(2, Math.min(8, Math.floor(cpuCount * 0.5)));
-	env.EMBEDDINGS_MAX_THREADS = defaultThreads.toString();
-	console.error(
-		`[code-intelligence-mcp] Setting EMBEDDINGS_MAX_THREADS=${defaultThreads} (${cpuCount} CPUs detected)`,
-	);
-	console.error(
-		"[code-intelligence-mcp] Set EMBEDDINGS_MAX_THREADS=0 to use all CPUs or customize as needed",
-	);
-}
-
-// Disable HTTP metrics server for MCP (overkill - logs provide enough debugging info)
-if (!env.METRICS_ENABLED) {
-	env.METRICS_ENABLED = "false";
-}
-
-// Per-repo data paths are auto-derived by the Rust binary from BASE_DIR.
-// Indexes are stored under ~/.code-intelligence/repos/<hash>/.
-// Models are shared across projects under ~/.code-intelligence/models/.
-// No need to set DB_PATH, VECTOR_DB_PATH, or TANTIVY_INDEX_PATH here.
-
-// Spawn the process
-const child = spawn(BINARY_PATH, process.argv.slice(2), {
-	env: env,
-	stdio: "inherit", // Pipe stdin/out/err directly
+const binary = resolveBinary();
+const child = spawn(binary, process.argv.slice(2), {
+	env: process.env,
+	stdio: "inherit",
 });
 
-child.on("exit", (code) => {
-	process.exit(code);
+child.on("exit", (code, signal) => {
+	if (signal) {
+		process.kill(process.pid, signal);
+	} else {
+		process.exit(code ?? 1);
+	}
 });
 
-// Forward signals
-process.on("SIGINT", () => child.kill("SIGINT"));
-process.on("SIGTERM", () => child.kill("SIGTERM"));
+// Forward common termination signals so the underlying binary exits
+// cleanly when the wrapper's process is killed.
+for (const sig of ["SIGINT", "SIGTERM", "SIGQUIT", "SIGHUP"]) {
+	process.on(sig, () => child.kill(sig));
+}

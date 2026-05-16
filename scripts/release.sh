@@ -224,17 +224,24 @@ echo "Updated Cargo.toml"
 cargo check >/dev/null 2>&1 || true
 echo "Updated Cargo.lock"
 
-# 2/3. npm packages
+# 2. npm package
 cp README.md npm/README.md
-cp README.md npm-standalone/README.md
 ( cd npm && npm pkg set version="$VERSION" >/dev/null )
-( cd npm-standalone && npm pkg set version="$VERSION" >/dev/null )
-echo "Updated npm package versions"
+echo "Updated npm package version"
+
+# 3. Homebrew formula version. The sha256 is rewritten after the
+# release workflow runs and uploads the tarball; we reset it to the
+# REPLACE_ON_RELEASE sentinel so reviewers can spot an un-updated
+# formula at a glance.
+BREW_FORMULA=dist/homebrew/code-intelligence-mcp.rb
+sed -i '' "s/^  version \".*\"/  version \"$VERSION\"/" "$BREW_FORMULA"
+sed -i '' 's/^      sha256 ".*"$/      sha256 "REPLACE_ON_RELEASE"/' "$BREW_FORMULA"
+echo "Updated $BREW_FORMULA (version=$VERSION, sha256=REPLACE_ON_RELEASE)"
 
 # 4. Commit and tag
 git add Cargo.toml Cargo.lock \
   npm/package.json npm/README.md \
-  npm-standalone/package.json npm-standalone/README.md
+  "$BREW_FORMULA"
 
 git commit -m "chore: release v$VERSION"
 git tag "v$VERSION"
@@ -246,8 +253,16 @@ echo "--------------------------------------------------"
 echo "Next steps:"
 echo "  1. git show HEAD"
 echo "  2. git push origin main && git push origin v$VERSION"
-echo "  3. Wait for CI to publish the GitHub release."
+echo "  3. Wait for CI to upload the binary tarball; copy the printed"
+echo "     sha256 from the workflow summary."
+echo "  4. Rewrite the formula's sha256:"
+echo "       sed -i '' \"s/REPLACE_ON_RELEASE/<sha256>/\" dist/homebrew/code-intelligence-mcp.rb"
+echo "     Commit and push that change."
+echo "  5. Copy the formula into the homebrew tap repo:"
+echo "       cp dist/homebrew/code-intelligence-mcp.rb \\"
+echo "           ../homebrew-tap/Formula/code-intelligence-mcp.rb"
+echo "     git -C ../homebrew-tap commit + push."
 if [ "$NO_NOTES" -eq 0 ]; then
-  echo "  4. Attach the generated notes:"
+  echo "  6. Attach the generated notes:"
   echo "       gh release edit v$VERSION --notes-file $NOTES_FILE"
 fi

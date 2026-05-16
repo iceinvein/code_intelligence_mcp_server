@@ -7,9 +7,18 @@ upgrade for each MCP client and explains the new binding model.
 
 ## TL;DR
 
+Pick one of:
+
 ```bash
-npx -y @iceinvein/code-intelligence-mcp install    # writes plist + bootstraps daemon
-npx -y @iceinvein/code-intelligence-mcp migrate    # rewrites ~/.claude.json
+# Homebrew (recommended on macOS)
+brew tap iceinvein/tap
+brew install code-intelligence-mcp
+brew services start code-intelligence-mcp
+code-intelligence-mcp-server migrate
+
+# npm (keeps the v3-era npx muscle memory)
+npx -y @iceinvein/code-intelligence-mcp install
+npx -y @iceinvein/code-intelligence-mcp migrate
 ```
 
 After install:
@@ -17,6 +26,8 @@ After install:
 - Daemon listens on `http://127.0.0.1:17800/mcp`.
 - Dashboard: `http://127.0.0.1:17802/`.
 - Optional discovery endpoint: `http://127.0.0.1:17801/.well-known/mcp`.
+
+> **Pick one install path.** Both produce the same daemon, but they manage launchd differently: Homebrew owns the service plist via `brew services`, while the binary's `install` subcommand (used by the npm path) writes its own `com.iceinvein.code-intelligence.plist`. Running both at once will fight over the port. The migration guide assumes whichever path you chose; commands below show both where they diverge.
 
 ## What changed
 
@@ -199,7 +210,15 @@ The migrate command backs up `~/.claude.json` as
 `~/.claude.json.bak.<unix-ts>` (last three kept). To revert:
 
 ```bash
+# Homebrew install:
+brew services stop code-intelligence-mcp
+brew uninstall code-intelligence-mcp
+brew untap iceinvein/tap
+
+# OR npm install:
 code-intelligence-mcp-server uninstall    # bootout + remove plist
+
+# Restore the v3 config and reinstall the v3 package:
 cp ~/.claude.json.bak.<ts> ~/.claude.json
 npm install -g @iceinvein/code-intelligence-mcp-standalone@^3.3
 ```

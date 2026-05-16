@@ -264,6 +264,74 @@
       tbody td.actions > button + button {
         margin-left: 6px;
       }
+      button.repo-toggle {
+        font: inherit;
+        font-size: inherit;
+        background: transparent;
+        color: var(--ink);
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+        line-height: 1.4;
+      }
+      button.repo-toggle:hover { color: var(--accent); }
+      button.repo-toggle:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+      button.repo-toggle .caret {
+        display: inline-block;
+        width: 0.85em;
+        color: var(--ink-faint);
+        transition: color 120ms ease;
+      }
+      button.repo-toggle[aria-expanded="true"] .caret { color: var(--accent); }
+      tr.repo-detail-row > td.repo-detail-cell {
+        background: var(--paper-deep);
+        padding: 16px 24px;
+        border-top: 0;
+      }
+      .repo-detail-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+      }
+      .stat-tile {
+        padding: 10px 14px;
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        transition: border-color 140ms ease, background 140ms ease;
+      }
+      .stat-label {
+        font-size: 11.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--ink-faint);
+        margin-bottom: 4px;
+      }
+      .stat-value {
+        font-size: 18px;
+        color: var(--ink);
+        line-height: 1.2;
+      }
+      .stat-sub {
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        margin-top: 2px;
+      }
+      .repo-detail-meta {
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        line-height: 1.6;
+      }
       button.action {
         font: inherit;
         font-size: 12px;
@@ -731,9 +799,25 @@
         const tbody = document.createElement("tbody");
         sorted.forEach((r) => {
           const tr = document.createElement("tr");
+          tr.dataset.repoId = r.id || "";
 
           const nameTd = document.createElement("td");
-          nameTd.textContent = r.name || "";
+          if (r.id) {
+            const toggle = document.createElement("button");
+            toggle.className = "repo-toggle";
+            toggle.type = "button";
+            toggle.setAttribute("aria-expanded", "false");
+            toggle.setAttribute("aria-label", "Toggle details for " + (r.name || r.id));
+            const caret = document.createElement("span");
+            caret.className = "caret";
+            caret.textContent = "▸"; // ▸
+            toggle.appendChild(caret);
+            toggle.appendChild(document.createTextNode(" " + (r.name || "")));
+            toggle.addEventListener("click", () => toggleRepoDetail(r, tr, toggle));
+            nameTd.appendChild(toggle);
+          } else {
+            nameTd.textContent = r.name || "";
+          }
           tr.appendChild(nameTd);
 
           const pathTd = document.createElement("td");
@@ -756,9 +840,10 @@
             reindexBtn.type = "button";
             reindexBtn.textContent = "Re-index";
             reindexBtn.title = "POST /api/repos/" + r.id + "/reindex";
-            reindexBtn.addEventListener("click", () =>
-              reindexRepo(reindexBtn, r.id, r.name || r.id)
-            );
+            reindexBtn.addEventListener("click", (e) => {
+              e.stopPropagation();
+              reindexRepo(reindexBtn, r.id, r.name || r.id);
+            });
             actionTd.appendChild(reindexBtn);
 
             const deleteBtn = document.createElement("button");
@@ -766,9 +851,10 @@
             deleteBtn.type = "button";
             deleteBtn.textContent = "Delete";
             deleteBtn.title = "DELETE /api/repos/" + r.id;
-            deleteBtn.addEventListener("click", () =>
-              deleteRepo(deleteBtn, r.id, r.name || r.id)
-            );
+            deleteBtn.addEventListener("click", (e) => {
+              e.stopPropagation();
+              deleteRepo(deleteBtn, r.id, r.name || r.id);
+            });
             actionTd.appendChild(deleteBtn);
           }
           tr.appendChild(actionTd);
@@ -777,6 +863,163 @@
         });
         table.appendChild(tbody);
         container.appendChild(table);
+
+        // Restore expanded panels after re-render. Set by toggleRepoDetail
+        // and applied here so the 5s polling refresh doesn't collapse the
+        // panel the user was looking at.
+        expandedRepos.forEach((id) => {
+          const row = tbody.querySelector('tr[data-repo-id="' + cssEscape(id) + '"]');
+          const btn = row && row.querySelector("button.repo-toggle");
+          if (row && btn) {
+            // Recreate the detail row in the same place. Reuses fetch
+            // cache so it's instant on the second render.
+            openRepoDetail(row, btn, id);
+          }
+        });
+      }
+
+      // Track expanded rows across refreshes and cache fetched detail data.
+      const expandedRepos = new Set();
+      const repoDetailCache = new Map(); // id -> { fetchedAt, data }
+
+      function cssEscape(s) {
+        // Minimal escape for use inside a CSS attribute selector. Repo ids
+        // are 16-hex chars in practice but we defend against future
+        // changes.
+        return String(s).replace(/(["\\\n])/g, "\\$1");
+      }
+
+      function toggleRepoDetail(repo, row, toggleBtn) {
+        if (expandedRepos.has(repo.id)) {
+          expandedRepos.delete(repo.id);
+          closeRepoDetail(row, toggleBtn);
+        } else {
+          expandedRepos.add(repo.id);
+          openRepoDetail(row, toggleBtn, repo.id);
+        }
+      }
+
+      function closeRepoDetail(row, toggleBtn) {
+        toggleBtn.setAttribute("aria-expanded", "false");
+        const caret = toggleBtn.querySelector(".caret");
+        if (caret) caret.textContent = "▸"; // ▸
+        const next = row.nextElementSibling;
+        if (next && next.classList.contains("repo-detail-row")) next.remove();
+      }
+
+      async function openRepoDetail(row, toggleBtn, repoId) {
+        toggleBtn.setAttribute("aria-expanded", "true");
+        const caret = toggleBtn.querySelector(".caret");
+        if (caret) caret.textContent = "▾"; // ▾
+
+        // Remove an existing detail row if there is one (re-open case).
+        const next = row.nextElementSibling;
+        if (next && next.classList.contains("repo-detail-row")) next.remove();
+
+        const detailTr = document.createElement("tr");
+        detailTr.className = "repo-detail-row";
+        const td = document.createElement("td");
+        td.colSpan = 4;
+        td.className = "repo-detail-cell";
+        const panel = document.createElement("div");
+        panel.className = "repo-detail-panel";
+        panel.textContent = "Loading repo details...";
+        td.appendChild(panel);
+        detailTr.appendChild(td);
+        row.insertAdjacentElement("afterend", detailTr);
+
+        try {
+          // Use cached detail if fetched within the last 5s, otherwise hit the API.
+          const cached = repoDetailCache.get(repoId);
+          const fresh = cached && Date.now() - cached.fetchedAt < 5000;
+          const data = fresh
+            ? cached.data
+            : await fetchJson("/api/repos/" + encodeURIComponent(repoId));
+          if (!fresh) repoDetailCache.set(repoId, { fetchedAt: Date.now(), data });
+          renderRepoDetail(panel, data);
+        } catch (e) {
+          while (panel.firstChild) panel.removeChild(panel.firstChild);
+          const err = document.createElement("div");
+          err.className = "error";
+          err.textContent = "Failed to load details: " + (e.message || e);
+          panel.appendChild(err);
+        }
+      }
+
+      function statTile(label, value, sub) {
+        const tile = document.createElement("div");
+        tile.className = "stat-tile";
+        const lbl = document.createElement("div");
+        lbl.className = "stat-label";
+        lbl.textContent = label;
+        const val = document.createElement("div");
+        val.className = "stat-value mono";
+        val.textContent = value == null ? "--" : String(value);
+        tile.appendChild(lbl);
+        tile.appendChild(val);
+        if (sub) {
+          const subDiv = document.createElement("div");
+          subDiv.className = "stat-sub";
+          subDiv.textContent = sub;
+          tile.appendChild(subDiv);
+        }
+        return tile;
+      }
+
+      function renderRepoDetail(panel, data) {
+        while (panel.firstChild) panel.removeChild(panel.firstChild);
+
+        const stats = data.stats || {};
+        const grid = document.createElement("div");
+        grid.className = "stat-grid";
+
+        grid.appendChild(statTile("Symbols", fmtNumber(stats.symbols)));
+        grid.appendChild(statTile("Edges", fmtNumber(stats.edges)));
+
+        const descCount = stats.descriptions;
+        const totalSym = stats.symbols;
+        let coverage = null;
+        if (descCount != null && totalSym && totalSym > 0) {
+          coverage = Math.round((descCount / totalSym) * 100) + "%";
+        }
+        grid.appendChild(
+          statTile("Descriptions", fmtNumber(descCount), coverage ? coverage + " coverage" : null)
+        );
+        grid.appendChild(statTile("Undescribed", fmtNumber(stats.undescribed_symbols)));
+
+        const lastUpdated = stats.last_updated_unix_s;
+        const lastUpdatedAgo = lastUpdated
+          ? fmtSecsAgo(Math.max(0, Math.floor(Date.now() / 1000) - lastUpdated))
+          : "--";
+        grid.appendChild(statTile("Last updated", lastUpdatedAgo));
+
+        const lir = stats.latest_index_run;
+        const lirText = lir
+          ? fmtDuration(lir.duration_ms) + " (" + (lir.files_indexed || 0) + " files)"
+          : "--";
+        grid.appendChild(statTile("Latest index run", lirText));
+
+        panel.appendChild(grid);
+
+        // Meta footer with data_dir + created_at
+        const meta = document.createElement("div");
+        meta.className = "repo-detail-meta mono";
+        const metaLines = [
+          "data_dir: " + (data.data_dir || "?"),
+          "created:  " + (data.created_at || "?"),
+        ];
+        metaLines.forEach((line) => {
+          const div = document.createElement("div");
+          div.textContent = line;
+          meta.appendChild(div);
+        });
+        panel.appendChild(meta);
+      }
+
+      function fmtNumber(n) {
+        if (n == null) return "--";
+        // Compact a few groups for readability.
+        return n.toLocaleString("en-US");
       }
 
       function fmtSecsAgo(secs) {

@@ -9,6 +9,7 @@
 //! - `GET /api/status`                   -> daemon overview
 //! - `GET /api/repos`                    -> registered repos
 //! - `GET /api/sessions`                 -> bound MCP sessions
+//! - `GET /api/repos/{id}`               -> repo metadata + per-repo stats
 //! - `POST /api/repos/{id}/reindex`      -> spawn a background re-index
 //! - `DELETE /api/repos/{id}`            -> drop the index, registry entry, and data dir
 //! - `GET /api/jobs`                     -> recent background jobs (running + last 15m finished)
@@ -27,7 +28,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Json, Response,
     },
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
 use futures::stream::Stream;
@@ -82,7 +83,10 @@ pub async fn spawn_api_server(
         .route("/api/status", get(handle_status))
         .route("/api/repos", get(handle_repos))
         .route("/api/repos/{id}/reindex", post(handle_repo_reindex))
-        .route("/api/repos/{id}", delete(handle_repo_delete))
+        .route(
+            "/api/repos/{id}",
+            get(handle_repo_detail).delete(handle_repo_delete),
+        )
         .route("/api/jobs", get(handle_jobs))
         .route("/api/sessions", get(handle_sessions))
         .route("/api/logs/stream", get(handle_logs_stream))
@@ -208,6 +212,78 @@ async fn handle_status(State(state): State<Arc<ApiState>>) -> Result<Json<Value>
         "connected_sessions": connected_sessions,
         "bound_sessions": bound_sessions,
     })))
+}
+
+async fn handle_repo_detail(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let entry = match state
+        .session_manager
+        .registry
+        .get_by_hash(&id)
+        .map_err(|e| ApiError(format!("registry lookup failed: {e}")))?
+    {
+        Some(e) => e,
+        None => {
+            return Ok((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("repo not found: {id}") })),
+            )
+                .into_response())
+        }
+    };
+
+    // Stats: open the per-repo SQLite directly instead of going through
+    // SessionManager::get_or_create_repo, which would warm a cold repo
+    // just to render a dashboard tile. The db file may not exist yet on a
+    // freshly registered repo that has never been indexed; surface that
+    // as `stats: null` rather than an error.
+    let db_path = entry.data_dir.join("code-intelligence.db");
+    let stats = if db_path.as_std_path().exists() {
+        match crate::storage::sqlite::SqliteStore::open(&db_path) {
+            Ok(sqlite) => Some(read_repo_stats(&sqlite)),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %db_path, "failed to open repo db for stats");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok(Json(json!({
+        "id": id,
+        "name": entry.name,
+        "path": entry.path,
+        "data_dir": entry.data_dir,
+        "created_at": entry.created_at,
+        "last_accessed": entry.last_accessed,
+        "stats": stats,
+    }))
+    .into_response())
+}
+
+/// Best-effort stats read. Any individual query failure becomes `null` so
+/// the dashboard can render partial data instead of a 500.
+fn read_repo_stats(sqlite: &crate::storage::sqlite::SqliteStore) -> Value {
+    let symbols = sqlite.count_symbols().ok();
+    let edges = sqlite.count_edges().ok();
+    let descriptions = sqlite.count_descriptions().ok();
+    let undescribed = sqlite.count_undescribed_symbols().ok();
+    let last_updated = sqlite.most_recent_symbol_update().ok().flatten();
+    let latest_index_run = sqlite.latest_index_run().ok().flatten();
+    let latest_search_run = sqlite.latest_search_run().ok().flatten();
+
+    json!({
+        "symbols": symbols,
+        "edges": edges,
+        "descriptions": descriptions,
+        "undescribed_symbols": undescribed,
+        "last_updated_unix_s": last_updated,
+        "latest_index_run": latest_index_run,
+        "latest_search_run": latest_search_run,
+    })
 }
 
 async fn handle_repo_reindex(

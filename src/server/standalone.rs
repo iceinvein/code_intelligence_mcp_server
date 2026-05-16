@@ -7,7 +7,7 @@ use crate::handlers::{
 use crate::path::Utf8PathBuf;
 use crate::server::{all_tools, dispatch_tool_call, tool_json_content};
 use crate::session::SessionManager;
-use crate::tools::{ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
+use crate::tools::{BindWorkspaceTool, ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rust_mcp_sdk::{
@@ -123,6 +123,81 @@ impl StandaloneHandler {
         Some(bound_path)
     }
 
+    /// Bind a session to an explicit repo path supplied by the client via the
+    /// `bind_workspace` MCP tool. Overwrites any prior binding.
+    async fn handle_bind_workspace(
+        &self,
+        runtime: &Arc<dyn McpServer>,
+        tool: BindWorkspaceTool,
+    ) -> Result<serde_json::Value, CallToolError> {
+        let session_id = runtime.session_id().ok_or_else(|| {
+            CallToolError::from_message(
+                "No session ID; standalone mode requires Streamable HTTP transport".to_string(),
+            )
+        })?;
+
+        let repo_path = Utf8PathBuf::from(tool.repo.as_str());
+        if !repo_path.is_absolute() {
+            return Err(CallToolError::from_message(format!(
+                "bind_workspace.repo must be an absolute path, got: {}",
+                tool.repo
+            )));
+        }
+        if !repo_path.is_dir() {
+            return Err(CallToolError::from_message(format!(
+                "bind_workspace.repo does not exist or is not a directory: {}",
+                repo_path
+            )));
+        }
+
+        self.session_repos
+            .insert(session_id.clone(), repo_path.clone());
+
+        tracing::info!(
+            session = %session_id,
+            repo = %repo_path,
+            "Session bound to repo via bind_workspace"
+        );
+
+        // Pre-warm so the next tool call is fast.
+        let sm = self.session_manager.clone();
+        let rp = repo_path.clone();
+        tokio::spawn(async move {
+            match sm.get_or_create_repo(&rp).await {
+                Ok(_) => tracing::info!(repo = %rp, "Repo initialized successfully"),
+                Err(e) => tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo"),
+            }
+        });
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "session_id": session_id,
+            "repo": repo_path.as_str(),
+        }))
+    }
+
+    /// Fall back to the single repo registered with the SessionManager when
+    /// the registry has exactly one entry. Returns `None` if zero or more
+    /// than one repos are registered. This rule disables itself the moment
+    /// a second repo is added, so users with multiple workspaces always
+    /// hit the explicit `bind_workspace` path instead of a silent wrong-bind.
+    async fn try_single_repo_fallback(&self, session_id: &SessionId) -> Option<Utf8PathBuf> {
+        let repos = self.session_manager.registry.list_all().ok()?;
+        if repos.len() != 1 {
+            return None;
+        }
+        let path = Utf8PathBuf::from(repos.into_iter().next()?.path);
+        self.session_repos
+            .entry(session_id.clone())
+            .or_insert_with(|| path.clone());
+        tracing::info!(
+            session = %session_id,
+            repo = %path,
+            "Session bound to sole registered repo (single-repo fallback)"
+        );
+        Some(path)
+    }
+
     /// Resolve the AppState for the current session's repo, binding lazily
     /// if `on_initialized` did not manage to during the race window.
     async fn resolve_state(
@@ -135,15 +210,19 @@ impl StandaloneHandler {
             )
         })?;
 
-        let repo_path = self
-            .try_bind_session(runtime, &session_id)
-            .await
-            .ok_or_else(|| {
-                CallToolError::from_message(
-                    "Session not bound to a repo. Ensure your MCP client supports roots capability."
-                        .to_string(),
-                )
-            })?;
+        let repo_path = if let Some(path) = self.try_bind_session(runtime, &session_id).await {
+            path
+        } else if let Some(path) = self.try_single_repo_fallback(&session_id).await {
+            path
+        } else {
+            return Err(CallToolError::from_message(
+                "Session not bound to a repo. Call \
+                 `bind_workspace` with `{ \"repo\": \"/abs/path/to/your/workspace\" }` \
+                 first, or use an MCP client that implements the `roots` capability \
+                 (currently only Claude Code)."
+                    .to_string(),
+            ));
+        };
 
         self.session_manager
             .get_or_create_repo(&repo_path)
@@ -207,6 +286,14 @@ impl ServerHandler for StandaloneHandler {
         params: CallToolRequestParams,
         runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<CallToolResult, CallToolError> {
+        // Workspace binding bypasses resolve_state because it is the call
+        // that establishes the binding in the first place.
+        if params.name == "bind_workspace" {
+            let tool: BindWorkspaceTool = parse_tool_args(&params)?;
+            let result = self.handle_bind_workspace(&runtime, tool).await?;
+            return Ok(tool_json_content(&result));
+        }
+
         // Cross-repo search bypasses single-repo resolution — handle before resolve_state()
         if params.name == "search_across_repos" {
             let tool: SearchAcrossReposTool = parse_tool_args(&params)?;

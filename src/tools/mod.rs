@@ -197,6 +197,16 @@ pub struct AskCodeTool {
 }
 
 #[macros::mcp_tool(
+    name = "bind_workspace",
+    description = "Bind this MCP session to a workspace root by absolute path. Required as the first tool call when the client does not implement the MCP roots capability (every client except Claude Code, as of v4.0). The path must be an absolute path to an existing directory. Subsequent tool calls in the same session operate against the bound repository. Calling again with a different path rebinds the session."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct BindWorkspaceTool {
+    /// Absolute path to the workspace root.
+    pub repo: String,
+}
+
+#[macros::mcp_tool(
     name = "report_selection",
     description = "Record selected search result feedback."
 )]

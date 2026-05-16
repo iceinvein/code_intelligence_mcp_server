@@ -155,6 +155,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         PlanCodeInvestigationTool::tool(),
         InvestigateTool::tool(),
         AskCodeTool::tool(),
+        BindWorkspaceTool::tool(),
         ReportSelectionTool::tool(),
         ReportFileAccessTool::tool(),
         ExplainSearchTool::tool(),

@@ -258,13 +258,21 @@ async fn run_standalone(
     code_intelligence_mcp_server::server::standalone::spawn_session_eviction_loop(
         session_repos.clone(),
     );
+    let pending_repos = code_intelligence_mcp_server::server::mcp_proxy::new_pending_repos();
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
         session_manager.clone(),
         server_details.clone(),
         session_repos.clone(),
+        pending_repos.clone(),
     );
     let bind_host = standalone_config.host.clone();
     let bind_port = standalone_config.port;
+    // The SDK owns the axum router and exposes no hook to read the request
+    // URI from inside the MCP transport. We bind it to an internal loopback
+    // port and run a small proxy on the public port that captures `?repo=`
+    // URL bindings on the way through. Offset by +100 so it never collides
+    // with discovery/api ports (+1 and +2).
+    let internal_mcp_port = bind_port.saturating_add(100);
 
     // Use SDK's hyper server for Streamable HTTP transport
     use rust_mcp_sdk::mcp_server::{hyper_server, HyperServerOptions, ToMcpServerHandler};
@@ -272,8 +280,8 @@ async fn run_standalone(
         server_details,
         handler.to_mcp_server_handler(),
         HyperServerOptions {
-            host: bind_host.clone(),
-            port: bind_port,
+            host: "127.0.0.1".to_string(),
+            port: internal_mcp_port,
             task_store: Some(Arc::new(rust_mcp_sdk::task_store::InMemoryTaskStore::<
                 rust_mcp_sdk::schema::schema_utils::ClientJsonrpcRequest,
                 rust_mcp_sdk::schema::schema_utils::ResultFromServer,
@@ -332,6 +340,28 @@ async fn run_standalone(
         {
             error!(
                 "Failed to start discovery server: {}. Discovery endpoint will not be available.",
+                e
+            );
+        }
+    }
+
+    // Spawn the MCP proxy on the public port. It forwards POST/GET/DELETE
+    // /mcp to the internal SDK listener (port +100), reading `?repo=` URL
+    // bindings on the way through and pairing them with the SDK-assigned
+    // mcp-session-id on the way back.
+    {
+        let pr = pending_repos.clone();
+        if let Err(e) = code_intelligence_mcp_server::server::mcp_proxy::spawn_mcp_proxy(
+            &bind_host,
+            bind_port,
+            internal_mcp_port,
+            "/mcp",
+            pr,
+        )
+        .await
+        {
+            error!(
+                "Failed to start MCP proxy: {}. ?repo= URL binding will not be available.",
                 e
             );
         }

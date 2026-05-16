@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod discovery;
+pub mod mcp_proxy;
 pub mod standalone;
 
 use crate::handlers::*;

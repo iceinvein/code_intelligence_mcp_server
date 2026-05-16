@@ -5,6 +5,7 @@ use crate::handlers::{
     tool_internal_error, AppState,
 };
 use crate::path::Utf8PathBuf;
+use crate::server::mcp_proxy::PendingRepos;
 use crate::server::{all_tools, dispatch_tool_call, tool_json_content};
 use crate::session::SessionManager;
 use crate::tools::{BindWorkspaceTool, ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
@@ -88,9 +89,16 @@ pub struct StandaloneHandler {
     pub server_details: InitializeResult,
     /// Maps session_id → bookkeeping. An entry is inserted with `repo: None`
     /// when `on_initialized` fires, then upgraded to `repo: Some(_)` when
-    /// the workspace root is resolved (via roots/list, bind_workspace, or
-    /// the single-repo fallback).
+    /// the workspace root is resolved (via `?repo=` URL binding,
+    /// `roots/list`, `bind_workspace`, or the single-repo fallback).
     session_repos: Sessions,
+    /// URL-query bindings captured by the proxy in front of the SDK. The
+    /// proxy reads `?repo=` from each request and pairs it with the
+    /// `mcp-session-id` header in the upstream response. This map is the
+    /// highest-priority binding source per the v4 plan: it works on every
+    /// HTTP MCP client (not just Claude Code) and is set before the client
+    /// has a chance to issue any tool call.
+    pending_repos: PendingRepos,
 }
 
 impl StandaloneHandler {
@@ -98,12 +106,46 @@ impl StandaloneHandler {
         session_manager: Arc<SessionManager>,
         server_details: InitializeResult,
         session_repos: Sessions,
+        pending_repos: PendingRepos,
     ) -> Self {
         Self {
             session_manager,
             server_details,
             session_repos,
+            pending_repos,
         }
+    }
+
+    /// Consume the proxy's `?repo=` binding for this session, if any, and
+    /// promote it to a fully bound session. Returns the bound repo path,
+    /// or `None` if no URL binding was captured.
+    fn try_url_query_binding(&self, session_id: &SessionId) -> Option<Utf8PathBuf> {
+        let (_id, repo) = self.pending_repos.remove(session_id)?;
+
+        let was_already_bound = self
+            .session_repos
+            .get(session_id)
+            .map(|i| i.repo.is_some())
+            .unwrap_or(false);
+        self.upsert_session(session_id, Some(repo.clone()));
+        if !was_already_bound {
+            tracing::info!(
+                session = %session_id,
+                repo = %repo,
+                "Session bound to repo via ?repo= URL query"
+            );
+
+            // Pre-warm in the background so the first tool call is fast.
+            let sm = self.session_manager.clone();
+            let rp = repo.clone();
+            tokio::spawn(async move {
+                match sm.get_or_create_repo(&rp).await {
+                    Ok(_) => tracing::info!(repo = %rp, "Repo initialized successfully"),
+                    Err(e) => tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo"),
+                }
+            });
+        }
+        Some(repo)
     }
 
     /// Upsert a session: if it already exists, update `last_seen` (and
@@ -322,16 +364,24 @@ impl StandaloneHandler {
         // never gets evicted by `spawn_session_eviction_loop`.
         self.touch_session(&session_id);
 
-        let repo_path = if let Some(path) = self.try_bind_session(runtime, &session_id).await {
+        // Binding hierarchy (first match wins):
+        //   1. `?repo=` URL query — captured by the proxy, universal client support
+        //   2. MCP `roots/list` — opportunistic, Claude Code only in practice
+        //   3. Single-repo fallback — only when exactly one repo is registered
+        //   4. Hard error with actionable guidance
+        let repo_path = if let Some(path) = self.try_url_query_binding(&session_id) {
+            path
+        } else if let Some(path) = self.try_bind_session(runtime, &session_id).await {
             path
         } else if let Some(path) = self.try_single_repo_fallback(&session_id).await {
             path
         } else {
             return Err(CallToolError::from_message(
-                "Session not bound to a repo. Call \
-                 `bind_workspace` with `{ \"repo\": \"/abs/path/to/your/workspace\" }` \
-                 first, or use an MCP client that implements the `roots` capability \
-                 (currently only Claude Code)."
+                "Session not bound to a repo. Configure your MCP client URL as \
+                 `http://127.0.0.1:17800/mcp?repo=/abs/path/to/your/workspace`, \
+                 or call `bind_workspace` with \
+                 `{ \"repo\": \"/abs/path\" }`, \
+                 or use an MCP client that implements the `roots` capability."
                     .to_string(),
             ));
         };
@@ -473,6 +523,7 @@ mod tests {
             Arc::new(session_manager),
             server_details,
             new_session_repos(),
+            crate::server::mcp_proxy::new_pending_repos(),
         );
         assert_eq!(handler.session_repos.len(), 0);
     }
@@ -515,7 +566,12 @@ mod tests {
         // Tests don't actually use the session_manager for these helpers; we
         // just need a value to construct the handler.
         let sm = futures::executor::block_on(SessionManager::new_for_test(data_dir));
-        StandaloneHandler::new(Arc::new(sm), server_details, new_session_repos())
+        StandaloneHandler::new(
+            Arc::new(sm),
+            server_details,
+            new_session_repos(),
+            crate::server::mcp_proxy::new_pending_repos(),
+        )
     }
 
     #[test]
@@ -555,6 +611,36 @@ mod tests {
         // Must not panic / not insert anything.
         h.touch_session(&"never-registered".to_string());
         assert_eq!(h.session_repos.len(), 0);
+    }
+
+    // The bind path spawns a background pre-warm task with `tokio::spawn`,
+    // so these tests need a runtime.
+    #[tokio::test]
+    async fn try_url_query_binding_consumes_pending_and_promotes_session() {
+        let h = test_handler();
+        let sid = "session-url-1".to_string();
+        let repo = Utf8PathBuf::from("/tmp/url-bound-repo");
+
+        h.upsert_session(&sid, None);
+        h.pending_repos.insert(sid.clone(), repo.clone());
+
+        let bound = h.try_url_query_binding(&sid);
+        assert_eq!(bound.as_deref(), Some(repo.as_path()));
+
+        // pending entry was consumed (one-shot)
+        assert!(!h.pending_repos.contains_key(&sid));
+
+        // session is now bound
+        let info = h.session_repos.get(&sid).unwrap().clone();
+        assert_eq!(info.repo.as_deref(), Some(repo.as_path()));
+    }
+
+    #[tokio::test]
+    async fn try_url_query_binding_returns_none_without_pending_entry() {
+        let h = test_handler();
+        let sid = "session-url-2".to_string();
+        h.upsert_session(&sid, None);
+        assert!(h.try_url_query_binding(&sid).is_none());
     }
 
     #[tokio::test]

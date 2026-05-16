@@ -246,7 +246,7 @@ async fn run_standalone(
     };
 
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
-        session_manager,
+        session_manager.clone(),
         server_details.clone(),
     );
     let bind_host = standalone_config.host.clone();
@@ -318,6 +318,23 @@ async fn run_standalone(
         {
             error!(
                 "Failed to start discovery server: {}. Discovery endpoint will not be available.",
+                e
+            );
+        }
+    }
+
+    // Spawn JSON API endpoint on mcp_port + 2 (or +3 if collision with discovery).
+    {
+        let api_port = bind_port.saturating_add(2);
+        if let Err(e) = code_intelligence_mcp_server::server::api::spawn_api_server(
+            &bind_host,
+            api_port,
+            session_manager.clone(),
+        )
+        .await
+        {
+            error!(
+                "Failed to start API server: {}. /api/* endpoints will not be available.",
                 e
             );
         }

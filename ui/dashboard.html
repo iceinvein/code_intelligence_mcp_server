@@ -4,19 +4,90 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>code-intelligence-mcp</title>
+    <script>
+      // FOUC guard: apply the persisted theme choice before first paint so
+      // there is no flash from system-default to user-preferred.
+      (function () {
+        try {
+          var pref = localStorage.getItem("cimcp.theme") || "system";
+          var root = document.documentElement;
+          root.classList.remove("theme-light", "theme-dark");
+          if (pref === "light") root.classList.add("theme-light");
+          else if (pref === "dark") root.classList.add("theme-dark");
+        } catch (_) {}
+      })();
+    </script>
     <style>
+      /* Light palette: warm-neutral, Notion-leaning. */
       :root {
-        --ink:        #1f1d1b;
-        --ink-dim:    #5a554f;
-        --ink-faint:  #9d978f;
-        --paper:      #fbfaf8;
-        --paper-deep: #f4f1ec;
-        --line:       #e8e3da;
-        --line-soft:  #efeae0;
-        --accent:     #b6633a;
-        --good:       #2f7a45;
-        --warn:       #c25b1f;
-        --bad:        #b03a2e;
+        --ink:             #1f1d1b;
+        --ink-dim:         #5a554f;
+        --ink-faint:       #9d978f;
+        --paper:           #fbfaf8;
+        --paper-deep:      #f4f1ec;
+        --surface-raised:  #fdfcfa;
+        --line:            #e8e3da;
+        --line-soft:       #efeae0;
+        --accent:          #b6633a;
+        --good:            #2f7a45;
+        --warn:            #c25b1f;
+        --bad:             #b03a2e;
+        --toast-bg:        #1f1d1b;
+        --toast-fg:        #fbfaf8;
+        --error-bg:        #fff4ef;
+        --error-line:      #ecc4b5;
+        --shadow-strong:   0 6px 24px rgba(0, 0, 0, 0.18);
+        color-scheme:      light;
+      }
+
+      /* Dark palette: dimmed paper / workshop after hours.
+         Same semantic tokens, warm undertone preserved, chroma boosted on
+         the accent/state colors so they retain contrast on dark surfaces.
+         --ink-faint lifted to clear WCAG AA for the 12.5px timestamp column
+         on --paper. */
+      @media (prefers-color-scheme: dark) {
+        :root:not(.theme-light) {
+          --ink:             #ece6dc;
+          --ink-dim:         #b3a99c;
+          --ink-faint:       #897f72;
+          --paper:           #181513;
+          --paper-deep:      #221e1a;
+          --surface-raised:  #1f1c19;
+          --line:            #36302a;
+          --line-soft:       #29251f;
+          --accent:          #d98559;
+          --good:            #6cc084;
+          --warn:            #e08956;
+          --bad:             #db6f60;
+          --toast-bg:        #2c2823;
+          --toast-fg:        #ece6dc;
+          --error-bg:        #2a1c17;
+          --error-line:      #5a3a30;
+          --shadow-strong:   0 10px 32px rgba(0, 0, 0, 0.55);
+          color-scheme:      dark;
+        }
+      }
+      /* Explicit toggle override; duplicates the dark block so the user's
+         choice beats prefers-color-scheme. */
+      :root.theme-dark {
+        --ink:             #ece6dc;
+        --ink-dim:         #b3a99c;
+        --ink-faint:       #897f72;
+        --paper:           #181513;
+        --paper-deep:      #221e1a;
+        --surface-raised:  #1f1c19;
+        --line:            #36302a;
+        --line-soft:       #29251f;
+        --accent:          #d98559;
+        --good:            #6cc084;
+        --warn:            #e08956;
+        --bad:             #db6f60;
+        --toast-bg:        #2c2823;
+        --toast-fg:        #ece6dc;
+        --error-bg:        #2a1c17;
+        --error-line:      #5a3a30;
+        --shadow-strong:   0 10px 32px rgba(0, 0, 0, 0.55);
+        color-scheme:      dark;
       }
       * { box-sizing: border-box; }
       html, body {
@@ -28,6 +99,7 @@
         font-size: 14px;
         line-height: 1.5;
         -webkit-font-smoothing: antialiased;
+        transition: background 140ms ease, color 140ms ease;
       }
       .mono {
         font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -40,6 +112,46 @@
         align-items: baseline;
         gap: 18px;
         flex-wrap: wrap;
+        transition: background 140ms ease, border-color 140ms ease;
+      }
+      header .spacer { flex: 1; }
+      .theme-toggle {
+        align-self: center;
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--paper-deep);
+        transition: background 140ms ease, border-color 140ms ease;
+      }
+      .theme-toggle button {
+        appearance: none;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        font: inherit;
+        font-size: 14px;
+        line-height: 1;
+        color: var(--ink-faint);
+        width: 28px;
+        height: 24px;
+        padding: 0;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 120ms ease, color 120ms ease;
+      }
+      .theme-toggle button:hover { color: var(--ink-dim); }
+      .theme-toggle button.active {
+        background: var(--paper);
+        color: var(--ink);
+      }
+      .theme-toggle button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
       }
       header h1 {
         margin: 0;
@@ -76,6 +188,7 @@
         border: 1px solid var(--line);
         border-radius: 6px;
         padding: 18px 20px;
+        transition: background 140ms ease, border-color 140ms ease;
       }
       .card .label {
         font-size: 11px;
@@ -157,11 +270,12 @@
         border-radius: 4px;
         padding: 4px 10px;
         cursor: pointer;
-        transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+        transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
       }
       button.action:hover {
         background: var(--paper-deep);
         color: var(--ink);
+        border-color: var(--ink-faint);
       }
       button.action:active {
         background: var(--line-soft);
@@ -171,20 +285,25 @@
         color: var(--ink-faint);
         opacity: 0.7;
       }
+      button.action:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
       .toast {
         position: fixed;
         right: 24px;
         bottom: 24px;
         max-width: 340px;
         padding: 12px 16px;
-        background: var(--ink);
-        color: var(--paper);
+        background: var(--toast-bg);
+        color: var(--toast-fg);
         border-radius: 6px;
         font-size: 13px;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+        box-shadow: var(--shadow-strong);
         opacity: 0;
         transform: translateY(8px);
-        transition: opacity 140ms ease, transform 140ms ease;
+        transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+                    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
         pointer-events: none;
         z-index: 100;
       }
@@ -194,12 +313,14 @@
       }
       .toast.error {
         background: var(--bad);
+        color: #fff8f4;
       }
       .logs-card {
         border: 1px solid var(--line);
         border-radius: 6px;
-        background: #fdfcfa;
+        background: var(--surface-raised);
         overflow: hidden;
+        transition: background 140ms ease, border-color 140ms ease;
       }
       .logs-bar {
         display: flex;
@@ -210,6 +331,7 @@
         border-bottom: 1px solid var(--line);
         font-size: 12.5px;
         color: var(--ink-dim);
+        transition: background 140ms ease, border-color 140ms ease;
       }
       .logs-bar .spacer { flex: 1; }
       .logs-bar .indicator {
@@ -228,13 +350,14 @@
         height: 320px;
         overflow-y: auto;
         padding: 10px 14px;
-        background: #fdfcfa;
+        background: var(--surface-raised);
         font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
         font-size: 11.5px;
         line-height: 1.55;
         color: var(--ink-dim);
         white-space: pre-wrap;
         word-break: break-word;
+        transition: background 140ms ease;
       }
       .logs-body .line.lagged { color: var(--warn); }
       .logs-body .line.error  { color: var(--bad); }
@@ -253,8 +376,8 @@
       }
       .error {
         padding: 18px 20px;
-        background: #fff4ef;
-        border: 1px solid #ecc4b5;
+        background: var(--error-bg);
+        border: 1px solid var(--error-line);
         color: var(--bad);
         border-radius: 6px;
         margin-bottom: 24px;
@@ -268,6 +391,23 @@
         color: inherit;
         text-decoration: underline;
       }
+      footer a:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 2px;
+      }
+
+      /* Respect users who request reduced motion. Keep functional opacity
+         fades on toast/page transitions but cut anything decorative. */
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          transition-duration: 1ms !important;
+          animation-duration: 1ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
     </style>
   </head>
   <body>
@@ -275,6 +415,33 @@
       <h1>code-intelligence-mcp</h1>
       <span class="meta" id="version-line">loading...</span>
       <span class="meta" id="uptime-line"></span>
+      <span class="spacer"></span>
+      <div class="theme-toggle" role="radiogroup" aria-label="Theme">
+        <button
+          type="button"
+          data-theme="system"
+          role="radio"
+          aria-checked="false"
+          aria-label="Match system theme"
+          title="Match system"
+        >&#x25D0;</button>
+        <button
+          type="button"
+          data-theme="light"
+          role="radio"
+          aria-checked="false"
+          aria-label="Light theme"
+          title="Light"
+        >&#x263C;</button>
+        <button
+          type="button"
+          data-theme="dark"
+          role="radio"
+          aria-checked="false"
+          aria-label="Dark theme"
+          title="Dark"
+        >&#x263E;</button>
+      </div>
     </header>
 
     <main>
@@ -579,7 +746,10 @@
       loadAll();
       setInterval(loadAll, 5000);
       document.addEventListener("keydown", (e) => {
-        if (e.tagName === "INPUT") return;
+        const t = e.target;
+        if (t && (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.tagName === "TEXTAREA")) {
+          return;
+        }
         if (e.key === "r" || e.key === "R") {
           loadAll();
         }
@@ -673,6 +843,70 @@
       });
 
       openLogStream();
+
+      // --- Theme toggle: System / Light / Dark ---
+      const THEME_KEY = "cimcp.theme";
+      const themeButtons = Array.from(document.querySelectorAll(".theme-toggle button"));
+      const mq = window.matchMedia
+        ? window.matchMedia("(prefers-color-scheme: dark)")
+        : null;
+
+      function readThemePref() {
+        try {
+          const v = localStorage.getItem(THEME_KEY);
+          return v === "light" || v === "dark" ? v : "system";
+        } catch (_) {
+          return "system";
+        }
+      }
+
+      function applyThemePref(pref) {
+        const root = document.documentElement;
+        root.classList.remove("theme-light", "theme-dark");
+        if (pref === "light") root.classList.add("theme-light");
+        else if (pref === "dark") root.classList.add("theme-dark");
+        themeButtons.forEach((b) => {
+          const active = b.dataset.theme === pref;
+          b.classList.toggle("active", active);
+          b.setAttribute("aria-checked", active ? "true" : "false");
+          b.tabIndex = active ? 0 : -1;
+        });
+        try { localStorage.setItem(THEME_KEY, pref); } catch (_) {}
+      }
+
+      themeButtons.forEach((b, idx) => {
+        b.addEventListener("click", () => applyThemePref(b.dataset.theme));
+        b.addEventListener("keydown", (e) => {
+          let next = -1;
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+            next = (idx + 1) % themeButtons.length;
+          } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+            next = (idx - 1 + themeButtons.length) % themeButtons.length;
+          } else if (e.key === "Home") {
+            next = 0;
+          } else if (e.key === "End") {
+            next = themeButtons.length - 1;
+          }
+          if (next >= 0) {
+            e.preventDefault();
+            const t = themeButtons[next];
+            applyThemePref(t.dataset.theme);
+            t.focus();
+          }
+        });
+      });
+
+      // When set to System, the CSS media query handles light <-> dark live.
+      // No JS reaction is strictly required, but listen so the toggle UI
+      // stays consistent if the user opens devtools and changes
+      // emulated color scheme.
+      if (mq && typeof mq.addEventListener === "function") {
+        mq.addEventListener("change", () => {
+          // No-op: CSS variables already update. Kept for future hooks.
+        });
+      }
+
+      applyThemePref(readThemePref());
     </script>
   </body>
 </html>

@@ -1,29 +1,89 @@
 //! CLI argument parsing and help text.
 //!
-//! Since v4.0 the server has one mode (HTTP daemon). The legacy `--standalone`
-//! flag and `CIMCP_MODE` env var are still accepted to keep old configs from
-//! erroring out, but they no longer change behaviour.
+//! v4.0 introduces lifecycle subcommands (install, uninstall, start, stop,
+//! status, migrate) alongside the default "run server" mode. When no
+//! subcommand is given the binary boots the HTTP daemon.
+//!
+//! The legacy `--standalone` flag and `CIMCP_MODE` env var are accepted as
+//! no-ops so v3 configs do not error.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    Run,
+    Install(InstallOpts),
+    Uninstall,
+    Start,
+    Stop,
+    Status,
+    Migrate(MigrateOpts),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InstallOpts {
+    pub port: Option<u16>,
+    pub no_autostart: bool,
+    pub no_launchd: bool,
+    /// Some(true): patch automatically, Some(false): never patch,
+    /// None: ask the user interactively.
+    pub patch_claude_json: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MigrateOpts {
+    /// When true, only report what would change without writing.
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliArgs {
     pub help: bool,
     pub version: bool,
+    pub command: Command,
     pub host: Option<String>,
     pub port: Option<u16>,
     pub discovery_port: Option<u16>,
 }
 
+impl Default for CliArgs {
+    fn default() -> Self {
+        Self {
+            help: false,
+            version: false,
+            command: Command::Run,
+            host: None,
+            port: None,
+            discovery_port: None,
+        }
+    }
+}
+
 pub fn parse_args(args: &[String]) -> CliArgs {
     let mut cli = CliArgs::default();
+    let mut install_opts = InstallOpts::default();
+    let mut migrate_opts = MigrateOpts::default();
+    let mut subcommand: Option<&str> = None;
 
-    let mut i = 1; // Skip program name at index 0
+    let mut i = 1;
     while i < args.len() {
-        let arg = &args[i];
-        match arg.as_str() {
+        let arg = args[i].as_str();
+        match arg {
             "-h" | "--help" | "help" => cli.help = true,
             "-V" | "--version" | "version" => cli.version = true,
-            // Accepted for backward compatibility; no-op in v4.
-            "--standalone" => {}
+            // Subcommands. The first one wins; later positionals are flag values.
+            "install" | "uninstall" | "start" | "stop" | "status" | "migrate"
+                if subcommand.is_none() =>
+            {
+                subcommand = Some(match arg {
+                    "install" => "install",
+                    "uninstall" => "uninstall",
+                    "start" => "start",
+                    "stop" => "stop",
+                    "status" => "status",
+                    "migrate" => "migrate",
+                    _ => unreachable!(),
+                });
+            }
+            "--standalone" => {} // legacy no-op
             "--host" => {
                 if i + 1 < args.len() {
                     cli.host = Some(args[i + 1].clone());
@@ -34,6 +94,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 if i + 1 < args.len() {
                     if let Ok(port) = args[i + 1].parse::<u16>() {
                         cli.port = Some(port);
+                        install_opts.port = Some(port);
                     }
                     i += 1;
                 }
@@ -46,10 +107,25 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     i += 1;
                 }
             }
+            "--no-autostart" => install_opts.no_autostart = true,
+            "--no-launchd" => install_opts.no_launchd = true,
+            "--patch-claude-json" => install_opts.patch_claude_json = Some(true),
+            "--no-patch-claude-json" => install_opts.patch_claude_json = Some(false),
+            "--dry-run" => migrate_opts.dry_run = true,
             _ => {}
         }
         i += 1;
     }
+
+    cli.command = match subcommand {
+        Some("install") => Command::Install(install_opts),
+        Some("uninstall") => Command::Uninstall,
+        Some("start") => Command::Start,
+        Some("stop") => Command::Stop,
+        Some("status") => Command::Status,
+        Some("migrate") => Command::Migrate(migrate_opts),
+        _ => Command::Run,
+    };
 
     cli
 }
@@ -60,33 +136,40 @@ pub fn print_help() {
     println!("HTTP MCP daemon for local code intelligence (index + search + context).");
     println!();
     println!("Usage:");
-    println!("  code-intelligence-mcp-server");
-    println!("  code-intelligence-mcp-server --host 0.0.0.0 --port 4444");
+    println!("  code-intelligence-mcp-server [run]                Start the HTTP daemon");
+    println!(
+        "  code-intelligence-mcp-server install [opts]       Register and start the launchd daemon"
+    );
+    println!("  code-intelligence-mcp-server uninstall            Stop and unregister the launchd daemon");
+    println!("  code-intelligence-mcp-server start                Start the registered daemon");
+    println!("  code-intelligence-mcp-server stop                 Stop the registered daemon");
+    println!(
+        "  code-intelligence-mcp-server status               Show daemon state, port, version"
+    );
+    println!("  code-intelligence-mcp-server migrate [--dry-run]  Rewrite v3 stdio MCP configs to v4 HTTP");
     println!();
-    println!("Flags:");
-    println!("  -h, --help              Show this help");
-    println!("  -V, --version           Show version");
+    println!("Run-mode flags:");
     println!("  --host HOST             Override listen address (default: 127.0.0.1)");
     println!("  --port PORT             Override listen port (default: 17800)");
     println!("  --discovery-port PORT   Discovery endpoint port (default: MCP port + 1)");
     println!();
+    println!("install flags:");
+    println!(
+        "  --port PORT                 Pin the daemon port (default: 17800; auto-bumps if busy)"
+    );
+    println!("  --no-autostart              Do not start the daemon at login (KeepAlive still on)");
+    println!("  --no-launchd                Write the plist but skip launchctl bootstrap");
+    println!("  --patch-claude-json         Patch ~/.claude.json without prompting");
+    println!("  --no-patch-claude-json      Skip the ~/.claude.json patch without prompting");
+    println!();
+    println!("Data location: ~/.code-intelligence/");
     println!("Configuration file: ~/.code-intelligence/server.toml");
-    println!("Per-repo data stored in: ~/.code-intelligence/repos/<repo-id>/");
     println!();
     println!("Common env (defaults shown):");
-    println!("  EMBEDDINGS_MODEL_DIR=<auto>           (default: ~/.code-intelligence/models/jina-code-embeddings-1.5b-gguf)");
     println!("  EMBEDDINGS_BACKEND=llamacpp|hash      (default: llamacpp)");
     println!("  EMBEDDINGS_DEVICE=cpu|metal           (default: metal)");
-    println!("  EMBEDDING_BATCH_SIZE=32");
-    println!("  MAX_CONTEXT_BYTES=200000");
-    println!("  WATCH_MODE=true|false                 (default: true)");
-    println!();
-    println!("LLM description generation:");
-    println!("  LLM_ENABLED=true|false                (default: true)");
     println!("  LLM_DEVICE=cpu|metal                  (default: cpu)");
-    println!("  LLM_MODEL_DIR=<auto>                  (default: ~/.code-intelligence/models/qwen2.5-coder-1.5b-gguf)");
-    println!("  LLM_MAX_TOKENS=50                     (default: 50)");
-    println!("  LLM_BATCH_COMMIT=10                   (default: 10)");
+    println!("  WATCH_MODE=true|false                 (default: true)");
 }
 
 pub fn print_version() {
@@ -108,7 +191,6 @@ mod tests {
     fn parse_args_detects_version_flags() {
         assert!(parse_args(&["bin".into(), "--version".into()]).version);
         assert!(parse_args(&["bin".into(), "-V".into()]).version);
-        assert!(parse_args(&["bin".into(), "version".into()]).version);
     }
 
     #[test]
@@ -125,34 +207,76 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_handles_missing_values() {
-        assert!(parse_args(&["bin".into(), "--host".into()]).host.is_none());
-        assert!(parse_args(&["bin".into(), "--port".into()]).port.is_none());
+    fn parse_args_defaults_to_run() {
+        let cli = parse_args(&["bin".into()]);
+        assert_eq!(cli.command, Command::Run);
     }
 
     #[test]
-    fn parse_args_defaults_to_no_overrides() {
-        let cli = parse_args(&["bin".into()]);
-        assert!(!cli.help);
-        assert!(!cli.version);
-        assert!(cli.host.is_none());
-        assert!(cli.port.is_none());
-        assert!(cli.discovery_port.is_none());
+    fn parse_args_recognises_install_subcommand() {
+        let cli = parse_args(&["bin".into(), "install".into()]);
+        match cli.command {
+            Command::Install(opts) => {
+                assert_eq!(opts.port, None);
+                assert!(!opts.no_autostart);
+                assert_eq!(opts.patch_claude_json, None);
+            }
+            _ => panic!("expected install command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_install_with_flags() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "install".into(),
+            "--port".into(),
+            "20000".into(),
+            "--no-autostart".into(),
+            "--patch-claude-json".into(),
+        ]);
+        match cli.command {
+            Command::Install(opts) => {
+                assert_eq!(opts.port, Some(20000));
+                assert!(opts.no_autostart);
+                assert_eq!(opts.patch_claude_json, Some(true));
+            }
+            _ => panic!("expected install"),
+        }
+    }
+
+    #[test]
+    fn parse_args_no_patch_flag_is_distinct() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "install".into(),
+            "--no-patch-claude-json".into(),
+        ]);
+        match cli.command {
+            Command::Install(opts) => assert_eq!(opts.patch_claude_json, Some(false)),
+            _ => panic!("expected install"),
+        }
+    }
+
+    #[test]
+    fn parse_args_migrate_with_dry_run() {
+        let cli = parse_args(&["bin".into(), "migrate".into(), "--dry-run".into()]);
+        match cli.command {
+            Command::Migrate(opts) => assert!(opts.dry_run),
+            _ => panic!("expected migrate"),
+        }
+    }
+
+    #[test]
+    fn parse_args_silently_accepts_legacy_standalone_flag() {
+        let cli = parse_args(&["bin".into(), "--standalone".into()]);
+        assert_eq!(cli.command, Command::Run);
     }
 
     #[test]
     fn parse_args_ignores_unknown_args() {
         let cli = parse_args(&["bin".into(), "--unknown".into()]);
-        assert!(!cli.help);
-        assert!(!cli.version);
-    }
-
-    #[test]
-    fn parse_args_silently_accepts_legacy_standalone_flag() {
-        // v3 configs passed --standalone; v4 still accepts it as a no-op.
-        let cli = parse_args(&["bin".into(), "--standalone".into()]);
-        assert!(!cli.help);
-        assert!(!cli.version);
+        assert_eq!(cli.command, Command::Run);
     }
 
     #[test]

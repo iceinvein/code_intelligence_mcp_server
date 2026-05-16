@@ -49,6 +49,16 @@ async fn main() -> SdkResult<()> {
         return Ok(());
     }
 
+    // Lifecycle subcommands run synchronously without booting the daemon.
+    if !matches!(
+        cli_args.command,
+        code_intelligence_mcp_server::cli::Command::Run
+    ) {
+        return dispatch_subcommand(cli_args.command).map_err(|e| McpSdkError::Internal {
+            description: e.to_string(),
+        });
+    }
+
     // Set up file logging to global ~/.code-intelligence/logs directory
     let global_dir = code_intelligence_mcp_server::config::get_data_dir();
     let logs_dir = global_dir.join("logs");
@@ -119,6 +129,20 @@ async fn main() -> SdkResult<()> {
         cli_args.discovery_port,
     )
     .await
+}
+
+fn dispatch_subcommand(cmd: code_intelligence_mcp_server::cli::Command) -> anyhow::Result<()> {
+    use code_intelligence_mcp_server::cli::Command;
+    use code_intelligence_mcp_server::install;
+    match cmd {
+        Command::Run => unreachable!("dispatch_subcommand should not see Run"),
+        Command::Install(opts) => install::handle_install(opts),
+        Command::Uninstall => install::handle_uninstall(),
+        Command::Start => install::handle_start(),
+        Command::Stop => install::handle_stop(),
+        Command::Status => install::handle_status(),
+        Command::Migrate(opts) => install::handle_migrate(opts),
+    }
 }
 
 async fn run_standalone(

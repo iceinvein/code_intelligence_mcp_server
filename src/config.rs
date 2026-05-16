@@ -126,7 +126,7 @@ impl Default for StandaloneConfig {
         let data_dir = get_data_dir();
         Self {
             host: "127.0.0.1".to_string(),
-            port: 3333,
+            port: 17800,
             data_dir: data_dir.clone(),
             warm_ttl_seconds: 300,
             embeddings_backend: EmbeddingsBackend::LlamaCpp,
@@ -1486,7 +1486,7 @@ mod tests {
     fn standalone_config_defaults() {
         let cfg = StandaloneConfig::default();
         assert_eq!(cfg.host, "127.0.0.1");
-        assert_eq!(cfg.port, 3333);
+        assert_eq!(cfg.port, 17800);
         assert_eq!(cfg.warm_ttl_seconds, 300);
         assert!(cfg.data_dir.to_string().contains("code-intelligence"));
     }

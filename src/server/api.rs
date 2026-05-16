@@ -21,17 +21,23 @@ use axum::{
     extract::{Path, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{Html, IntoResponse, Json, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        Html, IntoResponse, Json, Response,
+    },
     routing::{get, post},
     Router,
 };
+use futures::stream::Stream;
 use serde_json::{json, Value};
+use tokio::sync::broadcast::error::RecvError;
 
 const DASHBOARD_HTML: &str = include_str!("../../ui/dashboard.html");
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::log_broadcast::LogBroadcaster;
 use crate::server::standalone::SessionRepos;
 use crate::session::SessionManager;
 
@@ -39,6 +45,7 @@ use crate::session::SessionManager;
 struct ApiState {
     session_manager: Arc<SessionManager>,
     session_repos: SessionRepos,
+    log_broadcaster: LogBroadcaster,
     started_at_unix_s: u64,
 }
 
@@ -49,6 +56,7 @@ pub async fn spawn_api_server(
     api_port: u16,
     session_manager: Arc<SessionManager>,
     session_repos: SessionRepos,
+    log_broadcaster: LogBroadcaster,
 ) -> anyhow::Result<()> {
     let started_at_unix_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -58,6 +66,7 @@ pub async fn spawn_api_server(
     let state = Arc::new(ApiState {
         session_manager,
         session_repos,
+        log_broadcaster,
         started_at_unix_s,
     });
 
@@ -68,6 +77,7 @@ pub async fn spawn_api_server(
         .route("/api/repos", get(handle_repos))
         .route("/api/repos/{id}/reindex", post(handle_repo_reindex))
         .route("/api/sessions", get(handle_sessions))
+        .route("/api/logs/stream", get(handle_logs_stream))
         .layer(middleware::from_fn(check_origin))
         .with_state(state);
 
@@ -245,6 +255,31 @@ async fn handle_repo_reindex(
         "repo_path": entry.path,
     }));
     Ok((StatusCode::ACCEPTED, body).into_response())
+}
+
+async fn handle_logs_stream(
+    State(state): State<Arc<ApiState>>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let rx = state.log_broadcaster.subscribe();
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(line) => {
+                    return Some((Ok(Event::default().data(line)), rx));
+                }
+                Err(RecvError::Lagged(n)) => {
+                    return Some((
+                        Ok(Event::default()
+                            .event("lagged")
+                            .data(format!("{n} log messages dropped"))),
+                        rx,
+                    ));
+                }
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 async fn handle_sessions(State(state): State<Arc<ApiState>>) -> Json<Value> {

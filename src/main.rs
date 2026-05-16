@@ -79,8 +79,10 @@ async fn main() -> SdkResult<()> {
     let access_appender = tracing_appender::rolling::daily(&logs_dir, "access.log");
     let (non_blocking_access, _access_guard) = tracing_appender::non_blocking(access_appender);
 
-    // Set up layered subscriber with stderr, file, and access log output
+    // Set up layered subscriber with stderr, file, access log, and in-process
+    // broadcast for the SSE /api/logs/stream endpoint.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let log_broadcaster = code_intelligence_mcp_server::log_broadcast::LogBroadcaster::new();
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -94,6 +96,11 @@ async fn main() -> SdkResult<()> {
                     tracing_subscriber::filter::Targets::new()
                         .with_target("mcp_access", tracing::Level::INFO),
                 ),
+        )
+        .with(
+            fmt::layer()
+                .with_writer(log_broadcaster.make_writer())
+                .with_ansi(false),
         )
         .init();
 
@@ -127,6 +134,7 @@ async fn main() -> SdkResult<()> {
         cli_args.host.as_deref(),
         cli_args.port,
         cli_args.discovery_port,
+        log_broadcaster,
     )
     .await
 }
@@ -149,6 +157,7 @@ async fn run_standalone(
     host: Option<&str>,
     port: Option<u16>,
     discovery_port: Option<u16>,
+    log_broadcaster: code_intelligence_mcp_server::log_broadcast::LogBroadcaster,
 ) -> SdkResult<()> {
     let standalone_config =
         code_intelligence_mcp_server::config::StandaloneConfig::load(host, port, discovery_port)
@@ -333,6 +342,7 @@ async fn run_standalone(
             api_port,
             session_manager.clone(),
             session_repos.clone(),
+            log_broadcaster.clone(),
         )
         .await
         {

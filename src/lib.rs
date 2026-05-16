@@ -7,6 +7,7 @@ pub mod handlers;
 pub mod indexer;
 pub mod install;
 pub mod llm;
+pub mod log_broadcast;
 pub mod logging;
 pub mod metrics;
 pub mod os;

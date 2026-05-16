@@ -24,19 +24,33 @@ use std::sync::Arc;
 /// SessionId is String (from rust_mcp_transport)
 type SessionId = String;
 
+/// Shared map of MCP session-id to bound workspace root. Cloned (cheaply,
+/// it is an `Arc`) into both `StandaloneHandler` (which writes) and the
+/// JSON API server (which reads for `/api/sessions`).
+pub type SessionRepos = Arc<DashMap<SessionId, Utf8PathBuf>>;
+
+pub fn new_session_repos() -> SessionRepos {
+    Arc::new(DashMap::new())
+}
+
 pub struct StandaloneHandler {
     pub session_manager: Arc<SessionManager>,
     pub server_details: InitializeResult,
-    /// Maps session_id → repo path (set during on_initialized via list_roots)
-    session_repos: DashMap<SessionId, Utf8PathBuf>,
+    /// Maps session_id → repo path (set during on_initialized via list_roots
+    /// or via the bind_workspace tool).
+    session_repos: SessionRepos,
 }
 
 impl StandaloneHandler {
-    pub fn new(session_manager: Arc<SessionManager>, server_details: InitializeResult) -> Self {
+    pub fn new(
+        session_manager: Arc<SessionManager>,
+        server_details: InitializeResult,
+        session_repos: SessionRepos,
+    ) -> Self {
         Self {
             session_manager,
             server_details,
-            session_repos: DashMap::new(),
+            session_repos,
         }
     }
 
@@ -351,7 +365,11 @@ mod tests {
             meta: None,
         };
 
-        let handler = StandaloneHandler::new(Arc::new(session_manager), server_details);
+        let handler = StandaloneHandler::new(
+            Arc::new(session_manager),
+            server_details,
+            new_session_repos(),
+        );
         assert_eq!(handler.session_repos.len(), 0);
     }
 

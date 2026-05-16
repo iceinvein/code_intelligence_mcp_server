@@ -245,9 +245,11 @@ async fn run_standalone(
         meta: None,
     };
 
+    let session_repos = code_intelligence_mcp_server::server::standalone::new_session_repos();
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
         session_manager.clone(),
         server_details.clone(),
+        session_repos.clone(),
     );
     let bind_host = standalone_config.host.clone();
     let bind_port = standalone_config.port;
@@ -330,6 +332,7 @@ async fn run_standalone(
             &bind_host,
             api_port,
             session_manager.clone(),
+            session_repos.clone(),
         )
         .await
         {

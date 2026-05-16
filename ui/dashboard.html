@@ -189,7 +189,12 @@
         <div class="card">
           <div class="label">Registered repos</div>
           <div class="value" id="status-repo-count">--</div>
-          <div class="sub">across all sessions</div>
+          <div class="sub">on disk</div>
+        </div>
+        <div class="card">
+          <div class="label">Active sessions</div>
+          <div class="value" id="status-session-count">--</div>
+          <div class="sub">bound to a repo</div>
         </div>
         <div class="card">
           <div class="label">Started</div>
@@ -197,6 +202,13 @@
           <div class="sub" id="status-uptime">--</div>
         </div>
       </div>
+
+      <section>
+        <h2>Active sessions</h2>
+        <div id="sessions-container">
+          <div class="empty">loading sessions...</div>
+        </div>
+      </section>
 
       <section>
         <h2>Repositories</h2>
@@ -313,12 +325,60 @@
         container.appendChild(table);
       }
 
+      function renderSessions(sessionsJson) {
+        const container = document.getElementById("sessions-container");
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        if (!sessionsJson.sessions || sessionsJson.sessions.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent =
+            "No MCP sessions are currently bound. Connect a client and call bind_workspace, or rely on roots.";
+          container.appendChild(empty);
+          return;
+        }
+
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        ["Session", "Bound repo"].forEach((label) => {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        sessionsJson.sessions.forEach((s) => {
+          const tr = document.createElement("tr");
+
+          const sidTd = document.createElement("td");
+          sidTd.className = "mono";
+          // Short-form the session id for readability.
+          const sid = String(s.session_id || "");
+          sidTd.textContent = sid.length > 8 ? sid.substring(0, 8) + "..." : sid;
+          sidTd.title = sid;
+          tr.appendChild(sidTd);
+
+          const repoTd = document.createElement("td");
+          repoTd.className = "path mono";
+          repoTd.textContent = s.repo || "";
+          tr.appendChild(repoTd);
+
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        container.appendChild(table);
+      }
+
       async function loadAll() {
         try {
           clearError();
-          const [status, repos] = await Promise.all([
+          const [status, repos, sessions] = await Promise.all([
             fetchJson("/api/status"),
             fetchJson("/api/repos"),
+            fetchJson("/api/sessions"),
           ]);
 
           document.getElementById("version-line").textContent = "v" + status.version;
@@ -326,11 +386,14 @@
             "uptime " + fmtUptime(status.uptime_s);
           document.getElementById("status-port").textContent = location.host;
           document.getElementById("status-repo-count").textContent = status.registered_repos;
+          document.getElementById("status-session-count").textContent =
+            status.active_sessions != null ? status.active_sessions : sessions.count;
           document.getElementById("status-started").textContent = fmtTs(status.started_at_unix_s);
           document.getElementById("status-uptime").textContent =
             "running " + fmtUptime(status.uptime_s);
 
           renderRepos(repos);
+          renderSessions(sessions);
         } catch (e) {
           showError(e.message || String(e));
         }

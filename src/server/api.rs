@@ -30,11 +30,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::server::standalone::SessionRepos;
 use crate::session::SessionManager;
 
 #[derive(Clone)]
 struct ApiState {
     session_manager: Arc<SessionManager>,
+    session_repos: SessionRepos,
     started_at_unix_s: u64,
 }
 
@@ -44,6 +46,7 @@ pub async fn spawn_api_server(
     host: &str,
     api_port: u16,
     session_manager: Arc<SessionManager>,
+    session_repos: SessionRepos,
 ) -> anyhow::Result<()> {
     let started_at_unix_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -52,6 +55,7 @@ pub async fn spawn_api_server(
 
     let state = Arc::new(ApiState {
         session_manager,
+        session_repos,
         started_at_unix_s,
     });
 
@@ -60,6 +64,7 @@ pub async fn spawn_api_server(
         .route("/api/version", get(handle_version))
         .route("/api/status", get(handle_status))
         .route("/api/repos", get(handle_repos))
+        .route("/api/sessions", get(handle_sessions))
         .layer(middleware::from_fn(check_origin))
         .with_state(state);
 
@@ -169,7 +174,25 @@ async fn handle_status(State(state): State<Arc<ApiState>>) -> Result<Json<Value>
         "started_at_unix_s": state.started_at_unix_s,
         "uptime_s": now.saturating_sub(state.started_at_unix_s),
         "registered_repos": registered,
+        "active_sessions": state.session_repos.len(),
     })))
+}
+
+async fn handle_sessions(State(state): State<Arc<ApiState>>) -> Json<Value> {
+    let sessions: Vec<Value> = state
+        .session_repos
+        .iter()
+        .map(|entry| {
+            json!({
+                "session_id": entry.key(),
+                "repo": entry.value().as_str(),
+            })
+        })
+        .collect();
+    Json(json!({
+        "count": sessions.len(),
+        "sessions": sessions,
+    }))
 }
 
 /// Error wrapper that returns a JSON body with HTTP 500.

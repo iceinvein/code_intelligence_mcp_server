@@ -25,46 +25,32 @@ Key acronyms and concepts used throughout the codebase:
 
 ## Usage in Claude Code
 
-### Embedded Mode (Default)
+Since v4.0 the server runs as a single HTTP daemon managed by launchd. Embedded stdio mode and leader election are gone.
 
-Add to `~/.claude.json` (or project-level `.mcp.json`):
+### One-time install
 
-```json
-{
-  "mcpServers": {
-    "code-intelligence": {
-      "command": "npx",
-      "args": ["-y", "@iceinvein/code-intelligence-mcp"],
-      "env": {}
-    }
-  }
-}
+```bash
+npx -y @iceinvein/code-intelligence-mcp install   # writes plist + bootstraps daemon
+npx -y @iceinvein/code-intelligence-mcp migrate   # rewrites v3 stdio entries in ~/.claude.json
 ```
 
-Each Claude Code session spawns its own server process. The server auto-detects the working directory as `BASE_DIR` and begins indexing in the background. Three GGUF models (~3.2 GB total) are downloaded on first launch and cached in `~/.code-intelligence/models/`: the embedding model (~1.5 GB), the description LLM (~1.0 GB), and the cross-encoder reranker (~600 MB).
+The `install` subcommand:
+- Writes the launchd plist to `~/Library/LaunchAgents/com.iceinvein.code-intelligence.plist`.
+- Bootstraps the service via `launchctl bootstrap gui/<uid>` (macOS 13+).
+- Prompts before patching `~/.claude.json`; pass `--patch-claude-json` or `--no-patch-claude-json` to skip the prompt.
+- Default port: 17800 (configurable via `--port`).
 
-### Standalone Mode (Recommended for Multiple Sessions)
+After install, MCP clients connect to `http://127.0.0.1:17800/mcp`. The first launch downloads three GGUF models (~3.2 GB total).
 
-If you run multiple Claude Code sessions simultaneously, standalone mode avoids loading duplicate copies of the embedding model:
+### Session binding
 
-1. Start the standalone server (once):
-   ```bash
-   npx @iceinvein/code-intelligence-mcp-standalone
-   ```
+The MCP `roots/list` capability is implemented only by Claude Code in practice. v4 supports three binding mechanisms (tried in order):
 
-2. Configure Claude Code to connect (`~/.claude.json`):
-   ```json
-   {
-     "mcpServers": {
-       "code-intelligence": {
-         "type": "streamable-http",
-         "url": "http://localhost:3333/mcp"
-       }
-     }
-   }
-   ```
+1. **`roots/list` (auto)** for Claude Code.
+2. **`bind_workspace(repo="/abs/path")` MCP tool** for any other client. Call it once at the start of the session.
+3. **Single-repo registry fallback** auto-binds when the registry has exactly one repo.
 
-The standalone server auto-detects each session's workspace root via the MCP `roots` capability — no `BASE_DIR` needed.
+Unbound tool calls return an actionable error suggesting `bind_workspace`.
 
 ### What Claude Code Gets
 
@@ -89,34 +75,26 @@ cargo build --release          # Release build
 
 # Run tests
 cargo test                                      # All tests
-cargo test --test integration_index_search      # Integration tests only
 ./scripts/test_local.sh                         # End-to-end test with dummy workspace
 
-# Run the server
-./scripts/start_mcp.sh                          # Start MCP server (stdio transport)
-BASE_DIR=/path/to/repo ./target/release/code-intelligence-mcp-server
+# Run the server in the foreground (for benchmarks / dev)
+./target/release/code-intelligence-mcp-server                       # default port 17800
+./target/release/code-intelligence-mcp-server --port 18000          # custom port
 
 # For faster testing (skip model download)
 EMBEDDINGS_BACKEND=hash cargo test
+
+# Lifecycle subcommands (production install)
+./target/release/code-intelligence-mcp-server install               # write plist + bootstrap
+./target/release/code-intelligence-mcp-server status                # PID, port, plist state
+./target/release/code-intelligence-mcp-server stop
+./target/release/code-intelligence-mcp-server uninstall             # bootout + remove plist
+./target/release/code-intelligence-mcp-server migrate [--dry-run]   # rewrite stdio configs
 ```
 
-## Standalone Server Mode
+## Daemon architecture
 
-The server can run as a long-lived HTTP daemon serving multiple repos via Streamable HTTP transport. This is ideal when running multiple MCP clients (e.g. 5-6 Claude Code instances) — the embedding model (~1.5 GB), description LLM (~1.0 GB), and reranker (~600 MB) are loaded once and shared. The description LLM is freed after descriptions are generated; the embedding model and reranker stay resident for queries. In stdio mode, leader election ensures only one instance per repo performs indexing/descriptions; followers never load the description LLM.
-
-```bash
-# Start standalone server (default: localhost:3333)
-./target/release/code-intelligence-mcp-server --standalone
-
-# Custom port/host
-./target/release/code-intelligence-mcp-server --standalone --port 4444 --host 0.0.0.0
-
-# Via npx
-npx @iceinvein/code-intelligence-mcp-standalone
-
-# Via env var
-CIMCP_MODE=standalone ./target/release/code-intelligence-mcp-server
-```
+The server is a single HTTP daemon serving multiple repos via Streamable HTTP transport. The embedding model (~1.5 GB), description LLM (~1.0 GB), and reranker (~600 MB) load once and are shared across sessions. The description LLM is freed after descriptions are generated; the embedding model and reranker stay resident for queries. Per-repo indexes live under `~/.code-intelligence/repos/<hash>/`.
 
 Configure MCP clients to connect:
 ```json

@@ -292,6 +292,45 @@
         outline: 2px solid var(--accent);
         outline-offset: 2px;
       }
+      .job-status {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 11.5px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+      }
+      .job-status.running {
+        color: var(--accent);
+        border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+      }
+      .job-status.succeeded {
+        color: var(--good);
+        border-color: color-mix(in srgb, var(--good) 40%, var(--line));
+        background: color-mix(in srgb, var(--good) 8%, transparent);
+      }
+      .job-status.failed {
+        color: var(--bad);
+        border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+        background: color-mix(in srgb, var(--bad) 8%, transparent);
+      }
+      .job-status .pulse {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 4px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
       button.action.danger {
         color: var(--bad);
         border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
@@ -500,6 +539,13 @@
       </section>
 
       <section>
+        <h2>Jobs</h2>
+        <div id="jobs-container">
+          <div class="empty">loading jobs...</div>
+        </div>
+      </section>
+
+      <section>
         <h2>Logs</h2>
         <div class="logs-card">
           <div class="logs-bar">
@@ -625,6 +671,8 @@
             "Re-index started for " + repoName + " (job " + (res.job_id || "?") + ")"
           );
           button.textContent = "queued";
+          // Immediate refresh so the Jobs panel reflects the running job.
+          loadAll();
           setTimeout(() => {
             button.disabled = false;
             button.textContent = original;
@@ -738,6 +786,109 @@
         return Math.floor(secs / 3600) + "h ago";
       }
 
+      function fmtDuration(ms) {
+        if (ms == null) return "--";
+        if (ms < 1000) return ms + "ms";
+        const s = Math.round(ms / 1000);
+        if (s < 60) return s + "s";
+        const m = Math.floor(s / 60);
+        return m + "m " + (s % 60) + "s";
+      }
+
+      function renderJobs(jobsJson) {
+        const container = document.getElementById("jobs-container");
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        if (!jobsJson.jobs || jobsJson.jobs.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent =
+            "No background jobs in the last 15 minutes. Trigger a re-index from the Repositories table to see one here.";
+          container.appendChild(empty);
+          return;
+        }
+
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        ["Status", "Kind", "Repo", "Started", "Duration", "Result"].forEach((label) => {
+          const th = document.createElement("th");
+          th.textContent = label;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        const now = Math.floor(Date.now() / 1000);
+        jobsJson.jobs.forEach((j) => {
+          const tr = document.createElement("tr");
+
+          const statusTd = document.createElement("td");
+          const badge = document.createElement("span");
+          badge.className = "job-status " + (j.status || "");
+          if (j.status === "running") {
+            const dot = document.createElement("span");
+            dot.className = "pulse";
+            badge.appendChild(dot);
+          }
+          badge.appendChild(document.createTextNode((j.status || "?").toUpperCase()));
+          statusTd.appendChild(badge);
+          tr.appendChild(statusTd);
+
+          const kindTd = document.createElement("td");
+          kindTd.className = "mono";
+          kindTd.textContent = j.kind || "";
+          tr.appendChild(kindTd);
+
+          const repoTd = document.createElement("td");
+          repoTd.className = "path mono";
+          repoTd.textContent = j.repo_path || j.repo_id || "";
+          tr.appendChild(repoTd);
+
+          const startedTd = document.createElement("td");
+          startedTd.className = "timestamp mono";
+          const startedAgo = j.started_at_unix_s
+            ? now - j.started_at_unix_s
+            : null;
+          startedTd.textContent = fmtSecsAgo(startedAgo);
+          tr.appendChild(startedTd);
+
+          const durTd = document.createElement("td");
+          durTd.className = "timestamp mono";
+          if (j.status === "running") {
+            // Live elapsed time: started_at -> now.
+            durTd.textContent =
+              startedAgo != null ? fmtDuration(startedAgo * 1000) + "+" : "--";
+          } else {
+            durTd.textContent = fmtDuration(j.duration_ms);
+          }
+          tr.appendChild(durTd);
+
+          const resultTd = document.createElement("td");
+          resultTd.className = "mono";
+          if (j.status === "succeeded" && j.stats) {
+            const fi = j.stats.files_indexed;
+            const si = j.stats.symbols_indexed;
+            const summary = [];
+            if (fi != null) summary.push(fi + " files");
+            if (si != null) summary.push(si + " symbols");
+            resultTd.textContent = summary.join(", ") || "ok";
+          } else if (j.status === "failed") {
+            resultTd.textContent = j.error || "failed";
+            resultTd.title = j.error || "";
+            resultTd.style.color = "var(--bad)";
+          } else {
+            resultTd.textContent = "";
+          }
+          tr.appendChild(resultTd);
+
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        container.appendChild(table);
+      }
+
       function renderSessions(sessionsJson) {
         const container = document.getElementById("sessions-container");
         while (container.firstChild) container.removeChild(container.firstChild);
@@ -804,10 +955,11 @@
       async function loadAll() {
         try {
           clearError();
-          const [status, repos, sessions] = await Promise.all([
+          const [status, repos, sessions, jobsData] = await Promise.all([
             fetchJson("/api/status"),
             fetchJson("/api/repos"),
             fetchJson("/api/sessions"),
+            fetchJson("/api/jobs"),
           ]);
 
           document.getElementById("version-line").textContent = "v" + status.version;
@@ -835,6 +987,7 @@
 
           renderRepos(repos);
           renderSessions(sessions);
+          renderJobs(jobsData);
         } catch (e) {
           showError(e.message || String(e));
         }

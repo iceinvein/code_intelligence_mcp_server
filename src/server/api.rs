@@ -11,6 +11,7 @@
 //! - `GET /api/sessions`                 -> bound MCP sessions
 //! - `POST /api/repos/{id}/reindex`      -> spawn a background re-index
 //! - `DELETE /api/repos/{id}`            -> drop the index, registry entry, and data dir
+//! - `GET /api/jobs`                     -> recent background jobs (running + last 15m finished)
 //!
 //! All routes bind 127.0.0.1 only and reject requests whose `Origin` header is
 //! not `http://localhost:<port>` or `http://127.0.0.1:<port>`. The check is a
@@ -39,6 +40,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::log_broadcast::LogBroadcaster;
+use crate::server::jobs::{self, JobRegistry};
 use crate::server::standalone::SessionRepos;
 use crate::session::SessionManager;
 
@@ -47,6 +49,7 @@ struct ApiState {
     session_manager: Arc<SessionManager>,
     session_repos: SessionRepos,
     log_broadcaster: LogBroadcaster,
+    job_registry: JobRegistry,
     started_at_unix_s: u64,
 }
 
@@ -58,6 +61,7 @@ pub async fn spawn_api_server(
     session_manager: Arc<SessionManager>,
     session_repos: SessionRepos,
     log_broadcaster: LogBroadcaster,
+    job_registry: JobRegistry,
 ) -> anyhow::Result<()> {
     let started_at_unix_s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -68,6 +72,7 @@ pub async fn spawn_api_server(
         session_manager,
         session_repos,
         log_broadcaster,
+        job_registry,
         started_at_unix_s,
     });
 
@@ -78,6 +83,7 @@ pub async fn spawn_api_server(
         .route("/api/repos", get(handle_repos))
         .route("/api/repos/{id}/reindex", post(handle_repo_reindex))
         .route("/api/repos/{id}", delete(handle_repo_delete))
+        .route("/api/jobs", get(handle_jobs))
         .route("/api/sessions", get(handle_sessions))
         .route("/api/logs/stream", get(handle_logs_stream))
         .layer(middleware::from_fn(check_origin))
@@ -230,8 +236,7 @@ async fn handle_repo_reindex(
 
     // Resolve (or create) the per-repo AppState, then spawn the indexer in
     // the background so the HTTP request returns immediately. A full
-    // re-index can take minutes; the caller polls /api/repos for updated
-    // stats.
+    // re-index can take minutes; the caller polls /api/jobs for status.
     let job_id = format!(
         "reindex-{}-{}",
         id,
@@ -240,22 +245,36 @@ async fn handle_repo_reindex(
             .map(|d| d.as_secs())
             .unwrap_or(0)
     );
+
+    // Register the job up-front so /api/jobs shows it immediately.
+    jobs::register_running(
+        &state.job_registry,
+        job_id.clone(),
+        jobs::JobKind::ManualReindex,
+        id.clone(),
+        entry.path.clone(),
+    );
+
     let job_id_log = job_id.clone();
+    let registry = state.job_registry.clone();
     tokio::spawn(async move {
-        let state = match sm.get_or_create_repo(&path).await {
+        let app_state = match sm.get_or_create_repo(&path).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, path = %path, "reindex: failed to load repo");
+                jobs::mark_failed(&registry, &job_id_log, format!("load repo: {e}"));
                 return;
             }
         };
         let tool = crate::tools::RefreshIndexTool { files: None };
-        match crate::handlers::handle_refresh_index(&state, tool).await {
+        match crate::handlers::handle_refresh_index(&app_state, tool).await {
             Ok(stats) => {
                 tracing::info!(job = %job_id_log, path = %path, stats = %stats, "reindex completed");
+                jobs::mark_succeeded(&registry, &job_id_log, stats);
             }
             Err(e) => {
                 tracing::error!(job = %job_id_log, error = %e, path = %path, "reindex failed");
+                jobs::mark_failed(&registry, &job_id_log, e.to_string());
             }
         }
     });
@@ -267,6 +286,19 @@ async fn handle_repo_reindex(
         "repo_path": entry.path,
     }));
     Ok((StatusCode::ACCEPTED, body).into_response())
+}
+
+async fn handle_jobs(State(state): State<Arc<ApiState>>) -> Json<Value> {
+    let items = jobs::snapshot(&state.job_registry);
+    let running = items
+        .iter()
+        .filter(|j| matches!(j.status, jobs::JobStatus::Running))
+        .count();
+    Json(json!({
+        "count": items.len(),
+        "running": running,
+        "jobs": items,
+    }))
 }
 
 async fn handle_repo_delete(

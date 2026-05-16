@@ -259,6 +259,8 @@ async fn run_standalone(
         session_repos.clone(),
     );
     let pending_repos = code_intelligence_mcp_server::server::mcp_proxy::new_pending_repos();
+    let job_registry = code_intelligence_mcp_server::server::jobs::new_job_registry();
+    code_intelligence_mcp_server::server::jobs::spawn_job_eviction_loop(job_registry.clone());
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
         session_manager.clone(),
         server_details.clone(),
@@ -376,6 +378,7 @@ async fn run_standalone(
             session_manager.clone(),
             session_repos.clone(),
             log_broadcaster.clone(),
+            job_registry.clone(),
         )
         .await
         {

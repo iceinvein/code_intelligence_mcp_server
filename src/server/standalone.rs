@@ -19,39 +19,128 @@ use rust_mcp_sdk::{
     task_store::ServerTaskCreator,
     McpServer,
 };
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant, SystemTime},
+};
 
 /// SessionId is String (from rust_mcp_transport)
 type SessionId = String;
 
-/// Shared map of MCP session-id to bound workspace root. Cloned (cheaply,
-/// it is an `Arc`) into both `StandaloneHandler` (which writes) and the
-/// JSON API server (which reads for `/api/sessions`).
-pub type SessionRepos = Arc<DashMap<SessionId, Utf8PathBuf>>;
+/// TTL after which a session with no recent activity is evicted from the
+/// dashboard's `Sessions` map. We need this because rust_mcp_sdk 0.8 does
+/// not expose a session-close hook, so we can't observe disconnects.
+/// Five minutes is long enough that a session staying open without calls
+/// is still visible, short enough that abandoned connections fade out.
+pub const SESSION_INACTIVITY_TTL: Duration = Duration::from_secs(300);
 
-pub fn new_session_repos() -> SessionRepos {
+/// Per-session bookkeeping for the dashboard. Tracks both initialized-only
+/// and bound sessions so the UI can distinguish them.
+#[derive(Clone, Debug)]
+pub struct SessionInfo {
+    /// Bound workspace root, if any. `None` between `on_initialized` and
+    /// the moment `roots/list` resolves, the `bind_workspace` tool fires,
+    /// or the single-repo fallback triggers.
+    pub repo: Option<Utf8PathBuf>,
+    /// Wall-clock time of `on_initialized` (for the UI).
+    pub initialized_at: SystemTime,
+    /// Monotonic timestamp refreshed on every tool call; entries past
+    /// `SESSION_INACTIVITY_TTL` are evicted by [`spawn_session_eviction_loop`].
+    pub last_seen: Instant,
+}
+
+/// Shared map of MCP session-id to bookkeeping info. Cloned (cheaply, it is
+/// an `Arc`) into both `StandaloneHandler` (which writes) and the JSON API
+/// server (which reads for `/api/sessions` and the dashboard counters).
+pub type Sessions = Arc<DashMap<SessionId, SessionInfo>>;
+
+/// Back-compat alias for existing call sites. Prefer `Sessions` in new code.
+pub type SessionRepos = Sessions;
+
+pub fn new_session_repos() -> Sessions {
     Arc::new(DashMap::new())
+}
+
+/// Spawn a background task that evicts session entries whose `last_seen` is
+/// older than [`SESSION_INACTIVITY_TTL`]. Runs once per minute for the
+/// lifetime of the process.
+pub fn spawn_session_eviction_loop(sessions: Sessions) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let stale: Vec<SessionId> = sessions
+                .iter()
+                .filter(|e| e.value().last_seen.elapsed() > SESSION_INACTIVITY_TTL)
+                .map(|e| e.key().clone())
+                .collect();
+            for id in stale {
+                if sessions.remove(&id).is_some() {
+                    tracing::info!(session = %id, "Evicted stale session (inactivity TTL)");
+                }
+            }
+        }
+    });
 }
 
 pub struct StandaloneHandler {
     pub session_manager: Arc<SessionManager>,
     pub server_details: InitializeResult,
-    /// Maps session_id → repo path (set during on_initialized via list_roots
-    /// or via the bind_workspace tool).
-    session_repos: SessionRepos,
+    /// Maps session_id → bookkeeping. An entry is inserted with `repo: None`
+    /// when `on_initialized` fires, then upgraded to `repo: Some(_)` when
+    /// the workspace root is resolved (via roots/list, bind_workspace, or
+    /// the single-repo fallback).
+    session_repos: Sessions,
 }
 
 impl StandaloneHandler {
     pub fn new(
         session_manager: Arc<SessionManager>,
         server_details: InitializeResult,
-        session_repos: SessionRepos,
+        session_repos: Sessions,
     ) -> Self {
         Self {
             session_manager,
             server_details,
             session_repos,
         }
+    }
+
+    /// Upsert a session: if it already exists, update `last_seen` (and
+    /// optionally promote `repo`); otherwise insert a fresh entry. Returns
+    /// the bound repo path if known, `None` otherwise.
+    fn upsert_session(&self, session_id: &SessionId, repo: Option<Utf8PathBuf>) {
+        let now_instant = Instant::now();
+        let now_system = SystemTime::now();
+        self.session_repos
+            .entry(session_id.clone())
+            .and_modify(|info| {
+                info.last_seen = now_instant;
+                if let Some(p) = &repo {
+                    info.repo = Some(p.clone());
+                }
+            })
+            .or_insert(SessionInfo {
+                repo,
+                initialized_at: now_system,
+                last_seen: now_instant,
+            });
+    }
+
+    /// Refresh `last_seen` for a session without changing its repo. Used by
+    /// every tool call so an active session never gets evicted by the
+    /// inactivity TTL.
+    fn touch_session(&self, session_id: &SessionId) {
+        if let Some(mut info) = self.session_repos.get_mut(session_id) {
+            info.last_seen = Instant::now();
+        }
+    }
+
+    /// Return the currently-bound repo for a session, if any.
+    fn bound_repo(&self, session_id: &SessionId) -> Option<Utf8PathBuf> {
+        self.session_repos
+            .get(session_id)
+            .and_then(|info| info.repo.clone())
     }
 
     /// Parse a workspace-root URI into a UTF-8 path.
@@ -84,8 +173,8 @@ impl StandaloneHandler {
         runtime: &Arc<dyn McpServer>,
         session_id: &SessionId,
     ) -> Option<Utf8PathBuf> {
-        if let Some(existing) = self.session_repos.get(session_id) {
-            return Some(existing.value().clone());
+        if let Some(bound) = self.bound_repo(session_id) {
+            return Some(bound);
         }
 
         #[allow(deprecated)] // list_roots deprecated in 0.8.0 in favor of request_root_list
@@ -104,16 +193,17 @@ impl StandaloneHandler {
         let root = roots_result.roots.first()?;
         let repo_path = Self::parse_root_uri(&root.uri);
 
-        // Atomic insert-if-absent so concurrent tool calls cannot bind twice.
-        let entry = self
+        // Detect "we just promoted from unbound to bound" so we only log /
+        // pre-warm once per session.
+        let was_already_bound = self
             .session_repos
-            .entry(session_id.clone())
-            .or_insert_with(|| repo_path.clone());
-        let bound_path = entry.value().clone();
-        let we_inserted = bound_path == repo_path;
-        drop(entry);
+            .get(session_id)
+            .map(|i| i.repo.is_some())
+            .unwrap_or(false);
 
-        if we_inserted {
+        self.upsert_session(session_id, Some(repo_path.clone()));
+
+        if !was_already_bound {
             tracing::info!(
                 session = %session_id,
                 repo = %repo_path,
@@ -134,7 +224,7 @@ impl StandaloneHandler {
             });
         }
 
-        Some(bound_path)
+        Some(repo_path)
     }
 
     /// Bind a session to an explicit repo path supplied by the client via the
@@ -164,8 +254,7 @@ impl StandaloneHandler {
             )));
         }
 
-        self.session_repos
-            .insert(session_id.clone(), repo_path.clone());
+        self.upsert_session(&session_id, Some(repo_path.clone()));
 
         tracing::info!(
             session = %session_id,
@@ -201,14 +290,19 @@ impl StandaloneHandler {
             return None;
         }
         let path = Utf8PathBuf::from(repos.into_iter().next()?.path);
-        self.session_repos
-            .entry(session_id.clone())
-            .or_insert_with(|| path.clone());
-        tracing::info!(
-            session = %session_id,
-            repo = %path,
-            "Session bound to sole registered repo (single-repo fallback)"
-        );
+        let was_already_bound = self
+            .session_repos
+            .get(session_id)
+            .map(|i| i.repo.is_some())
+            .unwrap_or(false);
+        self.upsert_session(session_id, Some(path.clone()));
+        if !was_already_bound {
+            tracing::info!(
+                session = %session_id,
+                repo = %path,
+                "Session bound to sole registered repo (single-repo fallback)"
+            );
+        }
         Some(path)
     }
 
@@ -223,6 +317,10 @@ impl StandaloneHandler {
                 "No session ID — standalone mode requires Streamable HTTP transport".to_string(),
             )
         })?;
+
+        // Every tool call refreshes the inactivity TTL so an active session
+        // never gets evicted by `spawn_session_eviction_loop`.
+        self.touch_session(&session_id);
 
         let repo_path = if let Some(path) = self.try_bind_session(runtime, &session_id).await {
             path
@@ -252,6 +350,12 @@ impl ServerHandler for StandaloneHandler {
             tracing::warn!("on_initialized called without session_id");
             return;
         };
+
+        // Register the session as initialized-but-not-yet-bound so the
+        // dashboard shows it immediately. `try_bind_session` upgrades to
+        // bound if `roots/list` resolves; otherwise the entry stays in the
+        // `repo: None` state until the first tool call or `bind_workspace`.
+        self.upsert_session(&session_id, None);
 
         tracing::info!(
             session = %session_id,
@@ -389,5 +493,104 @@ mod tests {
     fn parse_root_uri_handles_file_url_with_spaces() {
         let parsed = StandaloneHandler::parse_root_uri("file:///Users/me/My%20Projects/foo");
         assert_eq!(parsed.as_str(), "/Users/me/My Projects/foo");
+    }
+
+    fn test_handler() -> StandaloneHandler {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+        let server_details = InitializeResult {
+            server_info: Implementation {
+                name: "test-server".into(),
+                version: "1.0.0".into(),
+                title: None,
+                description: None,
+                icons: vec![],
+                website_url: None,
+            },
+            capabilities: ServerCapabilities::default(),
+            protocol_version: ProtocolVersion::V2025_11_25.into(),
+            instructions: None,
+            meta: None,
+        };
+        // Tests don't actually use the session_manager for these helpers; we
+        // just need a value to construct the handler.
+        let sm = futures::executor::block_on(SessionManager::new_for_test(data_dir));
+        StandaloneHandler::new(Arc::new(sm), server_details, new_session_repos())
+    }
+
+    #[test]
+    fn upsert_inserts_unbound_session_then_promotes_to_bound() {
+        let h = test_handler();
+        let sid = "session-1".to_string();
+
+        h.upsert_session(&sid, None);
+        assert_eq!(h.session_repos.len(), 1);
+        let info = h.session_repos.get(&sid).unwrap().clone();
+        assert!(info.repo.is_none());
+
+        let repo = Utf8PathBuf::from("/tmp/some-repo");
+        h.upsert_session(&sid, Some(repo.clone()));
+        let info2 = h.session_repos.get(&sid).unwrap().clone();
+        assert_eq!(info2.repo.as_deref(), Some(repo.as_path()));
+        // initialized_at must NOT change on promote-to-bound
+        assert_eq!(info2.initialized_at, info.initialized_at);
+    }
+
+    #[test]
+    fn touch_session_refreshes_last_seen() {
+        let h = test_handler();
+        let sid = "session-2".to_string();
+        h.upsert_session(&sid, None);
+
+        let before = h.session_repos.get(&sid).unwrap().last_seen;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.touch_session(&sid);
+        let after = h.session_repos.get(&sid).unwrap().last_seen;
+        assert!(after > before, "last_seen should advance on touch");
+    }
+
+    #[test]
+    fn touch_session_no_op_for_unknown_session() {
+        let h = test_handler();
+        // Must not panic / not insert anything.
+        h.touch_session(&"never-registered".to_string());
+        assert_eq!(h.session_repos.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_eviction_loop_drops_stale_entries() {
+        let sessions = new_session_repos();
+        // Insert a fresh session and a session that's already past the TTL.
+        sessions.insert(
+            "fresh".to_string(),
+            SessionInfo {
+                repo: None,
+                initialized_at: SystemTime::now(),
+                last_seen: Instant::now(),
+            },
+        );
+        sessions.insert(
+            "stale".to_string(),
+            SessionInfo {
+                repo: None,
+                initialized_at: SystemTime::now(),
+                last_seen: Instant::now()
+                    .checked_sub(SESSION_INACTIVITY_TTL + Duration::from_secs(60))
+                    .unwrap(),
+            },
+        );
+
+        // Run one iteration of the loop's eviction body directly.
+        let stale: Vec<_> = sessions
+            .iter()
+            .filter(|e| e.value().last_seen.elapsed() > SESSION_INACTIVITY_TTL)
+            .map(|e| e.key().clone())
+            .collect();
+        for id in stale {
+            sessions.remove(&id);
+        }
+
+        assert!(sessions.contains_key("fresh"));
+        assert!(!sessions.contains_key("stale"));
     }
 }

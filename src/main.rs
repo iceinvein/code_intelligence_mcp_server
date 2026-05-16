@@ -255,6 +255,9 @@ async fn run_standalone(
     };
 
     let session_repos = code_intelligence_mcp_server::server::standalone::new_session_repos();
+    code_intelligence_mcp_server::server::standalone::spawn_session_eviction_loop(
+        session_repos.clone(),
+    );
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
         session_manager.clone(),
         server_details.clone(),

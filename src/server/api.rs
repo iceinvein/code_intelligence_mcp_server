@@ -36,7 +36,7 @@ use tokio::sync::broadcast::error::RecvError;
 const DASHBOARD_HTML: &str = include_str!("../../ui/dashboard.html");
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::log_broadcast::LogBroadcaster;
 use crate::server::standalone::SessionRepos;
@@ -185,12 +185,22 @@ async fn handle_status(State(state): State<Arc<ApiState>>) -> Result<Json<Value>
         .list_all()
         .map(|v| v.len())
         .unwrap_or(0);
+    let connected_sessions = state.session_repos.len();
+    let bound_sessions = state
+        .session_repos
+        .iter()
+        .filter(|e| e.value().repo.is_some())
+        .count();
     Ok(Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "started_at_unix_s": state.started_at_unix_s,
         "uptime_s": now.saturating_sub(state.started_at_unix_s),
         "registered_repos": registered,
-        "active_sessions": state.session_repos.len(),
+        // `active_sessions` retained for backward compatibility; equal to
+        // `bound_sessions`.
+        "active_sessions": bound_sessions,
+        "connected_sessions": connected_sessions,
+        "bound_sessions": bound_sessions,
     })))
 }
 
@@ -312,18 +322,35 @@ async fn handle_logs_stream(
 }
 
 async fn handle_sessions(State(state): State<Arc<ApiState>>) -> Json<Value> {
+    let now = Instant::now();
     let sessions: Vec<Value> = state
         .session_repos
         .iter()
         .map(|entry| {
+            let info = entry.value();
+            let initialized_at_unix_s = info
+                .initialized_at
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last_seen_secs_ago = now.saturating_duration_since(info.last_seen).as_secs();
             json!({
                 "session_id": entry.key(),
-                "repo": entry.value().as_str(),
+                "repo": info.repo.as_ref().map(|p| p.as_str()),
+                "bound": info.repo.is_some(),
+                "initialized_at_unix_s": initialized_at_unix_s,
+                "last_seen_secs_ago": last_seen_secs_ago,
             })
         })
         .collect();
+    let bound = sessions
+        .iter()
+        .filter(|v| v.get("bound").and_then(|b| b.as_bool()).unwrap_or(false))
+        .count();
     Json(json!({
         "count": sessions.len(),
+        "bound_count": bound,
+        "connected_count": sessions.len(),
         "sessions": sessions,
     }))
 }

@@ -474,9 +474,9 @@
           <div class="sub">on disk</div>
         </div>
         <div class="card">
-          <div class="label">Active sessions</div>
+          <div class="label">MCP sessions</div>
           <div class="value" id="status-session-count">--</div>
-          <div class="sub">bound to a repo</div>
+          <div class="sub" id="status-session-sub">bound / connected</div>
         </div>
         <div class="card">
           <div class="label">Started</div>
@@ -486,7 +486,7 @@
       </div>
 
       <section>
-        <h2>Active sessions</h2>
+        <h2>MCP sessions</h2>
         <div id="sessions-container">
           <div class="empty">loading sessions...</div>
         </div>
@@ -731,6 +731,13 @@
         container.appendChild(table);
       }
 
+      function fmtSecsAgo(secs) {
+        if (secs == null) return "--";
+        if (secs < 60) return secs + "s ago";
+        if (secs < 3600) return Math.floor(secs / 60) + "m ago";
+        return Math.floor(secs / 3600) + "h ago";
+      }
+
       function renderSessions(sessionsJson) {
         const container = document.getElementById("sessions-container");
         while (container.firstChild) container.removeChild(container.firstChild);
@@ -739,15 +746,20 @@
           const empty = document.createElement("div");
           empty.className = "empty";
           empty.textContent =
-            "No MCP sessions are currently bound. Connect a client and call bind_workspace, or rely on roots.";
+            "No MCP sessions connected. Sessions appear here within seconds of a client opening the /mcp endpoint.";
           container.appendChild(empty);
           return;
         }
 
+        const sorted = sessionsJson.sessions.slice().sort((a, b) => {
+          if ((a.bound ? 1 : 0) !== (b.bound ? 1 : 0)) return b.bound ? 1 : -1;
+          return (a.last_seen_secs_ago || 0) - (b.last_seen_secs_ago || 0);
+        });
+
         const table = document.createElement("table");
         const thead = document.createElement("thead");
         const headerRow = document.createElement("tr");
-        ["Session", "Bound repo"].forEach((label) => {
+        ["Session", "Bound repo", "Last seen"].forEach((label) => {
           const th = document.createElement("th");
           th.textContent = label;
           headerRow.appendChild(th);
@@ -756,12 +768,11 @@
         table.appendChild(thead);
 
         const tbody = document.createElement("tbody");
-        sessionsJson.sessions.forEach((s) => {
+        sorted.forEach((s) => {
           const tr = document.createElement("tr");
 
           const sidTd = document.createElement("td");
           sidTd.className = "mono";
-          // Short-form the session id for readability.
           const sid = String(s.session_id || "");
           sidTd.textContent = sid.length > 8 ? sid.substring(0, 8) + "..." : sid;
           sidTd.title = sid;
@@ -769,8 +780,20 @@
 
           const repoTd = document.createElement("td");
           repoTd.className = "path mono";
-          repoTd.textContent = s.repo || "";
+          if (s.repo) {
+            repoTd.textContent = s.repo;
+          } else {
+            const em = document.createElement("em");
+            em.textContent = "(not yet bound)";
+            em.style.color = "var(--ink-faint)";
+            repoTd.appendChild(em);
+          }
           tr.appendChild(repoTd);
+
+          const lastTd = document.createElement("td");
+          lastTd.className = "timestamp mono";
+          lastTd.textContent = fmtSecsAgo(s.last_seen_secs_ago);
+          tr.appendChild(lastTd);
 
           tbody.appendChild(tr);
         });
@@ -792,8 +815,20 @@
             "uptime " + fmtUptime(status.uptime_s);
           document.getElementById("status-port").textContent = location.host;
           document.getElementById("status-repo-count").textContent = status.registered_repos;
+          const boundCount =
+            status.bound_sessions != null
+              ? status.bound_sessions
+              : status.active_sessions != null
+                ? status.active_sessions
+                : sessions.bound_count;
+          const connectedCount =
+            status.connected_sessions != null
+              ? status.connected_sessions
+              : sessions.connected_count != null
+                ? sessions.connected_count
+                : sessions.count;
           document.getElementById("status-session-count").textContent =
-            status.active_sessions != null ? status.active_sessions : sessions.count;
+            boundCount + " / " + connectedCount;
           document.getElementById("status-started").textContent = fmtTs(status.started_at_unix_s);
           document.getElementById("status-uptime").textContent =
             "running " + fmtUptime(status.uptime_s);

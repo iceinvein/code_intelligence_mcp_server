@@ -253,6 +253,18 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      tbody td.name {
+        max-width: 260px;
+        min-width: 140px;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      tbody td.result {
+        max-width: 320px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       tbody td.timestamp {
         color: var(--ink-faint);
         white-space: nowrap;
@@ -274,6 +286,20 @@
         cursor: pointer;
         text-align: left;
         line-height: 1.4;
+        /* inline-flex with min-width:0 lets the name span shrink and
+           collapse with ellipsis instead of wrapping the caret onto a
+           new line when the cell is narrow. */
+        display: inline-flex;
+        align-items: baseline;
+        gap: 4px;
+        max-width: 100%;
+        min-width: 0;
+      }
+      button.repo-toggle > .toggle-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
       }
       button.repo-toggle:hover { color: var(--accent); }
       button.repo-toggle:focus-visible {
@@ -802,6 +828,8 @@
           tr.dataset.repoId = r.id || "";
 
           const nameTd = document.createElement("td");
+          nameTd.className = "name";
+          nameTd.title = r.name || r.id || "";
           if (r.id) {
             const toggle = document.createElement("button");
             toggle.className = "repo-toggle";
@@ -812,7 +840,10 @@
             caret.className = "caret";
             caret.textContent = "▸"; // ▸
             toggle.appendChild(caret);
-            toggle.appendChild(document.createTextNode(" " + (r.name || "")));
+            const nameSpan = document.createElement("span");
+            nameSpan.className = "toggle-name";
+            nameSpan.textContent = r.name || "";
+            toggle.appendChild(nameSpan);
             toggle.addEventListener("click", () => toggleRepoDetail(r, tr, toggle));
             nameTd.appendChild(toggle);
           } else {
@@ -1109,7 +1140,7 @@
           tr.appendChild(durTd);
 
           const resultTd = document.createElement("td");
-          resultTd.className = "mono";
+          resultTd.className = "mono result";
           if (j.status === "succeeded" && j.stats) {
             const fi = j.stats.files_indexed;
             const si = j.stats.symbols_indexed;

@@ -5,9 +5,11 @@
 //! future web UI consume.
 //!
 //! Routes:
-//! - `GET /api/version` -> `{ version, started_at_unix_s, uptime_s }`
-//! - `GET /api/status`  -> daemon overview (version, uptime, repo count)
-//! - `GET /api/repos`   -> `[{ name, path, created_at, last_accessed }, ...]`
+//! - `GET /api/version`                  -> `{ version, started_at_unix_s, uptime_s }`
+//! - `GET /api/status`                   -> daemon overview
+//! - `GET /api/repos`                    -> registered repos
+//! - `GET /api/sessions`                 -> bound MCP sessions
+//! - `POST /api/repos/{id}/reindex`      -> spawn a background re-index
 //!
 //! All routes bind 127.0.0.1 only and reject requests whose `Origin` header is
 //! not `http://localhost:<port>` or `http://127.0.0.1:<port>`. The check is a
@@ -16,11 +18,11 @@
 //! still be `https://example.com`.
 
 use axum::{
-    extract::{Request, State},
+    extract::{Path, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde_json::{json, Value};
@@ -64,6 +66,7 @@ pub async fn spawn_api_server(
         .route("/api/version", get(handle_version))
         .route("/api/status", get(handle_status))
         .route("/api/repos", get(handle_repos))
+        .route("/api/repos/{id}/reindex", post(handle_repo_reindex))
         .route("/api/sessions", get(handle_sessions))
         .layer(middleware::from_fn(check_origin))
         .with_state(state);
@@ -147,6 +150,7 @@ async fn handle_repos(State(state): State<Arc<ApiState>>) -> Result<Json<Value>,
         .into_iter()
         .map(|e| {
             json!({
+                "id": crate::registry::RepoRegistry::path_hash(&e.path),
                 "name": e.name,
                 "path": e.path,
                 "data_dir": e.data_dir,
@@ -176,6 +180,71 @@ async fn handle_status(State(state): State<Arc<ApiState>>) -> Result<Json<Value>
         "registered_repos": registered,
         "active_sessions": state.session_repos.len(),
     })))
+}
+
+async fn handle_repo_reindex(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    // Look up the repo by its 16-char SHA256-prefix hash.
+    let entry = match state
+        .session_manager
+        .registry
+        .get_by_hash(&id)
+        .map_err(|e| ApiError(format!("registry lookup failed: {e}")))?
+    {
+        Some(e) => e,
+        None => {
+            return Ok((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("repo not found: {id}") })),
+            )
+                .into_response())
+        }
+    };
+
+    let path = crate::path::Utf8PathBuf::from(entry.path.clone());
+    let sm = state.session_manager.clone();
+
+    // Resolve (or create) the per-repo AppState, then spawn the indexer in
+    // the background so the HTTP request returns immediately. A full
+    // re-index can take minutes; the caller polls /api/repos for updated
+    // stats.
+    let job_id = format!(
+        "reindex-{}-{}",
+        id,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    let job_id_log = job_id.clone();
+    tokio::spawn(async move {
+        let state = match sm.get_or_create_repo(&path).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, path = %path, "reindex: failed to load repo");
+                return;
+            }
+        };
+        let tool = crate::tools::RefreshIndexTool { files: None };
+        match crate::handlers::handle_refresh_index(&state, tool).await {
+            Ok(stats) => {
+                tracing::info!(job = %job_id_log, path = %path, stats = %stats, "reindex completed");
+            }
+            Err(e) => {
+                tracing::error!(job = %job_id_log, error = %e, path = %path, "reindex failed");
+            }
+        }
+    });
+
+    let body = Json(json!({
+        "status": "started",
+        "job_id": job_id,
+        "repo_id": id,
+        "repo_path": entry.path,
+    }));
+    Ok((StatusCode::ACCEPTED, body).into_response())
 }
 
 async fn handle_sessions(State(state): State<Arc<ApiState>>) -> Json<Value> {

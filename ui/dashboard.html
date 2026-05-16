@@ -144,6 +144,57 @@
         color: var(--ink-faint);
         white-space: nowrap;
       }
+      tbody td.actions {
+        text-align: right;
+        white-space: nowrap;
+      }
+      button.action {
+        font: inherit;
+        font-size: 12px;
+        background: var(--paper);
+        color: var(--ink-dim);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 4px 10px;
+        cursor: pointer;
+        transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+      }
+      button.action:hover {
+        background: var(--paper-deep);
+        color: var(--ink);
+      }
+      button.action:active {
+        background: var(--line-soft);
+      }
+      button.action:disabled {
+        cursor: default;
+        color: var(--ink-faint);
+        opacity: 0.7;
+      }
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        max-width: 340px;
+        padding: 12px 16px;
+        background: var(--ink);
+        color: var(--paper);
+        border-radius: 6px;
+        font-size: 13px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 140ms ease, transform 140ms ease;
+        pointer-events: none;
+        z-index: 100;
+      }
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .toast.error {
+        background: var(--bad);
+      }
       .empty {
         padding: 32px;
         text-align: center;
@@ -226,6 +277,8 @@
       <span>refresh: <kbd>R</kbd></span>
     </footer>
 
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
     <script>
       // No innerHTML with dynamic data anywhere in this file: everything from
       // the API is inserted via textContent or attribute setters. Static HTML
@@ -253,6 +306,52 @@
         const res = await fetch(path, { headers: { accept: "application/json" } });
         if (!res.ok) throw new Error(path + " returned " + res.status);
         return res.json();
+      }
+
+      async function postJson(path) {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { accept: "application/json" },
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error((body && body.error) || path + " returned " + res.status);
+        }
+        return body;
+      }
+
+      let toastTimer = 0;
+      function showToast(msg, kind) {
+        const el = document.getElementById("toast");
+        el.textContent = msg;
+        el.classList.remove("error");
+        if (kind === "error") el.classList.add("error");
+        el.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.classList.remove("show"), 3200);
+      }
+
+      async function reindexRepo(button, repoId, repoName) {
+        const original = button.textContent;
+        button.disabled = true;
+        button.textContent = "starting...";
+        try {
+          const res = await postJson(
+            "/api/repos/" + encodeURIComponent(repoId) + "/reindex"
+          );
+          showToast(
+            "Re-index started for " + repoName + " (job " + (res.job_id || "?") + ")"
+          );
+          button.textContent = "queued";
+          setTimeout(() => {
+            button.disabled = false;
+            button.textContent = original;
+          }, 1500);
+        } catch (e) {
+          showToast("Re-index failed: " + (e.message || e), "error");
+          button.disabled = false;
+          button.textContent = original;
+        }
       }
 
       function showError(msg) {
@@ -291,7 +390,7 @@
         const table = document.createElement("table");
         const thead = document.createElement("thead");
         const headerRow = document.createElement("tr");
-        ["Name", "Path", "Last accessed"].forEach((label) => {
+        ["Name", "Path", "Last accessed", ""].forEach((label) => {
           const th = document.createElement("th");
           th.textContent = label;
           headerRow.appendChild(th);
@@ -318,6 +417,19 @@
             .substring(0, 16)
             .replace("T", " ");
           tr.appendChild(tsTd);
+
+          const actionTd = document.createElement("td");
+          actionTd.className = "actions";
+          if (r.id) {
+            const btn = document.createElement("button");
+            btn.className = "action";
+            btn.type = "button";
+            btn.textContent = "Re-index";
+            btn.title = "POST /api/repos/" + r.id + "/reindex";
+            btn.addEventListener("click", () => reindexRepo(btn, r.id, r.name || r.id));
+            actionTd.appendChild(btn);
+          }
+          tr.appendChild(actionTd);
 
           tbody.appendChild(tr);
         });

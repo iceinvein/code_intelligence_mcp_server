@@ -44,13 +44,14 @@ After install, MCP clients connect to `http://127.0.0.1:17800/mcp`. The first la
 
 ### Session binding
 
-The MCP `roots/list` capability is implemented only by Claude Code in practice. v4 supports three binding mechanisms (tried in order):
+v4 tries four binding sources in order; first match wins.
 
-1. **`roots/list` (auto)** for Claude Code.
-2. **`bind_workspace(repo="/abs/path")` MCP tool** for any other client. Call it once at the start of the session.
-3. **Single-repo registry fallback** auto-binds when the registry has exactly one repo.
+1. **`?repo=/abs/path` URL query** — primary, works on every MCP client. The proxy in front of the SDK captures the query, pairs it with the `mcp-session-id` assigned by the upstream response, and stashes the pair in `PendingRepos` so `StandaloneHandler::resolve_state` can promote it on the first tool call.
+2. **MCP `roots/list`** — Claude Code negotiates this automatically. Opportunistic if no URL was provided.
+3. **`bind_workspace(repo="/abs/path")` tool** — manual escape hatch for clients that can't set query strings.
+4. **Single-repo registry fallback** — auto-binds when the registry has exactly one repo. Disables itself the moment a second repo is added.
 
-Unbound tool calls return an actionable error suggesting `bind_workspace`.
+Unbound tool calls return an actionable JSON-RPC error pointing at all four options.
 
 ### What Claude Code Gets
 
@@ -65,6 +66,10 @@ Once connected, Claude Code gains access to 32 MCP tools including:
 - **`find_affected_code`** — Impact analysis before refactoring
 - **`trace_data_flow`** — Follow variable reads/writes through the code
 - **`get_index_stats`** / **`refresh_index`** — Monitor and trigger re-indexing
+
+### Dashboard and JSON API
+
+Open `http://127.0.0.1:17802/` to see repos (expandable for per-repo stats), MCP sessions (connected + bound counts), background jobs (running + finished, 15-minute retention), and a live log stream. The same data is available via JSON at `/api/repos`, `/api/repos/:id`, `/api/sessions`, `/api/jobs`, `/api/status`. Reindex with `POST /api/repos/:id/reindex`; drop a repo entirely with `DELETE /api/repos/:id` (removes the registry entry and the on-disk data directory).
 
 ## Build & Run Commands
 
@@ -94,7 +99,14 @@ EMBEDDINGS_BACKEND=hash cargo test
 
 ## Daemon architecture
 
-The server is a single HTTP daemon serving multiple repos via Streamable HTTP transport. The embedding model (~1.5 GB), description LLM (~1.0 GB), and reranker (~600 MB) load once and are shared across sessions. The description LLM is freed after descriptions are generated; the embedding model and reranker stay resident for queries. Per-repo indexes live under `~/.code-intelligence/repos/<hash>/`.
+The server runs as a single HTTP daemon. Three ports:
+
+- **`mcp_port` (default 17800)** — public-facing MCP proxy (axum). Reads `?repo=` URL bindings, forwards to the internal SDK listener, captures `mcp-session-id` from the response.
+- **`mcp_port + 1`** — discovery endpoint at `/.well-known/mcp`.
+- **`mcp_port + 2`** — JSON API and embedded dashboard (repo CRUD, sessions, jobs, SSE log stream).
+- **`mcp_port + 100`** — internal-only rust-mcp-sdk Streamable HTTP transport, bound to 127.0.0.1.
+
+All public ports bind 127.0.0.1 and reject non-localhost `Origin` headers (DNS-rebinding defence). The embedding model (~1.5 GB), description LLM (~1.0 GB), and reranker (~600 MB) load once and are shared across sessions. The description LLM is freed after descriptions are generated; the embedding model and reranker stay resident for queries. Per-repo indexes live under `~/.code-intelligence/repos/<hash>/`.
 
 Configure MCP clients to connect:
 ```json
@@ -102,11 +114,13 @@ Configure MCP clients to connect:
   "mcpServers": {
     "code-intelligence": {
       "type": "streamable-http",
-      "url": "http://localhost:3333/mcp"
+      "url": "http://127.0.0.1:17800/mcp?repo=/abs/path/to/your/repo"
     }
   }
 }
 ```
+
+Drop `?repo=...` only when running Claude Code (which negotiates roots) or when the registry has exactly one repo.
 
 Data stored in `~/.code-intelligence/` (repos, models, config).
 Optional config: `~/.code-intelligence/server.toml`.
@@ -145,7 +159,7 @@ All data stored under `~/.code-intelligence/`:
 - `models/bge-reranker-v2-m3-gguf/` (shared cross-encoder reranker, ~600 MB Q8_0, GGUF via llama.cpp)
 - `logs/` (shared log files)
 
-The `<hash>` is the first 16 characters of `SHA256(BASE_DIR)`.
+The `<hash>` is the first 16 characters of `SHA256(repo_path)` where `repo_path` is the canonical absolute path the session bound to (via `?repo=`, roots, or `bind_workspace`).
 
 ## Configuration
 
@@ -153,7 +167,7 @@ The server reads configuration from environment variables. Key ones:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BASE_DIR` | **required** | Repository root to index |
+| `BASE_DIR` | — | Legacy v3 single-repo override. v4 derives the repo per-session from `?repo=`, roots, or `bind_workspace`, so this is only honored when launching the binary directly (not via launchd) without any session binding. |
 | `EMBEDDINGS_BACKEND` | `llamacpp` | `llamacpp` (default) or `hash` (fast testing) |
 | `EMBEDDINGS_DEVICE` | `metal` | `metal` (Metal GPU) or `cpu` |
 | `WATCH_MODE` | `true` | Auto-reindex on file changes |

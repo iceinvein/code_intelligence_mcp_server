@@ -10,6 +10,7 @@
 //! - `GET /api/repos`                    -> registered repos
 //! - `GET /api/sessions`                 -> bound MCP sessions
 //! - `POST /api/repos/{id}/reindex`      -> spawn a background re-index
+//! - `DELETE /api/repos/{id}`            -> drop the index, registry entry, and data dir
 //!
 //! All routes bind 127.0.0.1 only and reject requests whose `Origin` header is
 //! not `http://localhost:<port>` or `http://127.0.0.1:<port>`. The check is a
@@ -25,7 +26,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Json, Response,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use futures::stream::Stream;
@@ -76,6 +77,7 @@ pub async fn spawn_api_server(
         .route("/api/status", get(handle_status))
         .route("/api/repos", get(handle_repos))
         .route("/api/repos/{id}/reindex", post(handle_repo_reindex))
+        .route("/api/repos/{id}", delete(handle_repo_delete))
         .route("/api/sessions", get(handle_sessions))
         .route("/api/logs/stream", get(handle_logs_stream))
         .layer(middleware::from_fn(check_origin))
@@ -255,6 +257,33 @@ async fn handle_repo_reindex(
         "repo_path": entry.path,
     }));
     Ok((StatusCode::ACCEPTED, body).into_response())
+}
+
+async fn handle_repo_delete(
+    State(state): State<Arc<ApiState>>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    match state
+        .session_manager
+        .delete_repo_by_hash(&id)
+        .await
+        .map_err(|e| ApiError(format!("delete failed: {e}")))?
+    {
+        Some(entry) => {
+            let body = Json(json!({
+                "status": "deleted",
+                "repo_id": id,
+                "repo_path": entry.path,
+                "data_dir": entry.data_dir,
+            }));
+            Ok((StatusCode::OK, body).into_response())
+        }
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("repo not found: {id}") })),
+        )
+            .into_response()),
+    }
 }
 
 async fn handle_logs_stream(

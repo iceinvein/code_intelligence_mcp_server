@@ -117,6 +117,27 @@ impl RepoRegistry {
         Ok(entries)
     }
 
+    /// Remove a registered repository by its canonical path.
+    ///
+    /// Drops the entry from `registry.json`. Caller is responsible for
+    /// deleting the on-disk data directory (the returned entry exposes
+    /// `data_dir` for that). Returns `Ok(None)` if no such repo was
+    /// registered.
+    pub fn remove(&self, repo_path: &str) -> Result<Option<RepoEntry>> {
+        let hash = Self::path_hash(repo_path);
+        self.remove_by_hash(&hash)
+    }
+
+    /// Remove a registered repository by its 16-character hash.
+    pub fn remove_by_hash(&self, hash: &str) -> Result<Option<RepoEntry>> {
+        let mut registry = self.load()?;
+        let removed = registry.repos.remove(hash);
+        if removed.is_some() {
+            self.save(&registry)?;
+        }
+        Ok(removed)
+    }
+
     /// Update the last_accessed timestamp for a repository
     pub fn touch(&self, repo_path: &str) -> Result<()> {
         let hash = Self::path_hash(repo_path);
@@ -260,6 +281,52 @@ mod tests {
 
         let entry = reg.get_by_hash("0000000000000000").unwrap();
         assert!(entry.is_none());
+    }
+
+    #[test]
+    fn remove_drops_entry_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let registry_path = dir_path.join("registry.json");
+        let repos_dir = dir_path.join("repos");
+        let reg = RepoRegistry::new(registry_path.clone(), repos_dir.clone());
+
+        reg.register("/Users/dev/keep").unwrap();
+        reg.register("/Users/dev/drop").unwrap();
+
+        let removed = reg.remove("/Users/dev/drop").unwrap();
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().name, "drop");
+
+        // No longer findable
+        assert!(reg.get("/Users/dev/drop").unwrap().is_none());
+
+        // Persists across instances
+        let reg2 = RepoRegistry::new(registry_path, repos_dir);
+        assert!(reg2.get("/Users/dev/drop").unwrap().is_none());
+        assert!(reg2.get("/Users/dev/keep").unwrap().is_some());
+    }
+
+    #[test]
+    fn remove_unknown_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+        assert!(reg.remove("/no/such/repo").unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_by_hash_drops_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+
+        reg.register("/Users/dev/by-hash").unwrap();
+        let hash = RepoRegistry::path_hash("/Users/dev/by-hash");
+
+        let removed = reg.remove_by_hash(&hash).unwrap();
+        assert!(removed.is_some());
+        assert!(reg.get_by_hash(&hash).unwrap().is_none());
     }
 
     #[test]

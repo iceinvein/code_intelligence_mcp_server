@@ -239,6 +239,64 @@ impl SessionManager {
         Ok((state, watch_cancel))
     }
 
+    /// Delete a registered repository: cancel its watcher, drop the in-memory
+    /// AppState, unregister from `registry.json`, and remove the on-disk
+    /// data directory (`~/.code-intelligence/repos/<hash>/`).
+    ///
+    /// Returns the removed registry entry on success. Returns `Ok(None)` if
+    /// the hash is unknown.
+    ///
+    /// The operation is best-effort: storage handles are released before
+    /// the data directory is removed, but a failure to delete the directory
+    /// (e.g. permission error) does NOT roll back the registry change.
+    /// The caller sees the error and can retry the directory removal
+    /// manually; the registry entry stays gone so the daemon does not
+    /// attempt to reopen a half-deleted repo.
+    pub async fn delete_repo_by_hash(&self, hash: &str) -> Result<Option<RepoEntry>> {
+        let entry = match self.registry.get_by_hash(hash)? {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        let canonical = entry.path.clone();
+
+        // 1. Cancel watcher and drop in-memory AppState (releases SQLite,
+        //    Tantivy, LanceDB handles before we rmtree the dir).
+        if let Some((_, (_state, cancel))) = self.repos.remove(&canonical) {
+            cancel.cancel();
+        }
+        self.last_accessed.remove(&canonical);
+        self.init_locks.remove(&canonical);
+
+        // 2. Remove from registry.json.
+        let removed = self
+            .registry
+            .remove_by_hash(hash)
+            .context("Failed to remove repo from registry")?;
+
+        // 3. Remove on-disk data directory. Best-effort: missing dirs are
+        //    treated as success; permission errors propagate.
+        let data_dir = entry.data_dir.as_std_path();
+        match std::fs::remove_dir_all(data_dir) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed to remove repo data directory: {}", entry.data_dir)
+                });
+            }
+        }
+
+        tracing::info!(
+            repo = %canonical,
+            hash = %hash,
+            data_dir = %entry.data_dir,
+            "Deleted repo index"
+        );
+
+        Ok(removed)
+    }
+
     /// Resolve a cross-repo symbol synchronously by looking up the target repo's AppState.
     ///
     /// This is a blocking helper used by the `CrossRepoResolver` trait implementation.
@@ -489,6 +547,74 @@ mod tests {
             manager.last_accessed.contains_key(&key),
             "last_accessed entry must survive for recent repos"
         );
+    }
+
+    #[tokio::test]
+    async fn delete_repo_by_hash_removes_state_registry_and_dir() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+        let key = repo_path.as_str().to_string();
+        let hash = crate::registry::RepoRegistry::path_hash(&key);
+
+        // Capture the data dir BEFORE delete so we can check it was rmtree'd
+        let entry = manager.registry.get_by_hash(&hash).unwrap().unwrap();
+        let data_dir = entry.data_dir.clone();
+        assert!(
+            data_dir.as_std_path().exists(),
+            "data dir should exist after init"
+        );
+
+        let removed = manager.delete_repo_by_hash(&hash).await.unwrap();
+        assert!(removed.is_some(), "delete should return the removed entry");
+
+        // In-memory state cleared
+        assert!(!manager.repos.contains_key(&key));
+        assert!(!manager.last_accessed.contains_key(&key));
+        assert!(!manager.init_locks.contains_key(&key));
+
+        // Registry no longer knows the repo
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
+
+        // On-disk data directory is gone
+        assert!(
+            !data_dir.as_std_path().exists(),
+            "data dir should be removed: {}",
+            data_dir
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_repo_by_hash_unknown_returns_none() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+
+        let removed = manager
+            .delete_repo_by_hash("0000000000000000")
+            .await
+            .unwrap();
+        assert!(removed.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_repo_by_hash_works_when_not_loaded() {
+        // Repo is registered but NOT currently in the session cache
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        // Register directly via registry — never call get_or_create_repo
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+
+        assert!(entry.data_dir.as_std_path().exists());
+
+        let removed = manager.delete_repo_by_hash(&hash).await.unwrap();
+        assert!(removed.is_some());
+        assert!(!entry.data_dir.as_std_path().exists());
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
     }
 
     #[tokio::test]

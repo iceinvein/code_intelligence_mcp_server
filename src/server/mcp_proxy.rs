@@ -164,8 +164,6 @@ async fn forward(
 ) -> Response {
     let repo_query = parse_repo_query(&params);
 
-    let url = format!("{}{}", state.backend_base, state.backend_path);
-
     // Collect the request body. For SSE this is empty (GET) or a small
     // JSON-RPC POST. Buffering up to MAX_REQUEST_BODY_BYTES is fine; the
     // SDK itself has the same expectation.
@@ -193,13 +191,30 @@ async fn forward(
             }
         }
     }
-    // Preserve the original query string on the upstream request so the
-    // SDK's `Query` extractor sees exactly what the client sent. We do
-    // need to drop `repo` if we want to hide it from the SDK; we keep it
-    // so the backend's logs match the public request shape.
+
+    send_upstream_once(state, method, params, out_headers, body_bytes, repo_query).await
+}
+
+/// Issue a single upstream request and translate its response back into an
+/// axum `Response`. Captures the `mcp-session-id` -> `?repo=` binding on
+/// the way back when both are present. Streams the body without buffering.
+///
+/// Extracted from `forward` so we can call it twice in a row from the
+/// session-recovery path in a later task without duplicating the streaming /
+/// header-translation glue.
+async fn send_upstream_once(
+    state: Arc<ProxyState>,
+    method: Method,
+    params: HashMap<String, String>,
+    out_headers: reqwest::header::HeaderMap,
+    body_bytes: axum::body::Bytes,
+    repo_query: Option<Utf8PathBuf>,
+) -> Response {
+    let url = format!("{}{}", state.backend_base, state.backend_path);
+
     let request_builder = state
         .client
-        .request(method.clone(), &url)
+        .request(method, &url)
         .headers(out_headers)
         .query(&params)
         .body(body_bytes);
@@ -219,9 +234,6 @@ async fn forward(
     let status = response.status();
     let upstream_headers = response.headers().clone();
 
-    // Capture the session id assigned by the SDK. Only meaningful on
-    // initialize POSTs where the SDK creates a new session, but the header
-    // is also echoed on subsequent requests and that is fine to record.
     if let (Some(sid_value), Some(repo)) = (upstream_headers.get("mcp-session-id"), &repo_query) {
         if let Ok(sid) = sid_value.to_str() {
             tracing::info!(
@@ -430,5 +442,66 @@ mod tests {
             Some("application/json"),
             body,
         ));
+    }
+
+    use axum::{routing::post as axum_post, Router as AxumRouter};
+    use std::net::SocketAddr;
+
+    async fn spawn_test_upstream<F>(handler: F) -> SocketAddr
+    where
+        F: Fn(HeaderMap, axum::body::Bytes) -> Response + Clone + Send + Sync + 'static,
+    {
+        // Bind a fake SDK upstream on a random port. The handler is a plain
+        // closure so each test can script its own response sequence.
+        let app = AxumRouter::new().route(
+            "/mcp",
+            axum_post(move |headers: HeaderMap, body: axum::body::Bytes| {
+                let h = handler.clone();
+                async move { h(headers, body) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn forward_passes_through_2xx_response_unchanged() {
+        let upstream = spawn_test_upstream(|_h, _b| {
+            (
+                StatusCode::OK,
+                [("content-type", "application/json")],
+                r#"{"ok":true}"#,
+            )
+                .into_response()
+        })
+        .await;
+
+        // Start the proxy in front of it on another random port.
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            new_pending_repos(),
+        )
+        .await
+        .unwrap();
+
+        // Drive a request through the proxy.
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{proxy_port}/mcp"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, r#"{"ok":true}"#);
     }
 }

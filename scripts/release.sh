@@ -18,6 +18,7 @@ You may also pass a literal version like 3.1.4.
 Options:
   --no-notes        Skip release-notes generation
   --notes-only      Generate notes only; do not bump version, commit, or tag
+  --edit-notes      Open $EDITOR on the generated notes before continuing
   --dry-run         Print what would happen; do not modify anything
   --notes-file PATH Path for the generated notes file (default: RELEASE_NOTES.md)
   --since TAG       Override the "since" tag for the changelog (default: latest)
@@ -40,6 +41,7 @@ esac
 NO_NOTES=0
 NOTES_ONLY=0
 DRY_RUN=0
+EDIT_NOTES=0
 NOTES_FILE="RELEASE_NOTES.md"
 SINCE_TAG=""
 
@@ -47,6 +49,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --no-notes)    NO_NOTES=1 ;;
     --notes-only)  NOTES_ONLY=1 ;;
+    --edit-notes)  EDIT_NOTES=1 ;;
     --dry-run)     DRY_RUN=1 ;;
     --notes-file)  shift; NOTES_FILE=$1 ;;
     --since)       shift; SINCE_TAG=$1 ;;
@@ -184,11 +187,8 @@ PROMPT
   [ "$(wc -l <"$notes_file")" -gt 40 ] && echo "... (truncated)"
   echo "-------------------"
 
-  if [ -t 0 ]; then
-    read -r -p "Edit release notes? [y/N] " ans
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      "${EDITOR:-vi}" "$notes_file"
-    fi
+  if [ "$EDIT_NOTES" -eq 1 ]; then
+    "${EDITOR:-vi}" "$notes_file"
   fi
   return 0
 }

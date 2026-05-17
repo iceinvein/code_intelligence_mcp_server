@@ -192,7 +192,58 @@ async fn forward(
         }
     }
 
-    send_upstream_once(state, method, params, out_headers, body_bytes, repo_query).await
+    // Clone so we can replay on session-expired without rebuilding from
+    // the original axum request (which has already been consumed).
+    let replay_headers = out_headers.clone();
+    let replay_body = body_bytes.clone();
+    let replay_params = params.clone();
+
+    let first = send_upstream_once(
+        state.clone(),
+        method.clone(),
+        params,
+        out_headers,
+        body_bytes,
+        repo_query.clone(),
+    )
+    .await;
+
+    let original_response = match first {
+        UpstreamOutcome::Done(resp) => return resp,
+        UpstreamOutcome::RetryRequested { original_response } => original_response,
+    };
+
+    // Session expired upstream. Try once to recover.
+    let new_sid = match recover_session(&state, repo_query.as_ref()).await {
+        Some(s) => s,
+        None => return original_response,
+    };
+
+    // Substitute the new session id into the replay headers.
+    let mut retry_headers = replay_headers;
+    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&new_sid) {
+        retry_headers.insert(
+            reqwest::header::HeaderName::from_static("mcp-session-id"),
+            hv,
+        );
+    }
+
+    let second = send_upstream_once(
+        state,
+        method,
+        replay_params,
+        retry_headers,
+        replay_body,
+        repo_query,
+    )
+    .await;
+
+    match second {
+        UpstreamOutcome::Done(resp) => resp,
+        // Recovery itself was rejected by upstream a second time. Do NOT
+        // loop; return the second response to the client.
+        UpstreamOutcome::RetryRequested { original_response } => original_response,
+    }
 }
 
 /// Issue a single upstream request and translate its response back into an
@@ -200,8 +251,9 @@ async fn forward(
 /// the way back when both are present. Streams the body without buffering.
 ///
 /// Extracted from `forward` so we can call it twice in a row from the
-/// session-recovery path in a later task without duplicating the streaming /
-/// header-translation glue.
+/// session-recovery path without duplicating the streaming / header-translation
+/// glue. Returns `UpstreamOutcome::RetryRequested` when the upstream signals
+/// session-not-found (-32016) so `forward` can run recovery and replay.
 async fn send_upstream_once(
     state: Arc<ProxyState>,
     method: Method,
@@ -209,7 +261,7 @@ async fn send_upstream_once(
     out_headers: reqwest::header::HeaderMap,
     body_bytes: axum::body::Bytes,
     repo_query: Option<Utf8PathBuf>,
-) -> Response {
+) -> UpstreamOutcome {
     let url = format!("{}{}", state.backend_base, state.backend_path);
 
     let request_builder = state
@@ -223,11 +275,13 @@ async fn send_upstream_once(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "proxy: upstream request failed");
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("upstream unreachable: {e}"),
-            )
-                .into_response();
+            return UpstreamOutcome::Done(
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("upstream unreachable: {e}"),
+                )
+                    .into_response(),
+            );
         }
     };
 
@@ -269,21 +323,31 @@ async fn send_upstream_once(
                 let mut out = Response::new(Body::from(b));
                 *out.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
                 copy_response_headers(&upstream_headers, out.headers_mut());
-                return out;
+                return UpstreamOutcome::Done(out);
             }
             Err(e) => {
                 tracing::error!(error = %e, "proxy: failed to read 4xx response body");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    format!("upstream body read failed: {e}"),
-                )
-                    .into_response();
+                return UpstreamOutcome::Done(
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!("upstream body read failed: {e}"),
+                    )
+                        .into_response(),
+                );
             }
         };
-        // Probe for the session-expired signal. Task 4 will act on a
-        // `true` result; today we discard it so the detector and its
-        // imports stay live.
-        let _ = parse_session_expired(status, content_type_owned.as_deref(), &bytes);
+        // Probe for the session-expired signal. If matched, surface
+        // RetryRequested with the original response embedded so the
+        // caller can return it if recovery fails.
+        if parse_session_expired(status, content_type_owned.as_deref(), &bytes) {
+            let mut fallback = Response::new(Body::from(bytes));
+            *fallback.status_mut() =
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
+            copy_response_headers(&upstream_headers, fallback.headers_mut());
+            return UpstreamOutcome::RetryRequested {
+                original_response: fallback,
+            };
+        }
         Body::from(bytes)
     } else {
         // Stream the response body straight back. SSE responses must not be
@@ -298,7 +362,7 @@ async fn send_upstream_once(
     let mut out = Response::new(body_for_response);
     *out.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
     copy_response_headers(&upstream_headers, out.headers_mut());
-    out
+    UpstreamOutcome::Done(out)
 }
 
 /// Copy non-hop-by-hop headers from a reqwest response into an axum
@@ -334,6 +398,19 @@ fn is_hop_by_hop(name: &str) -> bool {
             | "upgrade"
             | "host"
     )
+}
+
+/// Outcome of a single upstream forward attempt. `Done` carries the
+/// final axum response to return to the client; `RetryRequested` means
+/// the upstream signalled session-not-found and the caller should run
+/// recovery + replay once.
+enum UpstreamOutcome {
+    Done(Response),
+    RetryRequested {
+        /// Original 4xx body we already consumed; surfaced if recovery
+        /// fails so the client still sees the real error.
+        original_response: Response,
+    },
 }
 
 /// JSON-RPC error code emitted by rust-mcp-sdk when the `mcp-session-id` is
@@ -376,6 +453,97 @@ fn parse_session_expired(status: StatusCode, content_type: Option<&str>, body: &
         return true;
     }
     false
+}
+
+/// Synthesize an MCP `initialize` + `notifications/initialized` handshake
+/// against the internal SDK so we obtain a fresh `mcp-session-id`. Returns
+/// the new session id on success, or `None` on any failure (the caller
+/// surfaces the original error to the client in that case).
+///
+/// We do not preserve the client's original initialize params: the SDK
+/// uses them only for capability negotiation, and the proxy is acting as
+/// a session-revival mechanism, not a full client. Tool calls we replay
+/// afterwards do not depend on negotiated capabilities beyond the
+/// JSON-RPC framing, which is identical.
+async fn recover_session(state: &ProxyState, repo_query: Option<&Utf8PathBuf>) -> Option<String> {
+    let url = format!("{}{}", state.backend_base, state.backend_path);
+
+    let mut query: Vec<(&str, String)> = Vec::new();
+    if let Some(repo) = repo_query {
+        query.push(("repo", repo.as_str().to_string()));
+    }
+
+    let init_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "code-intelligence-proxy-recover",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }
+    });
+
+    let init_resp = match state
+        .client
+        .post(&url)
+        .query(&query)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .body(init_body.to_string())
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            tracing::warn!(status = %r.status(), "session recovery: initialize failed");
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "session recovery: initialize transport error");
+            return None;
+        }
+    };
+
+    let new_sid = init_resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())?;
+
+    // Record the binding eagerly so the StandaloneHandler sees ?repo= on
+    // the replay even before the SDK has fully completed the initialized
+    // notification round-trip.
+    if let Some(repo) = repo_query {
+        state.pending_repos.insert(new_sid.clone(), repo.clone());
+    }
+
+    // Drain the initialize response body so the connection is reusable.
+    let _ = init_resp.bytes().await;
+
+    let initialized_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    });
+    if let Err(e) = state
+        .client
+        .post(&url)
+        .query(&query)
+        .header("mcp-session-id", &new_sid)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .body(initialized_body.to_string())
+        .send()
+        .await
+    {
+        tracing::warn!(error = %e, "session recovery: notifications/initialized failed");
+        // Continue anyway -- the replay will surface any real failure.
+    }
+
+    Some(new_sid)
 }
 
 #[cfg(test)]
@@ -553,6 +721,163 @@ mod tests {
             resp.text().await.unwrap(),
             r#"{"code":-32600,"message":"Invalid Request"}"#
         );
+    }
+
+    #[tokio::test]
+    async fn forward_recovers_from_session_not_found_and_replays_once() {
+        // Fake SDK that:
+        //   1. Returns -32016 the first time a tool call arrives with a
+        //      stale session id.
+        //   2. Accepts the proxy's synthetic initialize, returns a fresh
+        //      mcp-session-id header.
+        //   3. Accepts the notifications/initialized POST.
+        //   4. Returns 200 + tool result on the replayed tool call.
+        let state = Arc::new(std::sync::Mutex::new(0u32));
+        let state_for_handler = state.clone();
+        let upstream = spawn_test_upstream(move |headers: HeaderMap, body: axum::body::Bytes| {
+            let body_str = std::str::from_utf8(&body).unwrap_or("");
+            let mut s = state_for_handler.lock().unwrap();
+            *s += 1;
+            match *s {
+                1 => {
+                    // Stale tool call: must include the client's session id.
+                    assert_eq!(
+                        headers.get("mcp-session-id").map(|v| v.to_str().unwrap()),
+                        Some("stale-sid")
+                    );
+                    (
+                        StatusCode::BAD_REQUEST,
+                        [("content-type", "application/json")],
+                        r#"{"code":-32016,"message":"Session not found","data":null}"#,
+                    )
+                        .into_response()
+                }
+                2 => {
+                    // Synthetic initialize from the proxy.
+                    assert!(body_str.contains("\"method\":\"initialize\""));
+                    let mut resp = (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+                    )
+                        .into_response();
+                    resp.headers_mut()
+                        .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                    resp
+                }
+                3 => {
+                    // notifications/initialized -- fire and forget.
+                    assert!(body_str.contains("notifications/initialized"));
+                    assert_eq!(
+                        headers.get("mcp-session-id").map(|v| v.to_str().unwrap()),
+                        Some("fresh-sid")
+                    );
+                    StatusCode::ACCEPTED.into_response()
+                }
+                4 => {
+                    // Replay of the original tool call, now under the new id.
+                    assert_eq!(
+                        headers.get("mcp-session-id").map(|v| v.to_str().unwrap()),
+                        Some("fresh-sid")
+                    );
+                    let mut resp = (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        r#"{"jsonrpc":"2.0","id":42,"result":{"ok":true}}"#,
+                    )
+                        .into_response();
+                    resp.headers_mut()
+                        .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                    resp
+                }
+                _ => unreachable!("proxy made an unexpected {}-th upstream call", *s),
+            }
+        })
+        .await;
+
+        let pending = new_pending_repos();
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            pending.clone(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().to_str().unwrap();
+        let resp = client
+            .post(format!("http://127.0.0.1:{proxy_port}/mcp?repo={repo}"))
+            .header("mcp-session-id", "stale-sid")
+            .body(r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{}}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("mcp-session-id")
+                .map(|v| v.to_str().unwrap()),
+            Some("fresh-sid")
+        );
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("\"ok\":true"));
+
+        // The proxy must have made exactly 4 upstream calls: the failed
+        // original, the recovery initialize, the recovery initialized
+        // notification, and the replay.
+        assert_eq!(*state.lock().unwrap(), 4);
+
+        // ?repo= must have been re-bound to the new session id.
+        assert!(pending.contains_key("fresh-sid"));
+    }
+
+    #[tokio::test]
+    async fn forward_does_not_recover_more_than_once_per_request() {
+        // If recovery itself yields another -32016, we surface the second
+        // failure to the client rather than looping.
+        let state = Arc::new(std::sync::Mutex::new(0u32));
+        let state_for_handler = state.clone();
+        let upstream = spawn_test_upstream(move |_h: HeaderMap, _b: axum::body::Bytes| {
+            let mut s = state_for_handler.lock().unwrap();
+            *s += 1;
+            (
+                StatusCode::BAD_REQUEST,
+                [("content-type", "application/json")],
+                r#"{"code":-32016,"message":"Session not found"}"#,
+            )
+                .into_response()
+        })
+        .await;
+
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            new_pending_repos(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{proxy_port}/mcp"))
+            .header("mcp-session-id", "stale-sid")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // The proxy should give up after: original (1) + initialize attempt (2).
+        // It MUST NOT keep looping.
+        assert!(*state.lock().unwrap() <= 2, "proxy retried more than once");
     }
 
     #[tokio::test]

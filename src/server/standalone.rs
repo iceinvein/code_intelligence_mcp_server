@@ -5,7 +5,7 @@ use crate::handlers::{
     tool_internal_error, AppState,
 };
 use crate::path::Utf8PathBuf;
-use crate::server::mcp_proxy::PendingRepos;
+use crate::server::mcp_proxy::{BoundRepos, PendingRepos};
 use crate::server::{all_tools, dispatch_tool_call, tool_json_content};
 use crate::session::SessionManager;
 use crate::tools::{BindWorkspaceTool, ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
@@ -64,8 +64,9 @@ pub fn new_session_repos() -> Sessions {
 
 /// Spawn a background task that evicts session entries whose `last_seen` is
 /// older than [`SESSION_INACTIVITY_TTL`]. Runs once per minute for the
-/// lifetime of the process.
-pub fn spawn_session_eviction_loop(sessions: Sessions) {
+/// lifetime of the process. Also drops the matching `bound_repos` entry so
+/// the recovery-cache does not outlive its session.
+pub fn spawn_session_eviction_loop(sessions: Sessions, bound_repos: BoundRepos) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -77,6 +78,7 @@ pub fn spawn_session_eviction_loop(sessions: Sessions) {
                 .collect();
             for id in stale {
                 if sessions.remove(&id).is_some() {
+                    bound_repos.remove(&id);
                     tracing::info!(session = %id, "Evicted stale session (inactivity TTL)");
                 }
             }
@@ -99,6 +101,11 @@ pub struct StandaloneHandler {
     /// HTTP MCP client (not just Claude Code) and is set before the client
     /// has a chance to issue any tool call.
     pending_repos: PendingRepos,
+    /// Durable session-id → repo bindings used by `recover_session` (in the
+    /// proxy) to re-apply `bind_workspace`- and `roots/list`-style bindings
+    /// after an SDK eviction. Written by every successful binding path here;
+    /// dropped in lockstep with `session_repos` by the eviction loop.
+    bound_repos: BoundRepos,
 }
 
 impl StandaloneHandler {
@@ -107,12 +114,14 @@ impl StandaloneHandler {
         server_details: InitializeResult,
         session_repos: Sessions,
         pending_repos: PendingRepos,
+        bound_repos: BoundRepos,
     ) -> Self {
         Self {
             session_manager,
             server_details,
             session_repos,
             pending_repos,
+            bound_repos,
         }
     }
 
@@ -128,6 +137,9 @@ impl StandaloneHandler {
             .map(|i| i.repo.is_some())
             .unwrap_or(false);
         self.upsert_session(session_id, Some(repo.clone()));
+        // Cache for recovery so a future SDK eviction can re-apply the
+        // same repo even if the client request no longer carries `?repo=`.
+        self.bound_repos.insert(session_id.clone(), repo.clone());
         if !was_already_bound {
             tracing::info!(
                 session = %session_id,
@@ -244,6 +256,8 @@ impl StandaloneHandler {
             .unwrap_or(false);
 
         self.upsert_session(session_id, Some(repo_path.clone()));
+        self.bound_repos
+            .insert(session_id.clone(), repo_path.clone());
 
         if !was_already_bound {
             tracing::info!(
@@ -297,6 +311,8 @@ impl StandaloneHandler {
         }
 
         self.upsert_session(&session_id, Some(repo_path.clone()));
+        self.bound_repos
+            .insert(session_id.clone(), repo_path.clone());
 
         tracing::info!(
             session = %session_id,
@@ -524,6 +540,7 @@ mod tests {
             server_details,
             new_session_repos(),
             crate::server::mcp_proxy::new_pending_repos(),
+            crate::server::mcp_proxy::new_bound_repos(),
         );
         assert_eq!(handler.session_repos.len(), 0);
     }
@@ -571,6 +588,7 @@ mod tests {
             server_details,
             new_session_repos(),
             crate::server::mcp_proxy::new_pending_repos(),
+            crate::server::mcp_proxy::new_bound_repos(),
         )
     }
 

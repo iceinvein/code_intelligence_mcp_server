@@ -255,10 +255,12 @@ async fn run_standalone(
     };
 
     let session_repos = code_intelligence_mcp_server::server::standalone::new_session_repos();
+    let pending_repos = code_intelligence_mcp_server::server::mcp_proxy::new_pending_repos();
+    let bound_repos = code_intelligence_mcp_server::server::mcp_proxy::new_bound_repos();
     code_intelligence_mcp_server::server::standalone::spawn_session_eviction_loop(
         session_repos.clone(),
+        bound_repos.clone(),
     );
-    let pending_repos = code_intelligence_mcp_server::server::mcp_proxy::new_pending_repos();
     let job_registry = code_intelligence_mcp_server::server::jobs::new_job_registry();
     code_intelligence_mcp_server::server::jobs::spawn_job_eviction_loop(job_registry.clone());
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
@@ -266,6 +268,7 @@ async fn run_standalone(
         server_details.clone(),
         session_repos.clone(),
         pending_repos.clone(),
+        bound_repos.clone(),
     );
     let bind_host = standalone_config.host.clone();
     let bind_port = standalone_config.port;
@@ -353,12 +356,14 @@ async fn run_standalone(
     // mcp-session-id on the way back.
     {
         let pr = pending_repos.clone();
+        let br = bound_repos.clone();
         if let Err(e) = code_intelligence_mcp_server::server::mcp_proxy::spawn_mcp_proxy(
             &bind_host,
             bind_port,
             internal_mcp_port,
             "/mcp",
             pr,
+            br,
         )
         .await
         {

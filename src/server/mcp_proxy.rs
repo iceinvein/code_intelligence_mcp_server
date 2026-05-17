@@ -46,6 +46,19 @@ pub fn new_pending_repos() -> PendingRepos {
     Arc::new(DashMap::new())
 }
 
+/// Long-lived session-id → repo bindings, written by every successful
+/// binding path (URL `?repo=`, MCP `roots/list`, and the `bind_workspace`
+/// tool). Unlike `PendingRepos` (consume-once on first tool call), entries
+/// here persist for the lifetime of the session bookkeeping and are dropped
+/// in lockstep with session eviction. `recover_session` reads this map when
+/// the recovering request did not carry `?repo=`, so `bind_workspace`- and
+/// `roots/list`-bound sessions also survive an SDK eviction.
+pub type BoundRepos = Arc<DashMap<String, Utf8PathBuf>>;
+
+pub fn new_bound_repos() -> BoundRepos {
+    Arc::new(DashMap::new())
+}
+
 #[derive(Clone)]
 struct ProxyState {
     /// HTTP client used to talk to the internal SDK listener. Kept warm so
@@ -58,6 +71,10 @@ struct ProxyState {
     /// Captured `?repo=` bindings, populated on every response that carries
     /// a `mcp-session-id` header.
     pending_repos: PendingRepos,
+    /// Stable session-id → repo bindings used by `recover_session` when the
+    /// recovering request has no `?repo=` URL query (i.e. the original
+    /// session was bound via `roots/list` or `bind_workspace`).
+    bound_repos: BoundRepos,
 }
 
 /// Spawn the proxy listener. Returns once it has bound to `public_port`.
@@ -67,6 +84,7 @@ pub async fn spawn_mcp_proxy(
     backend_port: u16,
     backend_path: &str,
     pending_repos: PendingRepos,
+    bound_repos: BoundRepos,
 ) -> anyhow::Result<()> {
     // No `.timeout()` here: MCP SSE responses are long-lived, and reqwest's
     // `timeout(Duration::ZERO)` is a zero-second deadline, not "no
@@ -81,6 +99,7 @@ pub async fn spawn_mcp_proxy(
         backend_base: format!("http://127.0.0.1:{backend_port}"),
         backend_path: backend_path.to_string(),
         pending_repos,
+        bound_repos,
     });
 
     let app = Router::new()
@@ -192,6 +211,14 @@ async fn forward(
         }
     }
 
+    // Extract the client's stale session id (if any) before consuming the
+    // headers. `recover_session` uses it to look up a `bind_workspace`- or
+    // `roots/list`-recorded binding when the request did not carry `?repo=`.
+    let stale_sid = out_headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
     // Clone so we can replay on session-expired without rebuilding from
     // the original axum request (which has already been consumed).
     let replay_headers = out_headers.clone();
@@ -214,7 +241,7 @@ async fn forward(
     };
 
     // Session expired upstream. Try once to recover.
-    let new_sid = match recover_session(&state, repo_query.as_ref()).await {
+    let new_sid = match recover_session(&state, repo_query.as_ref(), stale_sid.as_deref()).await {
         Some(s) => s,
         None => return original_response,
     };
@@ -465,11 +492,24 @@ fn parse_session_expired(status: StatusCode, content_type: Option<&str>, body: &
 /// a session-revival mechanism, not a full client. Tool calls we replay
 /// afterwards do not depend on negotiated capabilities beyond the
 /// JSON-RPC framing, which is identical.
-async fn recover_session(state: &ProxyState, repo_query: Option<&Utf8PathBuf>) -> Option<String> {
+async fn recover_session(
+    state: &ProxyState,
+    repo_query: Option<&Utf8PathBuf>,
+    stale_sid: Option<&str>,
+) -> Option<String> {
     let url = format!("{}{}", state.backend_base, state.backend_path);
 
+    // Prefer the URL `?repo=` (highest-priority binding source). When that's
+    // missing, fall back to a previously-recorded binding for the stale
+    // session id, which covers `bind_workspace` and `roots/list` sessions.
+    let bound_repo_owned: Option<Utf8PathBuf> = match repo_query {
+        Some(_) => None,
+        None => stale_sid.and_then(|sid| state.bound_repos.get(sid).map(|r| r.value().clone())),
+    };
+    let effective_repo: Option<&Utf8PathBuf> = repo_query.or(bound_repo_owned.as_ref());
+
     let mut query: Vec<(&str, String)> = Vec::new();
-    if let Some(repo) = repo_query {
+    if let Some(repo) = effective_repo {
         query.push(("repo", repo.as_str().to_string()));
     }
 
@@ -514,11 +554,15 @@ async fn recover_session(state: &ProxyState, repo_query: Option<&Utf8PathBuf>) -
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())?;
 
-    // Record the binding eagerly so the StandaloneHandler sees ?repo= on
+    // Record the binding eagerly so the StandaloneHandler sees the repo on
     // the replay even before the SDK has fully completed the initialized
-    // notification round-trip.
-    if let Some(repo) = repo_query {
+    // notification round-trip. Write to both maps: `pending_repos` is the
+    // one-shot signal `StandaloneHandler::resolve_state` consumes on the
+    // first tool call; `bound_repos` is the durable cache used by future
+    // recoveries on the new session id.
+    if let Some(repo) = effective_repo {
         state.pending_repos.insert(new_sid.clone(), repo.clone());
+        state.bound_repos.insert(new_sid.clone(), repo.clone());
     }
 
     // Drain the initialize response body so the connection is reusable.
@@ -707,6 +751,7 @@ mod tests {
             upstream.port(),
             "/mcp",
             new_pending_repos(),
+            new_bound_repos(),
         )
         .await
         .unwrap();
@@ -801,6 +846,7 @@ mod tests {
         .await;
 
         let pending = new_pending_repos();
+        let bound = new_bound_repos();
         let proxy_port = portpicker::pick_unused_port().expect("free port");
         spawn_mcp_proxy(
             "127.0.0.1",
@@ -808,6 +854,7 @@ mod tests {
             upstream.port(),
             "/mcp",
             pending.clone(),
+            bound.clone(),
         )
         .await
         .unwrap();
@@ -867,6 +914,7 @@ mod tests {
             upstream.port(),
             "/mcp",
             new_pending_repos(),
+            new_bound_repos(),
         )
         .await
         .unwrap();
@@ -905,6 +953,7 @@ mod tests {
             upstream.port(),
             "/mcp",
             new_pending_repos(),
+            new_bound_repos(),
         )
         .await
         .unwrap();
@@ -920,5 +969,108 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.text().await.unwrap();
         assert_eq!(body, r#"{"ok":true}"#);
+    }
+
+    #[tokio::test]
+    async fn forward_recovers_using_bound_repos_when_url_has_no_repo() {
+        // Same shape as forward_recovers_from_session_not_found_and_replays_once,
+        // but the client does NOT pass `?repo=` in the URL. Instead, the
+        // stale session id has a prior binding in `bound_repos` (as would
+        // be left by `bind_workspace` or `roots/list`). The proxy must
+        // discover that binding and re-apply it on the recovered session.
+        let state = Arc::new(std::sync::Mutex::new(0u32));
+        let state_for_handler = state.clone();
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().to_str().unwrap().to_string();
+        let upstream = spawn_test_upstream(move |headers: HeaderMap, body: axum::body::Bytes| {
+            let body_str = std::str::from_utf8(&body).unwrap_or("");
+            let mut s = state_for_handler.lock().unwrap();
+            *s += 1;
+            match *s {
+                1 => (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    r#"{"code":-32016,"message":"Session not found"}"#,
+                )
+                    .into_response(),
+                2 => {
+                    assert!(body_str.contains("\"method\":\"initialize\""));
+                    let mut resp = (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+                    )
+                        .into_response();
+                    resp.headers_mut()
+                        .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                    resp
+                }
+                3 => {
+                    assert!(body_str.contains("notifications/initialized"));
+                    StatusCode::ACCEPTED.into_response()
+                }
+                4 => {
+                    assert_eq!(
+                        headers.get("mcp-session-id").map(|v| v.to_str().unwrap()),
+                        Some("fresh-sid")
+                    );
+                    let mut resp = (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        r#"{"jsonrpc":"2.0","id":42,"result":{"ok":true}}"#,
+                    )
+                        .into_response();
+                    resp.headers_mut()
+                        .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                    resp
+                }
+                _ => unreachable!("proxy made an unexpected {}-th upstream call", *s),
+            }
+        })
+        .await;
+
+        let pending = new_pending_repos();
+        let bound = new_bound_repos();
+        // Pre-seed bound_repos as bind_workspace / roots-list would.
+        bound.insert(
+            "stale-sid".to_string(),
+            Utf8PathBuf::from(repo_path.clone()),
+        );
+
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            pending.clone(),
+            bound.clone(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            // NOTE: no `?repo=` on this URL — recovery must read from bound_repos.
+            .post(format!("http://127.0.0.1:{proxy_port}/mcp"))
+            .header("mcp-session-id", "stale-sid")
+            .body(r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{}}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("mcp-session-id")
+                .map(|v| v.to_str().unwrap()),
+            Some("fresh-sid")
+        );
+        assert_eq!(*state.lock().unwrap(), 4);
+        // Recovery must rehydrate the binding under the new session id in
+        // both maps so subsequent recoveries on `fresh-sid` (if it dies
+        // later) also work.
+        assert!(pending.contains_key("fresh-sid"));
+        assert!(bound.contains_key("fresh-sid"));
     }
 }

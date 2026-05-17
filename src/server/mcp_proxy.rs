@@ -245,31 +245,77 @@ async fn send_upstream_once(
         }
     }
 
-    // Stream the response body straight back. SSE responses must not be
-    // buffered: clients block waiting for `event:` frames on the same
-    // connection.
-    let stream = response.bytes_stream();
-    let mapped =
-        stream.map_err(|e| std::io::Error::other(format!("proxy upstream stream error: {e}")));
-    let body = Body::from_stream(mapped);
+    let content_type_owned: Option<String> = upstream_headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let small_json_error = status.is_client_error()
+        && content_type_owned
+            .as_deref()
+            .map(|ct| ct.starts_with("application/json"))
+            .unwrap_or(false);
 
-    let mut out = Response::new(body);
-    *out.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
-    {
-        let out_headers = out.headers_mut();
-        for (name, value) in upstream_headers.iter() {
-            let n = name.as_str();
-            if is_hop_by_hop(n) {
-                continue;
+    let body_for_response: Body = if small_json_error {
+        // Buffer up to 64 KiB. SDK error envelopes are tiny; anything
+        // larger is unexpected and we forward without inspection.
+        const MAX_ERROR_BUFFER: usize = 64 * 1024;
+        let bytes = match response.bytes().await {
+            Ok(b) if b.len() <= MAX_ERROR_BUFFER => b,
+            Ok(b) => {
+                tracing::warn!(
+                    len = b.len(),
+                    "proxy: 4xx response exceeded inspect buffer; forwarding raw"
+                );
+                let mut out = Response::new(Body::from(b));
+                *out.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
+                copy_response_headers(&upstream_headers, out.headers_mut());
+                return out;
             }
-            if let Ok(hn) = axum::http::HeaderName::from_bytes(n.as_bytes()) {
-                if let Ok(hv) = HeaderValue::from_bytes(value.as_bytes()) {
-                    out_headers.insert(hn, hv);
-                }
+            Err(e) => {
+                tracing::error!(error = %e, "proxy: failed to read 4xx response body");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("upstream body read failed: {e}"),
+                )
+                    .into_response();
+            }
+        };
+        // Probe for the session-expired signal. Task 4 will act on a
+        // `true` result; today we discard it so the detector and its
+        // imports stay live.
+        let _ = parse_session_expired(status, content_type_owned.as_deref(), &bytes);
+        Body::from(bytes)
+    } else {
+        // Stream the response body straight back. SSE responses must not be
+        // buffered: clients block waiting for `event:` frames on the same
+        // connection.
+        let stream = response.bytes_stream();
+        let mapped =
+            stream.map_err(|e| std::io::Error::other(format!("proxy upstream stream error: {e}")));
+        Body::from_stream(mapped)
+    };
+
+    let mut out = Response::new(body_for_response);
+    *out.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
+    copy_response_headers(&upstream_headers, out.headers_mut());
+    out
+}
+
+/// Copy non-hop-by-hop headers from a reqwest response into an axum
+/// response. Pulled out of `send_upstream_once` so the early-return path
+/// for oversize 4xx bodies can reuse it.
+fn copy_response_headers(from: &reqwest::header::HeaderMap, to: &mut axum::http::HeaderMap) {
+    for (name, value) in from.iter() {
+        let n = name.as_str();
+        if is_hop_by_hop(n) {
+            continue;
+        }
+        if let Ok(hn) = axum::http::HeaderName::from_bytes(n.as_bytes()) {
+            if let Ok(hv) = HeaderValue::from_bytes(value.as_bytes()) {
+                to.insert(hn, hv);
             }
         }
     }
-    out
 }
 
 /// Hop-by-hop headers defined by RFC 7230 §6.1. These must not be forwarded
@@ -297,14 +343,12 @@ fn is_hop_by_hop(name: &str) -> bool {
 /// wrapped JSON-RPC envelope (`{"error": {"code": -32016, ...}}`) and the
 /// bare error object (which is what `error_response` actually serializes)
 /// as session-expired signals.
-#[allow(dead_code)]
 const SESSION_NOT_FOUND_CODE: i64 = -32016;
 
 /// Returns `true` when an upstream response indicates that the SDK does
 /// not know the `mcp-session-id` we forwarded. Only inspects `4xx`
 /// responses with a JSON content-type and a body small enough to have
 /// already been buffered by `forward`; this function does not perform I/O.
-#[allow(dead_code)]
 fn parse_session_expired(status: StatusCode, content_type: Option<&str>, body: &[u8]) -> bool {
     if !status.is_client_error() {
         return false;
@@ -466,6 +510,49 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         addr
+    }
+
+    #[tokio::test]
+    async fn forward_buffers_4xx_for_inspection() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = spawn_test_upstream(move |_h, _b| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (
+                StatusCode::BAD_REQUEST,
+                [("content-type", "application/json")],
+                r#"{"code":-32600,"message":"Invalid Request"}"#,
+            )
+                .into_response()
+        })
+        .await;
+
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            new_pending_repos(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{proxy_port}/mcp"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // The proxy must NOT have retried for a non-session error.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // The body must be forwarded intact even after buffering.
+        assert_eq!(
+            resp.text().await.unwrap(),
+            r#"{"code":-32600,"message":"Invalid Request"}"#
+        );
     }
 
     #[tokio::test]

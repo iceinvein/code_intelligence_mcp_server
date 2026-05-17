@@ -59,6 +59,13 @@ pub fn new_bound_repos() -> BoundRepos {
     Arc::new(DashMap::new())
 }
 
+/// Per-stale-sid recovery future, shared across concurrent requests that
+/// all hit the same dead `mcp-session-id`. The first caller into a given
+/// entry runs the initialize handshake; subsequent callers await its
+/// result instead of independently allocating a second backend session.
+type RecoveryCell = Arc<tokio::sync::OnceCell<Option<String>>>;
+type Recoveries = Arc<DashMap<String, RecoveryCell>>;
+
 #[derive(Clone)]
 struct ProxyState {
     /// HTTP client used to talk to the internal SDK listener. Kept warm so
@@ -75,6 +82,10 @@ struct ProxyState {
     /// recovering request has no `?repo=` URL query (i.e. the original
     /// session was bound via `roots/list` or `bind_workspace`).
     bound_repos: BoundRepos,
+    /// In-flight recoveries keyed by stale session id. Lets concurrent
+    /// requests with the same stale id share a single backend session
+    /// allocation instead of each minting a fresh one.
+    recoveries: Recoveries,
 }
 
 /// Spawn the proxy listener. Returns once it has bound to `public_port`.
@@ -100,6 +111,7 @@ pub async fn spawn_mcp_proxy(
         backend_path: backend_path.to_string(),
         pending_repos,
         bound_repos,
+        recoveries: Arc::new(DashMap::new()),
     });
 
     let app = Router::new()
@@ -240,8 +252,37 @@ async fn forward(
         UpstreamOutcome::RetryRequested { original_response } => original_response,
     };
 
-    // Session expired upstream. Try once to recover.
-    let new_sid = match recover_session(&state, repo_query.as_ref(), stale_sid.as_deref()).await {
+    // Session expired upstream. Try once to recover. When multiple
+    // requests with the same stale id arrive concurrently they share one
+    // recovery via a per-sid OnceCell, so only one backend session is
+    // allocated. Requests without a stale id (rare; client never sent
+    // `mcp-session-id`) recover directly with no dedupe key.
+    let new_sid_opt = match stale_sid.as_deref() {
+        Some(sid) => {
+            let cell: RecoveryCell = state
+                .recoveries
+                .entry(sid.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+                .clone();
+            let state_for_init = state.clone();
+            let repo_for_init = repo_query.clone();
+            let sid_for_init = sid.to_string();
+            let result = cell
+                .get_or_init(|| async move {
+                    recover_session(&state_for_init, repo_for_init.as_ref(), Some(&sid_for_init))
+                        .await
+                })
+                .await
+                .clone();
+            // Best-effort cleanup so a future eviction-and-recovery cycle
+            // on the same client sid can run again. Concurrent removers
+            // are harmless (DashMap.remove is idempotent).
+            state.recoveries.remove(sid);
+            result
+        }
+        None => recover_session(&state, repo_query.as_ref(), None).await,
+    };
+    let new_sid = match new_sid_opt {
         Some(s) => s,
         None => return original_response,
     };
@@ -1072,5 +1113,133 @@ mod tests {
         // later) also work.
         assert!(pending.contains_key("fresh-sid"));
         assert!(bound.contains_key("fresh-sid"));
+    }
+
+    #[tokio::test]
+    async fn forward_dedupes_concurrent_recoveries_for_same_stale_sid() {
+        // Two concurrent client requests carrying the same stale
+        // `mcp-session-id` must share one backend recovery. The upstream's
+        // initialize handler sleeps so both stale POSTs reach the
+        // recovery phase before either initialize completes, then a
+        // single initialize is observed.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let stale_count = Arc::new(AtomicUsize::new(0));
+        let init_count = Arc::new(AtomicUsize::new(0));
+        let notif_count = Arc::new(AtomicUsize::new(0));
+        let replay_count = Arc::new(AtomicUsize::new(0));
+        let sc = stale_count.clone();
+        let ic = init_count.clone();
+        let nc = notif_count.clone();
+        let rc = replay_count.clone();
+
+        let upstream = spawn_test_upstream(move |headers: HeaderMap, body: axum::body::Bytes| {
+            let body_str = std::str::from_utf8(&body).unwrap_or("");
+            let is_init = body_str.contains("\"method\":\"initialize\"");
+            let is_notif = body_str.contains("notifications/initialized");
+            let sid_header = headers
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if is_init {
+                ic.fetch_add(1, Ordering::SeqCst);
+                let _ = (&sc, &nc, &rc); // keep clones for the non-init arms
+                                         // NOTE: synchronous sleep here (we're inside a sync closure
+                                         // adapter in spawn_test_upstream's wrapper, which itself
+                                         // wraps the call in an async block). Use a short tokio
+                                         // sleep below via std::thread::sleep equivalent: just
+                                         // delay enough to let the second stale-POST arrive.
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let mut resp = (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                resp
+            } else if is_notif {
+                nc.fetch_add(1, Ordering::SeqCst);
+                StatusCode::ACCEPTED.into_response()
+            } else if sid_header.as_deref() == Some("stale-sid") {
+                sc.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    r#"{"code":-32016,"message":"Session not found"}"#,
+                )
+                    .into_response()
+            } else {
+                // Replay arrives with fresh-sid.
+                rc.fetch_add(1, Ordering::SeqCst);
+                let mut resp = (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    r#"{"jsonrpc":"2.0","id":99,"result":{"ok":true}}"#,
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                resp
+            }
+        })
+        .await;
+        // Originals stay accessible for assertions; the closure owns the clones.
+
+        let pending = new_pending_repos();
+        let bound = new_bound_repos();
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            pending.clone(),
+            bound.clone(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{proxy_port}/mcp");
+        let r1 = {
+            let c = client.clone();
+            let u = url.clone();
+            tokio::spawn(async move {
+                c.post(&u)
+                    .header("mcp-session-id", "stale-sid")
+                    .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#)
+                    .send()
+                    .await
+                    .unwrap()
+            })
+        };
+        let r2 = {
+            let c = client.clone();
+            let u = url.clone();
+            tokio::spawn(async move {
+                c.post(&u)
+                    .header("mcp-session-id", "stale-sid")
+                    .body(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{}}"#)
+                    .send()
+                    .await
+                    .unwrap()
+            })
+        };
+        let (a, b) = tokio::join!(r1, r2);
+        let resp_a = a.unwrap();
+        let resp_b = b.unwrap();
+        assert_eq!(resp_a.status(), StatusCode::OK);
+        assert_eq!(resp_b.status(), StatusCode::OK);
+
+        assert_eq!(stale_count.load(Ordering::SeqCst), 2, "two stale POSTs");
+        assert_eq!(
+            init_count.load(Ordering::SeqCst),
+            1,
+            "dedupe must collapse two recoveries into one initialize"
+        );
+        assert_eq!(notif_count.load(Ordering::SeqCst), 1, "one initialized");
+        assert_eq!(replay_count.load(Ordering::SeqCst), 2, "two replays");
     }
 }

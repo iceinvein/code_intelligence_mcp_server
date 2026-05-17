@@ -28,9 +28,7 @@ jobs:
           shared-key: "workflow-cache-macos"
 
       - name: Install Protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: brew install protobuf
 
       - name: Run Tests
         run: cargo test

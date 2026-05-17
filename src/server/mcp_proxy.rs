@@ -543,6 +543,11 @@ async fn recover_session(state: &ProxyState, repo_query: Option<&Utf8PathBuf>) -
         // Continue anyway -- the replay will surface any real failure.
     }
 
+    tracing::info!(
+        new_session = %new_sid,
+        repo = %repo_query.map(|p| p.as_str()).unwrap_or("<none>"),
+        "session recovery: minted fresh session and replaying"
+    );
     Some(new_sid)
 }
 

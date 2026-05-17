@@ -16,7 +16,7 @@ impl Embedder for HashEmbedder {
         self.dim
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let mut out = Vec::with_capacity(texts.len());
         for text in texts {
             let mut v = vec![0.0f32; self.dim];

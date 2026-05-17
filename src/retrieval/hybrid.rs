@@ -99,9 +99,10 @@ async fn execute_single_query_search(
                                 if let Ok(hyde_result) =
                                     generator.generate(search_query, language).await
                                 {
-                                    let mut embedder = retriever.embedder.lock().await;
-                                    if let Ok(hyde_embeddings) =
-                                        embedder.embed(&[hyde_result.hypothetical_code])
+                                    if let Ok(hyde_embeddings) = retriever
+                                        .embedder
+                                        .embed(vec![hyde_result.hypothetical_code])
+                                        .await
                                     {
                                         if let Some(hyde_vector) = hyde_embeddings.first() {
                                             if let Ok(mut hyde_hits) =
@@ -316,8 +317,11 @@ async fn execute_multi_query_search(
             if let Some(generator) = &retriever.hyde_generator {
                 let language = detect_language_from_query(sub_query);
                 if let Ok(hyde_result) = generator.generate(sub_query, language).await {
-                    let mut embedder = retriever.embedder.lock().await;
-                    if let Ok(hyde_embeddings) = embedder.embed(&[hyde_result.hypothetical_code]) {
+                    if let Ok(hyde_embeddings) = retriever
+                        .embedder
+                        .embed(vec![hyde_result.hypothetical_code])
+                        .await
+                    {
                         if let Some(hyde_vector) = hyde_embeddings.first() {
                             if let Ok(hyde_hits) =
                                 retriever.vectors.search(hyde_vector, k / 2).await

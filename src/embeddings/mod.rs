@@ -1,8 +1,11 @@
 pub mod hash;
 pub mod llamacpp;
+pub mod shared;
 
 use anyhow::Result;
 use std::sync::Arc;
+
+pub use shared::SharedEmbedder;
 
 /// L2-normalize a vector in place.
 ///
@@ -15,15 +18,26 @@ pub(crate) fn l2_normalize(v: &mut [f32]) {
     }
 }
 
-pub trait Embedder {
+/// Backend trait for sync embedding implementations.
+///
+/// All implementations must be `Send + Sync` so a single instance can be
+/// shared between the index pipeline and the query path without an external
+/// `AsyncMutex`. The contract is interior-immutable: `embed` takes `&self`
+/// and any state required for the forward pass (e.g. a fresh `LlamaContext`)
+/// must be created inside the call.
+///
+/// The async/concurrency-cap front-end is [`SharedEmbedder`], which wraps an
+/// `Arc<dyn Embedder>` with a `tokio::Semaphore` and `spawn_blocking` so the
+/// blocking CPU/GPU work does not stall the tokio runtime.
+pub trait Embedder: Send + Sync {
     fn dim(&self) -> usize;
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 
     /// Embed query texts with model-specific instruction prefix for retrieval.
     ///
     /// jina-code-1.5b uses symmetric embeddings, so queries and documents share
     /// the same embedding space. Default implementation falls back to `embed()`.
-    fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn query_embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.embed(texts)
     }
 }
@@ -65,7 +79,7 @@ pub fn default_embedding_dim(
 /// already handles embedding errors gracefully — it degrades to BM25-only.
 pub struct DeferredEmbedder {
     dim: usize,
-    inner: Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>,
+    inner: Arc<std::sync::Mutex<Option<Box<dyn Embedder>>>>,
 }
 
 impl DeferredEmbedder {
@@ -77,7 +91,7 @@ impl DeferredEmbedder {
     }
 
     /// Slot in the real embedder once it's downloaded and loaded.
-    pub fn set_inner(&self, embedder: Box<dyn Embedder + Send>) {
+    pub fn set_inner(&self, embedder: Box<dyn Embedder>) {
         let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
         *guard = Some(embedder);
     }
@@ -89,7 +103,7 @@ impl DeferredEmbedder {
     }
 
     /// Get a clone of the inner Arc for sharing with a background task.
-    pub fn inner_slot(&self) -> Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>> {
+    pub fn inner_slot(&self) -> Arc<std::sync::Mutex<Option<Box<dyn Embedder>>>> {
         Arc::clone(&self.inner)
     }
 }
@@ -99,9 +113,9 @@ impl Embedder for DeferredEmbedder {
         self.dim
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
-        match guard.as_mut() {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
+        match guard.as_ref() {
             Some(embedder) => embedder.embed(texts),
             None => anyhow::bail!(
                 "Embedding model is still loading — search will use BM25-only until ready"
@@ -109,9 +123,9 @@ impl Embedder for DeferredEmbedder {
         }
     }
 
-    fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
-        match guard.as_mut() {
+    fn query_embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
+        match guard.as_ref() {
             Some(embedder) => embedder.query_embed(texts),
             None => anyhow::bail!(
                 "Embedding model is still loading — search will use BM25-only until ready"
@@ -141,7 +155,7 @@ impl Embedder for DeferredEmbedder {
 /// assert_eq!(vecs[0].len(), 64);
 /// ```
 pub struct TruncatingEmbedder {
-    inner: Box<dyn Embedder + Send>,
+    inner: Box<dyn Embedder>,
     target_dim: usize,
 }
 
@@ -153,7 +167,7 @@ impl TruncatingEmbedder {
     ///
     /// Returns an error if `target_dim` is zero or exceeds the inner embedder's
     /// native dimension.
-    pub fn new(inner: Box<dyn Embedder + Send>, target_dim: usize) -> Result<Self> {
+    pub fn new(inner: Box<dyn Embedder>, target_dim: usize) -> Result<Self> {
         let full_dim = inner.dim();
         anyhow::ensure!(target_dim > 0, "Target dimension must be > 0");
         anyhow::ensure!(
@@ -169,7 +183,7 @@ impl Embedder for TruncatingEmbedder {
         self.target_dim
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let full = self.inner.embed(texts)?;
         Ok(full
             .into_iter()
@@ -181,7 +195,7 @@ impl Embedder for TruncatingEmbedder {
             .collect())
     }
 
-    fn query_embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn query_embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let full = self.inner.query_embed(texts)?;
         Ok(full
             .into_iter()
@@ -212,7 +226,7 @@ pub fn create_embedder(
     model_dir: Option<&crate::path::Utf8Path>,
     _device: crate::config::EmbeddingsDevice,
     hash_dim: usize,
-) -> Result<Box<dyn Embedder + Send>> {
+) -> Result<Box<dyn Embedder>> {
     match backend {
         crate::config::EmbeddingsBackend::LlamaCpp => {
             let model_dir = model_dir
@@ -291,7 +305,7 @@ mod truncating_tests {
     #[test]
     fn truncating_embedder_reduces_dimension() {
         let base = Box::new(HashEmbedder::new(64));
-        let mut truncating = TruncatingEmbedder::new(base, 32).unwrap();
+        let truncating = TruncatingEmbedder::new(base, 32).unwrap();
         assert_eq!(truncating.dim(), 32);
 
         let result = truncating.embed(&["hello".to_string()]).unwrap();
@@ -327,7 +341,7 @@ mod truncating_tests {
         // deterministically safe: with 8 buckets and multiple tokens, at least
         // one will fall into the first 4 slots by the pigeonhole principle.
         let base = Box::new(HashEmbedder::new(8));
-        let mut truncating = TruncatingEmbedder::new(base, 4).unwrap();
+        let truncating = TruncatingEmbedder::new(base, 4).unwrap();
 
         let texts = vec!["alpha beta gamma delta epsilon zeta".to_string()];
         let result = truncating.embed(&texts).unwrap();
@@ -342,7 +356,7 @@ mod truncating_tests {
     #[test]
     fn query_embed_also_truncates() {
         let base = Box::new(HashEmbedder::new(64));
-        let mut truncating = TruncatingEmbedder::new(base, 16).unwrap();
+        let truncating = TruncatingEmbedder::new(base, 16).unwrap();
 
         let result = truncating.query_embed(&["query".to_string()]).unwrap();
         assert_eq!(result[0].len(), 16);
@@ -361,7 +375,7 @@ mod truncating_tests {
     #[test]
     fn truncating_at_full_dim_is_valid() {
         let base = Box::new(HashEmbedder::new(32));
-        let mut truncating = TruncatingEmbedder::new(base, 32).unwrap();
+        let truncating = TruncatingEmbedder::new(base, 32).unwrap();
 
         let result = truncating.embed(&["full dimension".to_string()]).unwrap();
         assert_eq!(result[0].len(), 32);

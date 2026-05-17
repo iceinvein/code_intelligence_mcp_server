@@ -291,7 +291,7 @@ impl Embedder for LlamaCppEmbedder {
         self.dim
     }
 
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.embed_batch(texts)
     }
 
@@ -331,7 +331,7 @@ mod tests {
             return;
         }
 
-        let mut embedder = LlamaCppEmbedder::new(&model_path).expect("failed to load model");
+        let embedder = LlamaCppEmbedder::new(&model_path).expect("failed to load model");
 
         let texts: Vec<String> = vec![
             "fn hello() { println!(\"hello\"); }".to_string(),

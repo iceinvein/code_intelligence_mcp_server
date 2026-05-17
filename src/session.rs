@@ -2,7 +2,7 @@
 
 use crate::{
     config::StandaloneConfig,
-    embeddings::Embedder,
+    embeddings::SharedEmbedder,
     handlers::AppState,
     indexer::pipeline::IndexPipeline,
     metrics::MetricsRegistry,
@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 pub struct SessionManager {
     pub standalone_config: Arc<StandaloneConfig>,
     pub registry: Arc<RepoRegistry>,
-    embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+    embedder: Arc<SharedEmbedder>,
     /// Keyed by canonical repo path string. Value is (AppState, watcher cancel token).
     repos: DashMap<String, (Arc<AppState>, CancellationToken)>,
     /// Per-key init locks to prevent TOCTOU races when two sessions init the same repo
@@ -41,7 +41,7 @@ impl SessionManager {
     pub async fn new(
         standalone_config: StandaloneConfig,
         registry: RepoRegistry,
-        embedder: Box<dyn Embedder + Send>,
+        embedder: Arc<SharedEmbedder>,
         job_registry: Option<JobRegistry>,
     ) -> Result<Self> {
         let metrics = Arc::new(MetricsRegistry::new().context("Failed to create MetricsRegistry")?);
@@ -49,7 +49,7 @@ impl SessionManager {
         Ok(Self {
             standalone_config: Arc::new(standalone_config),
             registry: Arc::new(registry),
-            embedder: Arc::new(Mutex::new(embedder)),
+            embedder,
             repos: DashMap::new(),
             init_locks: DashMap::new(),
             last_accessed: DashMap::new(),
@@ -185,11 +185,9 @@ impl SessionManager {
             .context("Failed to open Tantivy index")?;
         let tantivy_arc = Arc::new(tantivy);
 
-        // Get embedder dimension
-        let embedding_dim = {
-            let embedder = self.embedder.lock().await;
-            embedder.dim()
-        };
+        // Get embedder dimension. `SharedEmbedder::dim()` is cached at
+        // construction so this requires no lock and no async work.
+        let embedding_dim = self.embedder.dim();
 
         // Connect LanceDB, migrate if embedding dimension changed, then open table
         let lancedb = LanceDbStore::connect(&config_arc.vector_db_path)
@@ -358,7 +356,7 @@ impl SessionManager {
 
         let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
 
-        let embedder = Box::new(HashEmbedder::new(64));
+        let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
 
         Self::new(standalone_config, registry, embedder, None)
             .await
@@ -380,7 +378,7 @@ impl SessionManager {
 
         let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
 
-        let embedder = Box::new(HashEmbedder::new(64));
+        let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
 
         Self::new(standalone_config, registry, embedder, None)
             .await

@@ -10,12 +10,12 @@ mod postprocess;
 pub(crate) mod query;
 pub(crate) mod ranking;
 
+use crate::embeddings::SharedEmbedder;
 use crate::path::Utf8PathBuf;
 use crate::retrieval::hyde::HypotheticalCodeGenerator;
 use crate::text::get_related_terms;
 use crate::{
     config::Config,
-    embeddings::Embedder,
     metrics::MetricsRegistry,
     reranker::Reranker,
     retrieval::assembler::{ContextAssembler, ContextItem},
@@ -41,7 +41,6 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedHit {
@@ -134,7 +133,7 @@ pub struct Retriever {
     pub(super) db_path: Utf8PathBuf,
     pub(super) tantivy: Arc<TantivyIndex>,
     pub(super) vectors: Arc<LanceVectorTable>,
-    pub(super) embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
+    pub(super) embedder: Arc<SharedEmbedder>,
     pub(super) reranker: Option<Arc<dyn Reranker>>,
     pub(super) hyde_generator: Option<HypotheticalCodeGenerator>,
     pub(super) cache: Arc<Mutex<RetrieverCaches>>,
@@ -259,7 +258,7 @@ impl Retriever {
         config: Arc<Config>,
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
-        embedder: Arc<AsyncMutex<Box<dyn Embedder + Send>>>,
+        embedder: Arc<SharedEmbedder>,
         reranker: Option<Arc<dyn Reranker>>,
         hyde_generator: Option<HypotheticalCodeGenerator>,
         metrics: Arc<MetricsRegistry>,
@@ -1152,8 +1151,7 @@ impl Retriever {
         }
 
         let v = {
-            let mut embedder = self.embedder.lock().await;
-            let mut out = embedder.query_embed(&[query.to_string()])?;
+            let mut out = self.embedder.query_embed(vec![query.to_string()]).await?;
             out.pop()
                 .ok_or_else(|| anyhow!("Embedder returned no vector"))?
         };
@@ -1216,8 +1214,7 @@ impl Retriever {
 
     /// Get embedding for a single text string
     pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
-        let mut embedder = self.embedder.lock().await;
-        let mut results = embedder.embed(&[text.to_string()])?;
+        let mut results = self.embedder.embed(vec![text.to_string()]).await?;
         results
             .pop()
             .ok_or_else(|| anyhow!("Embedder returned no vector"))

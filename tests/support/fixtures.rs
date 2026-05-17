@@ -19,7 +19,7 @@
 
 use code_intelligence_mcp_server::{
     config::{Config, EmbeddingsBackend, EmbeddingsDevice},
-    embeddings::hash::HashEmbedder,
+    embeddings::{hash::HashEmbedder, SharedEmbedder},
     handlers::AppState,
     indexer::pipeline::IndexPipeline,
     metrics::MetricsRegistry,
@@ -32,7 +32,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex as AsyncMutex;
 
 /// Unique counter for creating isolated test directories
 static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -157,18 +156,18 @@ fn tantivy_index(test_config: Config) -> Arc<TantivyIndex> {
 
 /// Creates a HashEmbedder for fast embedding generation
 ///
-/// This fixture depends on `test_config` and creates a HashEmbedder
-/// wrapped in an AsyncMutex for thread-safe async access.
+/// This fixture depends on `test_config` and wraps a HashEmbedder in a
+/// [`SharedEmbedder`] so it matches the shape consumed by `Retriever` and
+/// `IndexPipeline`. The semaphore inside SharedEmbedder is harmless for
+/// HashEmbedder, which is CPU-only and finishes in microseconds.
 ///
 /// Hash embeddings are used for testing because they're fast and
 /// require no model downloads.
 #[fixture]
-pub fn hash_embedder(
-    test_config: Config,
-) -> Arc<AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>> {
-    Arc::new(AsyncMutex::new(
-        Box::new(HashEmbedder::new(test_config.hash_embedding_dim)) as _,
-    ))
+pub fn hash_embedder(test_config: Config) -> Arc<SharedEmbedder> {
+    Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(
+        test_config.hash_embedding_dim,
+    ))))
 }
 
 /// Creates a LanceDB vector store for semantic search
@@ -234,9 +233,7 @@ pub fn metrics() -> Arc<MetricsRegistry> {
 pub fn app_state(
     test_config: Config,
     tantivy_index: Arc<TantivyIndex>,
-    hash_embedder: Arc<
-        AsyncMutex<Box<dyn code_intelligence_mcp_server::embeddings::Embedder + Send>>,
-    >,
+    hash_embedder: Arc<SharedEmbedder>,
     vector_store: Arc<code_intelligence_mcp_server::storage::vector::LanceVectorTable>,
     metrics: Arc<MetricsRegistry>,
 ) -> AppState {

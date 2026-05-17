@@ -14,7 +14,7 @@ use crate::indexer::package;
 
 use crate::{
     config::Config,
-    embeddings::Embedder,
+    embeddings::SharedEmbedder,
     graph::pagerank,
     logging::RepoLogger,
     metrics::MetricsRegistry,
@@ -34,7 +34,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 use self::scan::{scan_files, should_index_file};
@@ -77,7 +76,7 @@ pub struct IndexPipeline {
     db_path: Utf8PathBuf,
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
-    embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+    embedder: Arc<SharedEmbedder>,
     cache: Arc<EmbeddingCache>,
     metrics: Arc<MetricsRegistry>,
     repo_logger: Option<Arc<RepoLogger>>,
@@ -104,7 +103,7 @@ impl IndexPipeline {
         config: Arc<Config>,
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
-        embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+        embedder: Arc<SharedEmbedder>,
         metrics: Arc<MetricsRegistry>,
     ) -> Self {
         Self::new_with_jobs(config, tantivy, vectors, embedder, metrics, None)
@@ -114,7 +113,7 @@ impl IndexPipeline {
         config: Arc<Config>,
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
-        embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+        embedder: Arc<SharedEmbedder>,
         metrics: Arc<MetricsRegistry>,
         job_registry: Option<JobRegistry>,
     ) -> Self {
@@ -1032,10 +1031,11 @@ impl IndexPipeline {
             }
         }
 
-        // Embed uncached texts in batch
+        // Embed uncached texts in batch. SharedEmbedder runs this on the
+        // blocking pool and gates concurrency with a semaphore so a query
+        // embed can interleave between indexer batches instead of queueing.
         let new_embeddings = if !uncached_texts.is_empty() {
-            let mut embedder = self.embedder.lock().await;
-            embedder.embed(&uncached_texts)?
+            self.embedder.embed(uncached_texts.clone()).await?
         } else {
             Vec::new()
         };

@@ -15,20 +15,21 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::embeddings::{
-    create_embedder, default_embedding_dim, DeferredEmbedder, Embedder, TruncatingEmbedder,
+    create_embedder, default_embedding_dim, DeferredEmbedder, Embedder, SharedEmbedder,
+    TruncatingEmbedder,
 };
 
 /// Type alias for the (embedder, optional-deferred-slot) pair returned by embedder creation.
 type EmbedderWithSlot = (
-    Box<dyn Embedder + Send>,
-    Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder + Send>>>>>,
+    std::sync::Arc<SharedEmbedder>,
+    Option<std::sync::Arc<std::sync::Mutex<Option<Box<dyn Embedder>>>>>,
 );
 
 /// Optionally wrap an embedder with Matryoshka truncation.
 fn maybe_truncate(
-    embedder: Box<dyn Embedder + Send>,
+    embedder: Box<dyn Embedder>,
     truncate_dim: Option<usize>,
-) -> anyhow::Result<Box<dyn Embedder + Send>> {
+) -> anyhow::Result<Box<dyn Embedder>> {
     match truncate_dim {
         Some(dim) => Ok(Box::new(TruncatingEmbedder::new(embedder, dim)?)),
         None => Ok(embedder),
@@ -198,7 +199,7 @@ async fn run_standalone(
                     },
                 )?;
                 info!("Created hash embedder with dimension: {}", e.dim());
-                (e, None)
+                (Arc::new(SharedEmbedder::new(e)), None)
             }
             code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp => {
                 let dim = default_embedding_dim(
@@ -213,7 +214,10 @@ async fn run_standalone(
                     dim,
                     "Created deferred embedder — model will load in background"
                 );
-                (Box::new(deferred), Some(slot))
+                (
+                    Arc::new(SharedEmbedder::new(Box::new(deferred))),
+                    Some(slot),
+                )
             }
         };
 

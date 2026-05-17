@@ -278,6 +278,50 @@ fn is_hop_by_hop(name: &str) -> bool {
     )
 }
 
+/// JSON-RPC error code emitted by rust-mcp-sdk when the `mcp-session-id` is
+/// either missing or refers to a session the SDK no longer tracks. See
+/// `rust-mcp-sdk/src/mcp_http/mcp_http_handler.rs` (`error_response`) and
+/// the constant table in `rust-mcp-sdk/src/error.rs`. We treat both the
+/// wrapped JSON-RPC envelope (`{"error": {"code": -32016, ...}}`) and the
+/// bare error object (which is what `error_response` actually serializes)
+/// as session-expired signals.
+#[allow(dead_code)]
+const SESSION_NOT_FOUND_CODE: i64 = -32016;
+
+/// Returns `true` when an upstream response indicates that the SDK does
+/// not know the `mcp-session-id` we forwarded. Only inspects `4xx`
+/// responses with a JSON content-type and a body small enough to have
+/// already been buffered by `forward`; this function does not perform I/O.
+#[allow(dead_code)]
+fn parse_session_expired(status: StatusCode, content_type: Option<&str>, body: &[u8]) -> bool {
+    if !status.is_client_error() {
+        return false;
+    }
+    let ct = content_type.unwrap_or("");
+    if !ct.starts_with("application/json") {
+        return false;
+    }
+    let value: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    // Wrapped JSON-RPC envelope: { "error": { "code": -32016, ... } }
+    if let Some(code) = value
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_i64())
+    {
+        if code == SESSION_NOT_FOUND_CODE {
+            return true;
+        }
+    }
+    // Bare SdkError object: { "code": -32016, ... }
+    if value.get("code").and_then(|c| c.as_i64()) == Some(SESSION_NOT_FOUND_CODE) {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +368,67 @@ mod tests {
         assert!(!is_hop_by_hop("Content-Type"));
         assert!(!is_hop_by_hop("Mcp-Session-Id"));
         assert!(!is_hop_by_hop("Authorization"));
+    }
+
+    #[test]
+    fn parse_session_expired_matches_sdk_envelope() {
+        let body = br#"{"jsonrpc":"2.0","error":{"code":-32016,"message":"Bad Request: Session not found","data":null},"id":null}"#;
+        assert!(parse_session_expired(
+            StatusCode::BAD_REQUEST,
+            Some("application/json"),
+            body,
+        ));
+    }
+
+    #[test]
+    fn parse_session_expired_matches_bare_error_object() {
+        // The SDK's error_response helper serializes SdkError directly, not
+        // wrapped in a JSON-RPC envelope, so we must accept that shape too.
+        let body = br#"{"code":-32016,"message":"Session not found","data":null}"#;
+        assert!(parse_session_expired(
+            StatusCode::BAD_REQUEST,
+            Some("application/json"),
+            body,
+        ));
+    }
+
+    #[test]
+    fn parse_session_expired_rejects_other_errors() {
+        let body = br#"{"code":-32600,"message":"Invalid Request"}"#;
+        assert!(!parse_session_expired(
+            StatusCode::BAD_REQUEST,
+            Some("application/json"),
+            body,
+        ));
+    }
+
+    #[test]
+    fn parse_session_expired_rejects_2xx() {
+        let body = br#"{"code":-32016,"message":"Session not found"}"#;
+        assert!(!parse_session_expired(
+            StatusCode::OK,
+            Some("application/json"),
+            body
+        ));
+    }
+
+    #[test]
+    fn parse_session_expired_rejects_non_json() {
+        let body = b"event: message\ndata: {}\n\n";
+        assert!(!parse_session_expired(
+            StatusCode::BAD_REQUEST,
+            Some("text/event-stream"),
+            body,
+        ));
+    }
+
+    #[test]
+    fn parse_session_expired_handles_malformed_json() {
+        let body = b"not json";
+        assert!(!parse_session_expired(
+            StatusCode::BAD_REQUEST,
+            Some("application/json"),
+            body,
+        ));
     }
 }

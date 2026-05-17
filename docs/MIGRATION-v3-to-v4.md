@@ -228,6 +228,31 @@ unchanged across the upgrade, so re-indexing is not required on
 roll-forward or roll-back. Drop a repo via `DELETE /api/repos/{id}` (or
 the dashboard's "Delete" button) if you want a clean slate.
 
+## Session resilience (v4.0.1+)
+
+The rust-mcp-sdk transport occasionally times out a session and returns
+the `-32016` "session expired" envelope. In v4.0.1 the proxy detects
+this envelope, re-initialises the session against the SDK, replays the
+original request with the new `mcp-session-id`, and forwards the second
+response to the client. Workspace bindings (`?repo=`, `roots/list`,
+`bind_workspace`) survive the recovery, so the recovered session stays
+pinned to the same repo without a re-bind round trip.
+
+Concurrent recoveries for the same stale session id are deduplicated so
+racing in-flight requests do not trigger duplicate upstream re-init
+storms. Every successful recovery is logged at INFO; you can see them
+live in the dashboard's log panel or under `~/.code-intelligence/logs/`.
+
+Practical impact:
+
+- Long-running MCP clients (Claude Code, Cursor, OpenCode, Codex, …)
+  no longer surface `-32016` errors when the upstream SDK ages a
+  session out.
+- You do not need to reconnect, re-bind, or restart the daemon when a
+  session is recycled.
+- If a recovery itself fails (binary not reachable, upstream `init`
+  rejected, …) the original error propagates as before.
+
 ## What's new in the daemon
 
 The migration unlocks features that were impossible per-client:
@@ -243,3 +268,4 @@ The migration unlocks features that were impossible per-client:
   registry instead of needing the v3 standalone leader.
 - **Faster cold start** — model loads happen once at daemon start
   instead of once per MCP client.
+- **Transparent session recovery** (covered above; new in v4.0.1).

@@ -200,7 +200,9 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 
 ## Supported Languages
 
-Rust, TypeScript/TSX, JavaScript, Python, Go, Java, C, C++
+Rust, TypeScript (`.ts` / `.tsx`), JavaScript (`.js` / `.jsx`), Python, Go, Java, C, C++, Ruby, Kotlin, C#, Swift.
+
+Framework patterns are extracted for Express, Hono, Fastify, Elysia, FastAPI, Django, Spring, Actix, Axum, NestJS, NextJS, tRPC, Convex, and several Go / Ruby / Kotlin / Swift web stacks.
 
 ---
 
@@ -242,6 +244,10 @@ Sessions bind to a repo through one of four mechanisms, tried in order; first ma
 4. **Single-repo registry fallback** — when the registry has exactly one repo, sessions auto-bind to it.
 
 Beyond the MCP transport, the daemon exposes a discovery endpoint at `mcp_port + 1` and a JSON API + embedded dashboard at `mcp_port + 2`. All three bind 127.0.0.1 only.
+
+### Session resilience (v4.0.1+)
+
+When the upstream rust-mcp-sdk times out a session and returns the `-32016` session-expired envelope, the proxy transparently re-initialises the session, replays the original request with the new session id, and forwards the second response to the client. Workspace bindings (`?repo=`, `roots/list`, `bind_workspace`) survive the recovery, and concurrent retries for the same stale session id are deduplicated so racing in-flight requests do not cause re-init storms. Successful recoveries are logged at INFO; you can see them in the dashboard's log panel.
 
 ---
 

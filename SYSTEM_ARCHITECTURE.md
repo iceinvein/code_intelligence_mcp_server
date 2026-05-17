@@ -1,274 +1,234 @@
 # Code Intelligence System Architecture
 
-This document outlines the architecture of the Code Intelligence MCP Server (v2.x). The system provides fast, semantic, and structure-aware code navigation for LLM agents by building a local knowledge graph of the codebase with advanced retrieval and ranking capabilities.
+This document describes the architecture of the Code Intelligence MCP Server (v4.x). Since v4.0 the server runs as a single shared HTTP daemon managed by launchd; the v3 stdio-per-client transport and leader-election machinery have been removed. The daemon builds a local knowledge graph of every registered repo and exposes it through 32 MCP tools, a JSON API, and an embedded dashboard.
 
 ## High-Level Overview
 
-The system operates as a local indexing and retrieval engine. It scans the user's codebase, extracts semantic symbols (classes, functions, etc.), generates 1536-dimensional vector embeddings using jina-code-embeddings-1.5b (llama.cpp + Metal GPU), generates natural-language descriptions for every symbol using Qwen2.5-Coder-1.5B (llama.cpp + Metal GPU) to enrich BM25 keyword search, builds a knowledge graph with PageRank scoring, and provides intelligent search with cross-encoder reranking (bge-reranker-v2-m3) and query-aware context assembly.
+The daemon scans a repo's source files, extracts semantic symbols with Tree-Sitter, generates 1536-dim Matryoshka vector embeddings (jina-code-embeddings-1.5b, GGUF via llama.cpp + Metal GPU), enriches BM25 keyword search with natural-language descriptions generated on-device by Qwen2.5-Coder-1.5B, builds a knowledge graph with PageRank scoring, and serves intelligent queries with cross-encoder reranking (bge-reranker-v2-m3, also via llama.cpp + Metal GPU) plus query-aware context assembly.
 
-All three ML models run on-device via llama.cpp on Metal GPU. There are no cloud dependencies.
+All three ML models run on-device. There are no cloud dependencies. Models load once at daemon start and are shared across every MCP session; the description LLM is freed after each indexing pass while the embedding model and reranker stay resident for queries.
 
-## System Architecture Diagram
+## Runtime Topology
 
 ```mermaid
-flowchart LR
-  Client[MCP Client] <==> Tools
-
-  subgraph Server [Code Intelligence Server]
-    direction TB
-    Tools[Tool Router]
-
-    subgraph Indexer [Indexing Pipeline]
-      direction TB
-      Scan[File Scan] --> Parse[Tree-Sitter]
-      Parse --> Extract[Symbol Extraction]
-      Extract --> PageRank[PageRank Compute]
-      Extract --> Embed[Jina Code 1.5b Embeddings]
-      Extract --> Describe[Qwen2.5-Coder-1.5B Descriptions]
-      Extract --> Meta[JSDoc/Decorator/TODO Extract]
-      Describe --> EnrichBM25[Append to Tantivy text]
-    end
-
-    subgraph Storage [Storage Engine]
-      direction TB
-      SQLite[(SQLite Metadata + Descriptions)]
-      Tantivy[(Tantivy BM25 + LLM-enriched)]
-      Lance[(LanceDB 1536-dim Vectors)]
-      Cache[(Embedding Cache)]
-    end
-
-    subgraph Retrieval [Retrieval Engine]
-      direction TB
-      QueryExpand[Query Expansion + Synonyms]
-      Decompose[Query Decomposition + Sub-query Coverage]
-      Hybrid[Hybrid Search RRF: BM25 + Vector + Graph]
-      Promote[Vector Promotion]
-      Framework[Framework Pattern Injection]
-      Signals[Structural Ranking Signals]
-      EdgeExpand[Edge Expansion]
-      Diversify[File/Kind Diversification]
-      ScoreGap[Score-Gap Detection]
-      Rerank[bge-reranker-v2-m3 Cross-Encoder]
-      Learn[Learning Boost]
-      Context[Token-Aware Context Assembly]
-    end
-
-    subgraph Graph [Graph Engine]
-      direction TB
-      CallGraph[Call Hierarchy]
-      TypeGraph[Type Graph]
-      DepGraph[Dependency Graph]
-      DataFlow[Data Flow Edges]
-    end
-
-    %% Index Flow
-    Tools --> Scan
-    Scan --> Parse
-    Parse --> Extract
-    Extract --> PageRank
-    Extract --> Embed
-    Extract --> Describe
-    Extract --> Meta
-    PageRank --> SQLite
-    Embed --> Lance
-    Embed --> Cache
-    Describe --> SQLite
-    EnrichBM25 --> Tantivy
-    Meta --> SQLite
-
-    %% Query Flow
-    Tools --> QueryExpand
-    QueryExpand --> Decompose
-    Decompose --> Hybrid
-    Hybrid --> Promote
-    Promote --> Framework
-    Framework --> Signals
-    Signals --> EdgeExpand
-    EdgeExpand --> Diversify
-    Diversify --> ScoreGap
-    ScoreGap --> Rerank
-    Rerank --> Learn
-    Learn --> Context
-    Context --> Tools
-
-    %% Graph Integration
-    SQLite -.->|edges| Graph
-    Hybrid -.->|graph lookup| Graph
+flowchart TB
+  subgraph Clients
+    direction LR
+    CC[Claude Code]
+    Cursor[Cursor]
+    OC[OpenCode / Codex / Trae / Windsurf]
   end
+
+  subgraph Daemon[code-intelligence-mcp-server (launchd)]
+    direction TB
+    Proxy["Public MCP proxy<br/>port 17800<br/>(axum, ?repo= capture,<br/>session recovery)"]
+    Disco["Discovery<br/>port 17801<br/>/.well-known/mcp"]
+    API["JSON API + Dashboard + SSE logs<br/>port 17802<br/>(/api/*, /api/logs/stream)"]
+    SDK["rust-mcp-sdk Streamable HTTP<br/>internal port 17900<br/>127.0.0.1 only"]
+    Handler["StandaloneHandler<br/>session → repo binding<br/>lazy per-repo AppState"]
+
+    Proxy -- "forward + replay" --> SDK
+    SDK --> Handler
+  end
+
+  subgraph Storage[Per-repo data under ~/.code-intelligence/repos/<hash>/]
+    direction LR
+    SQLite[(SQLite metadata)]
+    Tantivy[(Tantivy BM25)]
+    Lance[(LanceDB vectors)]
+  end
+
+  subgraph Models[Shared models under ~/.code-intelligence/models/]
+    direction LR
+    Embed[jina-code-embeddings-1.5b<br/>Q8_0, 1536-dim]
+    LLM[Qwen2.5-Coder-1.5B<br/>Q4_K_M description LLM]
+    Rerank[bge-reranker-v2-m3<br/>Q8_0 cross-encoder]
+  end
+
+  CC -- "POST /mcp (roots/list auto)" --> Proxy
+  Cursor -- "POST /mcp?repo=/abs/path" --> Proxy
+  OC -- "POST /mcp?repo=/abs/path" --> Proxy
+
+  Handler --> SQLite
+  Handler --> Tantivy
+  Handler --> Lance
+  Handler --> Embed
+  Handler --> LLM
+  Handler --> Rerank
+
+  Browser[Browser / curl] --> API
+  Browser --> Disco
 ```
+
+Every public port binds 127.0.0.1 only and rejects non-localhost `Origin` headers (DNS-rebinding defence). The internal SDK port (17900) is loopback-only.
+
+### Session binding hierarchy
+
+When a tool call lands on the daemon, the session needs a bound workspace. v4 tries four sources in order; first match wins.
+
+1. **`?repo=/abs/path` URL query** (primary). The proxy captures the query parameter, pairs it with the `mcp-session-id` returned by the SDK, and stashes the pair in `PendingRepos` so `StandaloneHandler::resolve_state` promotes it before the first tool call.
+2. **MCP `roots/list`** (opportunistic). Claude Code negotiates this automatically; most other clients do not implement it.
+3. **`bind_workspace` tool call**: manual escape hatch for clients that cannot set query strings.
+4. **Single-repo registry fallback**: when `repos/registry.json` has exactly one entry, unbound sessions auto-bind to it. Disables itself the moment a second repo is added.
+
+If nothing binds, every tool call returns a JSON-RPC error pointing the user at all four options.
+
+### Session resilience (v4.0.1+)
+
+The proxy transparently recovers from upstream session expiry:
+
+- The rust-mcp-sdk transport occasionally times out a session and returns the `-32016` "session expired" envelope. v4.0.1 detects this envelope, re-initialises the session against the SDK, replays the original request with the new session id, and forwards the second response to the client. The client sees a clean response with an updated `mcp-session-id`.
+- Workspace bindings (`?repo=`, `roots/list`, `bind_workspace`) are preserved across recovery. The recovered session keeps the same repo without a re-bind round trip.
+- Concurrent recoveries for the same stale session id are deduplicated so racing in-flight requests do not trigger duplicate upstream re-init storms.
+- Successful recoveries are logged at INFO so operators can spot a recovering session via the dashboard's log panel or `~/.code-intelligence/logs/`.
+
+The proxy keeps a `send_upstream_once` helper as the shared transport path for both the first attempt and the replay, and small 4xx JSON bodies are buffered so the recovery detector can inspect the error envelope before deciding whether to replay.
 
 ## Core Components
 
 ### 1. Indexing Pipeline (`src/indexer`)
 
-The indexing pipeline transforms raw source code into structured, searchable data.
-
 #### File Scan (`src/indexer/scanner.rs`)
 
-- Identifies relevant files using glob patterns
-- Respects `.gitignore` and exclude patterns
-- Multi-repo support via `REPO_ROOTS` configuration
+- Identifies relevant files using `INDEX_PATTERNS` globs
+- Respects `.gitignore` and `EXCLUDE_PATTERNS`
 - Parallel file discovery with configurable workers
 
 #### Parsing (`src/indexer/parser.rs`)
 
-- Uses **Tree-Sitter** for language-agnostic AST parsing
-- Supports 9 languages: Rust, TypeScript, JavaScript, Python, Go, Java, C, C++
-- Error-tolerant parsing continues on syntax errors
+- Tree-Sitter for language-agnostic AST parsing
+- Error-tolerant: parsing continues on syntax errors
+- Currently registered language ids: Rust, TypeScript (`.ts` and `.tsx` as separate dialects), JavaScript (`.js` / `.jsx`), Python, Go, Java, C (`.c` / `.h`), C++ (`.cpp` / `.cc` / `.cxx` / `.hpp`), Ruby, Kotlin (`.kt` / `.kts`), C# (`.cs`), Swift
 
 #### Symbol Extraction (`src/indexer/extract/`)
 
-Language-specific extractors walk the AST to identify:
+Per-language extractors walk the AST to surface:
 
-- **Symbols**: Functions, classes, structs, interfaces, methods, variables
-- **Metadata**: Range, visibility, modifiers, documentation
-- **Relationships**: Calls, extends, implements, reads, writes
-- **Decorators**: TypeScript/JavaScript decorators (@Component, @Get, etc.)
-- **JSDoc**: @param, @returns, @example, @deprecated, @throws, @see, @since
-- **TODOs**: TODO and FIXME comments with context
+- **Symbols**: Functions, classes, structs, interfaces, methods, variables, exports
+- **Edges**: `call`, `extends`, `implements`, `reads`, `writes`, `alias`
+- **Decorators**: TS / JS decorators (`@Component`, `@Get`, …)
+- **JSDoc**: `@param`, `@returns`, `@example`, `@deprecated`, `@throws`, `@see`, `@since`
+- **TODOs**: TODO / FIXME comments with context
+- **Framework patterns**: Express, Hono, Fastify, Elysia, FastAPI, Django, Spring, Actix, Axum, NestJS, NextJS, tRPC, Convex, Go frameworks, Ruby, Kotlin, Swift
 
 #### PageRank Computation (`src/graph/pagerank.rs`)
 
-- Graph-based importance scoring for all symbols
-- Iterative algorithm (default: 20 iterations, damping: 0.85)
-- Identifies "central" components that are heavily referenced
-- Used as ranking signal for search results
+Graph-based importance scoring over `call` and `reads` edges (default: 20 iterations, damping 0.85). Used as a structural ranking signal.
 
 ### 2. Embedding Engine (`src/embeddings`)
 
 #### Embedding Model (`src/embeddings/llamacpp.rs`)
 
-- **Default model**: `jinaai/jina-code-embeddings-1.5b-GGUF` (Q8_0 quantization, ~1.5 GB)
-- **Native dimension**: 1536 (Matryoshka representation: the first N dimensions retain meaningful structure, so embeddings can be truncated and L2-renormalized)
-- **Symmetric** embeddings: queries and documents share the same space (no instruction prefix needed, unlike BGE asymmetric models)
-- llama.cpp runtime with Metal GPU acceleration (`n_gpu_layers=99`)
-- Batch processing with configurable batch size
-- Override dimension via `EMBEDDING_DIM` for evaluating models with different native dimensions
-- `TruncatingEmbedder` decorator caps output at a smaller dimension when needed
+- Default: `jinaai/jina-code-embeddings-1.5b-GGUF` (Q8_0, ~1.5 GB)
+- Native dimension: 1536, Matryoshka structure (truncate + L2-renormalize for smaller dims via `EMBEDDING_DIM`)
+- Symmetric embeddings: queries and documents share the same space (no instruction prefix)
+- llama.cpp with Metal GPU (`n_gpu_layers=99`); shared singleton across the daemon
 
 #### Embedding Cache (`src/storage/cache.rs`)
 
-- Persistent caching of generated embeddings
 - Content-addressed by file hash
-- Dramatically speeds up re-indexing
-- Configurable via `EMBEDDING_CACHE_ENABLED`
+- Persists across daemon restarts; only changed files re-embedded on refresh
+- Toggle with `EMBEDDING_CACHE_ENABLED`
 
 ### 3. Description LLM (`src/llm`)
 
 The description LLM enriches BM25 search by generating natural-language summaries for every indexed symbol, bridging the vocabulary gap between how users search ("auth handler") and how code is named (`authenticate_request`).
 
-#### LLM Backend (`src/llm/llamacpp.rs`)
+#### Backend (`src/llm/llamacpp.rs`)
 
-- **Default model**: `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` (Q4_K_M quantization, ~1.0 GB)
-- llama.cpp runtime with Metal GPU acceleration (`n_gpu_layers=99`, all 29 layers offloaded)
-- Greedy sampling with `AddBos::Never` (Qwen2.5 chat template handles BOS)
-- ~0.32s per symbol generation throughput on Apple Silicon
-- Per-call `LlamaContext` creation (the type is `!Send`)
+- Default: `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` (Q4_K_M, ~1.0 GB)
+- Override via `LLM_HF_REPO` / `LLM_HF_MODEL_FILE`
+- llama.cpp + Metal GPU, all layers offloaded (`n_gpu_layers=99`)
+- Greedy sampling, Qwen2.5 chat template (`AddBos::Never`)
+- ~0.32 s per symbol on Apple Silicon; per-call `LlamaContext` (the type is `!Send`)
 
-#### Description Pipeline
+#### Pipeline
 
-1. After parallel indexing produces a batch of new symbols, the LLM is loaded and generates a description for each
-2. Descriptions are appended to the symbol's Tantivy text field via `expand_index_text` (BM25 enrichment)
-3. Descriptions are also stored in SQLite (`symbol_descriptions` table) keyed by `symbol_id` and `content_hash`
-4. After generation completes the LLM is **freed** to release ~1.0 GB of RAM; the embedding model and reranker stay resident for queries
-5. Stale descriptions (content hash mismatch after a code edit) are detected by `find_stale_descriptions` and regenerated on the next refresh
-6. Background recovery task on startup regenerates descriptions for symbols that lost their LLM enrichment (e.g. after schema bump or LanceDB data loss)
-
-#### Storage Coordination
-
-- In standalone HTTP mode: a single instance generates descriptions for each repo
-- In stdio mode: leader election via file lock (`src/leader.rs`) ensures only one process per repo loads the LLM and writes descriptions; followers never load it
+1. Parallel indexing produces a batch of new symbols.
+2. The daemon loads the description LLM, generates a description per symbol, and writes:
+   - **SQLite** `symbol_descriptions` keyed by `symbol_id` + `content_hash`
+   - **Tantivy** text field via `expand_index_text` (BM25 enrichment)
+3. After the batch the LLM is **freed** to release ~1.0 GB of RAM. The embedding model and reranker stay resident for queries.
+4. Stale descriptions (content-hash mismatch after a code edit) are surfaced by `find_stale_descriptions` and regenerated on the next refresh.
+5. On daemon start a background recovery task regenerates descriptions for symbols that lost their LLM enrichment (e.g. after a schema bump or LanceDB data loss).
 
 ### 4. Storage Engine (`src/storage`)
 
-Multi-modal storage approach optimized for different query patterns:
+Per-repo storage lives under `~/.code-intelligence/repos/<sha256[:16]>/`. The hash is computed from the canonical absolute path the session bound to.
 
 #### SQLite (`src/storage/sqlite/`)
 
-Relational metadata storage:
+Relational metadata storage with pooled connections:
 
-- **Symbols**: ID, name, kind, file path, range, export status, PageRank score
-- **Edges**: Relationships (calls, extends, implements, reads, writes)
-- **JSDoc**: Documentation entries with tags
-- **Decorators**: Decorator metadata with types
-- **TODOs**: TODO/FIXME comments
-- **Test Links**: Bidirectional test-to-source mappings
-- **Packages**: Package detection for monorepo scoring
-- **Learning**: User selection feedback
+- **Symbols**: id, name, kind, file path, range, export status, PageRank score
+- **Edges**: `call`, `extends`, `implements`, `reads`, `writes`, `alias`
+- **JSDoc / Decorators / TODOs**
+- **Test links**: bidirectional test ↔ source mappings
+- **Packages**: monorepo package detection
+- **Symbol descriptions**: LLM output keyed by content hash
+- **Index / search telemetry**, **learning** events
 
 #### Tantivy (`src/storage/tantivy.rs`)
 
-- High-performance full-text search engine
 - BM25 ranking with n-gram tokenization
-- Indexes symbol names, code text (comments stripped), morphological variants, concept tags, framework patterns, and **LLM-generated descriptions**
+- Indexes symbol names, code text (comments stripped), morphological variants, concept tags, framework patterns, and LLM descriptions
 - Schema is versioned (currently v21); a schema bump wipes the Tantivy index and forces a `refresh_index`
 - Fuzzy search and exact identifier matching
-- Optimized for keyword queries
 
 #### LanceDB (`src/storage/vector.rs`)
 
-- Vector database for semantic similarity search
-- Stores 1536-dim jina-code-embeddings-1.5b embeddings (configurable truncation via `EMBEDDING_DIM`)
-- Cosine distance for similarity scoring
-- Configurable search limit
-- Auto-recovery: if LanceDB `data/` directory is lost (transactions/versions remain), the embedding-generation pass on startup regenerates orphaned vectors
+- 1536-dim vector embeddings, cosine distance
+- Configurable Matryoshka truncation via `EMBEDDING_DIM`
+- Auto-recovery: if the LanceDB `data/` directory is lost (transactions / versions remain), the indexing pass on startup regenerates orphaned vectors
 
 ### 5. Retrieval Engine (`src/retrieval`)
 
-The heart of the system with advanced search and ranking capabilities.
-
 #### Query Expansion (`src/retrieval/expansion/`)
 
-- **Synonym Expansion**: "auth" → "authentication", "db" → "database"
-- **Acronym Expansion**: "id" → "identifier", "req" → "request"
-- Configurable via `SYNONYM_EXPANSION_ENABLED` and `ACRONYM_EXPANSION_ENABLED`
+- Synonyms: `auth → authentication`, `db → database`
+- Acronyms: `id → identifier`, `req → request`
+- Toggle via `SYNONYM_EXPANSION_ENABLED`, `ACRONYM_EXPANSION_ENABLED`
 
 #### Query Decomposition (`src/retrieval/mod.rs`)
 
-- Splits complex queries: "authentication and authorization" → ["authentication", "authorization"]
-- Enables multi-query search for better coverage
-- Results merged via Reciprocal Rank Fusion (RRF)
+- Splits complex queries: `authentication and authorization → [authentication, authorization]`
+- Sub-query coverage ensures each term contributes results
 
 #### Hybrid Search with RRF (`src/retrieval/hybrid.rs`)
 
-- Parallel queries to Tantivy (keyword), LanceDB (vector), and graph (links)
-- **Reciprocal Rank Fusion**: Statistically optimal rank combination
-  - Formula: `1 / (k + rank)` for each source
-  - Configurable `RRF_K` (default: 60.0)
-  - Per-source weights: `RRF_KEYWORD_WEIGHT`, `RRF_VECTOR_WEIGHT`, `RRF_GRAPH_WEIGHT`
+- Parallel calls to Tantivy (keyword), LanceDB (vector), and the graph (links)
+- Reciprocal Rank Fusion: `1 / (k + rank)`, configurable `RRF_K` (default 60)
+- Per-source weights: `RRF_KEYWORD_WEIGHT`, `RRF_VECTOR_WEIGHT`, `RRF_GRAPH_WEIGHT`
 
 #### Cross-Encoder Reranking (`src/reranker/`)
 
-- **Default model**: `gpustack/bge-reranker-v2-m3-GGUF` (Q8_0, ~600 MB)
-- BERT-based cross-encoder run via llama.cpp + Metal GPU
-- **Enabled by default** (`reranker_enabled: true`); disable via `RERANKER_ENABLED=false`
-- Top-K reranking (default: 20) to balance quality and latency
-- Query-document relevance scoring; results are wrapped in a `CachedReranker` to avoid re-scoring identical (query, doc) pairs
+- Default: `gpustack/bge-reranker-v2-m3-GGUF` (Q8_0, ~600 MB)
+- BERT cross-encoder via llama.cpp + Metal GPU
+- Enabled by default (`RERANKER_ENABLED=true`); top-K reranking (default 20)
+- `CachedReranker` memoises (query, doc) scores to avoid re-scoring duplicates
 - Stays resident in memory alongside the embedding model
 
 #### Ranking Signals (`src/retrieval/ranking/score.rs`)
 
-Sophisticated scoring pipeline with multiple signals applied between RRF and reranking:
+Applied between RRF and reranking:
 
-1. **PageRank Boost**: Graph-based importance (0.05 × score by default, tunable via `RANK_POPULARITY_WEIGHT`)
-2. **Test Penalty**: 0.5x multiplier unless test intent (multi-layer detection: file path, symbol name, AST `#[test]` / `mod tests`)
-3. **Glue Code Filtering**: penalty for `index.ts`-style barrel files
-4. **Directory Semantics**: `dist`, `build`, `node_modules` heavily penalized; `src`, `lib`, `app` boosted
-5. **Export Boost**: `RANK_EXPORTED_BOOST` for exported symbols (public API surface)
-6. **Intent Multipliers**: Definitions 1.5x, Schema 50-75x, Test multipliers, etc.
-7. **JSDoc Boost**: documented symbols ranked higher
-8. **Framework-pattern injection**: routes, middleware, decorators surfaced alongside symbol matches
-9. **Sub-query coverage**: multi-term queries ensure each sub-query has at least 2 matching results
-10. **Edge expansion**: high-ranking symbols pull in structurally related code (callers, type members) with parent-derived scores stripped of intent multipliers
-11. **File/kind diversification**: caps how many results come from one file or one kind
-12. **Score-gap detection**: drops trailing results when there's a >2.5x score drop from the previous result (configurable ratio threshold 0.4)
-13. **Learning Boost**: User selection feedback (optional, off by default)
-14. **Package Boost**: Same-package boost in monorepos
-15. **Final intent enforcement**: applied after expansion + diversification so edge-expanded hits get correct test/schema treatment
+1. PageRank boost (configurable via `RANK_POPULARITY_WEIGHT`)
+2. Test penalty (0.5x unless test intent; multi-layer detection)
+3. Glue-code filtering (barrel files like `index.ts` deprioritised)
+4. Directory semantics (`src` / `lib` boosted; `dist` / `build` / `node_modules` penalised)
+5. Export boost (`RANK_EXPORTED_BOOST`)
+6. Intent multipliers (Definition 1.5x, Schema 50-75x, Test multipliers, …)
+7. JSDoc boost
+8. Framework-pattern injection
+9. Sub-query coverage
+10. Edge expansion (high-ranking symbols pull in callers / type members)
+11. File / kind diversification
+12. Score-gap detection (drops trailing results when there is a >2.5x score drop)
+13. Learning boost (off by default)
+14. Same-package boost in monorepos
+15. Final intent enforcement after expansion + diversification
 
 #### Intent Detection (`src/retrieval/intent.rs`)
-
-Query understanding for specialized ranking:
 
 - `Intent::Definition`: "struct User", "class AuthService"
 - `Intent::Callers`: "who calls login", "find callers"
@@ -277,207 +237,95 @@ Query understanding for specialized ranking:
 
 ### 6. Context Assembly (`src/retrieval/assembler/`)
 
-Token-aware context formatting with query-aware truncation.
-
-#### Token Budgeting (`src/retrieval/assembler/formatting.rs`)
-
-- tiktoken-based token counting (default: `o200k_base`)
-- Configurable via `MAX_CONTEXT_TOKENS` (default: 8192)
-- Respects token limits, not byte limits
-
-#### Query-Aware Truncation (`src/retrieval/assembler/formatting.rs`)
-
-- **BM25-style relevance scoring**: Ranks lines by query relevance
-- Keeps query-relevant lines within token budget
-- First sub-query used for multi-query relevance
-- Query hash included in cache key for freshness
-
-#### Formatting Modes (`src/retrieval/assembler/mod.rs`)
-
-- **Compact**: Minimal formatting, max code density
-- **Standard**: Balanced formatting with metadata
-- **Verbose**: Full context with all metadata
+- tiktoken-based token counting (default `o200k_base`), `MAX_CONTEXT_TOKENS=8192`
+- BM25-style line relevance ranking keeps query-relevant lines within the token budget
+- First sub-query is used for multi-query relevance; query hash is included in the cache key
+- Formatting modes: Compact, Standard, Verbose
 
 ### 7. Graph Engine (`src/graph/`)
 
-Knowledge graph for code relationship understanding.
-
-#### Call Hierarchy (`src/graph/calls.rs`)
-
-- Navigates `call` edges bidirectionally
-- Upstream: Find all callers of a function
-- Downstream: Find all functions called by a symbol
-
-#### Type Graph (`src/graph/types.rs`)
-
-- Navigates `extends`, `implements`, `alias` edges
-- Inheritance hierarchy exploration
-- Type alias resolution
-
-#### Dependency Graph (`src/graph/dependencies.rs`)
-
-- Module-level dependency tracking
-- Upstream: Find all dependencies
-- Downstream: Find all dependents
-
-#### Data Flow (`src/graph/dataflow.rs`)
-
-- Tracks `reads` and `writes` edges
-- Variable usage tracing
-- Impact analysis for changes
+- **Call hierarchy** (`graph/calls.rs`): bidirectional `call` traversal
+- **Type graph** (`graph/types.rs`): `extends`, `implements`, `alias`
+- **Dependency graph** (`graph/dependencies.rs`): module-level imports / exports
+- **Data flow** (`graph/dataflow.rs`): `reads` / `writes` tracing
 
 ### 8. Learning System (`src/learning/`)
 
-Optional adaptive ranking based on user feedback.
+- `report_selection` and `report_file_access` feed symbol- and file-affinity boosts
+- Stored in SQLite; off by default (`LEARNING_ENABLED=false`)
 
-#### Selection Tracking (`src/learning/tracker.rs`)
+### 9. Background Jobs (`src/jobs/`)
 
-- Records user selections via `report_selection` tool
-- Tracks symbol-level and file-level affinity
-- Stored in SQLite for persistence
+- Re-index jobs spawned by `refresh_index`, `POST /api/repos/:id/reindex`, and the dashboard's "Re-index" button
+- Tracked in an in-memory registry surfaced at `GET /api/jobs` (15-minute retention for finished jobs)
+- A panic watchdog converts unexpected unwinds into failed-job records so the dashboard reports the error instead of hanging on "running"
 
-#### Personalization (`src/retrieval/ranking/learning.rs`)
+### 10. Metrics (`src/metrics/`)
 
-- Boosts previously selected symbols (configurable)
-- File affinity boosting for frequent access
-- Disabled by default (`LEARNING_ENABLED=false`)
+Prometheus metrics on port 9090 (override via `METRICS_PORT`):
 
-### 9. Metrics (`src/metrics/`)
+- `search_duration_ms`, `keyword_ms`, `vector_ms`, `reranker_ms`
+- `symbols_indexed`, `files_indexed`
+- `embedding_cache_hit_rate`
 
-Prometheus metrics for observability:
+## JSON API + Dashboard
 
-- Search latency: `search_duration_ms`
-- Component timing: `keyword_ms`, `vector_ms`, `reranker_ms`
-- Index stats: `symbols_indexed`, `files_indexed`
-- Cache performance: `embedding_cache_hit_rate`
+Port `mcp_port + 2` (default **17802**) hosts both the embedded dashboard and a structured JSON API. Every endpoint binds 127.0.0.1 and enforces same-origin.
 
-Exposes on port 9090 (configurable via `METRICS_PORT`).
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/api/version` | daemon version, uptime |
+| `GET` | `/api/status` | daemon overview (ports, model state) |
+| `GET` | `/api/repos` | every registered repo with last-accessed time |
+| `GET` | `/api/repos/:id` | per-repo metadata + symbol / edge / description stats |
+| `POST` | `/api/repos/:id/reindex` | spawn a background re-index, returns `job_id` |
+| `DELETE` | `/api/repos/:id` | drop the index, registry entry, and on-disk data dir |
+| `GET` | `/api/sessions` | bound + connected MCP sessions, with TTL state |
+| `GET` | `/api/jobs` | running + recently-finished jobs (≤15 min) |
+| `GET` | `/api/logs/stream` | SSE stream of log lines |
+
+The dashboard renders these surfaces with a repo list (expand for stats, inline re-index / delete), MCP sessions card (connected vs bound, 5-minute inactivity TTL), jobs panel (status badge, live elapsed, success summary or error text), and a live log tail with pause / clear / level filter. A theme toggle (system / light / dark) lives in the header.
+
+## Discovery
+
+Port `mcp_port + 1` (default **17801**) hosts `/.well-known/mcp` advertising the transport type (`streamable-http`) and the MCP URL. Used by clients that auto-discover MCP servers on `localhost`.
 
 ## Data Flow: Complete Search Request
 
-### 1. Query Input
-
-```
-User: "authentication and authorization"
-```
-
-### 2. Query Expansion & Decomposition
-
-- Expand synonyms: "auth" → "authentication"
-- Decompose: ["authentication", "authorization"]
-
-### 3. Parallel Hybrid Search (per sub-query)
-
-- **Tantivy**: BM25 keyword search for "authentication"
-- **LanceDB**: Vector similarity for "authentication"
-- **Graph**: Link traversal for related symbols
-
-### 4. Rank Fusion
-
-- Combine results from all sources using RRF
-- Merge sub-queries using unified RRF
-- First sub-query used for primary ranking
-
-### 5. Cross-Encoder Reranking
-
-- Deep learning model re-scores top 20 results
-- Precision tuning of result order
-
-### 6. Signal Application
-
-- Apply PageRank, test penalty, directory semantics
-- Apply intent-based boosts
-- Apply learning boosts (if enabled)
-- Apply JSDoc and package boosts
-
-### 7. Context Assembly
-
-- Select top results within token budget
-- Fetch full symbol definitions
-- Apply query-aware truncation to keep relevant lines
-- Format with JSDoc examples and metadata
-
-### 8. Response
-
-```json
-{
-  "results": [
-    {
-      "symbol": "AuthService",
-      "file": "src/auth/service.ts",
-      "relevance_score": 0.95,
-      "context": "..."
-    }
-  ],
-  "query_explanation": {
-    "original": "authentication and authorization",
-    "decomposed": ["authentication", "authorization"],
-    "intent": "standard"
-  }
-}
-```
-
-## MCP Tools (32 Total)
-
-See README.md for the complete tool list with descriptions. Key categories:
-
-### Core Search & Navigation
-
-- `search_code`, `get_definition`, `find_references`
-- `get_call_hierarchy`, `get_type_graph`, `explore_dependency_graph`
-- `get_file_symbols`, `get_usage_examples`, `get_context_bundle`
-
-### Advanced Analysis
-
-- `find_affected_code`, `predict_impact` (combines structural deps with git co-change history)
-- `trace_data_flow`, `find_similar_code`, `get_similarity_cluster`
-- `find_duplicates`, `find_dead_code`
-- `explain_search`, `summarize_file`, `get_module_summary`
-
-### Testing, Frameworks & Description Lifecycle
-
-- `find_tests_for_symbol`, `search_todos`, `search_decorators`, `search_framework_patterns`
-- `find_undocumented_symbols`, `find_stale_descriptions` (LLM description lifecycle)
-
-### Cross-Repo (standalone mode only)
-
-- `search_across_repos`, `explore_cross_repo_dependencies`
-
-### Index Management & Learning
-
-- `hydrate_symbols`, `report_selection`, `report_file_access`
-- `refresh_index`, `get_index_stats`
+1. **Input**: `User: "authentication and authorization"`
+2. **Expansion + decomposition**: `auth → authentication`; split into `[authentication, authorization]`
+3. **Hybrid search per sub-query**: Tantivy BM25, LanceDB vector, graph link traversal in parallel
+4. **Rank fusion**: per-source RRF, then sub-query merge
+5. **Cross-encoder reranking**: bge-reranker-v2-m3 on top-20
+6. **Signal application**: PageRank, test penalty, intent multipliers, edge expansion, score-gap, etc.
+7. **Context assembly**: token-budgeted, query-aware line selection, JSDoc + metadata
+8. **Response**: ranked hits + optional context bundle + query explanation
 
 ## Performance Characteristics
 
 ### Indexing
 
 - **First-launch model download**: ~3.2 GB (embedding 1.5 GB + LLM 1.0 GB + reranker 600 MB)
-- **Initial Index**: ~2-3 min for 10k files (parsing + embedding); description generation adds ~0.32s/symbol on top
-- **Re-index**: ~30-60 sec with cache (parallel workers); only changed files re-embedded and re-described
-- **Incremental**: ~100-500 ms per changed file (watch mode)
+- **Initial index**: ~2-3 min for 10k files (parsing + embedding); description generation adds ~0.32 s / symbol on top
+- **Re-index**: ~30-60 s with the embedding cache; only changed files re-embedded and re-described
+- **Incremental (watch mode)**: ~100-500 ms per changed file
 
 ### Search Latency
 
-- **Cold Search**: ~500-1000 ms (first query, no cache)
-- **Warm Search**: ~50-200 ms (cached embeddings, indices loaded)
-- **Components**:
-  - Tantivy: 10-50 ms
-  - LanceDB: 20-100 ms
-  - Cross-encoder reranker: 20-50 ms (top-20)
+- **Cold**: ~500-1000 ms (first query, no cache)
+- **Warm**: ~50-200 ms (cached embeddings, indices loaded)
+- Components: Tantivy 10-50 ms, LanceDB 20-100 ms, cross-encoder reranker 20-50 ms (top-20)
 
 ### Storage
 
-- **SQLite**: ~1-5 MB per 10k symbols (more if LLM descriptions are populated)
-- **Tantivy**: ~50-200 MB per 10k symbols (LLM descriptions roughly double the text-field size)
+- **SQLite**: ~1-5 MB per 10k symbols (more when LLM descriptions are populated)
+- **Tantivy**: ~50-200 MB per 10k symbols (LLM descriptions roughly double the text field size)
 - **LanceDB**: ~150-700 MB per 10k symbols (1536-dim vectors)
-- **Cache**: ~200 MB per 10k symbols (embeddings)
+- **Embedding cache**: ~200 MB per 10k symbols
 
 ## Data Storage Layout
 
-Both embedded (stdio) and standalone (HTTP) modes use the same centralized storage under `~/.code-intelligence/`. Each repo gets an isolated data directory derived from a deterministic 16-character SHA256 hash of its absolute path:
-
-```text
+```
 ~/.code-intelligence/
 ├── models/                                  # Shared across all repos (~3.2 GB total)
 │   ├── jina-code-embeddings-1.5b-gguf/      # Embedding model, ~1.5 GB Q8_0
@@ -485,48 +333,63 @@ Both embedded (stdio) and standalone (HTTP) modes use the same centralized stora
 │   └── bge-reranker-v2-m3-gguf/             # Cross-encoder reranker, ~600 MB Q8_0
 ├── logs/
 │   └── server.log
-├── server.toml              # Standalone config (optional)
+├── server.toml                              # Standalone config (optional)
 └── repos/
-    ├── registry.json        # Maps repo paths → hash dirs
-    └── <sha256[:16]>/       # Per-repo data
-        ├── code-intelligence.db  # SQLite (symbols, edges, metadata, LLM descriptions)
-        ├── tantivy-index/        # BM25 full-text index (LLM-enriched)
-        └── vectors/              # LanceDB vector embeddings (1536-dim)
+    ├── registry.json                        # Maps repo paths → hash dirs
+    └── <sha256[:16]>/                       # Per-repo data
+        ├── code-intelligence.db             # SQLite (symbols, edges, metadata, descriptions)
+        ├── tantivy-index/                   # BM25 full-text index (LLM-enriched)
+        └── vectors/                         # LanceDB vector embeddings (1536-dim)
 ```
 
-The same repo always maps to the same hash, so embedded and standalone modes share index data. The `repos/registry.json` file tracks registered repos for discovery by the standalone mode's session manager.
+The same canonical repo path always maps to the same hash, so re-binding the same workspace across daemon restarts reuses the existing index. `registry.json` is the shared source of truth used by the dashboard, the JSON API, and `StandaloneHandler::resolve_state`.
 
-## Deployment Modes
+## MCP Tools (32 total)
 
-### Embedded Mode (stdio)
+See [README.md](README.md) for the complete tool list with descriptions. Categories:
 
-The default mode: each MCP client spawns its own server process over stdio transport. The server reads `BASE_DIR`, auto-derives the per-repo data directory, and registers the repo in the shared registry. Suitable for single-client setups.
+- **Search & Navigation**: `search_code`, `get_definition`, `find_references`, `get_call_hierarchy`, `get_type_graph`, `explore_dependency_graph`, `get_file_symbols`, `get_usage_examples`, `get_context_bundle`
+- **Analysis**: `find_affected_code`, `predict_impact`, `trace_data_flow`, `find_similar_code`, `get_similarity_cluster`, `find_duplicates`, `find_dead_code`, `explain_search`, `summarize_file`, `get_module_summary`
+- **Testing, Frameworks & Description Lifecycle**: `find_tests_for_symbol`, `search_todos`, `search_decorators`, `search_framework_patterns`, `find_undocumented_symbols`, `find_stale_descriptions`
+- **Cross-Repo**: `search_across_repos`, `explore_cross_repo_dependencies`
+- **Composite & Conversational**: `ask_code`, `investigate`, `plan_code_investigation`
+- **Index Management & Learning**: `bind_workspace`, `hydrate_symbols`, `report_selection`, `report_file_access`, `refresh_index`, `get_index_stats`
 
-### Standalone Mode (HTTP)
-
-A long-lived HTTP server that multiple MCP clients connect to via Streamable HTTP transport. The embedding model is loaded once and shared across all sessions. Each client session is bound to its workspace root via the MCP `roots` capability. Configured via `~/.code-intelligence/server.toml`.
+The `ask_code` tool runs `investigate` server-side and returns the verified `evidence[]` array; the local-LLM prose synthesis path is opt-in via `ASK_CODE_LLM_SYNTHESIS=1` (default off since v3.3 after evidence-only mode improved agent grounding).
 
 ## Configuration
 
-See README.md for complete environment variable reference. Key settings:
+Configuration priority: **CLI flags > environment variables > `~/.code-intelligence/server.toml` > defaults.**
 
-- `llamacpp` (default) or `hash` (testing)
-- `EMBEDDINGS_DEVICE`: `cpu`, `metal`
+The `server.toml` file is optional; the daemon falls back to defaults when it is absent. Key environment variables:
+
+- `EMBEDDINGS_BACKEND`: `llamacpp` (default) or `hash` (testing)
+- `EMBEDDINGS_DEVICE`: `metal` (default) or `cpu`
 - `MAX_CONTEXT_TOKENS`: `8192` (default)
+- `RERANKER_ENABLED`: `true` (default)
 - `LEARNING_ENABLED`: `false` (default)
 - `RRF_ENABLED`: `true` (default)
-- `PARALLEL_WORKERS`: `1` (default, for SQLite)
-- `REPO_ROOTS`: Multi-repo support
+- `ASK_CODE_LLM_SYNTHESIS`: unset (default); opt back into local-LLM prose in `ask_code`
+- `LLM_HF_REPO`, `LLM_HF_MODEL_FILE`: override the description LLM repo and file
+- `WATCH_MODE`, `INDEX_PATTERNS`, `EXCLUDE_PATTERNS`
+
+See `README.md` for the full table.
 
 ## Technology Stack
 
 - **Language**: Rust 2021
-- **Parsing**: Tree-Sitter (Rust, TypeScript, JavaScript, Python, Go, Java, C, C++)
-- **Storage**: SQLite (rusqlite), Tantivy (BM25), LanceDB (vectors)
+- **Parsing**: Tree-Sitter (Rust, TypeScript / TSX, JavaScript, Python, Go, Java, C, C++, Ruby, Kotlin, C#, Swift)
+- **Storage**: SQLite (rusqlite, pooled), Tantivy (BM25), LanceDB (vectors)
 - **Embeddings**: jina-code-embeddings-1.5b Q8_0, 1536-dim Matryoshka (GGUF via llama-cpp-2 + Metal GPU)
 - **Description LLM**: Qwen2.5-Coder-1.5B-Instruct Q4_K_M (GGUF via llama-cpp-2 + Metal GPU)
 - **Reranker**: bge-reranker-v2-m3 Q8_0 cross-encoder (GGUF via llama-cpp-2 + Metal GPU), enabled by default
-- **Tokenization**: tiktoken (o200k_base)
-- **Protocol**: Model Context Protocol via `rust-mcp-sdk 0.8.1` (stdio + Streamable HTTP)
-- **Path safety**: camino (UTF-8 typed paths), dunce (Windows UNC normalization)
+- **Tokenization**: tiktoken (`o200k_base`)
+- **HTTP**: axum (proxy, JSON API, dashboard, SSE)
+- **Protocol**: Model Context Protocol via `rust-mcp-sdk 0.8.1` (Streamable HTTP only)
+- **Process supervision**: launchd (`com.iceinvein.code-intelligence.plist`) or `brew services`
+- **Path safety**: camino (UTF-8 typed paths)
 - **Metrics**: Prometheus (port 9090, configurable)
+
+## Platform
+
+macOS only (Apple Silicon). The embedding, description, and reranker models are GGUF Metal-accelerated builds. The `launchctl bootstrap` API used by the `install` subcommand requires macOS 13+.

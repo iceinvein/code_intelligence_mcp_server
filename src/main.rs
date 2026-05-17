@@ -223,10 +223,14 @@ async fn run_standalone(
         data_dir.join("repos"),
     );
 
+    let job_registry = code_intelligence_mcp_server::server::jobs::new_job_registry();
+    code_intelligence_mcp_server::server::jobs::spawn_job_eviction_loop(job_registry.clone());
+
     let session_manager = code_intelligence_mcp_server::session::SessionManager::new(
         standalone_config.clone(),
         registry,
         embedder,
+        Some(job_registry.clone()),
     )
     .await
     .map_err(|e| McpSdkError::Internal {
@@ -261,8 +265,6 @@ async fn run_standalone(
         session_repos.clone(),
         bound_repos.clone(),
     );
-    let job_registry = code_intelligence_mcp_server::server::jobs::new_job_registry();
-    code_intelligence_mcp_server::server::jobs::spawn_job_eviction_loop(job_registry.clone());
     let handler = code_intelligence_mcp_server::server::standalone::StandaloneHandler::new(
         session_manager.clone(),
         server_details.clone(),

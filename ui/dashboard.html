@@ -425,6 +425,31 @@
         0%, 100% { opacity: 1; }
         50% { opacity: 0.35; }
       }
+      /* Compact per-repo activity chip rendered inside the Name cell. */
+      .repo-activity {
+        display: inline-flex;
+        align-items: center;
+        margin-left: 8px;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        color: var(--warn);
+        border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+        background: color-mix(in srgb, var(--warn) 8%, transparent);
+        vertical-align: middle;
+        cursor: help;
+      }
+      .repo-activity .pulse {
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        margin-right: 4px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: pulse 1.5s ease-in-out infinite;
+      }
       button.action.danger {
         color: var(--bad);
         border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
@@ -787,6 +812,39 @@
         document.getElementById("error-banner").style.display = "none";
       }
 
+      /* Build the compact chip rendered next to a repo name when the
+         daemon is actively working on it (InitialBind, WatchReindex, or
+         ManualReindex). Returns null when there is no running job, so
+         idle rows stay quiet. */
+      function buildRepoActivityChip(activity) {
+        if (!activity || !activity.running || !activity.current) return null;
+        const job = activity.current;
+        const labelByKind = {
+          initial_bind: "initial scan",
+          watch_reindex: "indexing",
+          manual_reindex: "re-indexing",
+        };
+        const label = labelByKind[job.kind] || "indexing";
+        const chip = document.createElement("span");
+        chip.className = "repo-activity";
+        const dot = document.createElement("span");
+        dot.className = "pulse";
+        dot.setAttribute("aria-hidden", "true");
+        chip.appendChild(dot);
+        chip.appendChild(document.createTextNode(label));
+
+        const startedMs = (job.started_at_unix_s || 0) * 1000;
+        const runningFor = startedMs
+          ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
+          : 0;
+        const coalesced = job.coalesced_count || 0;
+        const tipParts = [labelByKind[job.kind] || job.kind || "job"];
+        if (runningFor > 0) tipParts.push("running " + runningFor + "s");
+        if (coalesced > 0) tipParts.push(coalesced + " event" + (coalesced === 1 ? "" : "s") + " coalesced");
+        chip.title = tipParts.join(" • ");
+        return chip;
+      }
+
       function renderRepos(reposJson) {
         const container = document.getElementById("repos-container");
         // Wipe the container with safe DOM ops (no innerHTML).
@@ -849,6 +907,8 @@
           } else {
             nameTd.textContent = r.name || "";
           }
+          const activityChip = buildRepoActivityChip(r.activity);
+          if (activityChip) nameTd.appendChild(activityChip);
           tr.appendChild(nameTd);
 
           const pathTd = document.createElement("td");

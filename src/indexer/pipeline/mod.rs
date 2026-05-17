@@ -19,6 +19,7 @@ use crate::{
     logging::RepoLogger,
     metrics::MetricsRegistry,
     path::Utf8PathBuf,
+    server::jobs::JobRegistry,
     storage::{
         cache::EmbeddingCache,
         sqlite::{SimilarityClusterRow, SqliteStore, SymbolRow},
@@ -83,6 +84,14 @@ pub struct IndexPipeline {
     /// Guard to prevent concurrent `generate_embeddings_for_orphaned_symbols` runs
     /// (background startup recovery vs post-indexing can race, duplicating LanceDB records).
     embedding_generation_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Optional dashboard job tracker. Populated by the standalone daemon
+    /// so the watch loop can surface InitialBind/WatchReindex runs in
+    /// `/api/jobs` and the per-repo activity indicator.
+    job_registry: Option<JobRegistry>,
+    /// 16-char SHA256-prefix hash of `config.base_dir`, matching the
+    /// `repo_id` exposed by `/api/repos`. Empty when no `job_registry`
+    /// is wired (e.g. test pipelines).
+    repo_id: String,
 }
 
 impl IndexPipeline {
@@ -98,7 +107,23 @@ impl IndexPipeline {
         embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
         metrics: Arc<MetricsRegistry>,
     ) -> Self {
+        Self::new_with_jobs(config, tantivy, vectors, embedder, metrics, None)
+    }
+
+    pub fn new_with_jobs(
+        config: Arc<Config>,
+        tantivy: Arc<TantivyIndex>,
+        vectors: Arc<LanceVectorTable>,
+        embedder: Arc<Mutex<Box<dyn Embedder + Send>>>,
+        metrics: Arc<MetricsRegistry>,
+        job_registry: Option<JobRegistry>,
+    ) -> Self {
         let db_path = config.db_path.clone();
+        let repo_id = if job_registry.is_some() {
+            crate::registry::RepoRegistry::path_hash(config.base_dir.as_str())
+        } else {
+            String::new()
+        };
 
         // Initialize cache
         let sqlite = SqliteStore::open(&db_path).expect("Failed to open SQLite database");
@@ -127,6 +152,8 @@ impl IndexPipeline {
             metrics,
             repo_logger,
             embedding_generation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            job_registry,
+            repo_id,
         }
     }
 
@@ -390,6 +417,7 @@ impl IndexPipeline {
             let mut consecutive_failures: u32 = 0;
             let max_backoff_ms: u64 = 5000;
             let mut last_index_time: Option<Instant> = None;
+            let mut first_run = true;
 
             let repo_name = pipeline
                 .config
@@ -397,6 +425,7 @@ impl IndexPipeline {
                 .file_name()
                 .unwrap_or("unknown")
                 .to_string();
+            let repo_path = pipeline.config.base_dir.as_str().to_string();
 
             // Create tokio channel for the notify → async bridge
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -428,12 +457,18 @@ impl IndexPipeline {
                         break;
                     }
                     Some(_) = rx.recv() => {
-                        // Drain any queued signals
-                        while rx.try_recv().is_ok() {}
+                        // Drain any queued signals (count them so the job
+                        // entry shows how many fires the debounce absorbed).
+                        let mut coalesced: u32 = 1;
+                        while rx.try_recv().is_ok() {
+                            coalesced = coalesced.saturating_add(1);
+                        }
 
                         // Debounce: wait, then drain again to coalesce bursts
                         sleep(Duration::from_millis(debounce_ms)).await;
-                        while rx.try_recv().is_ok() {}
+                        while rx.try_recv().is_ok() {
+                            coalesced = coalesced.saturating_add(1);
+                        }
 
                         // Rate limiting
                         if let Some(last_time) = last_index_time {
@@ -454,16 +489,40 @@ impl IndexPipeline {
                             "File change detected, starting index run"
                         );
 
+                        // Register a Job entry so the dashboard can show
+                        // "indexing…" against this repo. `coalesced - 1`
+                        // because the first event is the one that triggered
+                        // the run itself; the rest were absorbed.
+                        let kind = if first_run {
+                            crate::server::jobs::JobKind::InitialBind
+                        } else {
+                            crate::server::jobs::JobKind::WatchReindex
+                        };
+                        let job_id = pipeline.register_watch_job(
+                            kind,
+                            &repo_path,
+                            coalesced.saturating_sub(1),
+                        );
+
                         match pipeline.index_all().await {
                             Ok(stats) => {
                                 last_index_time = Some(Instant::now());
                                 consecutive_failures = 0;
+                                first_run = false;
                                 tracing::info!(
                                     repo = %repo_name,
                                     files_indexed = stats.files_indexed,
                                     symbols_indexed = stats.symbols_indexed,
+                                    coalesced_events = coalesced - 1,
                                     "Watch index run completed"
                                 );
+                                if let (Some(reg), Some(id)) = (&pipeline.job_registry, &job_id) {
+                                    crate::server::jobs::mark_succeeded(
+                                        reg,
+                                        id,
+                                        serde_json::to_value(&stats).unwrap_or_default(),
+                                    );
+                                }
                             }
                             Err(err) => {
                                 consecutive_failures += 1;
@@ -477,6 +536,9 @@ impl IndexPipeline {
                                     backoff_ms = backoff_ms,
                                     "Watch index run failed, backing off"
                                 );
+                                if let (Some(reg), Some(id)) = (&pipeline.job_registry, &job_id) {
+                                    crate::server::jobs::mark_failed(reg, id, err.to_string());
+                                }
                                 sleep(Duration::from_millis(backoff_ms)).await;
                             }
                         }
@@ -484,6 +546,41 @@ impl IndexPipeline {
                 }
             }
         })
+    }
+
+    /// Insert a Running `Job` for the upcoming watch index pass. Returns
+    /// the job id so the caller can later mark it succeeded or failed.
+    /// Returns `None` when no `JobRegistry` is wired (test pipelines), in
+    /// which case the caller skips both register and mark calls.
+    fn register_watch_job(
+        &self,
+        kind: crate::server::jobs::JobKind,
+        repo_path: &str,
+        coalesced_count: u32,
+    ) -> Option<String> {
+        let registry = self.job_registry.as_ref()?;
+        let prefix = match kind {
+            crate::server::jobs::JobKind::InitialBind => "initial",
+            crate::server::jobs::JobKind::WatchReindex => "watch",
+            crate::server::jobs::JobKind::ManualReindex => "manual",
+        };
+        let job_id = format!(
+            "{prefix}-{}-{}",
+            self.repo_id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
+        crate::server::jobs::register_running_with_coalesced(
+            registry,
+            job_id.clone(),
+            kind,
+            self.repo_id.clone(),
+            repo_path.to_string(),
+            coalesced_count,
+        );
+        Some(job_id)
     }
 
     /// Spawn the background description worker.

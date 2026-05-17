@@ -171,17 +171,35 @@ async fn handle_repos(State(state): State<Arc<ApiState>>) -> Result<Json<Value>,
     let items: Vec<Value> = entries
         .into_iter()
         .map(|e| {
+            let id = crate::registry::RepoRegistry::path_hash(&e.path);
+            let activity = build_repo_activity(&state.job_registry, &id);
             json!({
-                "id": crate::registry::RepoRegistry::path_hash(&e.path),
+                "id": id,
                 "name": e.name,
                 "path": e.path,
                 "data_dir": e.data_dir,
                 "created_at": e.created_at,
                 "last_accessed": e.last_accessed,
+                "activity": activity,
             })
         })
         .collect();
     Ok(Json(json!({ "count": count, "repos": items })))
+}
+
+/// Build the per-repo `activity` block surfaced by `/api/repos`.
+///
+/// Returns the most recent Running job (if any) plus the most recent
+/// finished job, so the dashboard can render either a live "indexing…"
+/// indicator or a "last reindex Xm ago" hint without a second API call.
+fn build_repo_activity(job_registry: &JobRegistry, repo_id: &str) -> Value {
+    let running = jobs::most_recent_running_for_repo(job_registry, repo_id);
+    let last_finished = jobs::most_recent_finished_for_repo(job_registry, repo_id);
+    json!({
+        "running": running.is_some(),
+        "current": running,
+        "last_finished": last_finished,
+    })
 }
 
 async fn handle_status(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, ApiError> {

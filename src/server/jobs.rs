@@ -1,19 +1,21 @@
 //! In-memory registry of background indexing jobs for the dashboard.
 //!
-//! The daemon spawns background tasks for manual reindex (POST
-//! `/api/repos/{id}/reindex`). Without tracking, those tasks run silently:
-//! the API returns 202 with a `job_id` and the caller has no way to find
-//! out when it finished. This module is the lightweight bookkeeping side
-//! of that promise — populated by the spawner, consumed by `GET
-//! /api/jobs`.
+//! Three job kinds are tracked:
+//! - `ManualReindex`: triggered by `POST /api/repos/{id}/reindex`.
+//! - `InitialBind`: the first index pass after a session binds a repo
+//!   (registered from the watch loop's first fire on a fresh AppState).
+//! - `WatchReindex`: subsequent incremental reindex runs driven by the
+//!   file watcher in `IndexPipeline::spawn_watch_loop`.
 //!
-//! Scope notes:
-//! - Manual reindexes are tracked. The file-watcher auto-reindex
-//!   (`IndexPipeline::spawn_watch_loop`) and initial-index-on-bind are
-//!   not tracked here yet; they need plumbing through the indexer.
-//! - There is no intra-job progress %. The indexer emits final
-//!   `IndexRunStats` only. We record stats on completion and show
-//!   "running" until the task returns.
+//! Coalescing: the watch loop already serialises runs per repo, so we
+//! never need to merge two concurrent jobs. Instead each run carries a
+//! `coalesced_count` field with the number of filesystem events the
+//! debounce window absorbed into it. The dashboard reads that field to
+//! show "WatchReindex • 7 events" without one row per fire.
+//!
+//! There is no intra-job progress %. The indexer emits final
+//! `IndexRunStats` only. We record stats on completion and show
+//! "running" until the task returns.
 
 use dashmap::DashMap;
 use serde::Serialize;
@@ -31,11 +33,15 @@ pub const FINISHED_JOB_TTL: Duration = Duration::from_secs(900); // 15 min
 /// growth if the eviction loop ever falls behind.
 pub const MAX_JOBS: usize = 200;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
     /// Triggered by `POST /api/repos/{id}/reindex`.
     ManualReindex,
+    /// First index pass for a freshly bound repo (cold scan).
+    InitialBind,
+    /// Incremental reindex driven by the file watcher.
+    WatchReindex,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -62,6 +68,10 @@ pub struct Job {
     /// Error message when the run failed. None for running or succeeded
     /// jobs.
     pub error: Option<String>,
+    /// Watcher-only: number of filesystem events absorbed into this run
+    /// by the debounce window (0 for manual reindexes).
+    #[serde(default)]
+    pub coalesced_count: u32,
 }
 
 pub type JobRegistry = Arc<DashMap<String, Job>>;
@@ -86,6 +96,20 @@ pub fn register_running(
     repo_id: String,
     repo_path: String,
 ) -> Job {
+    register_running_with_coalesced(registry, job_id, kind, repo_id, repo_path, 0)
+}
+
+/// Variant of [`register_running`] that pre-seeds `coalesced_count`. The
+/// watch loop uses this because the debounce window has already drained N
+/// filesystem events into the upcoming run before the job is registered.
+pub fn register_running_with_coalesced(
+    registry: &JobRegistry,
+    job_id: String,
+    kind: JobKind,
+    repo_id: String,
+    repo_path: String,
+    coalesced_count: u32,
+) -> Job {
     let job = Job {
         id: job_id.clone(),
         kind,
@@ -97,9 +121,34 @@ pub fn register_running(
         duration_ms: None,
         stats: None,
         error: None,
+        coalesced_count,
     };
     registry.insert(job_id, job.clone());
     job
+}
+
+/// Most recent `Running` job for `repo_id`, if any. Used by `/api/repos`
+/// to render the per-row live indicator.
+pub fn most_recent_running_for_repo(registry: &JobRegistry, repo_id: &str) -> Option<Job> {
+    registry
+        .iter()
+        .filter(|e| e.value().repo_id == repo_id && e.value().status == JobStatus::Running)
+        .map(|e| e.value().clone())
+        .max_by_key(|j| j.started_at_unix_s)
+}
+
+/// Most recent finished (`Succeeded` or `Failed`) job for `repo_id`, if
+/// any. Used by `/api/repos` to render the "last reindex Xm ago" hint
+/// when no job is currently running.
+pub fn most_recent_finished_for_repo(registry: &JobRegistry, repo_id: &str) -> Option<Job> {
+    registry
+        .iter()
+        .filter(|e| {
+            e.value().repo_id == repo_id
+                && matches!(e.value().status, JobStatus::Succeeded | JobStatus::Failed)
+        })
+        .map(|e| e.value().clone())
+        .max_by_key(|j| j.finished_at_unix_s.unwrap_or(0))
 }
 
 /// Mark a job as succeeded with final stats.
@@ -362,5 +411,105 @@ mod tests {
         );
         evict_once(&reg);
         assert!(reg.contains_key("still-running"));
+    }
+
+    #[test]
+    fn register_running_default_coalesced_count_is_zero() {
+        let reg = new_job_registry();
+        let job = register_running(
+            &reg,
+            "j".to_string(),
+            JobKind::ManualReindex,
+            "h".to_string(),
+            "/p".to_string(),
+        );
+        assert_eq!(job.coalesced_count, 0);
+    }
+
+    #[test]
+    fn register_running_with_coalesced_preseeds_count() {
+        let reg = new_job_registry();
+        let job = register_running_with_coalesced(
+            &reg,
+            "j".to_string(),
+            JobKind::WatchReindex,
+            "h".to_string(),
+            "/p".to_string(),
+            7,
+        );
+        assert_eq!(job.coalesced_count, 7);
+        let stored = reg.get("j").unwrap().clone();
+        assert_eq!(stored.coalesced_count, 7);
+    }
+
+    #[test]
+    fn most_recent_running_for_repo_filters_by_repo_and_status() {
+        let reg = new_job_registry();
+        register_running(
+            &reg,
+            "other-repo".to_string(),
+            JobKind::WatchReindex,
+            "other".to_string(),
+            "/o".to_string(),
+        );
+        register_running(
+            &reg,
+            "old".to_string(),
+            JobKind::WatchReindex,
+            "target".to_string(),
+            "/t".to_string(),
+        );
+        mark_succeeded(&reg, "old", json!({}));
+        std::thread::sleep(Duration::from_millis(1100));
+        register_running(
+            &reg,
+            "new".to_string(),
+            JobKind::WatchReindex,
+            "target".to_string(),
+            "/t".to_string(),
+        );
+
+        let found = most_recent_running_for_repo(&reg, "target").unwrap();
+        assert_eq!(found.id, "new");
+    }
+
+    #[test]
+    fn most_recent_running_returns_none_when_only_finished() {
+        let reg = new_job_registry();
+        register_running(
+            &reg,
+            "done".to_string(),
+            JobKind::WatchReindex,
+            "target".to_string(),
+            "/t".to_string(),
+        );
+        mark_succeeded(&reg, "done", json!({}));
+        assert!(most_recent_running_for_repo(&reg, "target").is_none());
+    }
+
+    #[test]
+    fn most_recent_finished_for_repo_returns_latest_completed() {
+        let reg = new_job_registry();
+        register_running(
+            &reg,
+            "first".to_string(),
+            JobKind::WatchReindex,
+            "target".to_string(),
+            "/t".to_string(),
+        );
+        mark_succeeded(&reg, "first", json!({ "files_indexed": 1 }));
+        std::thread::sleep(Duration::from_millis(1100));
+        register_running(
+            &reg,
+            "second".to_string(),
+            JobKind::WatchReindex,
+            "target".to_string(),
+            "/t".to_string(),
+        );
+        mark_failed(&reg, "second", "boom".to_string());
+
+        let found = most_recent_finished_for_repo(&reg, "target").unwrap();
+        assert_eq!(found.id, "second");
+        assert_eq!(found.status, JobStatus::Failed);
     }
 }

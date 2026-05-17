@@ -9,6 +9,7 @@ use crate::{
     path::Utf8PathBuf,
     registry::{RepoEntry, RepoRegistry},
     retrieval::Retriever,
+    server::jobs::JobRegistry,
     storage::{sqlite::SqliteStore, tantivy::TantivyIndex, vector::LanceDbStore},
 };
 use anyhow::{Context, Result};
@@ -31,6 +32,9 @@ pub struct SessionManager {
     /// Tracks the last time each repo was accessed, for TTL-based eviction
     last_accessed: DashMap<String, Instant>,
     metrics: Arc<MetricsRegistry>,
+    /// Optional handle so watch-driven runs surface as `Job` entries for
+    /// the dashboard. Tests construct managers without one.
+    job_registry: Option<JobRegistry>,
 }
 
 impl SessionManager {
@@ -38,6 +42,7 @@ impl SessionManager {
         standalone_config: StandaloneConfig,
         registry: RepoRegistry,
         embedder: Box<dyn Embedder + Send>,
+        job_registry: Option<JobRegistry>,
     ) -> Result<Self> {
         let metrics = Arc::new(MetricsRegistry::new().context("Failed to create MetricsRegistry")?);
 
@@ -49,6 +54,7 @@ impl SessionManager {
             init_locks: DashMap::new(),
             last_accessed: DashMap::new(),
             metrics,
+            job_registry,
         })
     }
 
@@ -200,12 +206,13 @@ impl SessionManager {
         let vectors_arc = Arc::new(vectors);
 
         // Create IndexPipeline
-        let indexer = IndexPipeline::new(
+        let indexer = IndexPipeline::new_with_jobs(
             config_arc.clone(),
             tantivy_arc.clone(),
             vectors_arc.clone(),
             self.embedder.clone(),
             self.metrics.clone(),
+            self.job_registry.clone(),
         );
 
         // Create Retriever (no reranker, no hyde for now)
@@ -353,7 +360,7 @@ impl SessionManager {
 
         let embedder = Box::new(HashEmbedder::new(64));
 
-        Self::new(standalone_config, registry, embedder)
+        Self::new(standalone_config, registry, embedder, None)
             .await
             .expect("Failed to create test SessionManager")
     }
@@ -375,7 +382,7 @@ impl SessionManager {
 
         let embedder = Box::new(HashEmbedder::new(64));
 
-        Self::new(standalone_config, registry, embedder)
+        Self::new(standalone_config, registry, embedder, None)
             .await
             .expect("Failed to create test SessionManager")
     }

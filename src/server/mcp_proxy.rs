@@ -86,6 +86,19 @@ struct ProxyState {
     /// requests with the same stale id share a single backend session
     /// allocation instead of each minting a fresh one.
     recoveries: Recoveries,
+    /// Sticky client-supplied stale sid → fresh sid we minted during
+    /// recovery. Repeated requests bearing the same stale id (clients that
+    /// cache a session id from a prior daemon run and never update it after
+    /// `mcp-session-id` rotation) get rewritten to the recovered fresh id
+    /// before reaching the upstream. Without this, every tool call after a
+    /// daemon restart triggers a fresh recovery, allocates a fresh upstream
+    /// session, and silently drops the `bind_workspace`/`roots/list` repo
+    /// binding that was recorded against the previous one. Cleared lazily:
+    /// if a remapped fresh id later goes stale itself, the next request
+    /// runs recovery again and overwrites the entry with the newer fresh
+    /// id. No active eviction is required because the map only grows by
+    /// one entry per unique client-supplied stale id.
+    stale_to_fresh: Arc<DashMap<String, String>>,
 }
 
 /// Spawn the proxy listener. Returns once it has bound to `public_port`.
@@ -112,6 +125,7 @@ pub async fn spawn_mcp_proxy(
         pending_repos,
         bound_repos,
         recoveries: Arc::new(DashMap::new()),
+        stale_to_fresh: Arc::new(DashMap::new()),
     });
 
     let app = Router::new()
@@ -226,10 +240,45 @@ async fn forward(
     // Extract the client's stale session id (if any) before consuming the
     // headers. `recover_session` uses it to look up a `bind_workspace`- or
     // `roots/list`-recorded binding when the request did not carry `?repo=`.
-    let stale_sid = out_headers
+    let client_sid = out_headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+
+    // Sticky remap. If we have already recovered this client-supplied sid
+    // to a fresh upstream sid in a previous request, rewrite the outbound
+    // header now. This lets repeated requests carrying a stale id (clients
+    // that cached a session id from a previous daemon run and never
+    // update it) reuse the same recovered session instead of each minting
+    // a brand-new one. Without this, `bind_workspace` lands on session
+    // N1, the next tool call recovers onto N2 (which has no recorded
+    // binding), and the agent sees "Session not bound" on every call.
+    let remapped_sid = client_sid.as_deref().and_then(|s| {
+        state
+            .stale_to_fresh
+            .get(s)
+            .map(|entry| entry.value().clone())
+    });
+    if let Some(target) = &remapped_sid {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(target) {
+            out_headers.insert(
+                reqwest::header::HeaderName::from_static("mcp-session-id"),
+                hv,
+            );
+            tracing::debug!(
+                client_sid = %client_sid.as_deref().unwrap_or(""),
+                upstream_sid = %target,
+                "proxy: applied sticky session remap"
+            );
+        }
+    }
+
+    // The sid the upstream actually saw. We use this as the dedupe key for
+    // concurrent recoveries and as the lookup key for `bound_repos` if the
+    // remapped sid is itself stale: a `bind_workspace` recorded on a
+    // previous fresh sid sits under that fresh key, not the client's
+    // original sid.
+    let upstream_sid = remapped_sid.clone().or_else(|| client_sid.clone());
 
     // Clone so we can replay on session-expired without rebuilding from
     // the original axum request (which has already been consumed).
@@ -257,7 +306,7 @@ async fn forward(
     // recovery via a per-sid OnceCell, so only one backend session is
     // allocated. Requests without a stale id (rare; client never sent
     // `mcp-session-id`) recover directly with no dedupe key.
-    let new_sid_opt = match stale_sid.as_deref() {
+    let new_sid_opt = match upstream_sid.as_deref() {
         Some(sid) => {
             let cell: RecoveryCell = state
                 .recoveries
@@ -275,7 +324,7 @@ async fn forward(
                 .await
                 .clone();
             // Best-effort cleanup so a future eviction-and-recovery cycle
-            // on the same client sid can run again. Concurrent removers
+            // on the same upstream sid can run again. Concurrent removers
             // are harmless (DashMap.remove is idempotent).
             state.recoveries.remove(sid);
             result
@@ -286,6 +335,30 @@ async fn forward(
         Some(s) => s,
         None => return original_response,
     };
+
+    // Persist the sticky remap so future requests with this client sid
+    // skip recovery entirely. Updating in place when the remapped target
+    // itself went stale (`remapped_sid.is_some()`) keeps the chain pinned
+    // to whichever fresh id is currently live.
+    if let Some(cs) = &client_sid {
+        let first_remap = state
+            .stale_to_fresh
+            .insert(cs.clone(), new_sid.clone())
+            .is_none();
+        if first_remap {
+            tracing::info!(
+                client_sid = %cs,
+                upstream_sid = %new_sid,
+                "proxy: pinned client sid to recovered upstream sid"
+            );
+        } else {
+            tracing::debug!(
+                client_sid = %cs,
+                upstream_sid = %new_sid,
+                "proxy: refreshed remapped upstream sid"
+            );
+        }
+    }
 
     // Substitute the new session id into the replay headers.
     let mut retry_headers = replay_headers;
@@ -1241,5 +1314,302 @@ mod tests {
         );
         assert_eq!(notif_count.load(Ordering::SeqCst), 1, "one initialized");
         assert_eq!(replay_count.load(Ordering::SeqCst), 2, "two replays");
+    }
+
+    #[tokio::test]
+    async fn forward_sticky_remap_skips_recovery_on_repeat_requests() {
+        // Two SEQUENTIAL client requests, both bearing the same stale sid.
+        // The first triggers recovery (1 stale + 1 init + 1 notif + 1 replay).
+        // The second must be rewritten to the recovered fresh sid BEFORE it
+        // hits the upstream, so we only see one extra 200 with no further
+        // -32016 nor a second initialize. Without sticky remap, every later
+        // request would re-recover, allocate a new session, and silently
+        // discard any `bind_workspace` recorded on the previous one.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let stale_count = Arc::new(AtomicUsize::new(0));
+        let init_count = Arc::new(AtomicUsize::new(0));
+        let notif_count = Arc::new(AtomicUsize::new(0));
+        let ok_with_fresh = Arc::new(AtomicUsize::new(0));
+        let sc = stale_count.clone();
+        let ic = init_count.clone();
+        let nc = notif_count.clone();
+        let oc = ok_with_fresh.clone();
+
+        let upstream = spawn_test_upstream(move |headers: HeaderMap, body: axum::body::Bytes| {
+            let body_str = std::str::from_utf8(&body).unwrap_or("");
+            let sid = headers
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if body_str.contains("\"method\":\"initialize\"") {
+                ic.fetch_add(1, Ordering::SeqCst);
+                let mut resp = (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                resp
+            } else if body_str.contains("notifications/initialized") {
+                nc.fetch_add(1, Ordering::SeqCst);
+                StatusCode::ACCEPTED.into_response()
+            } else if sid.as_deref() == Some("stale-sid") {
+                sc.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    r#"{"code":-32016,"message":"Session not found"}"#,
+                )
+                    .into_response()
+            } else if sid.as_deref() == Some("fresh-sid") {
+                oc.fetch_add(1, Ordering::SeqCst);
+                let mut resp = (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    r#"{"jsonrpc":"2.0","id":99,"result":{"ok":true}}"#,
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert("mcp-session-id", HeaderValue::from_static("fresh-sid"));
+                resp
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        })
+        .await;
+
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            new_pending_repos(),
+            new_bound_repos(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{proxy_port}/mcp");
+
+        // First request: triggers recovery.
+        let r1 = client
+            .post(&url)
+            .header("mcp-session-id", "stale-sid")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        assert_eq!(
+            stale_count.load(Ordering::SeqCst),
+            1,
+            "first request stale-POSTs once"
+        );
+        assert_eq!(init_count.load(Ordering::SeqCst), 1, "first recovery init");
+        assert_eq!(
+            notif_count.load(Ordering::SeqCst),
+            1,
+            "first recovery notif"
+        );
+        assert_eq!(ok_with_fresh.load(Ordering::SeqCst), 1, "first replay");
+
+        // Second request: SAME client-supplied stale sid. Must be rewritten
+        // by the proxy before hitting upstream, so the upstream sees
+        // `fresh-sid` directly and never returns -32016.
+        let r2 = client
+            .post(&url)
+            .header("mcp-session-id", "stale-sid")
+            .body(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{}}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
+
+        assert_eq!(
+            stale_count.load(Ordering::SeqCst),
+            1,
+            "remap must skip the stale POST entirely"
+        );
+        assert_eq!(
+            init_count.load(Ordering::SeqCst),
+            1,
+            "remap must skip a second recovery initialize"
+        );
+        assert_eq!(notif_count.load(Ordering::SeqCst), 1, "no second notif");
+        assert_eq!(
+            ok_with_fresh.load(Ordering::SeqCst),
+            2,
+            "second request must land on fresh-sid directly"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_sticky_remap_refreshes_when_remapped_sid_dies() {
+        // Map stale-sid -> fresh-1 via a first recovery. Then make fresh-1
+        // itself go stale: the next request with stale-sid will be rewritten
+        // to fresh-1, get a -32016, run recovery (keyed on fresh-1 since
+        // that's what upstream saw), mint fresh-2, replay. The map must
+        // advance to stale-sid -> fresh-2 so further requests with stale-sid
+        // route directly to fresh-2 without another recovery.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let phase = Arc::new(std::sync::Mutex::new(1u8));
+        let stale_count = Arc::new(AtomicUsize::new(0));
+        let init_count = Arc::new(AtomicUsize::new(0));
+        let dead_fresh_calls = Arc::new(AtomicUsize::new(0));
+        let live_fresh_calls = Arc::new(AtomicUsize::new(0));
+        let p = phase.clone();
+        let sc = stale_count.clone();
+        let ic = init_count.clone();
+        let dfc = dead_fresh_calls.clone();
+        let lfc = live_fresh_calls.clone();
+
+        let upstream = spawn_test_upstream(move |headers: HeaderMap, body: axum::body::Bytes| {
+            let body_str = std::str::from_utf8(&body).unwrap_or("");
+            let sid = headers
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if body_str.contains("\"method\":\"initialize\"") {
+                let n = ic.fetch_add(1, Ordering::SeqCst) + 1;
+                let fresh = if n == 1 { "fresh-1" } else { "fresh-2" };
+                let mut resp = (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert("mcp-session-id", HeaderValue::from_str(fresh).unwrap());
+                resp
+            } else if body_str.contains("notifications/initialized") {
+                StatusCode::ACCEPTED.into_response()
+            } else if sid.as_deref() == Some("stale-sid") {
+                sc.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "application/json")],
+                    r#"{"code":-32016,"message":"Session not found"}"#,
+                )
+                    .into_response()
+            } else if sid.as_deref() == Some("fresh-1") {
+                let phase = *p.lock().unwrap();
+                if phase == 1 {
+                    // Phase 1: fresh-1 is live; succeed.
+                    let mut resp = (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        r#"{"jsonrpc":"2.0","id":99,"result":{"ok":true}}"#,
+                    )
+                        .into_response();
+                    resp.headers_mut()
+                        .insert("mcp-session-id", HeaderValue::from_static("fresh-1"));
+                    resp
+                } else {
+                    // Phase 2+: fresh-1 has died; force a re-recovery.
+                    dfc.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        [("content-type", "application/json")],
+                        r#"{"code":-32016,"message":"Session not found"}"#,
+                    )
+                        .into_response()
+                }
+            } else if sid.as_deref() == Some("fresh-2") {
+                lfc.fetch_add(1, Ordering::SeqCst);
+                let mut resp = (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    r#"{"jsonrpc":"2.0","id":99,"result":{"ok":true}}"#,
+                )
+                    .into_response();
+                resp.headers_mut()
+                    .insert("mcp-session-id", HeaderValue::from_static("fresh-2"));
+                resp
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        })
+        .await;
+
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            new_pending_repos(),
+            new_bound_repos(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{proxy_port}/mcp");
+
+        // Phase 1: first request pins stale-sid -> fresh-1.
+        let r1 = client
+            .post(&url)
+            .header("mcp-session-id", "stale-sid")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+        assert_eq!(init_count.load(Ordering::SeqCst), 1, "one init in phase 1");
+
+        // Phase 2: simulate fresh-1 going stale upstream.
+        *phase.lock().unwrap() = 2;
+
+        let r2 = client
+            .post(&url)
+            .header("mcp-session-id", "stale-sid")
+            .body(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{}}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
+
+        // The second request should have been remapped to fresh-1 first,
+        // then re-recovered onto fresh-2.
+        assert_eq!(
+            stale_count.load(Ordering::SeqCst),
+            1,
+            "stale-sid should never reach upstream after the first request"
+        );
+        assert_eq!(
+            dead_fresh_calls.load(Ordering::SeqCst),
+            1,
+            "fresh-1 stale once"
+        );
+        assert_eq!(init_count.load(Ordering::SeqCst), 2, "second recovery init");
+        assert_eq!(
+            live_fresh_calls.load(Ordering::SeqCst),
+            1,
+            "replay on fresh-2"
+        );
+
+        // Phase 3: a follow-up request with stale-sid must now route to
+        // fresh-2 directly (no third recovery).
+        let r3 = client
+            .post(&url)
+            .header("mcp-session-id", "stale-sid")
+            .body(r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{}}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r3.status(), StatusCode::OK);
+        assert_eq!(init_count.load(Ordering::SeqCst), 2, "no third init");
+        assert_eq!(
+            live_fresh_calls.load(Ordering::SeqCst),
+            2,
+            "follow-up lands on fresh-2 directly"
+        );
     }
 }

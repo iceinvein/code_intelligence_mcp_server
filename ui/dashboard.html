@@ -672,6 +672,45 @@
         renderPaletteFoot(rows[paletteHighlight]);
       }
 
+      let reindexAllPending = null; // { expiresAt }
+
+      function confirmReindexAll() {
+        if (reindexAllPending && Date.now() < reindexAllPending.expiresAt) {
+          reindexAllPending = null;
+          (async () => {
+            for (const r of lastRepoList || []) {
+              try { await fetch(`/api/repos/${encodeURIComponent(r.id)}/reindex`, { method: "POST", headers: { accept: "application/json" } }); }
+              catch (_) { /* swallow; the next renderRepos cycle reflects actual state */ }
+            }
+          })();
+          return;
+        }
+        reindexAllPending = { expiresAt: Date.now() + 5000 };
+        alert(`Reindex all (${(lastRepoList || []).length}) repos? Run again within 5s to confirm.`);
+      }
+
+      function cyclePaletteTheme() {
+        $("#theme-toggle").click();
+      }
+
+      function clearTailFilter() {
+        tailFilter.grep = null;
+        tailFilter.since_ms = null;
+        renderTail();
+      }
+
+      // `openTailFilterMode` is implemented in Task 4. Stub for now so PALETTE_ACTIONS
+      // initialises cleanly; Task 4 replaces the body.
+      function openTailFilterMode() { /* Task 4 */ }
+
+      const PALETTE_ACTIONS = [
+        { id: "refresh",     label: "Refresh data now",         run: () => { renderHeader(); renderStatus(); renderRepos(); } },
+        { id: "reindex-all", label: "Reindex all repositories", run: confirmReindexAll },
+        { id: "cycle-theme", label: "Cycle theme",              run: cyclePaletteTheme },
+        { id: "filter-tail", label: "Filter live tail…",        run: openTailFilterMode, keepOpen: true },
+        { id: "clear-tail",  label: "Clear live tail filter",   run: clearTailFilter },
+      ];
+
       function renderPalette() {
         lastMouseX = -1;
         lastMouseY = -1;
@@ -702,18 +741,34 @@
         sessionHost.replaceChildren(...sessionRows);
         palette.querySelector('[data-palette-section="sessions"]').style.display = sessionRows.length ? "" : "none";
 
-        // Actions section will be populated in Task 3.
+        const actionsHost = palette.querySelector('[data-palette-results="actions"]');
+        const actionRows = [];
+        for (const a of PALETTE_ACTIONS) {
+          const row = paletteRow("action", a.label, "", q);
+          if (!row) continue;
+          row.dataset.actionId = a.id;
+          actionRows.push(row);
+        }
+        actionsHost.replaceChildren(...actionRows);
+        palette.querySelector('[data-palette-section="actions"]').style.display = actionRows.length ? "" : "none";
+
         setHighlight(0);
       }
 
       paletteInput.addEventListener("input", renderPalette);
 
-      function renderPaletteFoot(_row) {
-        paletteFoot.replaceChildren(
+      function renderPaletteFoot(row) {
+        const kind = row?.dataset?.kind;
+        const items = [
           el("span", null, el("kbd", { text: "↑ ↓" }), " nav"),
           el("span", null, el("kbd", { text: "↵" }), " run"),
-          el("span", null, el("kbd", { text: "esc" }), " close"),
-        );
+        ];
+        if (kind === "repo") {
+          items.push(el("span", null, el("kbd", { text: "⌘↵" }), " reindex"));
+          items.push(el("span", null, el("kbd", { text: "⌫" }), " drop"));
+        }
+        items.push(el("span", null, el("kbd", { text: "esc" }), " close"));
+        paletteFoot.replaceChildren(...items);
       }
 
       function executePaletteRow(row, opts) {
@@ -728,11 +783,49 @@
           closePalette();
           document.querySelector("#status-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
         } else if (kind === "action") {
-          // Task 3 owns this branch.
+          const action = PALETTE_ACTIONS.find((a) => a.id === row.dataset.actionId);
+          if (!action) return;
+          if (!action.keepOpen) closePalette();
+          action.run();
         }
       }
 
       paletteInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+          ev.preventDefault();
+          const rows = paletteRowsFlat();
+          const row = rows[paletteHighlight];
+          if (row && row.dataset.kind === "repo") {
+            const id = row.dataset.repoId;
+            fetch(`/api/repos/${encodeURIComponent(id)}/reindex`, { method: "POST", headers: { accept: "application/json" } });
+            closePalette();
+          }
+          return;
+        }
+        if (ev.key === "Backspace" && paletteInput.value === "") {
+          const rows = paletteRowsFlat();
+          const row = rows[paletteHighlight];
+          if (!row || row.dataset.kind !== "repo") return;
+          ev.preventDefault();
+          const id = row.dataset.repoId;
+          if (pendingDrop && pendingDrop.id === id && Date.now() < pendingDrop.expiresAt) {
+            pendingDrop = null;
+            fetch(`/api/repos/${encodeURIComponent(id)}`, { method: "DELETE", headers: { accept: "application/json" } });
+            expandedRepoId = null;
+            repoDetailCache.delete(id);
+            renderRepos();
+            closePalette();
+            return;
+          }
+          pendingDrop = { id, expiresAt: Date.now() + 5000 };
+          const badge = row.querySelector(".badge");
+          if (badge) { badge.textContent = "confirm drop"; badge.classList.add("warn"); }
+          setTimeout(() => {
+            if (pendingDrop && pendingDrop.id === id) pendingDrop = null;
+            if (badge && badge.isConnected) { badge.textContent = "↵"; badge.classList.remove("warn"); }
+          }, 5000);
+          return;
+        }
         if (ev.key === "ArrowDown") { ev.preventDefault(); setHighlight(paletteHighlight + 1); }
         else if (ev.key === "ArrowUp") { ev.preventDefault(); setHighlight(paletteHighlight - 1); }
         else if (ev.key === "Enter") {

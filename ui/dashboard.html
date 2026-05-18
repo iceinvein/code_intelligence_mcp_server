@@ -72,6 +72,7 @@
       .kv .v { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .kv .v .ac { color: var(--accent); }
       .kv .v .dim { color: var(--ink-dim); }
+      #status-kv.stale .v { color: var(--ink-dim); }
       .bar { display: inline-block; letter-spacing: 0.5px; }
       .bar .fill { color: var(--accent); }
       .bar .gap { color: var(--edge-soft); }
@@ -180,9 +181,9 @@
             fetchJson("/api/jobs"),
             fetchJson("/api/version"),
           ]);
-          const repoList = repos.repos || repos;
-          const sessionList = sessions.sessions || sessions;
-          const jobList = jobs.jobs || jobs;
+          const repoList = repos.repos ?? [];
+          const sessionList = sessions.sessions ?? [];
+          const jobList = jobs.jobs ?? [];
           const totalSymbols = repoList.reduce((a, r) => a + (r.symbol_count || 0), 0);
           const sessionNames = sessionList.map((s) => basename(s.repo) || s.client || s.session_id || s.id || "session");
           const running = jobList.filter((j) => j.status === "running");
@@ -194,15 +195,18 @@
             el("span", { class: "ac", text: ok ? "ok" : "degraded" }),
             ` · up ${fmtUptime(uptime)}`
           );
-          const reposV = `${repoList.length} indexed · ${totalSymbols.toLocaleString()} symbols`;
+          const reposV = totalSymbols > 0
+            ? `${repoList.length} indexed · ${totalSymbols.toLocaleString()} symbols`
+            : `${repoList.length} indexed`;
           const sessV  = el("span", null,
-            `${sessionNames.length} / ${sessions.capacity ?? 4} cap · `,
+            `${sessionNames.length} · `,
             el("span", { class: "dim", text: sessionNames.slice(0, 3).join(", ") || "none" })
           );
           const jobsV  = el("span", null, `${running.length} running  `, bar(runPct));
           const embedV = "– q/s · – ms p50 · 4 permits";
           const verV   = `${version.version || "unknown"} · llama.cpp metal`;
 
+          kv.classList.remove("stale");
           kv.replaceChildren(
             ...kvRow("daemon",   daemonV),
             ...kvRow("repos",    reposV),
@@ -212,7 +216,7 @@
             ...kvRow("version",  verV),
           );
         } catch (_) {
-          kv.replaceChildren(...kvRow("daemon", el("span", { style: "color:var(--warn)", text: "unreachable" })));
+          kv.classList.add("stale");
         }
       }
       renderStatus();

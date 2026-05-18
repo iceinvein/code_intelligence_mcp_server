@@ -1,23 +1,37 @@
-//! Marker-presence smoke test for the terminal-redesign dashboard.
+//! Marker-presence smoke test for the palette-redesign dashboard.
 //! Re-includes ui/dashboard.html and asserts the expected section IDs are present.
 
 const DASHBOARD_HTML: &str = include_str!("../ui/dashboard.html");
 
 #[test]
-fn dashboard_contains_terminal_layout_markers() {
+fn dashboard_contains_palette_layout_markers() {
     for marker in [
         r#"id="header-strip""#,
         r#"id="status-grid""#,
         r#"id="repo-table""#,
-        r#"id="repl""#,
+        r#"id="palette""#,
+        r#"id="palette-input""#,
         r#"data-theme-key="cimcp.theme""#,
         r#"class="brand""#,
         r#"id="health-pulse""#,
         r#"id="theme-toggle""#,
+        r#"data-palette-section="repos""#,
+        r#"data-palette-section="sessions""#,
+        r#"data-palette-section="actions""#,
     ] {
         assert!(
             DASHBOARD_HTML.contains(marker),
             "missing marker in ui/dashboard.html: {marker}"
+        );
+    }
+}
+
+#[test]
+fn dashboard_does_not_contain_repl_markers() {
+    for absent in [r#"id="repl""#, r#"id="repl-in""#, r#"id="repl-out""#] {
+        assert!(
+            !DASHBOARD_HTML.contains(absent),
+            "REPL marker still present in ui/dashboard.html: {absent}"
         );
     }
 }

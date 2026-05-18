@@ -104,17 +104,34 @@
       .drop-link { color: var(--warn); cursor: pointer; text-decoration: underline dotted; user-select: none; }
       .drop-link.confirm { color: var(--bg); background: var(--warn); padding: 1px 6px; border-radius: 3px; text-decoration: none; }
       .repos tr[data-id]:focus-visible, .drop-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-      #repl { position: sticky; bottom: 0; background: var(--bg); border-top: 1px dashed var(--edge-soft); margin-top: 24px; }
-      #repl .scrollback { max-height: 240px; overflow-y: auto; padding: 8px 28px; font-size: 11px; line-height: 1.5; color: var(--ink-dim); display: none; }
-      #repl .scrollback.open { display: block; }
-      #repl .scrollback .echo { color: var(--ink); }
-      #repl .scrollback .out { color: var(--ink-dim); white-space: pre-wrap; }
-      #repl .scrollback .err { color: var(--warn); }
-      #repl .prompt { display: flex; align-items: baseline; gap: 10px; padding: 12px 28px 14px; max-width: 1080px; margin: 0 auto; }
-      #repl .caret { color: var(--accent); font-weight: 600; }
-      #repl input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--ink); font: 12px/1.5 var(--font-mono); }
-      #repl input:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
-      #repl .hint { font: 500 9px var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--label); }
+      #palette { position: fixed; inset: 0; display: none; z-index: 50; }
+      #palette.open { display: block; }
+      #palette .scrim { position: absolute; inset: 0; background: oklch(0% 0 0 / 0.45); }
+      #palette .panel { position: absolute; top: 16%; left: 50%; transform: translateX(-50%); width: min(680px, 80vw); max-height: 70vh; display: flex; flex-direction: column; background: var(--surface-2); border: 1px solid var(--edge); border-radius: 12px; box-shadow: 0 1px 0 rgba(0,0,0,0.4), 0 24px 60px rgba(0,0,0,0.6); overflow: hidden; font-family: var(--font-mono); color: var(--ink); }
+      #palette .top { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--edge); }
+      #palette .top .caret { color: var(--accent); font-weight: 600; font-size: 13px; }
+      #palette .top input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--ink); font: 13px/1.5 var(--font-mono); }
+      #palette .top input:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+      #palette .top .esc { font: 500 9px var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--label); border: 1px solid var(--edge); padding: 1px 6px; border-radius: 4px; }
+      #palette .body { flex: 1; overflow-y: auto; padding: 4px 0 8px; }
+      #palette .section-head { padding: 8px 16px 4px; font: 500 9px var(--font-sans); letter-spacing: 0.18em; text-transform: uppercase; color: var(--label); }
+      #palette .row { display: grid; grid-template-columns: 20px 1fr auto; gap: 12px; align-items: center; padding: 6px 16px; cursor: pointer; font-size: 12px; }
+      #palette .row.hl { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+      #palette .row .icon { width: 14px; height: 14px; border: 1px solid var(--edge); border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: var(--ink-dim); }
+      #palette .row.hl .icon { border-color: var(--accent); color: var(--accent); }
+      #palette .row .name { color: var(--ink); }
+      #palette .row .name .hit { color: var(--accent); font-weight: 600; }
+      #palette .row .sub { color: var(--ink-dim); font-size: 10px; margin-left: 6px; }
+      #palette .row .badge { font: 500 9px var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-dim); padding: 1px 6px; border: 1px solid var(--edge); border-radius: 3px; }
+      #palette .row.hl .badge { border-color: var(--accent); color: var(--accent); }
+      #palette .row .badge.warn { color: var(--warn); border-color: var(--warn); }
+      #palette .foot { border-top: 1px solid var(--edge); padding: 8px 16px; display: flex; gap: 14px; font: 500 9px var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--label); }
+      #palette .foot kbd { font: 500 9px var(--font-sans); padding: 1px 4px; border: 1px solid var(--edge); border-radius: 3px; color: var(--ink); }
+      #palette .empty { padding: 16px; color: var(--ink-dim); font-size: 11px; }
+      @media (prefers-reduced-motion: no-preference) {
+        #palette.open .panel { animation: pal-in 120ms ease-out; }
+      }
+      @keyframes pal-in { from { opacity: 0; transform: translate(-50%, -2px); } to { opacity: 1; transform: translate(-50%, 0); } }
     </style>
   </head>
   <body data-theme-key="cimcp.theme">
@@ -147,14 +164,6 @@
         </table>
       </section>
     </main>
-    <section id="repl" role="region" aria-label="command prompt">
-      <div class="scrollback" id="repl-out"></div>
-      <div class="prompt">
-        <span class="caret" aria-hidden="true">›</span>
-        <input id="repl-in" type="text" autocomplete="off" spellcheck="false" aria-label="command input" placeholder="press / to focus" />
-        <span class="hint" id="repl-hint">/ to focus</span>
-      </div>
-    </section>
     <script type="module">
       const $ = (sel) => document.querySelector(sel);
 
@@ -572,216 +581,78 @@
       renderRepos();
       setInterval(renderRepos, 5000);
 
-      const replIn = $("#repl-in");
-      const replOut = $("#repl-out");
-      const replHint = $("#repl-hint");
-      const scrollback = [];
+      const palette = $("#palette");
+      const paletteInput = $("#palette-input");
+      const paletteFoot = $("#palette-foot");
+      let paletteOpen = false;
+      let lastFocus = null;
 
-      function pushScrollback(entry) {
-        scrollback.push(entry);
-        if (scrollback.length > 50) scrollback.shift();
-        const nodes = [];
-        for (const e of scrollback) {
-          nodes.push(el("div", null, el("span", { class: "echo", text: `› ${e.echo}` })));
-          if (e.out) nodes.push(el("div", { class: "out", text: e.out }));
-          if (e.err) nodes.push(el("div", { class: "err", text: e.err }));
-        }
-        replOut.replaceChildren(...nodes);
-        replOut.classList.add("open");
-        replOut.scrollTop = replOut.scrollHeight;
+      function openPalette() {
+        if (paletteOpen) return;
+        paletteOpen = true;
+        lastFocus = document.activeElement;
+        palette.classList.add("open");
+        palette.setAttribute("aria-hidden", "false");
+        paletteInput.value = "";
+        paletteInput.focus();
+        renderPalette();
+        renderPaletteFoot(null);
       }
 
-      replIn.addEventListener("focus", () => { replHint.textContent = "tab complete · ↑ history · esc"; });
-      replIn.addEventListener("blur",  () => { replHint.textContent = "/ to focus"; });
-
-      const COMMANDS = {};
-      function registerCommand(name, handler, help, options = {}) {
-        COMMANDS[name] = { handler, help, silent: options.silent === true };
+      function closePalette() {
+        if (!paletteOpen) return;
+        paletteOpen = false;
+        palette.classList.remove("open");
+        palette.setAttribute("aria-hidden", "true");
+        paletteInput.blur();
+        if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
       }
 
-      function parseCommand(line) {
-        const tokens = line.trim().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-        const verb = tokens.shift();
-        const args = [];
-        const flags = {};
-        for (let i = 0; i < tokens.length; i++) {
-          const t = tokens[i];
-          if (t.startsWith("--")) {
-            const key = t.slice(2);
-            const next = tokens[i + 1];
-            if (next && !next.startsWith("--")) { flags[key] = next.replace(/^"|"$/g, ""); i++; }
-            else flags[key] = true;
-          } else {
-            args.push(t.replace(/^"|"$/g, ""));
-          }
-        }
-        return { verb, args, flags };
+      // Stub renderers; replaced in later tasks.
+      function renderPalette() { /* Task 2 owns this */ }
+      function renderPaletteFoot(_row) {
+        paletteFoot.replaceChildren(
+          el("span", null, el("kbd", { text: "↑ ↓" }), " nav"),
+          el("span", null, el("kbd", { text: "↵" }), " run"),
+          el("span", null, el("kbd", { text: "esc" }), " close"),
+        );
       }
-
-      let runCommand = async function (line) {
-        if (!line.trim()) return;
-        const { verb, args, flags } = parseCommand(line);
-        const entry = { echo: line, out: "", err: "" };
-        let silent = false;
-        if (verb === "?" || verb === "help") {
-          entry.out = Object.entries(COMMANDS).map(([n, c]) => `${n.padEnd(12)} ${c.help}`).join("\n");
-        } else if (COMMANDS[verb]) {
-          try {
-            entry.out = String((await COMMANDS[verb].handler(args, flags)) ?? "");
-            silent = COMMANDS[verb].silent;
-          } catch (e) {
-            entry.err = e.message || String(e);
-          }
-        } else {
-          entry.err = `unknown command; try ?`;
-        }
-        if (silent && !entry.err) return;
-        pushScrollback(entry);
-      };
-
-      replIn.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter") {
-          ev.preventDefault();
-          const line = replIn.value;
-          replIn.value = "";
-          runCommand(line);
-        }
-      });
-
-      registerCommand("clear", () => {
-        scrollback.length = 0;
-        replOut.replaceChildren();
-        replOut.classList.remove("open");
-        return "";
-      }, "clear scrollback", { silent: true });
-
-      registerCommand("status", async () => {
-        const s = await fetchJson("/api/status");
-        return `daemon ok · up ${fmtUptime(s.uptime_s)} · ${s.bound_sessions ?? 0} bound · ${s.connected_sessions ?? 0} connected`;
-      }, "reprint daemon status");
-
-      registerCommand("version", async () => {
-        const v = await fetchJson("/api/version");
-        return v.version || "unknown";
-      }, "print daemon version");
-
-      registerCommand("repos", async (args) => {
-        const list = (await fetchJson("/api/repos")).repos ?? [];
-        if (args[0]) {
-          const target = list.find((r) => (r.name || basename(r.path)) === args[0]);
-          if (!target) return `no repo matches "${args[0]}"`;
-          const wasOpen = expandedRepoId === target.id;
-          await toggleExpand(target.id);
-          document.querySelector(`tr[data-id="${CSS.escape(target.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-          return `${wasOpen ? "collapsed" : "expanded"} ${target.name || basename(target.path)}`;
-        }
-        document.querySelector("#repo-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
-        return `${list.length} repos`;
-      }, "list or focus a repo; `repos <name>` expands or collapses it");
-
-      registerCommand("reindex", async (args) => {
-        if (!args[0]) throw new Error("usage: reindex <repo>");
-        const list = (await fetchJson("/api/repos")).repos ?? [];
-        const target = list.find((r) => (r.name || basename(r.path)) === args[0]);
-        if (!target) throw new Error(`no repo matches "${args[0]}"`);
-        const res = await fetch(`/api/repos/${encodeURIComponent(target.id)}/reindex`, {
-          method: "POST",
-          headers: { accept: "application/json" },
-        });
-        if (!res.ok) throw new Error(`reindex failed: ${res.status}`);
-        return `queued reindex for ${target.name || basename(target.path)}`;
-      }, "POST /api/repos/<id>/reindex");
-
-      registerCommand("drop", async (args) => {
-        if (!args[0]) throw new Error("usage: drop <repo>");
-        const list = (await fetchJson("/api/repos")).repos ?? [];
-        const target = list.find((r) => (r.name || basename(r.path)) === args[0]);
-        if (!target) throw new Error(`no repo matches "${args[0]}"`);
-        if (!pendingDrop || pendingDrop.id !== target.id || Date.now() > pendingDrop.expiresAt) {
-          pendingDrop = { id: target.id, expiresAt: Date.now() + 5000 };
-          return `confirm drop of ${target.name || basename(target.path)} by running \`drop ${args[0]}\` again within 5 seconds`;
-        }
-        pendingDrop = null;
-        const res = await fetch(`/api/repos/${encodeURIComponent(target.id)}`, {
-          method: "DELETE",
-          headers: { accept: "application/json" },
-        });
-        if (!res.ok) throw new Error(`drop failed: ${res.status}`);
-        expandedRepoId = null;
-        repoDetailCache.delete(target.id);
-        renderRepos();
-        return `dropped ${target.name || basename(target.path)}`;
-      }, "two-step DELETE /api/repos/<id>; run twice within 5 seconds to confirm");
-
-      registerCommand("tail", (_args, flags) => {
-        tailFilter.grep = flags.grep ?? null;
-        if (flags.since) {
-          const m = String(flags.since).match(/^(\d+)([smh])$/);
-          if (!m) throw new Error(`bad --since "${flags.since}"; use Ns, Nm, or Nh`);
-          const unit = { s: 1000, m: 60000, h: 3600000 };
-          tailFilter.since_ms = parseInt(m[1], 10) * unit[m[2]];
-        } else {
-          tailFilter.since_ms = null;
-        }
-        renderTail();
-        document.querySelector("#status-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
-        return `tail filter ${JSON.stringify(tailFilter)}`;
-      }, "filter the live tail; `tail --grep bind --since 5m`");
 
       document.addEventListener("keydown", (ev) => {
-        if (ev.key === "/" && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
+        const isCmdK = (ev.metaKey || ev.ctrlKey) && (ev.key === "k" || ev.key === "K");
+        if (isCmdK) {
           ev.preventDefault();
-          replIn.focus();
+          openPalette();
+          return;
         }
-      });
-      replIn.addEventListener("keydown", (ev) => {
-        if (ev.key === "Escape") replIn.blur();
-      });
-
-      const history = [];
-      let historyIdx = -1;
-      const _runCommand = runCommand;
-      runCommand = async function (line) {
-        if (line.trim()) { history.push(line); historyIdx = history.length; }
-        return _runCommand(line);
-      };
-
-      replIn.addEventListener("keydown", (ev) => {
-        if (ev.key === "ArrowUp") {
-          if (history.length === 0) return;
-          historyIdx = Math.max(0, historyIdx - 1);
-          replIn.value = history[historyIdx];
+        if (ev.key === "Escape" && paletteOpen) {
           ev.preventDefault();
-        } else if (ev.key === "ArrowDown") {
-          if (historyIdx >= history.length - 1) { historyIdx = history.length; replIn.value = ""; }
-          else { historyIdx++; replIn.value = history[historyIdx]; }
-          ev.preventDefault();
-        } else if (ev.key === "l" && ev.ctrlKey) {
-          ev.preventDefault();
-          runCommand("clear");
+          closePalette();
         }
       });
 
-      replIn.addEventListener("keydown", (ev) => {
-        if (ev.key !== "Tab") return;
-        ev.preventDefault();
-        const cursor = replIn.selectionStart ?? replIn.value.length;
-        const before = replIn.value.slice(0, cursor);
-        const after  = replIn.value.slice(cursor);
-        const lastTok = (before.match(/[^\s]+$/) || [""])[0];
-        const tokens = before.trim().split(/\s+/);
-        const candidates = tokens.length <= 1
-          ? Object.keys(COMMANDS).concat(["?"])
-          : lastRepoList.map((r) => r.name || basename(r.path));
-        const matches = candidates.filter((c) => c.startsWith(lastTok));
-        if (matches.length === 1) {
-          const completion = matches[0].slice(lastTok.length);
-          replIn.value = before + completion + after;
-          replIn.setSelectionRange(cursor + completion.length, cursor + completion.length);
-        } else if (matches.length > 1) {
-          pushScrollback({ echo: `${before}<TAB>`, out: matches.join("  ") });
-        }
+      palette.addEventListener("click", (ev) => {
+        if (ev.target.dataset?.action === "close") closePalette();
       });
     </script>
+    <section id="palette" role="dialog" aria-modal="true" aria-label="command palette" aria-hidden="true">
+      <div class="scrim" data-action="close"></div>
+      <div class="panel" role="document">
+        <div class="top">
+          <span class="caret" aria-hidden="true">›</span>
+          <input id="palette-input" type="text" autocomplete="off" spellcheck="false" placeholder="search repos, sessions, actions" aria-label="search" />
+          <span class="esc">esc</span>
+        </div>
+        <div class="body">
+          <div class="section-head" data-palette-section="repos">Repositories</div>
+          <div data-palette-results="repos"></div>
+          <div class="section-head" data-palette-section="sessions">Sessions</div>
+          <div data-palette-results="sessions"></div>
+          <div class="section-head" data-palette-section="actions">Actions</div>
+          <div data-palette-results="actions"></div>
+        </div>
+        <div class="foot" id="palette-foot"></div>
+      </div>
+    </section>
   </body>
 </html>

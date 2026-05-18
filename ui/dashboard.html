@@ -315,7 +315,15 @@
 
       function lineMatchesFilter(l) {
         if (tailFilter.grep && !String(l.message).toLowerCase().includes(tailFilter.grep.toLowerCase())) return false;
+        if (tailFilter.since_ms && l.received_at && Date.now() - l.received_at > tailFilter.since_ms) return false;
         return true;
+      }
+
+      function pushTailLine(entry) {
+        entry.received_at = Date.now();
+        tailLines.push(entry);
+        if (tailLines.length > 200) tailLines = tailLines.slice(-200);
+        renderTail();
       }
 
       function renderTail() {
@@ -366,18 +374,14 @@
           } catch (_) {
             entry = parseTextLogLine(ev.data);
           }
-          tailLines.push(entry);
-          if (tailLines.length > 200) tailLines = tailLines.slice(-200);
-          renderTail();
+          pushTailLine(entry);
         };
         logSource.addEventListener("lagged", (ev) => {
-          tailLines.push({
+          pushTailLine({
             ts: fmtTs(Date.now()),
             level: "warn",
             message: `[stream] lagged ${ev.data || "n/a"} entries`,
           });
-          if (tailLines.length > 200) tailLines = tailLines.slice(-200);
-          renderTail();
         });
         logSource.onerror = () => {
           if (logSource.readyState === EventSource.CLOSED) setTimeout(startTail, 2000);
@@ -656,6 +660,54 @@
         document.querySelector("#repo-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
         return `${list.length} repos`;
       }, "list or focus a repo; `repos <name>` expands or collapses it");
+
+      registerCommand("reindex", async (args) => {
+        if (!args[0]) throw new Error("usage: reindex <repo>");
+        const list = (await fetchJson("/api/repos")).repos ?? [];
+        const target = list.find((r) => (r.name || basename(r.path)) === args[0]);
+        if (!target) throw new Error(`no repo matches "${args[0]}"`);
+        const res = await fetch(`/api/repos/${encodeURIComponent(target.id)}/reindex`, {
+          method: "POST",
+          headers: { accept: "application/json" },
+        });
+        if (!res.ok) throw new Error(`reindex failed: ${res.status}`);
+        return `queued reindex for ${target.name || basename(target.path)}`;
+      }, "POST /api/repos/<id>/reindex");
+
+      registerCommand("drop", async (args) => {
+        if (!args[0]) throw new Error("usage: drop <repo>");
+        const list = (await fetchJson("/api/repos")).repos ?? [];
+        const target = list.find((r) => (r.name || basename(r.path)) === args[0]);
+        if (!target) throw new Error(`no repo matches "${args[0]}"`);
+        if (!pendingDrop || pendingDrop.id !== target.id || Date.now() > pendingDrop.expiresAt) {
+          pendingDrop = { id: target.id, expiresAt: Date.now() + 5000 };
+          return `confirm drop of ${target.name || basename(target.path)} by running \`drop ${args[0]}\` again within 5 seconds`;
+        }
+        pendingDrop = null;
+        const res = await fetch(`/api/repos/${encodeURIComponent(target.id)}`, {
+          method: "DELETE",
+          headers: { accept: "application/json" },
+        });
+        if (!res.ok) throw new Error(`drop failed: ${res.status}`);
+        expandedRepoId = null;
+        repoDetailCache.delete(target.id);
+        renderRepos();
+        return `dropped ${target.name || basename(target.path)}`;
+      }, "two-step DELETE /api/repos/<id>; run twice within 5 seconds to confirm");
+
+      registerCommand("tail", (_args, flags) => {
+        tailFilter.grep = flags.grep ?? null;
+        if (flags.since) {
+          const m = String(flags.since).match(/^(\d+)([smh])$/);
+          const unit = { s: 1000, m: 60000, h: 3600000 };
+          tailFilter.since_ms = m ? parseInt(m[1], 10) * unit[m[2]] : null;
+        } else {
+          tailFilter.since_ms = null;
+        }
+        renderTail();
+        document.querySelector("#status-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return `tail filter ${JSON.stringify(tailFilter)}`;
+      }, "filter the live tail; `tail --grep bind --since 5m`");
     </script>
   </body>
 </html>

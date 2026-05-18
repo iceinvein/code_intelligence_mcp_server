@@ -5,9 +5,9 @@ Replaces: `ui/dashboard.html` (5-view tabbed redesign shipped in v4.0.5, commit 
 
 ## Goal
 
-Replace the tabbed dashboard with a single-page, monospace, REPL-driven surface. The page should read as one calm instrument in light mode and one high-contrast instrument in dark mode, both honouring the same identity (italic serif brand, mono body, single teal accent).
+Replace the tabbed dashboard with a single-page, monospace, palette-driven surface. The page should read as one calm instrument in light mode and one high-contrast instrument in dark mode, both honouring the same identity (italic serif brand, mono body, single teal accent). Power actions live behind a `⌘K` command palette that opens, runs, and disappears.
 
-Success: an operator opens the page and inside two seconds knows the daemon is healthy, which repos are indexed, and what just happened in the log tail. An evaluator opens the page and within ten seconds judges the project as precise, considered, and trustworthy. The REPL prompt at the bottom answers "is this a real tool?" without needing to be used.
+Success: an operator opens the page and inside two seconds knows the daemon is healthy, which repos are indexed, and what just happened in the log tail. An evaluator opens the page and within ten seconds judges the project as precise, considered, and trustworthy. Hitting `⌘K` answers "is this a real tool?" without ambiguity.
 
 ## Users
 
@@ -25,9 +25,9 @@ Top-down, no tabs. One scrolling page. Sections appear in this fixed order so th
    - Left column: key/value rows. `daemon`, `repos`, `sessions`, `jobs`, `embed`, `version`. Numbers in tabular figures.
    - Right column: live tail. Last six log lines with timestamp, level, message. Warn lines coloured.
 3. **Repositories.** A flat table beneath the status grid. Columns: name (with subdued path), files, symbols, last index, sessions. Rows expand inline on click to show repo detail (last 10 jobs, bound sessions, drop control).
-4. **REPL prompt.** Pinned at the bottom of the page. Single line: caret, input, keyboard hint. Slash key (`/`) focuses it from anywhere. History scrollback appears above the prompt when it has been used in this session.
+4. **Command palette.** Hidden by default. Opens as a centered overlay on `⌘K` (no `/` trigger; that key is left to ordinary typing). The palette is search-first: typing fuzzy-filters across repositories, sessions, and a small set of actions, presented in named sections. Modifier keys on a result execute scoped actions (`⌘↵` reindex a repo, `⌫` start a two-step drop). Esc closes.
 
-Earned density is honoured: the header is one line, status is glanceable, the repo table sits below the fold, the REPL is the densest surface and reveals itself only when used.
+Earned density is honoured: the header is one line, status is glanceable, the repo table sits below the fold, the command palette is the densest surface and reveals itself only when summoned by `⌘K`.
 
 ## Visual identity
 
@@ -97,38 +97,68 @@ Flat HTML table. Header row in small caps. Body rows in mono. Numeric columns us
 
 The drop control is a small text link (`drop repo`) that requires a confirmation step: clicking flips the link to `confirm drop` for three seconds; clicking again issues `DELETE /api/repos/{id}`. No modal.
 
-### REPL prompt
+### Command palette
 
-Pinned to the bottom of the scroll container with a `border-top: 1px dashed var(--edge-soft)`. Layout: caret, input, hint. The hint shows the most relevant keybinding for current context (e.g., `tab complete` when input is non-empty, `/ to focus` when blurred).
+Hidden by default. Opens on `⌘K` (Mac) and `Ctrl+K` (other platforms), pre-focused on its search input. Closes on `Esc` or on a click outside the palette panel.
 
-Scrollback appears above the prompt when commands have been issued. It is a transient session log, not persistent across reloads. Scrollback is capped at 50 entries.
+Layout (centered overlay):
 
-## REPL command set
+- A backdrop scrim (~45% black) dims the page underneath.
+- A single panel, ~min(680 px, 80vw) wide, anchored ~16% from the top. Background `var(--surface-2)` with a 1 px `var(--edge)` border and a soft shadow.
+- Top row: a single line with caret, search input, and an `Esc` kbd hint on the right. The input is mono, 13 px.
+- Body: a scrollable list grouped into named sections (small caps, tracked). Sections are: `Repositories`, `Sessions`, `Actions`. Up to 8 rows per section visible at once; results scroll if more.
+- Footer: a kbd hint strip showing the keystrokes available for the highlighted row (`↑ ↓ NAV`, `↵ RUN`, `⌘↵ REINDEX`, `⌫ DROP`, `ESC CLOSE`). The strip swaps as the highlight moves between row types.
 
-Bounded set wired to existing endpoints. Unknown commands print `unknown command; try ?`.
+Each row layout:
 
-| Command                | Action                                                              |
-| ---------------------- | ------------------------------------------------------------------- |
-| `?` or `help`          | List commands inline in scrollback.                                  |
-| `clear`                | Clear scrollback.                                                    |
-| `status`               | Reprint the status block as a scrollback entry.                      |
-| `repos`                | Reprint the repo table; smooth-scroll the view to that section.      |
-| `repos <name>`         | Expand the row for `<name>` (fuzzy match on basename).               |
-| `reindex <name>`       | `POST /api/repos/{id}/reindex`. Print queued / failed result.        |
-| `drop <name>`          | Two-step confirm. On second invocation, `DELETE /api/repos/{id}`.    |
-| `tail [--since 5m]`    | Scroll to the right column and apply a filter on age or substring.   |
-| `tail --grep <pat>`    | Filter the live tail by substring.                                   |
-| `version`              | Print daemon version from `/api/version`.                            |
+- 20-px icon column (a tiny boxed glyph in `var(--ink-dim)`, switching to `var(--accent)` when highlighted).
+- Primary label (the repo `name`, the session basename, or the action verb).
+- Secondary subtitle in `var(--ink-dim)`, 9 px (the repo path tail, the session bind state, etc.).
+- Right-aligned kbd badge showing the default action (`↵`).
 
-Keyboard:
+Fuzzy match: a basic substring-then-subsequence scorer. Highlights the matched span on the primary label in `var(--accent)`. The query is split on whitespace; all tokens must match (AND semantics).
 
-- `/` focuses the input from anywhere on the page (unless a text input is already focused).
-- `Esc` blurs the input.
-- `Up` and `Down` walk command history within the current session.
-- `Tab` completes the first unambiguous command keyword or repo name.
-- `Ctrl+L` is an alias for `clear`.
+### Palette result types
 
-Out of scope for V1: pipes, scripting, saved command files, plugins, multi-line input. The grammar is `<verb> [<arg>] [--flag value]` and nothing more.
+| Section        | Source                        | Default `↵`               | `⌘↵`                       | `⌫`                                  |
+| -------------- | ----------------------------- | --------------------------- | ---------------------------- | -------------------------------------- |
+| Repositories   | `/api/repos`                  | Expand inline in the table; smooth-scroll into view; close palette. | `POST /api/repos/{id}/reindex` and close. | Start two-step drop: keep palette open, swap the row hint to `confirm drop`, second `⌫` issues `DELETE /api/repos/{id}`. 5 s window. |
+| Sessions       | `/api/sessions`               | Scroll the session count in the status grid into view; close palette. | (n/a) | (n/a) |
+| Actions        | Built-in static list (below)  | Per-action.                 | (n/a)                        | (n/a)                                  |
+
+Built-in actions (V2):
+
+- `Refresh data now` (re-runs all pollers immediately).
+- `Reindex all repositories` (POSTs reindex for every repo; confirms first via a second-press pattern).
+- `Cycle theme` (system → light → dark → system; mirrors the header toggle).
+- `Filter live tail…` (opens the palette in a sub-input mode: a single line that takes a grep pattern and an optional `Ns|Nm|Nh` since; applies `tailFilter` and closes).
+- `Clear live tail filter` (resets `tailFilter` to defaults).
+
+Sections render in this order: Repositories, Sessions, Actions. Empty sections are omitted. When the search box is empty, all sections appear in full (with Repositories capped at 8 rows visible; the user can scroll). When the search box has text, only sections with at least one match render.
+
+### Palette keyboard
+
+- `⌘K` (or `Ctrl+K`): open the palette from anywhere on the page (does not fire while the user is typing in a real `<input>` or `<textarea>` that is NOT the palette itself).
+- `Esc`: close the palette. If the palette is closed, do nothing.
+- `↑` / `↓`: move the highlight. Skips section header rows. Wraps within the visible result set.
+- `↵`: run the default action for the highlighted row, then close (unless the action keeps the palette open by design, e.g., `Filter live tail…`).
+- `⌘↵` (or `Ctrl+↵`): on a Repository row, queue a reindex and close. Inactive on other row types.
+- `⌫`: on a Repository row, start the two-step drop. The first press swaps the row's right-side kbd badge to a warn-coloured `confirm drop` and arms `pendingDrop`. The second press within 5 s issues the DELETE and closes. The third option for a wary user is `Esc` to cancel.
+- Typing: filters the current section list. Whitespace splits into AND tokens.
+
+### Decommissioned commands
+
+The V1 REPL commands `?`/`help`, `clear`, `status`, `version`, `tail --grep`, `tail --since`, plus the inline command-history walk (`↑`/`↓`) and `Tab` completion, are removed. Their UX functions are absorbed as follows:
+
+- `help` and self-discovery → the palette itself is the help; the footer kbd hints document available shortcuts contextually.
+- `clear` → no scrollback to clear.
+- `status` → the status grid is permanently visible; "Refresh data now" forces a re-poll.
+- `version` → shown in the existing status grid `version` row and on the health-pulse tooltip.
+- `tail --grep` / `--since` → "Filter live tail…" palette action.
+- History (`↑`/`↓`) → unused in palette mode (you re-find the result by typing again, which is the Raycast convention).
+- `Tab` completion → unused; typing already fuzzy-filters.
+
+Out of scope for V2: multi-pane palette views, plugins, persistent recent-actions, fuzzy scorers more elaborate than substring + subsequence with token AND.
 
 ## Theming
 
@@ -150,7 +180,7 @@ All endpoints already exist on the JSON API (`src/server/api.rs`). No backend ch
 - `GET /api/repos`: repo list.
 - `GET /api/repos/{id}`: repo detail (for row expansion).
 - `POST /api/repos/{id}/reindex`: reindex action.
-- `DELETE /api/repos/{id}`: drop repo (REPL `drop`).
+- `DELETE /api/repos/{id}`: drop repo (palette `⌫`).
 - `GET /api/sessions`: bound MCP sessions.
 - `GET /api/jobs`: running and finished background jobs.
 - `GET /api/logs/stream`: SSE log feed for the live tail.
@@ -168,22 +198,22 @@ Polling cadence: status, repos, sessions, jobs every 5 s (matches v4.0.5 default
 - Live tail is announced as a polite ARIA live region (`aria-live="polite"`), not assertive.
 - Color blindness: warn uses warm orange, ok uses teal, error will use warm red. Each state additionally carries a text label.
 
-## Non-goals (V1)
+## Non-goals (V2)
 
 - Charts and graphs. No sparklines on the dashboard. (Measure direction can be considered later.)
-- Pipes and scripting in the REPL.
-- Persistent REPL history across reloads.
-- Drag-and-drop, multi-pane resizing, or tmux-like splits.
 - Per-repo dashboards or deep links. Row expansion is enough.
 - Configuration UI. Settings remain in `~/.code-intelligence/server.toml`.
+- Multi-pane palette views, plugin extensions, or persistent recent-actions in the palette.
+- A pinned bottom REPL. V1 shipped one; V2 replaces it with the palette overlay.
+- Command history walk (`↑` / `↓`) and Tab completion inside the palette. The Raycast model relies on type-to-find; we follow it.
 
 ## Open questions
 
 None blocking. Items to resolve during planning:
 
 - Exact `aria-live` granularity for the tail (per row vs batch).
-- Whether `tab` completion should also complete fuzzy repo basenames or only command keywords.
-- Whether `drop` confirmation should also accept typing the repo name (safer for destructive ops, slower).
+- Whether the palette should announce result count to screen readers as the query changes (e.g., `aria-live="polite"` on a hidden status node).
+- Whether `Filter live tail…` should temporarily replace the palette body with a single-input mode (recommended), or use a chained command-style prompt.
 
 ## Implementation notes
 
@@ -192,4 +222,4 @@ None blocking. Items to resolve during planning:
 - Reuse the existing `localStorage.cimcp.theme` key and FOUC guard pattern from the v4.0.5 dashboard.
 - Keep the page total under 80 KB inlined.
 - No external font requests. Type stack falls back to system serif and mono.
-- Tests: Bun smoke test that fetches `/` and asserts the page contains the brand string, the section markers, and the REPL prompt; integration test that exercises one round trip of the REPL `version` command against a running daemon (already covered for backend by existing API tests).
+- Tests: existing `tests/dashboard_markers.rs` is extended to assert the palette markers (`id="palette"`, `id="palette-input"`, the three section labels). Integration coverage of `POST /api/repos/{id}/reindex` and `DELETE /api/repos/{id}` already exists for the V1 row-link drop; the palette reuses those handlers.

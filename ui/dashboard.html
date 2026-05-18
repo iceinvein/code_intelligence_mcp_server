@@ -86,6 +86,18 @@
         .tail .ln.new { animation: fade 120ms ease-out; }
       }
       @keyframes fade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+      .repos h4 { margin: 18px 0 8px; font: 500 10px var(--font-sans); letter-spacing: 0.18em; text-transform: uppercase; color: var(--label); }
+      .repos table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      .repos th { text-align: left; font: 500 9px var(--font-sans); letter-spacing: 0.16em; text-transform: uppercase; color: var(--label); padding: 0 8px 6px 0; }
+      .repos th.right, .repos td.right { text-align: right; padding-right: 0; }
+      .repos td { padding: 4px 8px 4px 0; border-top: 1px dashed var(--edge); cursor: pointer; }
+      .repos td .dim { color: var(--ink-dim); margin-left: 8px; }
+      .repos tr.detail td { background: var(--surface-2); cursor: default; padding: 8px 12px 12px; border-top: 0; }
+      .repos .detail h5 { margin: 0 0 4px; font: 500 9px var(--font-sans); letter-spacing: 0.16em; text-transform: uppercase; color: var(--label); }
+      .repos .detail .group + .group { margin-top: 8px; }
+      .drop-link { color: var(--warn); cursor: pointer; text-decoration: underline dotted; user-select: none; }
+      .drop-link.confirm { color: var(--bg); background: var(--warn); padding: 1px 6px; border-radius: 3px; text-decoration: none; }
+      .repos tr[data-id]:focus-visible, .drop-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     </style>
   </head>
   <body data-theme-key="cimcp.theme">
@@ -104,7 +116,19 @@
         <div class="sep"></div>
         <div class="col" id="tail-col"></div>
       </section>
-      <section id="repo-table"></section>
+      <section id="repo-table" class="repos">
+        <h4>Repositories</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>name</th>
+              <th class="right">last access</th>
+              <th class="right">activity</th>
+            </tr>
+          </thead>
+          <tbody id="repo-rows"></tbody>
+        </table>
+      </section>
     </main>
     <section id="repl"></section>
     <script type="module">
@@ -342,6 +366,153 @@
         };
       }
       startTail();
+
+      let expandedRepoId = null;
+      const repoDetailCache = new Map();
+      let lastRepoList = [];
+      let lastSessions = [];
+
+      function activityLabel(r) {
+        if (r.activity?.running) return "running";
+        if (r.activity?.last_finished) return "idle";
+        return "never";
+      }
+
+      function renderRepoRow(r) {
+        const last = r.last_accessed ? fmtTs(r.last_accessed) : "–";
+        const nameCell = el("td", null,
+          r.name || basename(r.path),
+          el("span", { class: "dim", text: r.path || "" })
+        );
+        const tr = el("tr", { tabindex: 0, role: "button", "aria-expanded": String(expandedRepoId === r.id) },
+          nameCell,
+          el("td", { class: "right", text: last }),
+          el("td", { class: "right", text: activityLabel(r) })
+        );
+        tr.dataset.id = r.id;
+        return tr;
+      }
+
+      function renderRepoDetail(detail, repoId, sessions) {
+        const stats = detail.stats || {};
+        const statsRow = (k, v) =>
+          el("div", { class: "kv-line" },
+            el("span", { class: "k", style: "color:var(--label);font:500 9px var(--font-sans);letter-spacing:0.16em;text-transform:uppercase;margin-right:10px", text: k }),
+            el("span", { class: "v", text: v == null ? "–" : String(v.toLocaleString?.() ?? v) })
+          );
+
+        const statsGroup = el("div", { class: "group" },
+          el("h5", { text: "stats" }),
+          statsRow("symbols", stats.symbols),
+          statsRow("edges", stats.edges),
+          statsRow("descriptions", stats.descriptions),
+          statsRow("undescribed", stats.undescribed_symbols),
+        );
+
+        const repoPath = detail.path || "";
+        const boundSessions = (sessions || []).filter((s) => s.repo === repoPath);
+        const sessionsList = boundSessions.length === 0
+          ? el("span", { class: "dim", style: "color:var(--ink-dim)", text: "none" })
+          : el("span", { text: boundSessions.map((s) => (s.session_id || "").slice(0, 8)).join(", ") });
+        const sessionsGroup = el("div", { class: "group" },
+          el("h5", { text: "bound sessions" }),
+          sessionsList,
+        );
+
+        const dropLink = el("a", { href: "#", class: "drop-link", text: "drop repo" });
+        dropLink.dataset.action = "drop";
+        dropLink.dataset.id = repoId;
+        const actionsGroup = el("div", { class: "group" },
+          el("h5", { text: "actions" }),
+          el("div", null, dropLink),
+        );
+
+        const detailDiv = el("div", { class: "detail" }, statsGroup, sessionsGroup, actionsGroup);
+        return el("tr", { class: "detail" }, el("td", { colSpan: 3 }, detailDiv));
+      }
+
+      async function renderRepos() {
+        let data;
+        try { data = await fetchJson("/api/repos"); }
+        catch (_) { return; }
+        const list = data.repos ?? [];
+        lastRepoList = list;
+        const tbody = $("#repo-rows");
+        tbody.replaceChildren(...list.map(renderRepoRow));
+        if (expandedRepoId) {
+          const present = list.find((r) => r.id === expandedRepoId);
+          if (present) attachDetail(expandedRepoId); else expandedRepoId = null;
+        }
+      }
+
+      async function attachDetail(id) {
+        document.querySelectorAll("tr.detail").forEach((tr) => tr.remove());
+        document.querySelectorAll("tr[data-id]").forEach((tr) => tr.setAttribute("aria-expanded", tr.dataset.id === id ? "true" : "false"));
+        const cached = repoDetailCache.get(id);
+        let detail;
+        try {
+          detail = cached && Date.now() - cached.fetchedAt < 5000
+            ? cached.data
+            : await fetchJson(`/api/repos/${encodeURIComponent(id)}`);
+        } catch (_) {
+          return;
+        }
+        repoDetailCache.set(id, { fetchedAt: Date.now(), data: detail });
+        let sessions = lastSessions;
+        try {
+          const s = await fetchJson("/api/sessions");
+          sessions = s.sessions ?? [];
+          lastSessions = sessions;
+        } catch (_) { /* keep last */ }
+        const host = document.querySelector(`tr[data-id="${CSS.escape(id)}"]`);
+        if (!host) return;
+        host.insertAdjacentElement("afterend", renderRepoDetail(detail, id, sessions));
+      }
+
+      async function toggleExpand(id) {
+        if (expandedRepoId === id) {
+          expandedRepoId = null;
+          document.querySelectorAll("tr.detail").forEach((tr) => tr.remove());
+          document.querySelectorAll("tr[data-id]").forEach((tr) => tr.setAttribute("aria-expanded", "false"));
+          return;
+        }
+        expandedRepoId = id;
+        await attachDetail(id);
+      }
+
+      $("#repo-rows").addEventListener("click", async (ev) => {
+        const link = ev.target.closest(".drop-link");
+        if (link) {
+          ev.preventDefault();
+          if (link.classList.contains("confirm")) {
+            const id = link.dataset.id;
+            try {
+              await fetch(`/api/repos/${encodeURIComponent(id)}`, { method: "DELETE", headers: { accept: "application/json" } });
+            } catch (_) { /* swallow; the next renderRepos cycle will reflect actual state */ }
+            expandedRepoId = null;
+            repoDetailCache.delete(id);
+            renderRepos();
+            return;
+          }
+          link.textContent = "confirm drop";
+          link.classList.add("confirm");
+          setTimeout(() => { link.textContent = "drop repo"; link.classList.remove("confirm"); }, 3000);
+          return;
+        }
+        const tr = ev.target.closest("tr[data-id]");
+        if (tr) toggleExpand(tr.dataset.id);
+      });
+
+      $("#repo-rows").addEventListener("keydown", (ev) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        const tr = ev.target.closest("tr[data-id]");
+        if (!tr) return;
+        ev.preventDefault();
+        toggleExpand(tr.dataset.id);
+      });
+
+      renderRepos();
+      setInterval(renderRepos, 5000);
     </script>
   </body>
 </html>

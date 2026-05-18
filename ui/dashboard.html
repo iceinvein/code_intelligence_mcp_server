@@ -765,7 +765,7 @@
         ];
         if (kind === "repo") {
           items.push(el("span", null, el("kbd", { text: "⌘↵" }), " reindex"));
-          items.push(el("span", null, el("kbd", { text: "⌫" }), " drop"));
+          items.push(el("span", null, el("kbd", { text: "⌘⌫" }), " drop"));
         }
         items.push(el("span", null, el("kbd", { text: "esc" }), " close"));
         paletteFoot.replaceChildren(...items);
@@ -802,7 +802,7 @@
           }
           return;
         }
-        if (ev.key === "Backspace" && paletteInput.value === "") {
+        if (ev.key === "Backspace" && (ev.metaKey || ev.ctrlKey)) {
           const rows = paletteRowsFlat();
           const row = rows[paletteHighlight];
           if (!row || row.dataset.kind !== "repo") return;

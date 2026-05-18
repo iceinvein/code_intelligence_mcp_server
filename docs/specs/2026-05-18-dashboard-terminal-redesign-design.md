@@ -25,7 +25,7 @@ Top-down, no tabs. One scrolling page. Sections appear in this fixed order so th
    - Left column: key/value rows. `daemon`, `repos`, `sessions`, `jobs`, `embed`, `version`. Numbers in tabular figures.
    - Right column: live tail. Last six log lines with timestamp, level, message. Warn lines coloured.
 3. **Repositories.** A flat table beneath the status grid. Columns: name (with subdued path), files, symbols, last index, sessions. Rows expand inline on click to show repo detail (last 10 jobs, bound sessions, drop control).
-4. **Command palette.** Hidden by default. Opens as a centered overlay on `⌘K` (no `/` trigger; that key is left to ordinary typing). The palette is search-first: typing fuzzy-filters across repositories, sessions, and a small set of actions, presented in named sections. Modifier keys on a result execute scoped actions (`⌘↵` reindex a repo, `⌫` start a two-step drop). Esc closes.
+4. **Command palette.** Hidden by default. Opens as a centered overlay on `⌘K` (no `/` trigger; that key is left to ordinary typing). The palette is search-first: typing fuzzy-filters across repositories, sessions, and a small set of actions, presented in named sections. Modifier keys on a result execute scoped actions (`⌘↵` reindex a repo, `⌘⌫` start a two-step drop). Esc closes.
 
 Earned density is honoured: the header is one line, status is glanceable, the repo table sits below the fold, the command palette is the densest surface and reveals itself only when summoned by `⌘K`.
 
@@ -107,7 +107,7 @@ Layout (centered overlay):
 - A single panel, ~min(680 px, 80vw) wide, anchored ~16% from the top. Background `var(--surface-2)` with a 1 px `var(--edge)` border and a soft shadow.
 - Top row: a single line with caret, search input, and an `Esc` kbd hint on the right. The input is mono, 13 px.
 - Body: a scrollable list grouped into named sections (small caps, tracked). Sections are: `Repositories`, `Sessions`, `Actions`. Up to 8 rows per section visible at once; results scroll if more.
-- Footer: a kbd hint strip showing the keystrokes available for the highlighted row (`↑ ↓ NAV`, `↵ RUN`, `⌘↵ REINDEX`, `⌫ DROP`, `ESC CLOSE`). The strip swaps as the highlight moves between row types.
+- Footer: a kbd hint strip showing the keystrokes available for the highlighted row (`↑ ↓ NAV`, `↵ RUN`, `⌘↵ REINDEX`, `⌘⌫ DROP`, `ESC CLOSE`). The strip swaps as the highlight moves between row types.
 
 Each row layout:
 
@@ -120,9 +120,9 @@ Fuzzy match: a basic substring-then-subsequence scorer. Highlights the matched s
 
 ### Palette result types
 
-| Section        | Source                        | Default `↵`               | `⌘↵`                       | `⌫`                                  |
+| Section        | Source                        | Default `↵`               | `⌘↵`                       | `⌘⌫`                                  |
 | -------------- | ----------------------------- | --------------------------- | ---------------------------- | -------------------------------------- |
-| Repositories   | `/api/repos`                  | Expand inline in the table; smooth-scroll into view; close palette. | `POST /api/repos/{id}/reindex` and close. | Start two-step drop: keep palette open, swap the row hint to `confirm drop`, second `⌫` issues `DELETE /api/repos/{id}`. 5 s window. |
+| Repositories   | `/api/repos`                  | Expand inline in the table; smooth-scroll into view; close palette. | `POST /api/repos/{id}/reindex` and close. | Start two-step drop: keep palette open, swap the row hint to `confirm drop`, second `⌘⌫` issues `DELETE /api/repos/{id}`. 5 s window. |
 | Sessions       | `/api/sessions`               | Scroll the session count in the status grid into view; close palette. | (n/a) | (n/a) |
 | Actions        | Built-in static list (below)  | Per-action.                 | (n/a)                        | (n/a)                                  |
 
@@ -143,7 +143,7 @@ Sections render in this order: Repositories, Sessions, Actions. Empty sections a
 - `↑` / `↓`: move the highlight. Skips section header rows. Wraps within the visible result set.
 - `↵`: run the default action for the highlighted row, then close (unless the action keeps the palette open by design, e.g., `Filter live tail…`).
 - `⌘↵` (or `Ctrl+↵`): on a Repository row, queue a reindex and close. Inactive on other row types.
-- `⌫`: on a Repository row, start the two-step drop. The first press swaps the row's right-side kbd badge to a warn-coloured `confirm drop` and arms `pendingDrop`. The second press within 5 s issues the DELETE and closes. The third option for a wary user is `Esc` to cancel.
+- `⌘⌫`: on a Repository row, start the two-step drop. The first press swaps the row's right-side kbd badge to a warn-coloured `confirm drop` and arms `pendingDrop`. The second press within 5 s issues the DELETE and closes. The third option for a wary user is `Esc` to cancel.
 - Typing: filters the current section list. Whitespace splits into AND tokens.
 
 ### Decommissioned commands
@@ -180,7 +180,7 @@ All endpoints already exist on the JSON API (`src/server/api.rs`). No backend ch
 - `GET /api/repos`: repo list.
 - `GET /api/repos/{id}`: repo detail (for row expansion).
 - `POST /api/repos/{id}/reindex`: reindex action.
-- `DELETE /api/repos/{id}`: drop repo (palette `⌫`).
+- `DELETE /api/repos/{id}`: drop repo (palette `⌘⌫`).
 - `GET /api/sessions`: bound MCP sessions.
 - `GET /api/jobs`: running and finished background jobs.
 - `GET /api/logs/stream`: SSE log feed for the live tail.

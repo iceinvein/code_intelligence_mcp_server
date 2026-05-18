@@ -261,7 +261,7 @@
             el("span", { class: "dim", text: sessionNames.slice(0, 3).join(", ") || "none" })
           );
           const jobsV  = el("span", null, `${running.length} running  `, bar(runPct));
-          const embedV = "– q/s · – ms p50 · 4 permits";
+          const embedV = el("span", { class: "dim", text: "telemetry not exposed yet" });
           const verV   = `${version.version || "unknown"} · llama.cpp metal`;
 
           kv.classList.remove("stale");
@@ -317,6 +317,18 @@
         const d = new Date(iso);
         if (Number.isNaN(d.getTime())) return "";
         return d.toTimeString().slice(0, 5);
+      }
+
+      function fmtAgo(iso) {
+        if (!iso) return "–";
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return "–";
+        const ms = Date.now() - d.getTime();
+        if (ms < 60_000) return "just now";
+        if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+        if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+        if (ms < 7 * 86_400_000) return `${Math.floor(ms / 86_400_000)}d ago`;
+        return d.toISOString().slice(0, 10);
       }
 
       function lineMatchesFilter(l) {
@@ -409,7 +421,7 @@
       }
 
       function renderRepoRow(r) {
-        const last = r.last_accessed ? fmtTs(r.last_accessed) : "–";
+        const last = fmtAgo(r.last_accessed);
         const nameCell = el("td", null,
           r.name || basename(r.path),
           el("span", { class: "dim", text: r.path || "" })
@@ -533,7 +545,7 @@
             renderRepos();
             return;
           }
-          pendingDrop = { id: link.dataset.id, expiresAt: Date.now() + 3000 };
+          pendingDrop = { id: link.dataset.id, expiresAt: Date.now() + 5000 };
           link.textContent = "confirm drop";
           link.classList.add("confirm");
           setTimeout(() => {
@@ -542,7 +554,7 @@
               link.textContent = "drop repo";
               link.classList.remove("confirm");
             }
-          }, 3000);
+          }, 5000);
           return;
         }
         const tr = ev.target.closest("tr[data-id]");

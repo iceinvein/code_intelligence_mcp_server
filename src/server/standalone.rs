@@ -6,6 +6,7 @@ use crate::handlers::{
 };
 use crate::path::Utf8PathBuf;
 use crate::server::mcp_proxy::{BoundRepos, PendingRepos};
+use crate::server::project_check::{ProjectGate, SkipReason};
 use crate::server::{all_tools, dispatch_tool_call, tool_json_content};
 use crate::session::SessionManager;
 use crate::tools::{BindWorkspaceTool, ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
@@ -48,6 +49,13 @@ pub struct SessionInfo {
     /// Monotonic timestamp refreshed on every tool call; entries past
     /// `SESSION_INACTIVITY_TTL` are evicted by [`spawn_session_eviction_loop`].
     pub last_seen: Instant,
+    /// Set when an implicit binding source (roots/list or the single-repo
+    /// fallback) offered a path that failed the project-marker heuristic in
+    /// [`crate::server::project_check`]. Surfaces in the dashboard and short-
+    /// circuits further auto-bind attempts so we don't loop on `roots/list`
+    /// every tool call. Explicit binds (`bind_workspace`, `?repo=` URL)
+    /// clear this field.
+    pub bind_skipped_reason: Option<String>,
 }
 
 /// Shared map of MCP session-id to bookkeeping info. Cloned (cheaply, it is
@@ -137,6 +145,8 @@ impl StandaloneHandler {
             .map(|i| i.repo.is_some())
             .unwrap_or(false);
         self.upsert_session(session_id, Some(repo.clone()));
+        // Explicit URL binding overrides any prior auto-bind skip.
+        self.clear_bind_skip(session_id);
         // Cache for recovery so a future SDK eviction can re-apply the
         // same repo even if the client request no longer carries `?repo=`.
         self.bound_repos.insert(session_id.clone(), repo.clone());
@@ -178,7 +188,63 @@ impl StandaloneHandler {
                 repo,
                 initialized_at: now_system,
                 last_seen: now_instant,
+                bind_skipped_reason: None,
             });
+    }
+
+    /// Record that an automatic bind was skipped because the candidate path
+    /// failed the project-marker heuristic. Idempotent and safe to call from
+    /// any binding path. Only updates the reason if no explicit repo is set
+    /// so a later `bind_workspace` cleanly overrides the skip.
+    fn mark_bind_skipped(&self, session_id: &SessionId, reason: String) {
+        if let Some(mut info) = self.session_repos.get_mut(session_id) {
+            if info.repo.is_none() {
+                info.bind_skipped_reason = Some(reason);
+            }
+        }
+    }
+
+    /// Return the previously-recorded skip reason for this session, if the
+    /// session is unbound. A bound session is never considered skipped.
+    fn bind_skip_reason(&self, session_id: &SessionId) -> Option<String> {
+        let info = self.session_repos.get(session_id)?;
+        if info.repo.is_some() {
+            return None;
+        }
+        info.bind_skipped_reason.clone()
+    }
+
+    /// Clear any prior skip reason for this session. Called whenever an
+    /// explicit binding succeeds so the user can recover from an earlier
+    /// auto-bind rejection without restarting the session.
+    fn clear_bind_skip(&self, session_id: &SessionId) {
+        if let Some(mut info) = self.session_repos.get_mut(session_id) {
+            info.bind_skipped_reason = None;
+        }
+    }
+
+    /// Log and remember that an automatic bind was rejected. Ensures the
+    /// session row is present (so the dashboard can show the skip), updates
+    /// the reason, and emits a warning to the log stream.
+    fn record_auto_bind_skip(
+        &self,
+        session_id: &SessionId,
+        repo_path: &crate::path::Utf8Path,
+        reason: &SkipReason,
+        source: &'static str,
+    ) {
+        let reason_str = reason.to_string();
+        // Make sure the session row exists before we try to mark it.
+        self.upsert_session(session_id, None);
+        self.mark_bind_skipped(session_id, reason_str.clone());
+        tracing::warn!(
+            session = %session_id,
+            repo = %repo_path,
+            source,
+            reason = %reason_str,
+            "Skipped auto-bind: candidate path does not look like a project. \
+             Call bind_workspace explicitly or set ?repo=... if this is intentional.",
+        );
     }
 
     /// Refresh `last_seen` for a session without changing its repo. Used by
@@ -231,6 +297,14 @@ impl StandaloneHandler {
             return Some(bound);
         }
 
+        // A prior roots/list returned a path that failed the project-marker
+        // check. Don't re-issue the request on every tool call; the user can
+        // still bind explicitly via `bind_workspace` or `?repo=`, both of
+        // which clear the skip when they fire.
+        if self.bind_skip_reason(session_id).is_some() {
+            return None;
+        }
+
         #[allow(deprecated)] // list_roots deprecated in 0.8.0 in favor of request_root_list
         let roots_result = match runtime.request_root_list(None).await {
             Ok(r) => r,
@@ -246,6 +320,11 @@ impl StandaloneHandler {
 
         let root = roots_result.roots.first()?;
         let repo_path = Self::parse_root_uri(&root.uri);
+
+        if let Err(reason) = ProjectGate::from_env().check(&repo_path) {
+            self.record_auto_bind_skip(session_id, &repo_path, &reason, "roots/list");
+            return None;
+        }
 
         // Detect "we just promoted from unbound to bound" so we only log /
         // pre-warm once per session.
@@ -313,6 +392,8 @@ impl StandaloneHandler {
         self.upsert_session(&session_id, Some(repo_path.clone()));
         self.bound_repos
             .insert(session_id.clone(), repo_path.clone());
+        // Explicit bind overrides any prior auto-bind skip.
+        self.clear_bind_skip(&session_id);
 
         tracing::info!(
             session = %session_id,
@@ -343,11 +424,18 @@ impl StandaloneHandler {
     /// a second repo is added, so users with multiple workspaces always
     /// hit the explicit `bind_workspace` path instead of a silent wrong-bind.
     async fn try_single_repo_fallback(&self, session_id: &SessionId) -> Option<Utf8PathBuf> {
+        if self.bind_skip_reason(session_id).is_some() {
+            return None;
+        }
         let repos = self.session_manager.registry.list_all().ok()?;
         if repos.len() != 1 {
             return None;
         }
         let path = Utf8PathBuf::from(repos.into_iter().next()?.path);
+        if let Err(reason) = ProjectGate::from_env().check(&path) {
+            self.record_auto_bind_skip(session_id, &path, &reason, "single_repo_fallback");
+            return None;
+        }
         let was_already_bound = self
             .session_repos
             .get(session_id)
@@ -511,6 +599,7 @@ impl ServerHandler for StandaloneHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::Utf8Path;
     use rust_mcp_sdk::schema::{Implementation, ProtocolVersion, ServerCapabilities};
 
     #[tokio::test]
@@ -671,6 +760,7 @@ mod tests {
                 repo: None,
                 initialized_at: SystemTime::now(),
                 last_seen: Instant::now(),
+                bind_skipped_reason: None,
             },
         );
         sessions.insert(
@@ -681,6 +771,7 @@ mod tests {
                 last_seen: Instant::now()
                     .checked_sub(SESSION_INACTIVITY_TTL + Duration::from_secs(60))
                     .unwrap(),
+                bind_skipped_reason: None,
             },
         );
 
@@ -696,5 +787,50 @@ mod tests {
 
         assert!(sessions.contains_key("fresh"));
         assert!(!sessions.contains_key("stale"));
+    }
+
+    #[test]
+    fn record_auto_bind_skip_persists_reason_on_session() {
+        let h = test_handler();
+        let sid = "session-skip-1".to_string();
+        h.upsert_session(&sid, None);
+
+        let reason = SkipReason::Blocklisted { matched: "/tmp" };
+        h.record_auto_bind_skip(&sid, Utf8Path::new("/private/tmp"), &reason, "roots/list");
+
+        let stored = h.bind_skip_reason(&sid).expect("skip recorded");
+        assert!(stored.contains("/tmp"));
+    }
+
+    #[test]
+    fn bind_skip_reason_clears_when_session_becomes_bound() {
+        let h = test_handler();
+        let sid = "session-skip-2".to_string();
+        h.upsert_session(&sid, None);
+        let reason = SkipReason::NoProjectMarkers;
+        h.record_auto_bind_skip(
+            &sid,
+            Utf8Path::new("/Users/me/scratch"),
+            &reason,
+            "roots/list",
+        );
+        assert!(h.bind_skip_reason(&sid).is_some());
+
+        // Promote to bound — even though the field still holds a value
+        // internally, the accessor must return None so the dashboard does
+        // not display a stale skip alongside a bound repo.
+        h.upsert_session(&sid, Some(Utf8PathBuf::from("/Users/me/scratch/real")));
+        assert!(h.bind_skip_reason(&sid).is_none());
+    }
+
+    #[test]
+    fn clear_bind_skip_drops_stored_reason() {
+        let h = test_handler();
+        let sid = "session-skip-3".to_string();
+        h.upsert_session(&sid, None);
+        h.mark_bind_skipped(&sid, "test reason".to_string());
+        assert!(h.bind_skip_reason(&sid).is_some());
+        h.clear_bind_skip(&sid);
+        assert!(h.bind_skip_reason(&sid).is_none());
     }
 }

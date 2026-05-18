@@ -490,6 +490,7 @@ async fn handle_sessions(State(state): State<Arc<ApiState>>) -> Json<Value> {
                 "bound": info.repo.is_some(),
                 "initialized_at_unix_s": initialized_at_unix_s,
                 "last_seen_secs_ago": last_seen_secs_ago,
+                "bind_skipped_reason": info.bind_skipped_reason.clone(),
             })
         })
         .collect();

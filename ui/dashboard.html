@@ -76,6 +76,16 @@
       .bar { display: inline-block; letter-spacing: 0.5px; }
       .bar .fill { color: var(--accent); }
       .bar .gap { color: var(--edge-soft); }
+      .tail { font-size: 11px; line-height: 1.55; }
+      .tail .ln { display: grid; grid-template-columns: 48px 60px 1fr; gap: 10px; padding: 1px 0; }
+      .tail .ln .t { color: var(--label); font-variant-numeric: tabular-nums; }
+      .tail .ln .lvl { color: var(--label); text-transform: lowercase; }
+      .tail .ln.warn .lvl, .tail .ln.warn { color: var(--warn); }
+      .tail .ln.error .lvl, .tail .ln.error { color: var(--warn); font-weight: 600; }
+      @media (prefers-reduced-motion: no-preference) {
+        .tail .ln.new { animation: fade 120ms ease-out; }
+      }
+      @keyframes fade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
     </style>
   </head>
   <body data-theme-key="cimcp.theme">
@@ -238,6 +248,69 @@
         applyTheme(next);
       });
       applyTheme(localStorage.getItem(THEME_KEY) || "system");
+
+      $("#tail-col").appendChild(
+        el("div", {
+          class: "tail",
+          id: "tail",
+          role: "log",
+          "aria-live": "polite",
+          "aria-relevant": "additions",
+          "aria-label": "live log tail",
+        })
+      );
+
+      const MAX_TAIL = 6;
+      let tailLines = [];
+      const tailFilter = { since_ms: null, grep: null };
+      let logSource = null;
+
+      function fmtTs(iso) {
+        try {
+          const d = new Date(iso);
+          return d.toTimeString().slice(0, 5);
+        } catch { return ""; }
+      }
+
+      function lineMatchesFilter(l) {
+        if (tailFilter.grep && !String(l.message).toLowerCase().includes(tailFilter.grep.toLowerCase())) return false;
+        return true;
+      }
+
+      function renderTail() {
+        const tail = $("#tail");
+        const rows = tailLines
+          .slice(-MAX_TAIL)
+          .filter(lineMatchesFilter)
+          .reverse()
+          .map((l, i) =>
+            el("div", { class: `ln ${l.level}${i === 0 ? " new" : ""}` },
+              el("span", { class: "t",   text: l.ts }),
+              el("span", { class: "lvl", text: l.level }),
+              el("span", { class: "msg", text: l.message })
+            )
+          );
+        tail.replaceChildren(...rows);
+      }
+
+      function startTail() {
+        logSource = new EventSource("/api/logs/stream");
+        logSource.onmessage = (ev) => {
+          let obj = null;
+          try { obj = JSON.parse(ev.data); } catch (_) { return; }
+          tailLines.push({
+            ts: fmtTs(obj.timestamp || obj.ts || Date.now()),
+            level: String(obj.level || "info").toLowerCase(),
+            message: String(obj.message || obj.msg || ev.data),
+          });
+          if (tailLines.length > 200) tailLines = tailLines.slice(-200);
+          renderTail();
+        };
+        logSource.onerror = () => {
+          if (logSource.readyState === EventSource.CLOSED) setTimeout(startTail, 2000);
+        };
+      }
+      startTail();
     </script>
   </body>
 </html>

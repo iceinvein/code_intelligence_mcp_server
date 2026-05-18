@@ -762,15 +762,27 @@
         paletteInput.value = "";
         paletteInput.placeholder = "grep pattern (optional --since Ns|Nm|Nh)";
         const body = palette.querySelector(".body");
-        body.replaceChildren(
-          el("div", { class: "empty", text: "Type a substring to filter the live tail. Add --since 5m for an age window. Enter to apply." })
-        );
+        for (const child of Array.from(body.children)) {
+          child.style.display = "none";
+        }
+        const help = el("div", {
+          class: "empty",
+          text: "Type a substring to filter the live tail. Add --since 5m for an age window. Enter to apply.",
+        });
+        help.dataset.paletteTransient = "tail-filter";
+        body.appendChild(help);
         renderPaletteFoot(null);
       }
 
       function resetPaletteMode() {
         paletteMode = "default";
         paletteInput.placeholder = "search repos, sessions, actions";
+        const body = palette.querySelector(".body");
+        const transient = body.querySelector('[data-palette-transient="tail-filter"]');
+        if (transient) transient.remove();
+        for (const child of Array.from(body.children)) {
+          child.style.display = "";
+        }
         renderPalette();
       }
 

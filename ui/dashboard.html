@@ -98,6 +98,17 @@
       .drop-link { color: var(--warn); cursor: pointer; text-decoration: underline dotted; user-select: none; }
       .drop-link.confirm { color: var(--bg); background: var(--warn); padding: 1px 6px; border-radius: 3px; text-decoration: none; }
       .repos tr[data-id]:focus-visible, .drop-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+      #repl { position: sticky; bottom: 0; background: var(--bg); border-top: 1px dashed var(--edge-soft); margin-top: 24px; }
+      #repl .scrollback { max-height: 240px; overflow-y: auto; padding: 8px 28px; font-size: 11px; line-height: 1.5; color: var(--ink-dim); display: none; }
+      #repl .scrollback.open { display: block; }
+      #repl .scrollback .echo { color: var(--ink); }
+      #repl .scrollback .out { color: var(--ink-dim); white-space: pre-wrap; }
+      #repl .scrollback .err { color: var(--warn); }
+      #repl .prompt { display: flex; align-items: baseline; gap: 10px; padding: 12px 28px 14px; max-width: 1080px; margin: 0 auto; }
+      #repl .caret { color: var(--accent); font-weight: 600; }
+      #repl input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--ink); font: 12px/1.5 var(--font-mono); }
+      #repl input:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+      #repl .hint { font: 500 9px var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--label); }
     </style>
   </head>
   <body data-theme-key="cimcp.theme">
@@ -130,7 +141,14 @@
         </table>
       </section>
     </main>
-    <section id="repl"></section>
+    <section id="repl" role="region" aria-label="command prompt">
+      <div class="scrollback" id="repl-out"></div>
+      <div class="prompt">
+        <span class="caret" aria-hidden="true">›</span>
+        <input id="repl-in" type="text" autocomplete="off" spellcheck="false" aria-label="command input" placeholder="press / to focus" />
+        <span class="hint" id="repl-hint">/ to focus</span>
+      </div>
+    </section>
     <script type="module">
       const $ = (sel) => document.querySelector(sel);
 
@@ -531,6 +549,28 @@
 
       renderRepos();
       setInterval(renderRepos, 5000);
+
+      const replIn = $("#repl-in");
+      const replOut = $("#repl-out");
+      const replHint = $("#repl-hint");
+      const scrollback = [];
+
+      function pushScrollback(entry) {
+        scrollback.push(entry);
+        if (scrollback.length > 50) scrollback.shift();
+        const nodes = [];
+        for (const e of scrollback) {
+          nodes.push(el("div", null, el("span", { class: "echo", text: `› ${e.echo}` })));
+          if (e.out) nodes.push(el("div", { class: "out", text: e.out }));
+          if (e.err) nodes.push(el("div", { class: "err", text: e.err }));
+        }
+        replOut.replaceChildren(...nodes);
+        replOut.classList.add("open");
+        replOut.scrollTop = replOut.scrollHeight;
+      }
+
+      replIn.addEventListener("focus", () => { replHint.textContent = "tab complete · ↑ history · esc"; });
+      replIn.addEventListener("blur",  () => { replHint.textContent = "/ to focus"; });
     </script>
   </body>
 </html>

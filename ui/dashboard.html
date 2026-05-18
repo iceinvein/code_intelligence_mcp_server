@@ -573,7 +573,9 @@
       replIn.addEventListener("blur",  () => { replHint.textContent = "/ to focus"; });
 
       const COMMANDS = {};
-      function registerCommand(name, handler, help) { COMMANDS[name] = { handler, help }; }
+      function registerCommand(name, handler, help, options = {}) {
+        COMMANDS[name] = { handler, help, silent: options.silent === true };
+      }
 
       function parseCommand(line) {
         const tokens = line.trim().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
@@ -598,14 +600,20 @@
         if (!line.trim()) return;
         const { verb, args, flags } = parseCommand(line);
         const entry = { echo: line, out: "", err: "" };
+        let silent = false;
         if (verb === "?" || verb === "help") {
           entry.out = Object.entries(COMMANDS).map(([n, c]) => `${n.padEnd(12)} ${c.help}`).join("\n");
         } else if (COMMANDS[verb]) {
-          try { entry.out = String((await COMMANDS[verb].handler(args, flags)) ?? ""); }
-          catch (e) { entry.err = e.message || String(e); }
+          try {
+            entry.out = String((await COMMANDS[verb].handler(args, flags)) ?? "");
+            silent = COMMANDS[verb].silent;
+          } catch (e) {
+            entry.err = e.message || String(e);
+          }
         } else {
           entry.err = `unknown command; try ?`;
         }
+        if (silent && !entry.err) return;
         pushScrollback(entry);
       };
 
@@ -623,7 +631,7 @@
         replOut.replaceChildren();
         replOut.classList.remove("open");
         return "";
-      }, "clear scrollback");
+      }, "clear scrollback", { silent: true });
 
       registerCommand("status", async () => {
         const s = await fetchJson("/api/status");
@@ -640,13 +648,14 @@
         if (args[0]) {
           const target = list.find((r) => (r.name || basename(r.path)) === args[0]);
           if (!target) return `no repo matches "${args[0]}"`;
+          const wasOpen = expandedRepoId === target.id;
           await toggleExpand(target.id);
           document.querySelector(`tr[data-id="${CSS.escape(target.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-          return `expanded ${target.name || basename(target.path)}`;
+          return `${wasOpen ? "collapsed" : "expanded"} ${target.name || basename(target.path)}`;
         }
         document.querySelector("#repo-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
         return `${list.length} repos`;
-      }, "list or focus a repo; `repos <name>` expands it");
+      }, "list or focus a repo; `repos <name>` expands or collapses it");
     </script>
   </body>
 </html>

@@ -608,8 +608,103 @@
         if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
       }
 
-      // Stub renderers; replaced in later tasks.
-      function renderPalette() { /* Task 2 owns this */ }
+      function fuzzyMatch(query, label) {
+        const q = query.trim().toLowerCase();
+        const s = label.toLowerCase();
+        if (q.length === 0) return { ok: true, hits: [] };
+        const tokens = q.split(/\s+/);
+        const hits = [];
+        for (const tok of tokens) {
+          const idx = s.indexOf(tok);
+          if (idx < 0) return { ok: false };
+          hits.push([idx, idx + tok.length]);
+        }
+        hits.sort((a, b) => a[0] - b[0]);
+        return { ok: true, hits };
+      }
+
+      function highlightLabel(label, hits) {
+        if (!hits || hits.length === 0) return [label];
+        const merged = [];
+        for (const [a, b] of hits) {
+          if (merged.length && merged[merged.length - 1][1] >= a) {
+            merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], b);
+          } else merged.push([a, b]);
+        }
+        const out = [];
+        let cursor = 0;
+        for (const [a, b] of merged) {
+          if (a > cursor) out.push(label.slice(cursor, a));
+          out.push(el("span", { class: "hit", text: label.slice(a, b) }));
+          cursor = b;
+        }
+        if (cursor < label.length) out.push(label.slice(cursor));
+        return out;
+      }
+
+      function paletteRow(kind, primary, secondary, query, defaultBadge) {
+        const match = fuzzyMatch(query, primary);
+        if (!match.ok) return null;
+        const nameSpan = el("span", { class: "name" }, ...highlightLabel(primary, match.hits));
+        if (secondary) nameSpan.appendChild(el("span", { class: "sub", text: secondary }));
+        const row = el("div", { class: "row", role: "option", tabindex: -1 },
+          el("span", { class: "icon", text: kind === "repo" ? "▣" : kind === "session" ? "●" : "▸" }),
+          nameSpan,
+          el("span", { class: "badge", text: defaultBadge || "↵" }),
+        );
+        row.dataset.kind = kind;
+        return row;
+      }
+
+      let paletteHighlight = 0;
+
+      function paletteRowsFlat() {
+        return [...palette.querySelectorAll(".body .row")];
+      }
+
+      function setHighlight(i) {
+        const rows = paletteRowsFlat();
+        if (rows.length === 0) { paletteHighlight = 0; renderPaletteFoot(null); return; }
+        paletteHighlight = (i + rows.length) % rows.length;
+        rows.forEach((r, k) => r.classList.toggle("hl", k === paletteHighlight));
+        rows[paletteHighlight].scrollIntoView({ block: "nearest" });
+        renderPaletteFoot(rows[paletteHighlight]);
+      }
+
+      function renderPalette() {
+        const q = paletteInput.value;
+
+        const repoHost = palette.querySelector('[data-palette-results="repos"]');
+        const repoRows = [];
+        for (const r of lastRepoList || []) {
+          const row = paletteRow("repo", r.name || basename(r.path), r.path || "", q);
+          if (!row) continue;
+          row.dataset.repoId = r.id;
+          row.dataset.repoName = r.name || basename(r.path);
+          repoRows.push(row);
+        }
+        repoHost.replaceChildren(...repoRows);
+        palette.querySelector('[data-palette-section="repos"]').style.display = repoRows.length ? "" : "none";
+
+        const sessionHost = palette.querySelector('[data-palette-results="sessions"]');
+        const sessionRows = [];
+        for (const s of lastSessions || []) {
+          const primary = (s.repo ? basename(s.repo) : null) || (s.session_id || "").slice(0, 8) || "session";
+          const sub = s.bound ? "bound" : "connected";
+          const row = paletteRow("session", primary, sub, q);
+          if (!row) continue;
+          row.dataset.sessionId = s.session_id || "";
+          sessionRows.push(row);
+        }
+        sessionHost.replaceChildren(...sessionRows);
+        palette.querySelector('[data-palette-section="sessions"]').style.display = sessionRows.length ? "" : "none";
+
+        // Actions section will be populated in Task 3.
+        setHighlight(0);
+      }
+
+      paletteInput.addEventListener("input", renderPalette);
+
       function renderPaletteFoot(_row) {
         paletteFoot.replaceChildren(
           el("span", null, el("kbd", { text: "↑ ↓" }), " nav"),
@@ -617,6 +712,33 @@
           el("span", null, el("kbd", { text: "esc" }), " close"),
         );
       }
+
+      function executePaletteRow(row, opts) {
+        const kind = row.dataset.kind;
+        if (kind === "repo") {
+          const id = row.dataset.repoId;
+          if (!id) return;
+          closePalette();
+          toggleExpand(id);
+          document.querySelector(`tr[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else if (kind === "session") {
+          closePalette();
+          document.querySelector("#status-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else if (kind === "action") {
+          // Task 3 owns this branch.
+        }
+      }
+
+      paletteInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "ArrowDown") { ev.preventDefault(); setHighlight(paletteHighlight + 1); }
+        else if (ev.key === "ArrowUp") { ev.preventDefault(); setHighlight(paletteHighlight - 1); }
+        else if (ev.key === "Enter") {
+          ev.preventDefault();
+          const rows = paletteRowsFlat();
+          const row = rows[paletteHighlight];
+          if (row) executePaletteRow(row, { primary: true });
+        }
+      });
 
       document.addEventListener("keydown", (ev) => {
         const isCmdK = (ev.metaKey || ev.ctrlKey) && (ev.key === "k" || ev.key === "K");
@@ -631,8 +753,18 @@
         }
       });
 
+      palette.addEventListener("mousemove", (ev) => {
+        const row = ev.target.closest(".row");
+        if (!row) return;
+        const rows = paletteRowsFlat();
+        const i = rows.indexOf(row);
+        if (i >= 0) setHighlight(i);
+      });
+
       palette.addEventListener("click", (ev) => {
-        if (ev.target.dataset?.action === "close") closePalette();
+        if (ev.target.dataset?.action === "close") { closePalette(); return; }
+        const row = ev.target.closest(".row");
+        if (row) executePaletteRow(row, { primary: true });
       });
     </script>
     <section id="palette" role="dialog" aria-modal="true" aria-label="command palette" aria-hidden="true">

@@ -6,7 +6,8 @@
     <title>code-intelligence-mcp</title>
     <script>
       // FOUC guard: apply the persisted theme choice before first paint so
-      // there is no flash from system-default to user-preferred.
+      // there is no flash from system-default to user-preferred. The new
+      // identity leads dark; "system" honours prefers-color-scheme.
       (function () {
         try {
           var pref = localStorage.getItem("cimcp.theme") || "system";
@@ -18,125 +19,256 @@
       })();
     </script>
     <style>
-      /* Light palette: warm-neutral, Notion-leaning. */
+      /* ================================================================
+         Identity
+         ----------------------------------------------------------------
+         Dark is the load-bearing identity: a cool slate instrument
+         surface, warm off-white ink, one sharp cyan signal. The serif
+         display face carries the numerals; system sans carries body;
+         mono carries data. Type is the load-bearing distinction, not
+         decoration.
+         ================================================================ */
       :root {
-        --ink:             #1f1d1b;
-        --ink-dim:         #5a554f;
-        --ink-faint:       #9d978f;
-        --paper:           #fbfaf8;
-        --paper-deep:      #f4f1ec;
-        --surface-raised:  #fdfcfa;
-        --line:            #e8e3da;
-        --line-soft:       #efeae0;
-        --accent:          #b6633a;
-        --good:            #2f7a45;
-        --warn:            #c25b1f;
-        --bad:             #b03a2e;
-        --toast-bg:        #1f1d1b;
-        --toast-fg:        #fbfaf8;
-        --error-bg:        #fff4ef;
-        --error-line:      #ecc4b5;
-        --shadow-strong:   0 6px 24px rgba(0, 0, 0, 0.18);
-        color-scheme:      light;
+        /* Dark — default identity. */
+        --bg:           oklch(15% 0.015 250);
+        --bg-deep:      oklch(11% 0.015 250);
+        --surface:      oklch(19% 0.018 250);
+        --surface-2:    oklch(23% 0.020 250);
+        --surface-3:    oklch(27% 0.022 250);
+        --edge:         oklch(31% 0.020 250);
+        --edge-soft:    oklch(25% 0.018 250);
+        --ink:          oklch(94% 0.012 85);
+        --ink-2:        oklch(78% 0.012 85);
+        --ink-3:        oklch(62% 0.012 85);
+        --ink-4:        oklch(48% 0.012 85);
+        --signal:       oklch(78% 0.150 215);
+        --signal-soft:  color-mix(in srgb, var(--signal) 14%, transparent);
+        --signal-edge:  color-mix(in srgb, var(--signal) 45%, var(--edge));
+        --good:         oklch(78% 0.170 150);
+        --warn:         oklch(82% 0.150 80);
+        --bad:          oklch(72% 0.180 25);
+        --toast-bg:     oklch(96% 0.005 85);
+        --toast-ink:    oklch(18% 0.010 250);
+        --grid:         oklch(28% 0.020 250);
+        --shadow-soft:  0 1px 0 oklch(0% 0 0 / 0.45), 0 10px 32px oklch(0% 0 0 / 0.55);
+        --shadow-firm:  0 1px 0 oklch(0% 0 0 / 0.50), 0 18px 48px oklch(0% 0 0 / 0.70);
+        color-scheme:   dark;
       }
-
-      /* Dark palette: dimmed paper / workshop after hours.
-         Same semantic tokens, warm undertone preserved, chroma boosted on
-         the accent/state colors so they retain contrast on dark surfaces.
-         --ink-faint lifted to clear WCAG AA for the 12.5px timestamp column
-         on --paper. */
-      @media (prefers-color-scheme: dark) {
-        :root:not(.theme-light) {
-          --ink:             #ece6dc;
-          --ink-dim:         #b3a99c;
-          --ink-faint:       #897f72;
-          --paper:           #181513;
-          --paper-deep:      #221e1a;
-          --surface-raised:  #1f1c19;
-          --line:            #36302a;
-          --line-soft:       #29251f;
-          --accent:          #d98559;
-          --good:            #6cc084;
-          --warn:            #e08956;
-          --bad:             #db6f60;
-          --toast-bg:        #2c2823;
-          --toast-fg:        #ece6dc;
-          --error-bg:        #2a1c17;
-          --error-line:      #5a3a30;
-          --shadow-strong:   0 10px 32px rgba(0, 0, 0, 0.55);
-          color-scheme:      dark;
+      :root.theme-light,
+      :root.theme-light :where(*) { color-scheme: light; }
+      @media (prefers-color-scheme: light) {
+        :root:not(.theme-dark) {
+          --bg:           oklch(98% 0.004 250);
+          --bg-deep:      oklch(95% 0.006 250);
+          --surface:      oklch(99% 0.003 250);
+          --surface-2:    oklch(96% 0.006 250);
+          --surface-3:    oklch(93% 0.008 250);
+          --edge:         oklch(84% 0.010 250);
+          --edge-soft:    oklch(90% 0.008 250);
+          --ink:          oklch(18% 0.022 250);
+          --ink-2:        oklch(36% 0.018 250);
+          --ink-3:        oklch(50% 0.014 250);
+          --ink-4:        oklch(60% 0.012 250);
+          --signal:       oklch(48% 0.200 220);
+          --signal-soft:  color-mix(in srgb, var(--signal) 10%, transparent);
+          --signal-edge:  color-mix(in srgb, var(--signal) 50%, var(--edge));
+          --good:         oklch(45% 0.150 150);
+          --warn:         oklch(58% 0.140 75);
+          --bad:          oklch(52% 0.190 25);
+          --toast-bg:     oklch(22% 0.012 250);
+          --toast-ink:    oklch(96% 0.005 250);
+          --grid:         oklch(88% 0.006 250);
+          --shadow-soft:  0 1px 0 oklch(0% 0 0 / 0.04), 0 6px 18px oklch(0% 0 0 / 0.07);
+          --shadow-firm:  0 1px 0 oklch(0% 0 0 / 0.05), 0 14px 36px oklch(0% 0 0 / 0.12);
+          color-scheme:   light;
         }
       }
-      /* Explicit toggle override; duplicates the dark block so the user's
-         choice beats prefers-color-scheme. */
-      :root.theme-dark {
-        --ink:             #ece6dc;
-        --ink-dim:         #b3a99c;
-        --ink-faint:       #897f72;
-        --paper:           #181513;
-        --paper-deep:      #221e1a;
-        --surface-raised:  #1f1c19;
-        --line:            #36302a;
-        --line-soft:       #29251f;
-        --accent:          #d98559;
-        --good:            #6cc084;
-        --warn:            #e08956;
-        --bad:             #db6f60;
-        --toast-bg:        #2c2823;
-        --toast-fg:        #ece6dc;
-        --error-bg:        #2a1c17;
-        --error-line:      #5a3a30;
-        --shadow-strong:   0 10px 32px rgba(0, 0, 0, 0.55);
-        color-scheme:      dark;
+      :root.theme-light {
+        --bg:           oklch(98% 0.004 250);
+        --bg-deep:      oklch(95% 0.006 250);
+        --surface:      oklch(99% 0.003 250);
+        --surface-2:    oklch(96% 0.006 250);
+        --surface-3:    oklch(93% 0.008 250);
+        --edge:         oklch(84% 0.010 250);
+        --edge-soft:    oklch(90% 0.008 250);
+        --ink:          oklch(18% 0.022 250);
+        --ink-2:        oklch(36% 0.018 250);
+        --ink-3:        oklch(50% 0.014 250);
+        --ink-4:        oklch(60% 0.012 250);
+        --signal:       oklch(48% 0.200 220);
+        --signal-soft:  color-mix(in srgb, var(--signal) 10%, transparent);
+        --signal-edge:  color-mix(in srgb, var(--signal) 50%, var(--edge));
+        --good:         oklch(45% 0.150 150);
+        --warn:         oklch(58% 0.140 75);
+        --bad:          oklch(52% 0.190 25);
+        --toast-bg:     oklch(22% 0.012 250);
+        --toast-ink:    oklch(96% 0.005 250);
+        --grid:         oklch(88% 0.006 250);
+        --shadow-soft:  0 1px 0 oklch(0% 0 0 / 0.04), 0 6px 18px oklch(0% 0 0 / 0.07);
+        --shadow-firm:  0 1px 0 oklch(0% 0 0 / 0.05), 0 14px 36px oklch(0% 0 0 / 0.12);
+        color-scheme:   light;
       }
-      * { box-sizing: border-box; }
+
+      /* Type stacks. The serif comes from macOS's system library
+         (Charter, Iowan Old Style, Sitka), avoiding webfont loads on a
+         localhost surface. The serif handles display + numerals; sans
+         handles labels and body; mono handles paths and timestamps. */
+      :root {
+        --font-serif:
+          "Charter", "Iowan Old Style", "Sitka Text", Georgia,
+          "Times New Roman", Times, serif;
+        --font-sans:
+          -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+          system-ui, Helvetica, Arial, sans-serif;
+        --font-mono:
+          ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo,
+          Consolas, monospace;
+      }
+
+      *, *::before, *::after { box-sizing: border-box; }
       html, body {
         margin: 0;
         padding: 0;
-        background: var(--paper);
+        background: var(--bg);
         color: var(--ink);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
-        font-size: 14px;
-        line-height: 1.5;
+        font-family: var(--font-sans);
+        font-size: 13.5px;
+        line-height: 1.55;
+        font-feature-settings: "tnum" 1, "ss01" 1;
         -webkit-font-smoothing: antialiased;
-        transition: background 140ms ease, color 140ms ease;
+        text-rendering: optimizeLegibility;
+        transition: background 160ms ease, color 160ms ease;
       }
-      .mono {
-        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-        font-size: 12.5px;
+      .mono { font-family: var(--font-mono); font-feature-settings: "tnum" 1, "zero" 1; }
+      .serif { font-family: var(--font-serif); font-feature-settings: "tnum" 1, "lnum" 1; }
+
+      /* ================================================================
+         Shell — fixed top bar + tab strip; main canvas fills the rest
+         and is bounded to viewport height for views that don't scroll.
+         ================================================================ */
+      .shell {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: 52px 40px 1fr;
       }
-      header {
-        padding: 36px 48px 24px;
-        border-bottom: 1px solid var(--line);
+
+      /* Top bar */
+      .topbar {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         gap: 18px;
-        flex-wrap: wrap;
-        transition: background 140ms ease, border-color 140ms ease;
+        padding: 0 24px;
+        background: var(--bg-deep);
+        border-bottom: 1px solid var(--edge);
+        z-index: 30;
       }
-      header .spacer { flex: 1; }
-      .theme-toggle {
-        align-self: center;
+      .brand {
         display: inline-flex;
         align-items: center;
-        gap: 2px;
-        padding: 3px;
-        border: 1px solid var(--line);
+        gap: 11px;
+        color: var(--ink);
+        text-decoration: none;
+        flex-shrink: 0;
+      }
+      .brand .glyph {
+        width: 22px;
+        height: 22px;
+        color: var(--signal);
+      }
+      .brand .glyph svg { display: block; }
+      .brand .lockup {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        line-height: 1;
+      }
+      .brand .name {
+        font-family: var(--font-serif);
+        font-size: 17px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+        font-style: italic;
+        white-space: nowrap;
+      }
+      .brand .role {
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+        font-weight: 500;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-4);
+      }
+
+      .topbar .spacer { flex: 1; }
+
+      .health {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        padding: 5px 11px 5px 9px;
+        border: 1px solid var(--edge);
         border-radius: 999px;
-        background: var(--paper-deep);
-        transition: background 140ms ease, border-color 140ms ease;
+        font-size: 12px;
+        color: var(--ink-2);
+        background: var(--surface);
+        font-family: var(--font-mono);
+        letter-spacing: 0.02em;
+      }
+      .health .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--good);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 18%, transparent);
+        animation: dot-breathe 2.4s ease-in-out infinite;
+      }
+      .health.warn .dot {
+        background: var(--warn);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
+      }
+      .health.bad .dot {
+        background: var(--bad);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 18%, transparent);
+        animation: none;
+      }
+      @keyframes dot-breathe {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.55; }
+      }
+
+      .topbar .meta {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-4);
+        letter-spacing: 0.02em;
+        opacity: 0.85;
+      }
+      .topbar .meta-divider {
+        width: 1px;
+        height: 14px;
+        background: var(--edge);
+        opacity: 0.6;
+      }
+
+      .theme-toggle {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px;
+        border: 1px solid var(--edge);
+        border-radius: 999px;
+        background: var(--surface);
       }
       .theme-toggle button {
         appearance: none;
         background: transparent;
         border: 0;
         cursor: pointer;
-        font: inherit;
-        font-size: 14px;
+        font-family: inherit;
+        font-size: 12px;
         line-height: 1;
-        color: var(--ink-faint);
-        width: 28px;
-        height: 24px;
+        color: var(--ink-4);
+        width: 26px;
+        height: 22px;
         padding: 0;
         border-radius: 999px;
         display: inline-flex;
@@ -144,83 +276,830 @@
         justify-content: center;
         transition: background 120ms ease, color 120ms ease;
       }
-      .theme-toggle button:hover { color: var(--ink-dim); }
+      .theme-toggle button:hover { color: var(--ink-2); }
       .theme-toggle button.active {
-        background: var(--paper);
+        background: var(--surface-3);
         color: var(--ink);
       }
       .theme-toggle button:focus-visible {
-        outline: 2px solid var(--accent);
+        outline: 2px solid var(--signal);
         outline-offset: 2px;
       }
-      header h1 {
-        margin: 0;
-        font-size: 18px;
-        font-weight: 600;
-        letter-spacing: -0.01em;
+
+      /* Tab strip */
+      .tabs {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        padding: 0 24px;
+        background: var(--bg-deep);
+        border-bottom: 1px solid var(--edge);
+        overflow-x: auto;
+        scrollbar-width: none;
       }
-      header .meta {
-        color: var(--ink-faint);
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab {
+        appearance: none;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        padding: 0 14px;
+        font-family: var(--font-sans);
         font-size: 12.5px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        color: var(--ink-3);
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        transition: color 140ms ease;
       }
-      header .dot {
+      .tab:hover { color: var(--ink-2); }
+      .tab .count {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: var(--surface-2);
+        color: var(--ink-3);
+        line-height: 1.4;
+        min-width: 18px;
+        text-align: center;
+      }
+      .tab .count[data-empty="true"] {
+        background: transparent;
+        color: var(--ink-4);
+      }
+      .tab:focus-visible {
+        outline: 2px solid var(--signal);
+        outline-offset: -4px;
+        border-radius: 4px;
+      }
+      .tab[aria-current="page"] { color: var(--ink); }
+      .tab[aria-current="page"]::after {
+        content: "";
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: -1px;
+        height: 2px;
+        background: var(--signal);
+        border-radius: 2px 2px 0 0;
+      }
+      .tab[aria-current="page"] .count {
+        background: var(--signal-soft);
+        color: var(--signal);
+      }
+
+      /* Main canvas */
+      main {
+        position: relative;
+        overflow: hidden;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        background-image:
+          radial-gradient(circle at 1px 1px, var(--grid) 1px, transparent 1px);
+        background-size: 22px 22px;
+        background-position: -1px -1px;
+      }
+      .view {
+        flex: 1;
+        min-height: 0;
+        display: none;
+        flex-direction: column;
+        animation: fade-in 200ms ease-out;
+      }
+      .view.active { display: flex; }
+      @keyframes fade-in {
+        from { opacity: 0; transform: translateY(2px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+
+      .view-head {
+        padding: 28px 32px 0;
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+      }
+      .view-head h1 {
+        margin: 0;
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 26px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+        line-height: 1.05;
+      }
+      .view-head .subhead {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--ink-4);
+      }
+      .view-head .actions {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .banner {
+        margin: 16px 32px 0;
+        padding: 13px 16px;
+        background: color-mix(in srgb, var(--bad) 10%, var(--surface));
+        border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--edge));
+        color: var(--bad);
+        border-radius: 6px;
+        font-size: 13px;
+      }
+      .banner:empty { display: none; }
+
+      /* ================================================================
+         Overview view — one-screen dense grid with serif numerals
+         ================================================================ */
+      .overview-wrap {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 24px 32px 0;
+      }
+      .overview {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        grid-template-rows: auto auto 1fr;
+        gap: 20px;
+      }
+      .overview-foot {
+        padding: 14px 0 18px;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        flex-wrap: wrap;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-4);
+        border-top: 1px solid var(--edge-soft);
+        margin-top: 18px;
+      }
+      .overview-foot .group {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .overview-foot .group .label {
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+      }
+      .overview-foot .group kbd { margin: 0 1px; }
+      .overview-foot .spacer { flex: 1; }
+      .overview-foot a {
+        color: var(--ink-3);
+        text-decoration: none;
+        border-bottom: 1px solid var(--edge);
+      }
+      .overview-foot a:hover { color: var(--signal); border-color: var(--signal); }
+      .slab {
+        background: var(--surface);
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 18px 20px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+      }
+      .slab.span-3 { grid-column: span 3; }
+      .slab.span-4 { grid-column: span 4; }
+      .slab.span-6 { grid-column: span 6; }
+      .slab.span-8 { grid-column: span 8; }
+      .slab.span-12 { grid-column: span 12; }
+      .slab .label {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-4);
+      }
+      .slab .figure {
+        font-family: var(--font-serif);
+        font-size: 44px;
+        font-weight: 400;
+        letter-spacing: -0.02em;
+        color: var(--ink);
+        line-height: 1;
+        font-feature-settings: "tnum" 1, "lnum" 1, "ss01" 1;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .slab .figure .unit {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        color: var(--ink-3);
+        letter-spacing: 0.04em;
+      }
+      .slab .figure .delim {
+        color: var(--ink-4);
+        font-size: 36px;
+        font-style: italic;
+      }
+      .slab .sub {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--ink-3);
+        letter-spacing: 0.02em;
+      }
+      .slab.linked {
+        cursor: pointer;
+        text-align: left;
+        font: inherit;
+        color: inherit;
+        appearance: none;
+        transition: border-color 140ms ease, background 140ms ease;
+      }
+      /* Logs slab spans the third overview row and fills available height. */
+      .slab.slab-logs {
+        min-height: 0;
+        overflow: hidden;
+      }
+      .slab-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .slab-head .spacer { flex: 1; }
+      .slab-head .indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        color: var(--ink-3);
+      }
+      .slab-head .indicator .dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .slab-head .indicator .dot.live { color: var(--good); animation: dot-breathe 2.4s ease-in-out infinite; }
+      .slab-head .indicator .dot.paused { color: var(--warn); }
+      .slab-head .indicator .dot.error { color: var(--bad); }
+      .slab-head .slab-link {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--ink-4);
+        text-decoration: none;
+        border-bottom: 1px solid transparent;
+        transition: color 120ms ease, border-color 120ms ease;
+      }
+      .slab-head .slab-link:hover { color: var(--signal); border-color: var(--signal); }
+      .logs-tail {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        margin-top: 6px;
+        padding: 12px 14px;
+        background: var(--bg-deep);
+        border: 1px solid var(--edge-soft);
+        border-radius: 6px;
+        font-family: var(--font-mono);
+        font-feature-settings: "tnum" 1, "zero" 1;
+        font-size: 11.5px;
+        line-height: 1.65;
+        color: var(--ink-2);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .logs-tail .line {
+        position: relative;
+        padding-left: 12px;
+      }
+      .logs-tail .line::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.7em;
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: var(--edge);
+      }
+      .logs-tail .line.lagged { color: var(--warn); }
+      .logs-tail .line.error  { color: var(--bad); }
+      .logs-tail .logs-empty {
+        color: var(--ink-4);
+        font-style: italic;
+        font-family: var(--font-serif);
+        font-size: 13px;
+        text-align: center;
+        padding: 12px 0;
+      }
+      .slab.linked:hover {
+        border-color: var(--signal-edge);
+        background: color-mix(in srgb, var(--signal) 3%, var(--surface));
+      }
+      .slab.linked:focus-visible {
+        outline: 2px solid var(--signal);
+        outline-offset: 3px;
+      }
+
+      .slab .activity {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .slab .activity .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--ink-2);
+      }
+      .slab .activity .row .name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--ink-2);
+      }
+      .slab .activity .row .when {
+        color: var(--ink-4);
+        flex-shrink: 0;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        border: 1px solid var(--edge);
+        color: var(--ink-3);
+        background: var(--surface);
+      }
+      .pill.running {
+        color: var(--signal);
+        border-color: var(--signal-edge);
+        background: var(--signal-soft);
+      }
+      .pill.succeeded {
+        color: var(--good);
+        border-color: color-mix(in srgb, var(--good) 45%, var(--edge));
+        background: color-mix(in srgb, var(--good) 9%, transparent);
+      }
+      .pill.failed {
+        color: var(--bad);
+        border-color: color-mix(in srgb, var(--bad) 45%, var(--edge));
+        background: color-mix(in srgb, var(--bad) 9%, transparent);
+      }
+      .pill .pulse {
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: dot-breathe 1.6s ease-in-out infinite;
+      }
+
+      /* ================================================================
+         Repositories view — master/detail (list left, detail right)
+         ================================================================ */
+      .repos-pane {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(320px, 360px) 1fr;
+        gap: 0;
+        padding: 20px 32px 28px;
+      }
+      .repos-list {
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--edge);
+        border-right: 0;
+        border-radius: 8px 0 0 8px;
+        min-height: 0;
+      }
+      .repos-list .search {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--edge);
+        background: var(--bg-deep);
+      }
+      .repos-list .search input {
+        width: 100%;
+        appearance: none;
+        background: transparent;
+        border: 0;
+        color: var(--ink);
+        font: inherit;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        padding: 4px 0;
+        outline: none;
+      }
+      .repos-list .search input::placeholder { color: var(--ink-4); }
+      .repos-list .rows {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      .repo-row {
+        appearance: none;
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid var(--edge-soft);
+        padding: 13px 16px;
+        cursor: pointer;
+        text-align: left;
+        font: inherit;
+        color: var(--ink);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        width: 100%;
+        position: relative;
+        transition: background 120ms ease;
+      }
+      .repo-row:hover { background: var(--surface-2); }
+      .repo-row[aria-selected="true"] { background: var(--surface-3); }
+      .repo-row[aria-selected="true"]::before {
+        content: "";
+        position: absolute;
+        left: 0; top: 0; bottom: 0;
+        width: 2px;
+        background: var(--signal);
+      }
+      .repo-row .row-name {
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 15px;
+        color: var(--ink);
+        line-height: 1.2;
+      }
+      .repo-row .row-path {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-4);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .repo-row .row-meta {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--ink-4);
+      }
+      .repo-row .row-meta .activity { color: var(--warn); }
+      .repo-row:focus-visible {
+        outline: 2px solid var(--signal);
+        outline-offset: -2px;
+      }
+
+      .repo-detail {
+        background: var(--surface);
+        border: 1px solid var(--edge);
+        border-radius: 0 8px 8px 0;
+        padding: 24px 28px;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      .repo-detail .empty-detail {
+        color: var(--ink-4);
+        font-size: 13px;
+        text-align: center;
+        padding: 48px 16px;
+        font-family: var(--font-mono);
+      }
+      .repo-detail .heading {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+        margin-bottom: 22px;
+      }
+      .repo-detail .heading .titles {
+        flex: 1;
+        min-width: 0;
+      }
+      .repo-detail .heading h2 {
+        margin: 0 0 4px;
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 26px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+      }
+      .repo-detail .heading .path {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        color: var(--ink-3);
+        word-break: break-all;
+      }
+      .repo-detail .heading .actions {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .detail-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 18px 28px;
+        padding-top: 16px;
+        border-top: 1px solid var(--edge);
+      }
+      .detail-tile {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .detail-tile .label {
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--ink-4);
+      }
+      .detail-tile .value {
+        font-family: var(--font-serif);
+        font-size: 24px;
+        font-weight: 400;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+        line-height: 1.1;
+      }
+      .detail-tile .sub {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-3);
+      }
+      .repo-meta {
+        margin-top: 22px;
+        padding-top: 16px;
+        border-top: 1px solid var(--edge);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-4);
+        line-height: 1.7;
+      }
+      .repo-meta .kv {
+        display: grid;
+        grid-template-columns: 100px 1fr;
+        gap: 0 12px;
+      }
+      .repo-meta .k { color: var(--ink-4); }
+      .repo-meta .v { color: var(--ink-3); word-break: break-all; }
+
+      /* ================================================================
+         Sessions view — tight table, full width
+         ================================================================ */
+      .sessions-pane {
+        padding: 20px 32px 28px;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .sessions-pane .container {
+        flex: 1;
+        background: var(--surface);
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        overflow-y: auto;
+        min-height: 0;
+      }
+
+      /* ================================================================
+         Jobs view — vertical timeline
+         ================================================================ */
+      .jobs-pane {
+        padding: 20px 32px 28px;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .jobs-stream {
+        flex: 1;
+        background: var(--surface);
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 16px 24px;
+        overflow-y: auto;
+        min-height: 0;
+        position: relative;
+      }
+      /* Timeline rail: only show when at least one job card is present.
+         Empty states use :has() to hide the otherwise-floating vertical
+         line that would otherwise look like a stray UI artefact. */
+      .jobs-stream:has(.job-card)::before {
+        content: "";
+        position: absolute;
+        left: 38px;
+        top: 16px;
+        bottom: 16px;
+        width: 1px;
+        background: var(--edge);
+      }
+      .job-card {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        align-items: start;
+        gap: 16px;
+        padding: 16px 0;
+        border-bottom: 1px solid var(--edge-soft);
+        position: relative;
+      }
+      .job-card:last-child { border-bottom: 0; }
+      .job-card .marker {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        margin-top: 5px;
+        margin-left: 8px;
+        background: var(--ink-4);
+        position: relative;
+        z-index: 1;
+        box-shadow: 0 0 0 3px var(--surface);
+      }
+      .job-card.running .marker {
+        background: var(--signal);
+        box-shadow: 0 0 0 3px var(--surface), 0 0 0 6px var(--signal-soft);
+        animation: dot-breathe 1.8s ease-in-out infinite;
+      }
+      .job-card.succeeded .marker { background: var(--good); }
+      .job-card.failed .marker { background: var(--bad); }
+      .job-card .body { min-width: 0; }
+      .job-card .head {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        flex-wrap: wrap;
+      }
+      .job-card .kind {
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 16px;
+        color: var(--ink);
+        line-height: 1.2;
+      }
+      .job-card .repo-path {
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--ink-3);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 420px;
+      }
+      .job-card .result {
+        margin-top: 4px;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--ink-3);
+      }
+      .job-card.failed .result { color: var(--bad); }
+      .job-card .timing {
+        text-align: right;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        color: var(--ink-4);
+        line-height: 1.7;
+      }
+      .job-card .timing .elapsed {
+        font-family: var(--font-serif);
+        font-size: 18px;
+        font-style: italic;
+        color: var(--ink);
+        display: block;
+        line-height: 1.1;
+      }
+      .job-card.running .timing .elapsed { color: var(--signal); }
+
+      /* ================================================================
+         Logs view — full-bleed terminal
+         ================================================================ */
+      .logs-pane {
+        padding: 0;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .logs-pane .logs-header {
+        padding: 14px 32px;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        background: var(--bg-deep);
+        border-bottom: 1px solid var(--edge);
+      }
+      .logs-pane .logs-header h1 {
+        margin: 0;
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 22px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+      }
+      .logs-pane .logs-bar {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-left: auto;
+      }
+      .logs-pane .indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 3px 11px;
+        background: var(--surface);
+        border: 1px solid var(--edge);
+        border-radius: 999px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        color: var(--ink-2);
+        letter-spacing: 0.04em;
+      }
+      .logs-pane .indicator .dot {
         display: inline-block;
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background: var(--good);
-        vertical-align: middle;
-        margin-right: 6px;
+        background: currentColor;
       }
-      main {
-        max-width: 1080px;
-        margin: 0 auto;
-        padding: 32px 48px 80px;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 16px;
-        margin-bottom: 40px;
-      }
-      .card {
-        background: var(--paper);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        padding: 18px 20px;
-        transition: background 140ms ease, border-color 140ms ease;
-      }
-      .card .label {
+      .logs-pane .indicator .dot.live  { color: var(--good); animation: dot-breathe 2.4s ease-in-out infinite; }
+      .logs-pane .indicator .dot.paused { color: var(--warn); }
+      .logs-pane .indicator .dot.error  { color: var(--bad); }
+      .logs-pane .count {
+        font-family: var(--font-mono);
         font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--ink-faint);
-        margin-bottom: 8px;
+        color: var(--ink-3);
       }
-      .card .value {
-        font-size: 24px;
-        font-weight: 500;
-        letter-spacing: -0.01em;
+      .logs-pane .logs-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 18px 32px 24px;
+        background: var(--bg-deep);
+        font-family: var(--font-mono);
+        font-feature-settings: "tnum" 1, "zero" 1;
+        font-size: 12px;
+        line-height: 1.7;
+        color: var(--ink-2);
+        white-space: pre-wrap;
+        word-break: break-word;
       }
-      .card .value.mono {
-        font-size: 16px;
+      .logs-pane .logs-body .line.lagged { color: var(--warn); }
+      .logs-pane .logs-body .line.error  { color: var(--bad); }
+      .logs-pane .logs-body .line {
+        position: relative;
+        padding-left: 14px;
       }
-      .card .sub {
-        margin-top: 4px;
-        color: var(--ink-dim);
-        font-size: 12.5px;
+      .logs-pane .logs-body .line::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.7em;
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: var(--edge);
       }
-      section {
-        margin-bottom: 48px;
+      .logs-pane .logs-empty {
+        padding: 40px 0;
+        text-align: center;
+        color: var(--ink-4);
+        font-style: italic;
+        font-family: var(--font-serif);
+        font-size: 14px;
       }
-      section h2 {
-        font-size: 13px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--ink-dim);
-        margin: 0 0 14px;
-      }
+
+      /* ================================================================
+         Common pieces
+         ================================================================ */
       table {
         width: 100%;
         border-collapse: collapse;
@@ -228,251 +1107,104 @@
       }
       thead th {
         text-align: left;
-        font-size: 11px;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
         text-transform: uppercase;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.10em;
         font-weight: 500;
-        color: var(--ink-faint);
-        padding: 10px 12px;
-        border-bottom: 1px solid var(--line);
+        color: var(--ink-4);
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--edge);
+        background: var(--bg-deep);
+        position: sticky;
+        top: 0;
+        z-index: 1;
       }
       tbody tr {
-        border-bottom: 1px solid var(--line-soft);
+        border-bottom: 1px solid var(--edge-soft);
+        transition: background 100ms ease;
       }
-      tbody tr:hover {
-        background: var(--paper-deep);
+      tbody tr:last-child { border-bottom: 0; }
+      tbody tr:hover { background: var(--surface-2); }
+      tbody td { padding: 13px 16px; vertical-align: middle; }
+      tbody td.path { color: var(--ink-3); font-family: var(--font-mono); font-size: 12px; }
+      tbody td.name { font-family: var(--font-serif); font-style: italic; font-size: 15px; color: var(--ink); }
+      tbody td.timestamp { color: var(--ink-4); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; }
+
+      .empty {
+        padding: 48px 24px;
+        text-align: center;
+        color: var(--ink-4);
+        font-family: var(--font-serif);
+        font-style: italic;
+        font-size: 15px;
       }
-      tbody td {
-        padding: 12px;
-        vertical-align: top;
-      }
-      tbody td.path {
-        color: var(--ink-dim);
-        max-width: 520px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      tbody td.name {
-        max-width: 260px;
-        min-width: 140px;
-        overflow: hidden;
-        white-space: nowrap;
-      }
-      tbody td.result {
-        max-width: 320px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      tbody td.timestamp {
-        color: var(--ink-faint);
-        white-space: nowrap;
-      }
-      tbody td.actions {
-        text-align: right;
-        white-space: nowrap;
-      }
-      tbody td.actions > button + button {
-        margin-left: 6px;
-      }
-      button.repo-toggle {
-        font: inherit;
-        font-size: inherit;
-        background: transparent;
-        color: var(--ink);
-        border: 0;
-        padding: 0;
-        cursor: pointer;
-        text-align: left;
-        line-height: 1.4;
-        /* inline-flex with min-width:0 lets the name span shrink and
-           collapse with ellipsis instead of wrapping the caret onto a
-           new line when the cell is narrow. */
-        display: inline-flex;
-        align-items: baseline;
-        gap: 4px;
-        max-width: 100%;
-        min-width: 0;
-      }
-      button.repo-toggle > .toggle-name {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        min-width: 0;
-      }
-      button.repo-toggle:hover { color: var(--accent); }
-      button.repo-toggle:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-        border-radius: 2px;
-      }
-      button.repo-toggle .caret {
-        display: inline-block;
-        width: 0.85em;
-        color: var(--ink-faint);
-        transition: color 120ms ease;
-      }
-      button.repo-toggle[aria-expanded="true"] .caret { color: var(--accent); }
-      tr.repo-detail-row > td.repo-detail-cell {
-        background: var(--paper-deep);
-        padding: 16px 24px;
-        border-top: 0;
-      }
-      .repo-detail-panel {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-      }
-      .stat-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 10px;
-      }
-      .stat-tile {
-        padding: 10px 14px;
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        transition: border-color 140ms ease, background 140ms ease;
-      }
-      .stat-label {
-        font-size: 11.5px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--ink-faint);
-        margin-bottom: 4px;
-      }
-      .stat-value {
-        font-size: 18px;
-        color: var(--ink);
-        line-height: 1.2;
-      }
-      .stat-sub {
-        font-size: 11.5px;
-        color: var(--ink-faint);
-        margin-top: 2px;
-      }
-      .repo-detail-meta {
-        font-size: 11.5px;
-        color: var(--ink-faint);
-        line-height: 1.6;
-      }
-      button.action {
-        font: inherit;
+      .empty .mono {
+        color: var(--ink-3);
+        font-style: normal;
+        font-family: var(--font-mono);
         font-size: 12px;
-        background: var(--paper);
-        color: var(--ink-dim);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        padding: 4px 10px;
+      }
+      .empty .hint {
+        display: block;
+        margin-top: 8px;
+        font-family: var(--font-mono);
+        font-size: 11.5px;
+        font-style: normal;
+        color: var(--ink-4);
+      }
+
+      button.action {
+        font-family: var(--font-sans);
+        font-size: 12px;
+        font-weight: 500;
+        background: var(--surface);
+        color: var(--ink-2);
+        border: 1px solid var(--edge);
+        border-radius: 5px;
+        padding: 6px 12px;
         cursor: pointer;
         transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
       }
       button.action:hover {
-        background: var(--paper-deep);
+        background: var(--surface-3);
         color: var(--ink);
-        border-color: var(--ink-faint);
+        border-color: var(--ink-4);
       }
-      button.action:active {
-        background: var(--line-soft);
+      button.action.primary {
+        background: var(--signal-soft);
+        color: var(--signal);
+        border-color: var(--signal-edge);
       }
-      button.action:disabled {
-        cursor: default;
-        color: var(--ink-faint);
-        opacity: 0.7;
+      button.action.primary:hover {
+        background: color-mix(in srgb, var(--signal) 22%, transparent);
+        color: var(--ink);
+        border-color: var(--signal);
       }
-      button.action:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-      }
-      .job-status {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-size: 11.5px;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        border: 1px solid var(--line);
-        color: var(--ink-dim);
-      }
-      .job-status.running {
-        color: var(--accent);
-        border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
-        background: color-mix(in srgb, var(--accent) 8%, transparent);
-      }
-      .job-status.succeeded {
-        color: var(--good);
-        border-color: color-mix(in srgb, var(--good) 40%, var(--line));
-        background: color-mix(in srgb, var(--good) 8%, transparent);
-      }
-      .job-status.failed {
-        color: var(--bad);
-        border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
-        background: color-mix(in srgb, var(--bad) 8%, transparent);
-      }
-      .job-status .pulse {
-        display: inline-block;
-        width: 6px;
-        height: 6px;
-        margin-right: 4px;
-        border-radius: 50%;
-        background: currentColor;
-        animation: pulse 1.5s ease-in-out infinite;
-      }
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.35; }
-      }
-      /* Compact per-repo activity chip rendered inside the Name cell. */
-      .repo-activity {
-        display: inline-flex;
-        align-items: center;
-        margin-left: 8px;
-        padding: 1px 6px;
-        border-radius: 3px;
-        font-size: 11px;
-        font-weight: 500;
-        letter-spacing: 0.01em;
-        color: var(--warn);
-        border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
-        background: color-mix(in srgb, var(--warn) 8%, transparent);
-        vertical-align: middle;
-        cursor: help;
-      }
-      .repo-activity .pulse {
-        display: inline-block;
-        width: 5px;
-        height: 5px;
-        margin-right: 4px;
-        border-radius: 50%;
-        background: currentColor;
-        animation: pulse 1.5s ease-in-out infinite;
-      }
-      button.action.danger {
-        color: var(--bad);
-        border-color: color-mix(in srgb, var(--bad) 35%, var(--line));
-      }
+      button.action.danger { color: var(--ink-3); }
       button.action.danger:hover {
-        background: color-mix(in srgb, var(--bad) 8%, var(--paper));
+        background: color-mix(in srgb, var(--bad) 12%, var(--surface));
         color: var(--bad);
         border-color: var(--bad);
       }
-      button.action.danger:focus-visible {
-        outline-color: var(--bad);
+      button.action:focus-visible {
+        outline: 2px solid var(--signal);
+        outline-offset: 2px;
       }
+      button.action.danger:focus-visible { outline-color: var(--bad); }
+      button.action:disabled { cursor: default; opacity: 0.5; }
+
       .toast {
         position: fixed;
         right: 24px;
         bottom: 24px;
-        max-width: 340px;
+        max-width: 360px;
         padding: 12px 16px;
         background: var(--toast-bg);
-        color: var(--toast-fg);
-        border-radius: 6px;
+        color: var(--toast-ink);
+        border-radius: 8px;
         font-size: 13px;
-        box-shadow: var(--shadow-strong);
+        box-shadow: var(--shadow-firm);
         opacity: 0;
         transform: translateY(8px);
         transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -480,98 +1212,61 @@
         pointer-events: none;
         z-index: 100;
       }
-      .toast.show {
-        opacity: 1;
-        transform: translateY(0);
-      }
+      .toast.show { opacity: 1; transform: translateY(0); }
       .toast.error {
         background: var(--bad);
-        color: #fff8f4;
-      }
-      .logs-card {
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        background: var(--surface-raised);
-        overflow: hidden;
-        transition: background 140ms ease, border-color 140ms ease;
-      }
-      .logs-bar {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 14px;
-        background: var(--paper-deep);
-        border-bottom: 1px solid var(--line);
-        font-size: 12.5px;
-        color: var(--ink-dim);
-        transition: background 140ms ease, border-color 140ms ease;
-      }
-      .logs-bar .spacer { flex: 1; }
-      .logs-bar .indicator {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .logs-bar .indicator .dot.live   { background: var(--good); }
-      .logs-bar .indicator .dot.paused { background: var(--warn); }
-      .logs-bar .indicator .dot.error  { background: var(--bad); }
-      .logs-bar button.action {
-        font-size: 11.5px;
-        padding: 3px 9px;
-      }
-      .logs-body {
-        height: 320px;
-        overflow-y: auto;
-        padding: 10px 14px;
-        background: var(--surface-raised);
-        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-        font-size: 11.5px;
-        line-height: 1.55;
-        color: var(--ink-dim);
-        white-space: pre-wrap;
-        word-break: break-word;
-        transition: background 140ms ease;
-      }
-      .logs-body .line.lagged { color: var(--warn); }
-      .logs-body .line.error  { color: var(--bad); }
-      .logs-empty {
-        padding: 28px;
-        text-align: center;
-        color: var(--ink-faint);
-        font-style: italic;
-      }
-      .empty {
-        padding: 32px;
-        text-align: center;
-        color: var(--ink-faint);
-        border: 1px dashed var(--line);
-        border-radius: 6px;
-      }
-      .error {
-        padding: 18px 20px;
-        background: var(--error-bg);
-        border: 1px solid var(--error-line);
-        color: var(--bad);
-        border-radius: 6px;
-        margin-bottom: 24px;
-      }
-      footer {
-        padding: 0 48px 48px;
-        color: var(--ink-faint);
-        font-size: 12px;
-      }
-      footer a {
-        color: inherit;
-        text-decoration: underline;
-      }
-      footer a:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-        border-radius: 2px;
+        color: oklch(98% 0.01 25);
       }
 
-      /* Respect users who request reduced motion. Keep functional opacity
-         fades on toast/page transitions but cut anything decorative. */
+      kbd {
+        display: inline-block;
+        padding: 1px 5px;
+        font-family: var(--font-mono);
+        font-size: 10.5px;
+        color: var(--ink-3);
+        background: var(--surface);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        line-height: 1.3;
+      }
+
+      /* ================================================================
+         Responsive
+         ================================================================ */
+      @media (max-width: 960px) {
+        .topbar { padding: 0 16px; gap: 12px; }
+        .topbar .meta, .topbar .meta-divider { display: none; }
+        .tabs { padding: 0 16px; }
+        .view-head { padding: 20px 20px 0; }
+        .overview {
+          padding: 16px 20px 24px;
+          grid-template-columns: repeat(6, 1fr);
+        }
+        .slab.span-3 { grid-column: span 3; }
+        .slab.span-4 { grid-column: span 6; }
+        .slab.span-6 { grid-column: span 6; }
+        .slab.span-8 { grid-column: span 6; }
+        .slab.span-12 { grid-column: span 6; }
+        .repos-pane { padding: 16px 20px 24px; grid-template-columns: 1fr; }
+        .repos-list { border-radius: 8px 8px 0 0; border-right: 1px solid var(--edge); border-bottom: 0; max-height: 240px; }
+        .repo-detail { border-radius: 0 0 8px 8px; }
+        .sessions-pane, .jobs-pane { padding: 16px 20px 24px; }
+        .logs-pane .logs-header { padding: 12px 20px; }
+        .logs-pane .logs-body { padding: 14px 20px 20px; }
+      }
+
+      @media (max-width: 560px) {
+        .brand .role { display: none; }
+        .health { padding: 4px 9px 4px 7px; font-size: 11px; }
+        .overview { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+        .slab { padding: 14px 14px 12px; }
+        .slab .figure { font-size: 32px; }
+        .slab.span-3, .slab.span-4, .slab.span-6, .slab.span-8, .slab.span-12 { grid-column: span 2; }
+        .tab { padding: 0 10px; font-size: 12px; }
+        .repo-detail { padding: 18px 18px; }
+        .repo-detail .heading h2 { font-size: 22px; }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -584,124 +1279,242 @@
     </style>
   </head>
   <body>
-    <header>
-      <h1>code-intelligence-mcp</h1>
-      <span class="meta" id="version-line">loading...</span>
-      <span class="meta" id="uptime-line"></span>
-      <span class="spacer"></span>
-      <div class="theme-toggle" role="radiogroup" aria-label="Theme">
-        <button
-          type="button"
-          data-theme="system"
-          role="radio"
-          aria-checked="false"
-          aria-label="Match system theme"
-          title="Match system"
-        >&#x25D0;</button>
-        <button
-          type="button"
-          data-theme="light"
-          role="radio"
-          aria-checked="false"
-          aria-label="Light theme"
-          title="Light"
-        >&#x263C;</button>
-        <button
-          type="button"
-          data-theme="dark"
-          role="radio"
-          aria-checked="false"
-          aria-label="Dark theme"
-          title="Dark"
-        >&#x263E;</button>
-      </div>
-    </header>
+    <div class="shell">
+      <!-- Top bar -->
+      <header class="topbar">
+        <a class="brand" href="#/overview" aria-label="Overview">
+          <span class="glyph" aria-hidden="true">
+            <!-- Three connected nodes: graph-shaped mark for the code graph. -->
+            <svg viewBox="0 0 22 22" width="22" height="22" fill="none"
+                 stroke="currentColor" stroke-width="1.4"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="5"  cy="6"  r="1.7" fill="currentColor" stroke="none"/>
+              <circle cx="17" cy="6"  r="1.7"/>
+              <circle cx="11" cy="17" r="1.7"/>
+              <path d="M5 6 L17 6 M5 6 L11 17 M17 6 L11 17"/>
+            </svg>
+          </span>
+          <span class="lockup">
+            <span class="name">code intelligence</span>
+            <span class="role">mcp daemon</span>
+          </span>
+        </a>
 
-    <main>
-      <div id="error-banner" class="error" style="display: none"></div>
+        <span class="spacer"></span>
 
-      <div class="grid">
-        <div class="card">
-          <div class="label">Daemon</div>
-          <div class="value"><span class="dot"></span>running</div>
-          <div class="sub mono" id="status-port">localhost</div>
-        </div>
-        <div class="card">
-          <div class="label">Registered repos</div>
-          <div class="value" id="status-repo-count">--</div>
-          <div class="sub">on disk</div>
-        </div>
-        <div class="card">
-          <div class="label">MCP sessions</div>
-          <div class="value" id="status-session-count">--</div>
-          <div class="sub" id="status-session-sub">bound / connected</div>
-        </div>
-        <div class="card">
-          <div class="label">Started</div>
-          <div class="value mono" id="status-started">--</div>
-          <div class="sub" id="status-uptime">--</div>
-        </div>
-      </div>
+        <span class="health" id="daemon-state">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="daemon-state-label">running</span>
+        </span>
+        <span class="meta" id="version-line">loading</span>
+        <span class="meta-divider" aria-hidden="true"></span>
+        <span class="meta mono" id="status-port" title="dashboard origin">--</span>
 
-      <section>
-        <h2>MCP sessions</h2>
-        <div id="sessions-container">
-          <div class="empty">loading sessions...</div>
+        <div class="theme-toggle" role="radiogroup" aria-label="Theme">
+          <button
+            type="button"
+            data-theme="system"
+            role="radio"
+            aria-checked="false"
+            aria-label="Match system theme"
+            title="Match system"
+          >&#x25D0;</button>
+          <button
+            type="button"
+            data-theme="light"
+            role="radio"
+            aria-checked="false"
+            aria-label="Light theme"
+            title="Light"
+          >&#x263C;</button>
+          <button
+            type="button"
+            data-theme="dark"
+            role="radio"
+            aria-checked="false"
+            aria-label="Dark theme"
+            title="Dark"
+          >&#x263E;</button>
         </div>
-      </section>
+      </header>
 
-      <section>
-        <h2>Repositories</h2>
-        <div id="repos-container">
-          <div class="empty">loading repositories...</div>
-        </div>
-      </section>
+      <!-- Tab strip -->
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button class="tab" type="button" data-view="overview"     role="tab" aria-current="page">Overview</button>
+        <button class="tab" type="button" data-view="repositories" role="tab" aria-current="false">Repositories <span class="count" id="tab-count-repos">--</span></button>
+        <button class="tab" type="button" data-view="sessions"     role="tab" aria-current="false">Sessions <span class="count" id="tab-count-sessions">--</span></button>
+        <button class="tab" type="button" data-view="jobs"         role="tab" aria-current="false">Jobs <span class="count" id="tab-count-jobs">--</span></button>
+        <button class="tab" type="button" data-view="logs"         role="tab" aria-current="false">Logs</button>
+      </nav>
 
-      <section>
-        <h2>Jobs</h2>
-        <div id="jobs-container">
-          <div class="empty">loading jobs...</div>
-        </div>
-      </section>
+      <!-- Main area -->
+      <main>
+        <div id="error-banner" class="banner" role="alert"></div>
 
-      <section>
-        <h2>Logs</h2>
-        <div class="logs-card">
-          <div class="logs-bar">
-            <span class="indicator"><span id="logs-dot" class="dot live"></span><span id="logs-state">streaming</span></span>
-            <span class="mono" id="logs-count">0 lines</span>
+        <!-- View: Overview -->
+        <section class="view view-overview active" data-view="overview" role="tabpanel" aria-label="Overview">
+          <div class="overview-wrap">
+          <div class="overview">
+            <div class="slab span-3">
+              <span class="label">Repos</span>
+              <span class="figure"><span id="ov-repos">--</span><span class="unit">indexed</span></span>
+              <span class="sub" id="ov-repos-sub">on disk</span>
+            </div>
+            <div class="slab span-3">
+              <span class="label">Sessions</span>
+              <span class="figure">
+                <span id="ov-sessions-bound">--</span>
+                <span class="delim">/</span>
+                <span id="ov-sessions-connected">--</span>
+              </span>
+              <span class="sub">bound · connected</span>
+            </div>
+            <div class="slab span-3">
+              <span class="label">Jobs running</span>
+              <span class="figure"><span id="ov-jobs-running">--</span><span class="unit" id="ov-jobs-total">of --</span></span>
+              <span class="sub" id="ov-jobs-sub">last 15 min</span>
+            </div>
+            <div class="slab span-3">
+              <span class="label">Uptime</span>
+              <span class="figure mono" id="ov-uptime">--</span>
+              <span class="sub mono" id="ov-started">--</span>
+            </div>
+
+            <button class="slab span-6 linked" type="button" id="ov-recent-repo-card">
+              <span class="label">Last accessed</span>
+              <span id="ov-recent-repo-title" class="figure" style="font-size:28px">--</span>
+              <span class="sub mono" id="ov-recent-repo-sub">no repos indexed yet</span>
+            </button>
+            <div class="slab span-6">
+              <span class="label">Recent activity</span>
+              <div class="activity" id="ov-activity">
+                <div class="row"><span class="name">loading recent jobs</span></div>
+              </div>
+            </div>
+
+            <div class="slab span-12 slab-logs" role="region" aria-label="Live logs preview">
+              <div class="slab-head">
+                <span class="label">Live logs</span>
+                <span class="indicator">
+                  <span id="ov-logs-dot" class="dot live" aria-hidden="true"></span>
+                  <span id="ov-logs-state">streaming</span>
+                </span>
+                <span class="spacer"></span>
+                <a href="#/logs" class="slab-link">open logs view →</a>
+              </div>
+              <div class="logs-tail" id="ov-logs-body" aria-live="polite" aria-atomic="false">
+                <div class="logs-empty">waiting for log events</div>
+              </div>
+            </div>
+          </div>
+          <div class="overview-foot">
+            <div class="group">
+              <span class="label">Views</span>
+              <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd><kbd>5</kbd>
+            </div>
+            <div class="group">
+              <span class="label">Refresh</span>
+              <kbd>R</kbd>
+            </div>
             <span class="spacer"></span>
-            <button id="logs-pause" class="action" type="button">Pause</button>
-            <button id="logs-clear" class="action" type="button">Clear</button>
+            <div class="group">
+              <span>api</span>
+              <a href="/api/status">status</a>
+              <span>·</span>
+              <a href="/api/repos">repos</a>
+              <span>·</span>
+              <a href="/api/jobs">jobs</a>
+            </div>
           </div>
-          <div id="logs-body" class="logs-body">
-            <div class="logs-empty">Waiting for log events. Trigger a tool call or a re-index to see traffic.</div>
           </div>
-        </div>
-      </section>
-    </main>
+        </section>
 
-    <footer>
-      <span>api: <a href="/api/status">/api/status</a></span>
-      &nbsp;&middot;&nbsp;
-      <span>repos: <a href="/api/repos">/api/repos</a></span>
-      &nbsp;&middot;&nbsp;
-      <span>refresh: <kbd>R</kbd></span>
-    </footer>
+        <!-- View: Repositories -->
+        <section class="view view-repositories" data-view="repositories" role="tabpanel" aria-label="Repositories">
+          <div class="view-head">
+            <h1>Repositories</h1>
+            <span class="subhead">indexed workspaces</span>
+          </div>
+          <div class="repos-pane">
+            <div class="repos-list">
+              <div class="search">
+                <input id="repo-search" type="search" placeholder="filter by name or path" aria-label="Filter repositories" />
+              </div>
+              <div class="rows" id="repos-rows">
+                <div class="empty">loading repositories</div>
+              </div>
+            </div>
+            <div class="repo-detail" id="repo-detail">
+              <div class="empty-detail">select a repository to see its details</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View: Sessions -->
+        <section class="view view-sessions" data-view="sessions" role="tabpanel" aria-label="MCP sessions">
+          <div class="view-head">
+            <h1>Sessions</h1>
+            <span class="subhead">mcp clients, evicted after five minutes idle</span>
+          </div>
+          <div class="sessions-pane">
+            <div class="container" id="sessions-container">
+              <div class="empty">loading sessions</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View: Jobs -->
+        <section class="view view-jobs" data-view="jobs" role="tabpanel" aria-label="Background jobs">
+          <div class="view-head">
+            <h1>Jobs</h1>
+            <span class="subhead">background indexing, kept fifteen minutes</span>
+          </div>
+          <div class="jobs-pane">
+            <div class="jobs-stream" id="jobs-container">
+              <div class="empty">loading jobs</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- View: Logs -->
+        <section class="view view-logs" data-view="logs" role="tabpanel" aria-label="Live logs">
+          <div class="logs-pane">
+            <div class="logs-header">
+              <h1>Logs</h1>
+              <div class="logs-bar">
+                <span class="indicator">
+                  <span id="logs-dot" class="dot live" aria-hidden="true"></span>
+                  <span id="logs-state">streaming</span>
+                </span>
+                <span class="count" id="logs-count">0 lines</span>
+                <button id="logs-pause" class="action" type="button">Pause</button>
+                <button id="logs-clear" class="action" type="button">Clear</button>
+              </div>
+            </div>
+            <div id="logs-body" class="logs-body" aria-live="polite" aria-atomic="false">
+              <div class="logs-empty">waiting for log events. trigger a tool call or a re-index to see traffic.</div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <script>
-      // No innerHTML with dynamic data anywhere in this file: everything from
-      // the API is inserted via textContent or attribute setters. Static HTML
-      // structure is built with createElement.
-
+      /* ----------------------------------------------------------------
+         Utilities and shared formatters.
+         Data flows: GET /api/status, /api/repos, /api/repos/:id,
+         /api/sessions, /api/jobs every 5s; SSE on /api/logs/stream.
+         No innerHTML with dynamic data: text via textContent or setAttribute.
+         ---------------------------------------------------------------- */
       const fmtTs = (unix) => {
         if (!unix) return "--";
         const d = new Date(unix * 1000);
         return d.toISOString().replace("T", " ").substring(0, 16) + "Z";
       };
       const fmtUptime = (secs) => {
+        if (secs == null) return "--";
         if (secs < 60) return secs + "s";
         if (secs < 3600) return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
         if (secs < 86400) {
@@ -713,34 +1526,42 @@
         const h = Math.floor((secs % 86400) / 3600);
         return d + "d " + h + "h";
       };
+      const fmtNumber = (n) => n == null ? "--" : Number(n).toLocaleString("en-US");
+      const fmtSecsAgo = (secs) => {
+        if (secs == null) return "--";
+        if (secs < 60) return secs + "s ago";
+        if (secs < 3600) return Math.floor(secs / 60) + "m ago";
+        return Math.floor(secs / 3600) + "h ago";
+      };
+      const fmtDuration = (ms) => {
+        if (ms == null) return "--";
+        if (ms < 1000) return ms + "ms";
+        const s = Math.round(ms / 1000);
+        if (s < 60) return s + "s";
+        const m = Math.floor(s / 60);
+        return m + "m " + (s % 60) + "s";
+      };
+      const KIND_LABEL = {
+        initial_bind: "initial scan",
+        watch_reindex: "watch re-index",
+        manual_reindex: "manual re-index",
+      };
 
       async function fetchJson(path) {
         const res = await fetch(path, { headers: { accept: "application/json" } });
         if (!res.ok) throw new Error(path + " returned " + res.status);
         return res.json();
       }
-
       async function postJson(path) {
-        const res = await fetch(path, {
-          method: "POST",
-          headers: { accept: "application/json" },
-        });
+        const res = await fetch(path, { method: "POST", headers: { accept: "application/json" } });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error((body && body.error) || path + " returned " + res.status);
-        }
+        if (!res.ok) throw new Error((body && body.error) || path + " returned " + res.status);
         return body;
       }
-
       async function deleteJson(path) {
-        const res = await fetch(path, {
-          method: "DELETE",
-          headers: { accept: "application/json" },
-        });
+        const res = await fetch(path, { method: "DELETE", headers: { accept: "application/json" } });
         const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error((body && body.error) || path + " returned " + res.status);
-        }
+        if (!res.ok) throw new Error((body && body.error) || path + " returned " + res.status);
         return body;
       }
 
@@ -754,318 +1575,248 @@
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => el.classList.remove("show"), 3200);
       }
-
-      async function deleteRepo(button, repoId, repoName) {
-        const confirmMsg =
-          "Delete the index for \"" + repoName + "\"?\n\n" +
-          "This removes the registry entry and erases the on-disk data " +
-          "directory (~/.code-intelligence/repos/" + repoId + "). " +
-          "The source code is not touched. Re-indexing will start from scratch " +
-          "next time a session binds to this repo.";
-        if (!window.confirm(confirmMsg)) return;
-
-        const original = button.textContent;
-        button.disabled = true;
-        button.textContent = "deleting...";
-        try {
-          await deleteJson("/api/repos/" + encodeURIComponent(repoId));
-          showToast("Deleted index for " + repoName);
-          loadAll();
-        } catch (e) {
-          showToast("Delete failed: " + (e.message || e), "error");
-          button.disabled = false;
-          button.textContent = original;
-        }
-      }
-
-      async function reindexRepo(button, repoId, repoName) {
-        const original = button.textContent;
-        button.disabled = true;
-        button.textContent = "starting...";
-        try {
-          const res = await postJson(
-            "/api/repos/" + encodeURIComponent(repoId) + "/reindex"
-          );
-          showToast(
-            "Re-index started for " + repoName + " (job " + (res.job_id || "?") + ")"
-          );
-          button.textContent = "queued";
-          // Immediate refresh so the Jobs panel reflects the running job.
-          loadAll();
-          setTimeout(() => {
-            button.disabled = false;
-            button.textContent = original;
-          }, 1500);
-        } catch (e) {
-          showToast("Re-index failed: " + (e.message || e), "error");
-          button.disabled = false;
-          button.textContent = original;
-        }
-      }
-
       function showError(msg) {
-        const el = document.getElementById("error-banner");
-        el.textContent = "API error: " + msg;
-        el.style.display = "block";
+        document.getElementById("error-banner").textContent = "api error: " + msg;
       }
       function clearError() {
-        document.getElementById("error-banner").style.display = "none";
+        document.getElementById("error-banner").textContent = "";
       }
 
-      /* Build the compact chip rendered next to a repo name when the
-         daemon is actively working on it (InitialBind, WatchReindex, or
-         ManualReindex). Returns null when there is no running job, so
-         idle rows stay quiet. */
-      function buildRepoActivityChip(activity) {
-        if (!activity || !activity.running || !activity.current) return null;
-        const job = activity.current;
-        const labelByKind = {
-          initial_bind: "initial scan",
-          watch_reindex: "indexing",
-          manual_reindex: "re-indexing",
-        };
-        const label = labelByKind[job.kind] || "indexing";
-        const chip = document.createElement("span");
-        chip.className = "repo-activity";
-        const dot = document.createElement("span");
-        dot.className = "pulse";
-        dot.setAttribute("aria-hidden", "true");
-        chip.appendChild(dot);
-        chip.appendChild(document.createTextNode(label));
+      /* ----------------------------------------------------------------
+         View router: hash-based, five views. Default to overview.
+         ---------------------------------------------------------------- */
+      const VIEWS = ["overview", "repositories", "sessions", "jobs", "logs"];
+      const tabButtons = Array.from(document.querySelectorAll(".tab"));
+      const viewPanels = Array.from(document.querySelectorAll(".view"));
 
-        const startedMs = (job.started_at_unix_s || 0) * 1000;
-        const runningFor = startedMs
-          ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
-          : 0;
-        const coalesced = job.coalesced_count || 0;
-        const tipParts = [labelByKind[job.kind] || job.kind || "job"];
-        if (runningFor > 0) tipParts.push("running " + runningFor + "s");
-        if (coalesced > 0) tipParts.push(coalesced + " event" + (coalesced === 1 ? "" : "s") + " coalesced");
-        chip.title = tipParts.join(" • ");
-        return chip;
+      function currentViewFromHash() {
+        const raw = (location.hash || "#/overview").replace(/^#\//, "").split("/")[0];
+        return VIEWS.includes(raw) ? raw : "overview";
+      }
+      function applyView(name) {
+        viewPanels.forEach((p) => {
+          p.classList.toggle("active", p.dataset.view === name);
+        });
+        tabButtons.forEach((b) => {
+          const active = b.dataset.view === name;
+          b.setAttribute("aria-current", active ? "page" : "false");
+        });
+      }
+      tabButtons.forEach((b) => {
+        b.addEventListener("click", () => {
+          location.hash = "#/" + b.dataset.view;
+        });
+      });
+      window.addEventListener("hashchange", () => applyView(currentViewFromHash()));
+      applyView(currentViewFromHash());
+
+      /* ----------------------------------------------------------------
+         Daemon state
+         ---------------------------------------------------------------- */
+      function setDaemonState(status) {
+        const el = document.getElementById("daemon-state");
+        const label = document.getElementById("daemon-state-label");
+        el.classList.remove("warn", "bad");
+        if (status === "warn") el.classList.add("warn");
+        else if (status === "bad") el.classList.add("bad");
+        label.textContent =
+          status === "warn" ? "degraded" : status === "bad" ? "unreachable" : "running";
       }
 
-      function renderRepos(reposJson) {
-        const container = document.getElementById("repos-container");
-        // Wipe the container with safe DOM ops (no innerHTML).
+      /* ----------------------------------------------------------------
+         Repos view: master/detail
+         ---------------------------------------------------------------- */
+      let reposCache = [];
+      let reposFilter = "";
+      let selectedRepoId = readSelectedFromHash();
+      const repoDetailCache = new Map(); // id -> { fetchedAt, data }
+
+      function readSelectedFromHash() {
+        const h = location.hash || "";
+        const m = h.match(/^#\/repositories\/(.+)$/);
+        return m ? decodeURIComponent(m[1]) : null;
+      }
+      window.addEventListener("hashchange", () => {
+        selectedRepoId = readSelectedFromHash();
+        renderRepoList();
+        renderRepoDetail();
+      });
+
+      document.getElementById("repo-search").addEventListener("input", (e) => {
+        reposFilter = String(e.target.value || "").toLowerCase();
+        renderRepoList();
+      });
+
+      function renderRepoList() {
+        const container = document.getElementById("repos-rows");
         while (container.firstChild) container.removeChild(container.firstChild);
 
-        if (!reposJson.repos || reposJson.repos.length === 0) {
+        if (!reposCache.length) {
           const empty = document.createElement("div");
           empty.className = "empty";
-          empty.appendChild(document.createTextNode(
-            "No repositories indexed yet. Connect an MCP client and call "
-          ));
-          const code = document.createElement("span");
-          code.className = "mono";
-          code.textContent = "bind_workspace";
-          empty.appendChild(code);
-          empty.appendChild(document.createTextNode("."));
+          empty.appendChild(document.createTextNode("no repositories indexed yet"));
+          const hint = document.createElement("span");
+          hint.className = "hint";
+          hint.textContent = "connect a client with ?repo=/abs/path or call bind_workspace";
+          empty.appendChild(hint);
           container.appendChild(empty);
           return;
         }
 
-        const sorted = reposJson.repos
-          .slice()
-          .sort((a, b) => (b.last_accessed || "").localeCompare(a.last_accessed || ""));
-
-        const table = document.createElement("table");
-        const thead = document.createElement("thead");
-        const headerRow = document.createElement("tr");
-        ["Name", "Path", "Last accessed", ""].forEach((label) => {
-          const th = document.createElement("th");
-          th.textContent = label;
-          headerRow.appendChild(th);
+        const filter = reposFilter;
+        const filtered = reposCache.filter((r) => {
+          if (!filter) return true;
+          const hay = ((r.name || "") + " " + (r.path || "")).toLowerCase();
+          return hay.includes(filter);
         });
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
 
-        const tbody = document.createElement("tbody");
-        sorted.forEach((r) => {
-          const tr = document.createElement("tr");
-          tr.dataset.repoId = r.id || "";
-
-          const nameTd = document.createElement("td");
-          nameTd.className = "name";
-          nameTd.title = r.name || r.id || "";
-          if (r.id) {
-            const toggle = document.createElement("button");
-            toggle.className = "repo-toggle";
-            toggle.type = "button";
-            toggle.setAttribute("aria-expanded", "false");
-            toggle.setAttribute("aria-label", "Toggle details for " + (r.name || r.id));
-            const caret = document.createElement("span");
-            caret.className = "caret";
-            caret.textContent = "▸"; // ▸
-            toggle.appendChild(caret);
-            const nameSpan = document.createElement("span");
-            nameSpan.className = "toggle-name";
-            nameSpan.textContent = r.name || "";
-            toggle.appendChild(nameSpan);
-            toggle.addEventListener("click", () => toggleRepoDetail(r, tr, toggle));
-            nameTd.appendChild(toggle);
-          } else {
-            nameTd.textContent = r.name || "";
-          }
-          const activityChip = buildRepoActivityChip(r.activity);
-          if (activityChip) nameTd.appendChild(activityChip);
-          tr.appendChild(nameTd);
-
-          const pathTd = document.createElement("td");
-          pathTd.className = "path mono";
-          pathTd.textContent = r.path || "";
-          tr.appendChild(pathTd);
-
-          const tsTd = document.createElement("td");
-          tsTd.className = "timestamp mono";
-          tsTd.textContent = String(r.last_accessed || "")
-            .substring(0, 16)
-            .replace("T", " ");
-          tr.appendChild(tsTd);
-
-          const actionTd = document.createElement("td");
-          actionTd.className = "actions";
-          if (r.id) {
-            const reindexBtn = document.createElement("button");
-            reindexBtn.className = "action";
-            reindexBtn.type = "button";
-            reindexBtn.textContent = "Re-index";
-            reindexBtn.title = "POST /api/repos/" + r.id + "/reindex";
-            reindexBtn.addEventListener("click", (e) => {
-              e.stopPropagation();
-              reindexRepo(reindexBtn, r.id, r.name || r.id);
-            });
-            actionTd.appendChild(reindexBtn);
-
-            const deleteBtn = document.createElement("button");
-            deleteBtn.className = "action danger";
-            deleteBtn.type = "button";
-            deleteBtn.textContent = "Delete";
-            deleteBtn.title = "DELETE /api/repos/" + r.id;
-            deleteBtn.addEventListener("click", (e) => {
-              e.stopPropagation();
-              deleteRepo(deleteBtn, r.id, r.name || r.id);
-            });
-            actionTd.appendChild(deleteBtn);
-          }
-          tr.appendChild(actionTd);
-
-          tbody.appendChild(tr);
-        });
-        table.appendChild(tbody);
-        container.appendChild(table);
-
-        // Restore expanded panels after re-render. Set by toggleRepoDetail
-        // and applied here so the 5s polling refresh doesn't collapse the
-        // panel the user was looking at.
-        expandedRepos.forEach((id) => {
-          const row = tbody.querySelector('tr[data-repo-id="' + cssEscape(id) + '"]');
-          const btn = row && row.querySelector("button.repo-toggle");
-          if (row && btn) {
-            // Recreate the detail row in the same place. Reuses fetch
-            // cache so it's instant on the second render.
-            openRepoDetail(row, btn, id);
-          }
-        });
-      }
-
-      // Track expanded rows across refreshes and cache fetched detail data.
-      const expandedRepos = new Set();
-      const repoDetailCache = new Map(); // id -> { fetchedAt, data }
-
-      function cssEscape(s) {
-        // Minimal escape for use inside a CSS attribute selector. Repo ids
-        // are 16-hex chars in practice but we defend against future
-        // changes.
-        return String(s).replace(/(["\\\n])/g, "\\$1");
-      }
-
-      function toggleRepoDetail(repo, row, toggleBtn) {
-        if (expandedRepos.has(repo.id)) {
-          expandedRepos.delete(repo.id);
-          closeRepoDetail(row, toggleBtn);
-        } else {
-          expandedRepos.add(repo.id);
-          openRepoDetail(row, toggleBtn, repo.id);
+        if (!filtered.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "no matches";
+          container.appendChild(empty);
+          return;
         }
+
+        filtered.forEach((r) => {
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "repo-row";
+          row.dataset.repoId = r.id;
+          row.setAttribute(
+            "aria-selected",
+            selectedRepoId === r.id ? "true" : "false",
+          );
+          row.addEventListener("click", () => {
+            location.hash = "#/repositories/" + encodeURIComponent(r.id);
+          });
+
+          const nameEl = document.createElement("div");
+          nameEl.className = "row-name";
+          nameEl.textContent = r.name || r.id;
+          row.appendChild(nameEl);
+
+          const pathEl = document.createElement("div");
+          pathEl.className = "row-path";
+          pathEl.textContent = r.path || "";
+          row.appendChild(pathEl);
+
+          const metaEl = document.createElement("div");
+          metaEl.className = "row-meta";
+          const lastTs = String(r.last_accessed || "").substring(0, 16).replace("T", " ");
+          metaEl.appendChild(document.createTextNode(lastTs || "--"));
+          const activity = r.activity;
+          if (activity && activity.running && activity.current) {
+            const sep = document.createElement("span");
+            sep.textContent = "·";
+            metaEl.appendChild(sep);
+            const a = document.createElement("span");
+            a.className = "activity";
+            a.textContent = KIND_LABEL[activity.current.kind] || "running";
+            metaEl.appendChild(a);
+          }
+          row.appendChild(metaEl);
+
+          container.appendChild(row);
+        });
       }
 
-      function closeRepoDetail(row, toggleBtn) {
-        toggleBtn.setAttribute("aria-expanded", "false");
-        const caret = toggleBtn.querySelector(".caret");
-        if (caret) caret.textContent = "▸"; // ▸
-        const next = row.nextElementSibling;
-        if (next && next.classList.contains("repo-detail-row")) next.remove();
-      }
+      async function renderRepoDetail() {
+        const panel = document.getElementById("repo-detail");
+        while (panel.firstChild) panel.removeChild(panel.firstChild);
 
-      async function openRepoDetail(row, toggleBtn, repoId) {
-        toggleBtn.setAttribute("aria-expanded", "true");
-        const caret = toggleBtn.querySelector(".caret");
-        if (caret) caret.textContent = "▾"; // ▾
+        if (!selectedRepoId) {
+          const empty = document.createElement("div");
+          empty.className = "empty-detail";
+          empty.textContent = "select a repository to see its details";
+          panel.appendChild(empty);
+          return;
+        }
 
-        // Remove an existing detail row if there is one (re-open case).
-        const next = row.nextElementSibling;
-        if (next && next.classList.contains("repo-detail-row")) next.remove();
+        const summary = reposCache.find((r) => r.id === selectedRepoId);
+        const cached = repoDetailCache.get(selectedRepoId);
+        const fresh = cached && Date.now() - cached.fetchedAt < 5000;
 
-        const detailTr = document.createElement("tr");
-        detailTr.className = "repo-detail-row";
-        const td = document.createElement("td");
-        td.colSpan = 4;
-        td.className = "repo-detail-cell";
-        const panel = document.createElement("div");
-        panel.className = "repo-detail-panel";
-        panel.textContent = "Loading repo details...";
-        td.appendChild(panel);
-        detailTr.appendChild(td);
-        row.insertAdjacentElement("afterend", detailTr);
+        const heading = document.createElement("div");
+        heading.className = "heading";
+        const titles = document.createElement("div");
+        titles.className = "titles";
+        const h2 = document.createElement("h2");
+        h2.textContent = (summary && summary.name) || selectedRepoId;
+        titles.appendChild(h2);
+        const path = document.createElement("div");
+        path.className = "path";
+        path.textContent = (summary && summary.path) || "";
+        titles.appendChild(path);
+        heading.appendChild(titles);
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const reindexBtn = document.createElement("button");
+        reindexBtn.className = "action primary";
+        reindexBtn.type = "button";
+        reindexBtn.textContent = "Re-index";
+        reindexBtn.addEventListener("click", () => {
+          reindexRepo(reindexBtn, selectedRepoId, (summary && summary.name) || selectedRepoId);
+        });
+        actions.appendChild(reindexBtn);
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "action danger";
+        deleteBtn.type = "button";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.addEventListener("click", () => {
+          deleteRepo(deleteBtn, selectedRepoId, (summary && summary.name) || selectedRepoId);
+        });
+        actions.appendChild(deleteBtn);
+        heading.appendChild(actions);
+        panel.appendChild(heading);
+
+        const placeholder = document.createElement("div");
+        placeholder.className = "empty-detail";
+        placeholder.textContent = "loading repo details...";
+        panel.appendChild(placeholder);
 
         try {
-          // Use cached detail if fetched within the last 5s, otherwise hit the API.
-          const cached = repoDetailCache.get(repoId);
-          const fresh = cached && Date.now() - cached.fetchedAt < 5000;
           const data = fresh
             ? cached.data
-            : await fetchJson("/api/repos/" + encodeURIComponent(repoId));
-          if (!fresh) repoDetailCache.set(repoId, { fetchedAt: Date.now(), data });
-          renderRepoDetail(panel, data);
+            : await fetchJson("/api/repos/" + encodeURIComponent(selectedRepoId));
+          if (!fresh) repoDetailCache.set(selectedRepoId, { fetchedAt: Date.now(), data });
+          panel.removeChild(placeholder);
+          renderDetailBody(panel, data);
         } catch (e) {
-          while (panel.firstChild) panel.removeChild(panel.firstChild);
+          panel.removeChild(placeholder);
           const err = document.createElement("div");
-          err.className = "error";
-          err.textContent = "Failed to load details: " + (e.message || e);
+          err.className = "banner";
+          err.style.margin = "16px 0 0";
+          err.textContent = "failed to load details: " + (e.message || e);
           panel.appendChild(err);
         }
       }
 
-      function statTile(label, value, sub) {
+      function detailTile(label, value, sub) {
         const tile = document.createElement("div");
-        tile.className = "stat-tile";
+        tile.className = "detail-tile";
         const lbl = document.createElement("div");
-        lbl.className = "stat-label";
+        lbl.className = "label";
         lbl.textContent = label;
         const val = document.createElement("div");
-        val.className = "stat-value mono";
+        val.className = "value";
         val.textContent = value == null ? "--" : String(value);
         tile.appendChild(lbl);
         tile.appendChild(val);
         if (sub) {
-          const subDiv = document.createElement("div");
-          subDiv.className = "stat-sub";
-          subDiv.textContent = sub;
-          tile.appendChild(subDiv);
+          const subEl = document.createElement("div");
+          subEl.className = "sub";
+          subEl.textContent = sub;
+          tile.appendChild(subEl);
         }
         return tile;
       }
-
-      function renderRepoDetail(panel, data) {
-        while (panel.firstChild) panel.removeChild(panel.firstChild);
-
+      function renderDetailBody(panel, data) {
         const stats = data.stats || {};
         const grid = document.createElement("div");
-        grid.className = "stat-grid";
-
-        grid.appendChild(statTile("Symbols", fmtNumber(stats.symbols)));
-        grid.appendChild(statTile("Edges", fmtNumber(stats.edges)));
+        grid.className = "detail-grid";
+        grid.appendChild(detailTile("Symbols", fmtNumber(stats.symbols)));
+        grid.appendChild(detailTile("Edges", fmtNumber(stats.edges)));
 
         const descCount = stats.descriptions;
         const totalSym = stats.symbols;
@@ -1073,165 +1824,58 @@
         if (descCount != null && totalSym && totalSym > 0) {
           coverage = Math.round((descCount / totalSym) * 100) + "%";
         }
-        grid.appendChild(
-          statTile("Descriptions", fmtNumber(descCount), coverage ? coverage + " coverage" : null)
-        );
-        grid.appendChild(statTile("Undescribed", fmtNumber(stats.undescribed_symbols)));
-
+        grid.appendChild(detailTile("Descriptions", fmtNumber(descCount), coverage ? coverage + " coverage" : null));
+        grid.appendChild(detailTile("Undescribed", fmtNumber(stats.undescribed_symbols)));
         const lastUpdated = stats.last_updated_unix_s;
         const lastUpdatedAgo = lastUpdated
           ? fmtSecsAgo(Math.max(0, Math.floor(Date.now() / 1000) - lastUpdated))
           : "--";
-        grid.appendChild(statTile("Last updated", lastUpdatedAgo));
-
+        grid.appendChild(detailTile("Last updated", lastUpdatedAgo));
         const lir = stats.latest_index_run;
-        const lirText = lir
-          ? fmtDuration(lir.duration_ms) + " (" + (lir.files_indexed || 0) + " files)"
-          : "--";
-        grid.appendChild(statTile("Latest index run", lirText));
-
+        if (lir) {
+          grid.appendChild(detailTile(
+            "Latest run",
+            fmtDuration(lir.duration_ms),
+            (lir.files_indexed || 0) + " files",
+          ));
+        } else {
+          grid.appendChild(detailTile("Latest run", "--"));
+        }
         panel.appendChild(grid);
 
-        // Meta footer with data_dir + created_at
         const meta = document.createElement("div");
-        meta.className = "repo-detail-meta mono";
-        const metaLines = [
-          "data_dir: " + (data.data_dir || "?"),
-          "created:  " + (data.created_at || "?"),
-        ];
-        metaLines.forEach((line) => {
-          const div = document.createElement("div");
-          div.textContent = line;
-          meta.appendChild(div);
+        meta.className = "repo-meta";
+        const kv = document.createElement("div");
+        kv.className = "kv";
+        [["data_dir", data.data_dir || "?"], ["created", data.created_at || "?"]].forEach(([k, v]) => {
+          const ke = document.createElement("div");
+          ke.className = "k";
+          ke.textContent = k;
+          kv.appendChild(ke);
+          const ve = document.createElement("div");
+          ve.className = "v";
+          ve.textContent = v;
+          kv.appendChild(ve);
         });
+        meta.appendChild(kv);
         panel.appendChild(meta);
       }
 
-      function fmtNumber(n) {
-        if (n == null) return "--";
-        // Compact a few groups for readability.
-        return n.toLocaleString("en-US");
-      }
-
-      function fmtSecsAgo(secs) {
-        if (secs == null) return "--";
-        if (secs < 60) return secs + "s ago";
-        if (secs < 3600) return Math.floor(secs / 60) + "m ago";
-        return Math.floor(secs / 3600) + "h ago";
-      }
-
-      function fmtDuration(ms) {
-        if (ms == null) return "--";
-        if (ms < 1000) return ms + "ms";
-        const s = Math.round(ms / 1000);
-        if (s < 60) return s + "s";
-        const m = Math.floor(s / 60);
-        return m + "m " + (s % 60) + "s";
-      }
-
-      function renderJobs(jobsJson) {
-        const container = document.getElementById("jobs-container");
-        while (container.firstChild) container.removeChild(container.firstChild);
-
-        if (!jobsJson.jobs || jobsJson.jobs.length === 0) {
-          const empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent =
-            "No background jobs in the last 15 minutes. Trigger a re-index from the Repositories table to see one here.";
-          container.appendChild(empty);
-          return;
-        }
-
-        const table = document.createElement("table");
-        const thead = document.createElement("thead");
-        const headerRow = document.createElement("tr");
-        ["Status", "Kind", "Repo", "Started", "Duration", "Result"].forEach((label) => {
-          const th = document.createElement("th");
-          th.textContent = label;
-          headerRow.appendChild(th);
-        });
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
-
-        const tbody = document.createElement("tbody");
-        const now = Math.floor(Date.now() / 1000);
-        jobsJson.jobs.forEach((j) => {
-          const tr = document.createElement("tr");
-
-          const statusTd = document.createElement("td");
-          const badge = document.createElement("span");
-          badge.className = "job-status " + (j.status || "");
-          if (j.status === "running") {
-            const dot = document.createElement("span");
-            dot.className = "pulse";
-            badge.appendChild(dot);
-          }
-          badge.appendChild(document.createTextNode((j.status || "?").toUpperCase()));
-          statusTd.appendChild(badge);
-          tr.appendChild(statusTd);
-
-          const kindTd = document.createElement("td");
-          kindTd.className = "mono";
-          kindTd.textContent = j.kind || "";
-          tr.appendChild(kindTd);
-
-          const repoTd = document.createElement("td");
-          repoTd.className = "path mono";
-          repoTd.textContent = j.repo_path || j.repo_id || "";
-          tr.appendChild(repoTd);
-
-          const startedTd = document.createElement("td");
-          startedTd.className = "timestamp mono";
-          const startedAgo = j.started_at_unix_s
-            ? now - j.started_at_unix_s
-            : null;
-          startedTd.textContent = fmtSecsAgo(startedAgo);
-          tr.appendChild(startedTd);
-
-          const durTd = document.createElement("td");
-          durTd.className = "timestamp mono";
-          if (j.status === "running") {
-            // Live elapsed time: started_at -> now.
-            durTd.textContent =
-              startedAgo != null ? fmtDuration(startedAgo * 1000) + "+" : "--";
-          } else {
-            durTd.textContent = fmtDuration(j.duration_ms);
-          }
-          tr.appendChild(durTd);
-
-          const resultTd = document.createElement("td");
-          resultTd.className = "mono result";
-          if (j.status === "succeeded" && j.stats) {
-            const fi = j.stats.files_indexed;
-            const si = j.stats.symbols_indexed;
-            const summary = [];
-            if (fi != null) summary.push(fi + " files");
-            if (si != null) summary.push(si + " symbols");
-            resultTd.textContent = summary.join(", ") || "ok";
-          } else if (j.status === "failed") {
-            resultTd.textContent = j.error || "failed";
-            resultTd.title = j.error || "";
-            resultTd.style.color = "var(--bad)";
-          } else {
-            resultTd.textContent = "";
-          }
-          tr.appendChild(resultTd);
-
-          tbody.appendChild(tr);
-        });
-        table.appendChild(tbody);
-        container.appendChild(table);
-      }
-
+      /* ----------------------------------------------------------------
+         Sessions view
+         ---------------------------------------------------------------- */
       function renderSessions(sessionsJson) {
         const container = document.getElementById("sessions-container");
         while (container.firstChild) container.removeChild(container.firstChild);
 
-        if (!sessionsJson.sessions || sessionsJson.sessions.length === 0) {
+        if (!sessionsJson.sessions || !sessionsJson.sessions.length) {
           const empty = document.createElement("div");
           empty.className = "empty";
-          empty.textContent =
-            "No MCP sessions connected. Sessions appear here within seconds of a client opening the /mcp endpoint.";
+          empty.textContent = "no mcp sessions connected";
+          const hint = document.createElement("span");
+          hint.className = "hint";
+          hint.textContent = "sessions appear within seconds of a client opening /mcp";
+          empty.appendChild(hint);
           container.appendChild(empty);
           return;
         }
@@ -1240,26 +1884,23 @@
           if ((a.bound ? 1 : 0) !== (b.bound ? 1 : 0)) return b.bound ? 1 : -1;
           return (a.last_seen_secs_ago || 0) - (b.last_seen_secs_ago || 0);
         });
-
         const table = document.createElement("table");
         const thead = document.createElement("thead");
-        const headerRow = document.createElement("tr");
+        const headRow = document.createElement("tr");
         ["Session", "Bound repo", "Last seen"].forEach((label) => {
           const th = document.createElement("th");
           th.textContent = label;
-          headerRow.appendChild(th);
+          headRow.appendChild(th);
         });
-        thead.appendChild(headerRow);
+        thead.appendChild(headRow);
         table.appendChild(thead);
-
         const tbody = document.createElement("tbody");
         sorted.forEach((s) => {
           const tr = document.createElement("tr");
-
           const sidTd = document.createElement("td");
           sidTd.className = "mono";
           const sid = String(s.session_id || "");
-          sidTd.textContent = sid.length > 8 ? sid.substring(0, 8) + "..." : sid;
+          sidTd.textContent = sid.length > 12 ? sid.substring(0, 12) + "..." : sid;
           sidTd.title = sid;
           tr.appendChild(sidTd);
 
@@ -1270,7 +1911,7 @@
           } else {
             const em = document.createElement("em");
             em.textContent = "(not yet bound)";
-            em.style.color = "var(--ink-faint)";
+            em.style.color = "var(--ink-4)";
             repoTd.appendChild(em);
           }
           tr.appendChild(repoTd);
@@ -1286,6 +1927,250 @@
         container.appendChild(table);
       }
 
+      /* ----------------------------------------------------------------
+         Jobs view — timeline
+         ---------------------------------------------------------------- */
+      function renderJobs(jobsJson) {
+        const container = document.getElementById("jobs-container");
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        const jobs = (jobsJson && jobsJson.jobs) || [];
+        if (!jobs.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "no background jobs in the last fifteen minutes";
+          const hint = document.createElement("span");
+          hint.className = "hint";
+          hint.textContent = "trigger a re-index from the repositories view to see one here";
+          empty.appendChild(hint);
+          container.appendChild(empty);
+          return;
+        }
+
+        const sorted = jobs.slice().sort((a, b) => {
+          const ar = a.status === "running" ? 0 : 1;
+          const br = b.status === "running" ? 0 : 1;
+          if (ar !== br) return ar - br;
+          return (b.started_at_unix_s || 0) - (a.started_at_unix_s || 0);
+        });
+        const now = Math.floor(Date.now() / 1000);
+        sorted.forEach((j) => {
+          const card = document.createElement("div");
+          card.className = "job-card " + (j.status || "");
+
+          const marker = document.createElement("div");
+          marker.className = "marker";
+          card.appendChild(marker);
+
+          const body = document.createElement("div");
+          body.className = "body";
+          const head = document.createElement("div");
+          head.className = "head";
+          const kind = document.createElement("span");
+          kind.className = "kind";
+          kind.textContent = KIND_LABEL[j.kind] || j.kind || "job";
+          head.appendChild(kind);
+
+          const pill = document.createElement("span");
+          pill.className = "pill " + (j.status || "");
+          if (j.status === "running") {
+            const pulse = document.createElement("span");
+            pulse.className = "pulse";
+            pill.appendChild(pulse);
+          }
+          pill.appendChild(document.createTextNode(j.status || "?"));
+          head.appendChild(pill);
+
+          const rp = document.createElement("span");
+          rp.className = "repo-path";
+          rp.textContent = j.repo_path || j.repo_id || "";
+          rp.title = j.repo_path || j.repo_id || "";
+          head.appendChild(rp);
+          body.appendChild(head);
+
+          const result = document.createElement("div");
+          result.className = "result";
+          if (j.status === "succeeded" && j.stats) {
+            const parts = [];
+            if (j.stats.files_indexed != null) parts.push(j.stats.files_indexed + " files");
+            if (j.stats.symbols_indexed != null) parts.push(fmtNumber(j.stats.symbols_indexed) + " symbols");
+            result.textContent = parts.join(" · ") || "ok";
+          } else if (j.status === "failed") {
+            result.textContent = j.error || "failed";
+            result.title = j.error || "";
+          } else if (j.status === "running") {
+            result.textContent = "in progress";
+          }
+          if (result.textContent) body.appendChild(result);
+          card.appendChild(body);
+
+          const timing = document.createElement("div");
+          timing.className = "timing";
+          const elapsed = document.createElement("span");
+          elapsed.className = "elapsed";
+          if (j.status === "running") {
+            const elapsedS = j.started_at_unix_s ? now - j.started_at_unix_s : null;
+            elapsed.textContent = elapsedS != null ? fmtDuration(elapsedS * 1000) : "--";
+          } else {
+            elapsed.textContent = fmtDuration(j.duration_ms);
+          }
+          timing.appendChild(elapsed);
+          const when = document.createElement("div");
+          const startedAgo = j.started_at_unix_s ? now - j.started_at_unix_s : null;
+          when.textContent = fmtSecsAgo(startedAgo);
+          timing.appendChild(when);
+          card.appendChild(timing);
+
+          container.appendChild(card);
+        });
+      }
+
+      /* ----------------------------------------------------------------
+         Repo actions
+         ---------------------------------------------------------------- */
+      async function deleteRepo(button, repoId, repoName) {
+        const confirmMsg =
+          "Delete the index for \"" + repoName + "\"?\n\n" +
+          "This removes the registry entry and erases the on-disk data " +
+          "directory (~/.code-intelligence/repos/" + repoId + "). " +
+          "The source code is not touched. Re-indexing will start from " +
+          "scratch next time a session binds to this repo.";
+        if (!window.confirm(confirmMsg)) return;
+        const original = button.textContent;
+        button.disabled = true;
+        button.textContent = "deleting...";
+        try {
+          await deleteJson("/api/repos/" + encodeURIComponent(repoId));
+          showToast("deleted index for " + repoName);
+          if (selectedRepoId === repoId) {
+            location.hash = "#/repositories";
+          } else {
+            loadAll();
+          }
+        } catch (e) {
+          showToast("delete failed: " + (e.message || e), "error");
+          button.disabled = false;
+          button.textContent = original;
+        }
+      }
+      async function reindexRepo(button, repoId, repoName) {
+        const original = button.textContent;
+        button.disabled = true;
+        button.textContent = "starting...";
+        try {
+          const res = await postJson("/api/repos/" + encodeURIComponent(repoId) + "/reindex");
+          showToast("re-index started for " + repoName + " (job " + (res.job_id || "?") + ")");
+          button.textContent = "queued";
+          loadAll();
+          setTimeout(() => {
+            button.disabled = false;
+            button.textContent = original;
+          }, 1500);
+        } catch (e) {
+          showToast("re-index failed: " + (e.message || e), "error");
+          button.disabled = false;
+          button.textContent = original;
+        }
+      }
+
+      /* ----------------------------------------------------------------
+         Overview view body
+         ---------------------------------------------------------------- */
+      function renderOverview(status, repos, sessions, jobsData) {
+        const boundCount =
+          status.bound_sessions != null
+            ? status.bound_sessions
+            : status.active_sessions != null
+              ? status.active_sessions
+              : sessions.bound_count;
+        const connectedCount =
+          status.connected_sessions != null
+            ? status.connected_sessions
+            : sessions.connected_count != null
+              ? sessions.connected_count
+              : sessions.count;
+        document.getElementById("ov-repos").textContent = fmtNumber(status.registered_repos);
+        document.getElementById("ov-sessions-bound").textContent = fmtNumber(boundCount);
+        document.getElementById("ov-sessions-connected").textContent = fmtNumber(connectedCount);
+
+        const allJobs = (jobsData && jobsData.jobs) || [];
+        const running = allJobs.filter((j) => j.status === "running").length;
+        document.getElementById("ov-jobs-running").textContent = fmtNumber(running);
+        // Hide the "of N" unit when there are no jobs at all — "0" alone
+        // reads cleaner than "0 of 0" when the system is truly idle.
+        document.getElementById("ov-jobs-total").textContent =
+          allJobs.length > 0 ? "of " + allJobs.length : "";
+        document.getElementById("ov-jobs-sub").textContent =
+          allJobs.length === 0 ? "idle" : (running > 0 ? running + " in flight" : "no active jobs");
+
+        document.getElementById("ov-uptime").textContent = fmtUptime(status.uptime_s);
+        document.getElementById("ov-started").textContent = "since " + fmtTs(status.started_at_unix_s);
+
+        const repoList = (repos && repos.repos) || [];
+        const recentSorted = repoList.slice().sort((a, b) =>
+          (b.last_accessed || "").localeCompare(a.last_accessed || "")
+        );
+        const card = document.getElementById("ov-recent-repo-card");
+        const title = document.getElementById("ov-recent-repo-title");
+        const sub = document.getElementById("ov-recent-repo-sub");
+        if (recentSorted.length) {
+          const r = recentSorted[0];
+          title.textContent = r.name || r.id || "--";
+          sub.textContent = r.path || "";
+          card.dataset.repoId = r.id || "";
+          card.disabled = false;
+        } else {
+          title.textContent = "no repositories";
+          sub.textContent = "bind one to begin";
+          card.dataset.repoId = "";
+        }
+
+        const activity = document.getElementById("ov-activity");
+        while (activity.firstChild) activity.removeChild(activity.firstChild);
+        const recentJobs = allJobs.slice(0, 4);
+        if (!recentJobs.length) {
+          const row = document.createElement("div");
+          row.className = "row";
+          const name = document.createElement("span");
+          name.className = "name";
+          name.textContent = "no recent jobs";
+          row.appendChild(name);
+          activity.appendChild(row);
+        } else {
+          recentJobs.forEach((j) => {
+            const row = document.createElement("div");
+            row.className = "row";
+            const pill = document.createElement("span");
+            pill.className = "pill " + (j.status || "");
+            if (j.status === "running") {
+              const pulse = document.createElement("span");
+              pulse.className = "pulse";
+              pill.appendChild(pulse);
+            }
+            pill.appendChild(document.createTextNode(j.status || "?"));
+            row.appendChild(pill);
+            const name = document.createElement("span");
+            name.className = "name";
+            name.textContent = KIND_LABEL[j.kind] || j.kind || "job";
+            row.appendChild(name);
+            const when = document.createElement("span");
+            when.className = "when";
+            const now = Math.floor(Date.now() / 1000);
+            const startedAgo = j.started_at_unix_s ? now - j.started_at_unix_s : null;
+            when.textContent = fmtSecsAgo(startedAgo);
+            row.appendChild(when);
+            activity.appendChild(row);
+          });
+        }
+      }
+      document.getElementById("ov-recent-repo-card").addEventListener("click", () => {
+        const id = document.getElementById("ov-recent-repo-card").dataset.repoId;
+        if (id) location.hash = "#/repositories/" + encodeURIComponent(id);
+      });
+
+      /* ----------------------------------------------------------------
+         Top-level loader. Polled every 5s.
+         ---------------------------------------------------------------- */
       async function loadAll() {
         try {
           clearError();
@@ -1297,94 +2182,131 @@
           ]);
 
           document.getElementById("version-line").textContent = "v" + status.version;
-          document.getElementById("uptime-line").textContent =
-            "uptime " + fmtUptime(status.uptime_s);
           document.getElementById("status-port").textContent = location.host;
-          document.getElementById("status-repo-count").textContent = status.registered_repos;
-          const boundCount =
-            status.bound_sessions != null
-              ? status.bound_sessions
-              : status.active_sessions != null
-                ? status.active_sessions
-                : sessions.bound_count;
-          const connectedCount =
-            status.connected_sessions != null
-              ? status.connected_sessions
-              : sessions.connected_count != null
-                ? sessions.connected_count
-                : sessions.count;
-          document.getElementById("status-session-count").textContent =
-            boundCount + " / " + connectedCount;
-          document.getElementById("status-started").textContent = fmtTs(status.started_at_unix_s);
-          document.getElementById("status-uptime").textContent =
-            "running " + fmtUptime(status.uptime_s);
 
-          renderRepos(repos);
+          const setTabCount = (id, count, runningCount) => {
+            const el = document.getElementById(id);
+            if (runningCount != null && runningCount > 0) {
+              el.textContent = runningCount + " / " + count;
+            } else {
+              el.textContent = count;
+            }
+            el.setAttribute("data-empty", count === 0 ? "true" : "false");
+          };
+          const repoList = repos.repos || [];
+          const sessionList = sessions.sessions || [];
+          const allJobs = (jobsData && jobsData.jobs) || [];
+          const runningJobs = allJobs.filter((j) => j.status === "running").length;
+          setTabCount("tab-count-repos", repoList.length);
+          setTabCount("tab-count-sessions", sessionList.length);
+          setTabCount("tab-count-jobs", allJobs.length, runningJobs);
+
+          setDaemonState("ok");
+
+          reposCache = repos.repos || [];
+          renderOverview(status, repos, sessions, jobsData);
+          renderRepoList();
+          renderRepoDetail();
           renderSessions(sessions);
           renderJobs(jobsData);
         } catch (e) {
+          setDaemonState("bad");
           showError(e.message || String(e));
         }
       }
-
       loadAll();
       setInterval(loadAll, 5000);
+
       document.addEventListener("keydown", (e) => {
         const t = e.target;
-        if (t && (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.tagName === "TEXTAREA")) {
+        if (t && (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
           return;
         }
         if (e.key === "r" || e.key === "R") {
           loadAll();
+          return;
+        }
+        const idx = parseInt(e.key, 10);
+        if (idx >= 1 && idx <= VIEWS.length) {
+          location.hash = "#/" + VIEWS[idx - 1];
         }
       });
 
-      // --- /api/logs/stream (SSE) ---
+      /* ----------------------------------------------------------------
+         SSE log stream
+         ---------------------------------------------------------------- */
       const LOG_MAX_LINES = 500;
+      const OVERVIEW_TAIL_LINES = 80;
       const logsBody = document.getElementById("logs-body");
       const logsCount = document.getElementById("logs-count");
       const logsState = document.getElementById("logs-state");
       const logsDot = document.getElementById("logs-dot");
       const logsPause = document.getElementById("logs-pause");
       const logsClear = document.getElementById("logs-clear");
+      // Overview mirror: same stream, smaller buffer, no controls.
+      const overviewLogsBody = document.getElementById("ov-logs-body");
+      const overviewLogsState = document.getElementById("ov-logs-state");
+      const overviewLogsDot = document.getElementById("ov-logs-dot");
       let logSource = null;
       let logLines = 0;
       let logsPaused = false;
       let logsEmptyShown = true;
+      let overviewLogsEmptyShown = true;
 
       function setLogStatus(state) {
-        // state: "live" | "paused" | "error"
-        logsDot.classList.remove("live", "paused", "error");
-        logsDot.classList.add(state);
-        logsState.textContent =
-          state === "live" ? "streaming" : state === "paused" ? "paused" : "disconnected";
+        const label = state === "live" ? "streaming"
+                    : state === "paused" ? "paused"
+                    : "disconnected";
+        [logsDot, overviewLogsDot].forEach((el) => {
+          if (!el) return;
+          el.classList.remove("live", "paused", "error");
+          el.classList.add(state);
+        });
+        [logsState, overviewLogsState].forEach((el) => {
+          if (el) el.textContent = label;
+        });
       }
-
       function appendLogLine(text, kind) {
+        const cleaned = String(text).replace(/\x1b\[[0-9;]*m/g, "");
+
+        // Canonical logs body (Logs view).
         if (logsEmptyShown) {
           while (logsBody.firstChild) logsBody.removeChild(logsBody.firstChild);
           logsEmptyShown = false;
         }
         const line = document.createElement("div");
         line.className = "line" + (kind ? " " + kind : "");
-        // Strip ANSI escape sequences using a string replace so the panel
-        // stays plain text. Never set innerHTML with line content.
-        line.textContent = String(text).replace(/\x1b\[[0-9;]*m/g, "");
+        line.textContent = cleaned;
         logsBody.appendChild(line);
         logLines += 1;
-        // Trim oldest lines beyond the buffer limit.
         while (logsBody.childElementCount > LOG_MAX_LINES) {
           logsBody.removeChild(logsBody.firstChild);
         }
         logsCount.textContent = logLines.toLocaleString() + " lines";
-        // Auto-scroll only when the user is near the bottom.
         const nearBottom =
           logsBody.scrollHeight - logsBody.scrollTop - logsBody.clientHeight < 60;
-        if (nearBottom) {
-          logsBody.scrollTop = logsBody.scrollHeight;
+        if (nearBottom) logsBody.scrollTop = logsBody.scrollHeight;
+
+        // Overview preview mirror. Caps at OVERVIEW_TAIL_LINES; auto-scrolls
+        // only when the viewer is already near the bottom so a user reading
+        // earlier lines isn't yanked.
+        if (overviewLogsBody) {
+          if (overviewLogsEmptyShown) {
+            while (overviewLogsBody.firstChild) overviewLogsBody.removeChild(overviewLogsBody.firstChild);
+            overviewLogsEmptyShown = false;
+          }
+          const mirror = document.createElement("div");
+          mirror.className = "line" + (kind ? " " + kind : "");
+          mirror.textContent = cleaned;
+          overviewLogsBody.appendChild(mirror);
+          while (overviewLogsBody.childElementCount > OVERVIEW_TAIL_LINES) {
+            overviewLogsBody.removeChild(overviewLogsBody.firstChild);
+          }
+          const ovNearBottom =
+            overviewLogsBody.scrollHeight - overviewLogsBody.scrollTop - overviewLogsBody.clientHeight < 60;
+          if (ovNearBottom) overviewLogsBody.scrollTop = overviewLogsBody.scrollHeight;
         }
       }
-
       function openLogStream() {
         if (logSource) {
           try { logSource.close(); } catch (_) {}
@@ -1401,7 +2323,6 @@
         });
         logSource.addEventListener("error", () => {
           setLogStatus("error");
-          // EventSource auto-reconnects; reflect that in the indicator after a bit.
           setTimeout(() => {
             if (logSource && logSource.readyState === EventSource.OPEN) {
               setLogStatus(logsPaused ? "paused" : "live");
@@ -1409,7 +2330,6 @@
           }, 2000);
         });
       }
-
       logsPause.addEventListener("click", () => {
         logsPaused = !logsPaused;
         logsPause.textContent = logsPaused ? "Resume" : "Pause";
@@ -1421,29 +2341,33 @@
         logsCount.textContent = "0 lines";
         const empty = document.createElement("div");
         empty.className = "logs-empty";
-        empty.textContent = "Cleared. New events will stream in here.";
+        empty.textContent = "cleared. new events will stream in here.";
         logsBody.appendChild(empty);
         logsEmptyShown = true;
+        // Mirror the clear into the overview preview.
+        if (overviewLogsBody) {
+          while (overviewLogsBody.firstChild) overviewLogsBody.removeChild(overviewLogsBody.firstChild);
+          const ovEmpty = document.createElement("div");
+          ovEmpty.className = "logs-empty";
+          ovEmpty.textContent = "cleared";
+          overviewLogsBody.appendChild(ovEmpty);
+          overviewLogsEmptyShown = true;
+        }
       });
-
       openLogStream();
 
-      // --- Theme toggle: System / Light / Dark ---
+      /* ----------------------------------------------------------------
+         Theme toggle
+         ---------------------------------------------------------------- */
       const THEME_KEY = "cimcp.theme";
       const themeButtons = Array.from(document.querySelectorAll(".theme-toggle button"));
-      const mq = window.matchMedia
-        ? window.matchMedia("(prefers-color-scheme: dark)")
-        : null;
-
+      const mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
       function readThemePref() {
         try {
           const v = localStorage.getItem(THEME_KEY);
           return v === "light" || v === "dark" ? v : "system";
-        } catch (_) {
-          return "system";
-        }
+        } catch (_) { return "system"; }
       }
-
       function applyThemePref(pref) {
         const root = document.documentElement;
         root.classList.remove("theme-light", "theme-dark");
@@ -1457,20 +2381,14 @@
         });
         try { localStorage.setItem(THEME_KEY, pref); } catch (_) {}
       }
-
       themeButtons.forEach((b, idx) => {
         b.addEventListener("click", () => applyThemePref(b.dataset.theme));
         b.addEventListener("keydown", (e) => {
           let next = -1;
-          if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-            next = (idx + 1) % themeButtons.length;
-          } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-            next = (idx - 1 + themeButtons.length) % themeButtons.length;
-          } else if (e.key === "Home") {
-            next = 0;
-          } else if (e.key === "End") {
-            next = themeButtons.length - 1;
-          }
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (idx + 1) % themeButtons.length;
+          else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (idx - 1 + themeButtons.length) % themeButtons.length;
+          else if (e.key === "Home") next = 0;
+          else if (e.key === "End") next = themeButtons.length - 1;
           if (next >= 0) {
             e.preventDefault();
             const t = themeButtons[next];
@@ -1479,17 +2397,9 @@
           }
         });
       });
-
-      // When set to System, the CSS media query handles light <-> dark live.
-      // No JS reaction is strictly required, but listen so the toggle UI
-      // stays consistent if the user opens devtools and changes
-      // emulated color scheme.
       if (mq && typeof mq.addEventListener === "function") {
-        mq.addEventListener("change", () => {
-          // No-op: CSS variables already update. Kept for future hooks.
-        });
+        mq.addEventListener("change", () => {});
       }
-
       applyThemePref(readThemePref());
     </script>
   </body>

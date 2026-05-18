@@ -4,6 +4,7 @@
 # Agent related
 .cimcp/
 .code-intelligence/
+.impeccable/
 :memory:
 .plans
 

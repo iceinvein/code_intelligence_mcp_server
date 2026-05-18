@@ -293,16 +293,35 @@
         tail.replaceChildren(...rows);
       }
 
+      function parseTextLogLine(raw) {
+        // Tracing default format: "<ISO timestamp>  <LEVEL>  <rest>"
+        // Two spaces separate timestamp from level; one or more separate level from rest.
+        const re = /^(\S+)\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+(.*)$/;
+        const m = raw.match(re);
+        if (!m) return { ts: fmtTs(Date.now()), level: "info", message: raw };
+        return {
+          ts: fmtTs(m[1]),
+          level: m[2].toLowerCase() === "warn" ? "warn" :
+                 m[2].toLowerCase() === "error" ? "error" : "info",
+          message: m[3],
+        };
+      }
+
       function startTail() {
         logSource = new EventSource("/api/logs/stream");
         logSource.onmessage = (ev) => {
-          let obj = null;
-          try { obj = JSON.parse(ev.data); } catch (_) { return; }
-          tailLines.push({
-            ts: fmtTs(obj.timestamp || obj.ts || Date.now()),
-            level: String(obj.level || "info").toLowerCase(),
-            message: String(obj.message || obj.msg || ev.data),
-          });
+          let entry = null;
+          try {
+            const obj = JSON.parse(ev.data);
+            entry = {
+              ts: fmtTs(obj.timestamp || obj.ts || Date.now()),
+              level: String(obj.level || "info").toLowerCase(),
+              message: String(obj.message || obj.msg || ev.data),
+            };
+          } catch (_) {
+            entry = parseTextLogLine(ev.data);
+          }
+          tailLines.push(entry);
           if (tailLines.length > 200) tailLines = tailLines.slice(-200);
           renderTail();
         };

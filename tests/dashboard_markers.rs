@@ -11,6 +11,9 @@ fn dashboard_contains_terminal_layout_markers() {
         r#"id="repo-table""#,
         r#"id="repl""#,
         r#"data-theme-key="cimcp.theme""#,
+        r#"class="brand""#,
+        r#"id="health-pulse""#,
+        r#"id="theme-toggle""#,
     ] {
         assert!(
             DASHBOARD_HTML.contains(marker),

@@ -56,17 +56,94 @@
       main { max-width: 1080px; margin: 0 auto; padding: 32px 28px 0; }
       section { margin-bottom: 12px; }
       a { color: inherit; }
+      .header { display: flex; align-items: baseline; gap: 18px; padding: 0 0 12px; border-bottom: 1px dashed var(--edge-soft); }
+      .header .brand { font-family: var(--font-serif); font-style: italic; font-size: 16px; letter-spacing: 0.01em; }
+      .header .crumb { color: var(--ink-dim); font-size: 11px; letter-spacing: 0.02em; }
+      .header .grow { flex: 1; }
+      .header .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+      .header .pulse.warn { background: transparent; border: 1.5px solid var(--warn); box-shadow: none; }
+      .theme-toggle { background: transparent; color: var(--label); border: 1px solid var(--edge); border-radius: 999px; padding: 2px 10px; font: 500 9px var(--font-sans); letter-spacing: 0.16em; text-transform: uppercase; cursor: pointer; }
+      .theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     </style>
   </head>
   <body data-theme-key="cimcp.theme">
     <main>
-      <section id="header-strip"></section>
+      <section id="header-strip" class="header">
+        <span class="brand">code intelligence</span>
+        <span class="crumb" id="daemon-addr"></span>
+        <span class="grow"></span>
+        <button id="theme-toggle" class="theme-toggle" aria-label="cycle theme"></button>
+        <span id="health-pulse" class="pulse" role="status" aria-label="daemon healthy" title="daemon healthy"></span>
+      </section>
       <section id="status-grid"></section>
       <section id="repo-table"></section>
     </main>
     <section id="repl"></section>
     <script type="module">
-      // populated in later tasks
+      const $ = (sel) => document.querySelector(sel);
+
+      function el(tag, props, ...children) {
+        const n = document.createElement(tag);
+        if (props) {
+          for (const k in props) {
+            const v = props[k];
+            if (v == null) continue;
+            if (k === "class") n.className = v;
+            else if (k === "text") n.textContent = v;
+            else if (k === "on") for (const ev in v) n.addEventListener(ev, v[ev]);
+            else if (k in n) n[k] = v;
+            else n.setAttribute(k, v);
+          }
+        }
+        for (const c of children) {
+          if (c == null) continue;
+          n.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
+        }
+        return n;
+      }
+
+      const fetchJson = async (path) => {
+        const res = await fetch(path, { headers: { accept: "application/json" } });
+        if (!res.ok) throw new Error(`${path} ${res.status}`);
+        return res.json();
+      };
+
+      async function renderHeader() {
+        const pulse = $("#health-pulse");
+        try {
+          const [status, version] = await Promise.all([fetchJson("/api/status"), fetchJson("/api/version")]);
+          const healthy = status.healthy !== false;
+          pulse.classList.toggle("warn", !healthy);
+          const label = `daemon ${healthy ? "healthy" : "degraded"}`;
+          pulse.setAttribute("aria-label", label);
+          pulse.title = `${label} · ${version.version || "unknown"}`;
+          const addr = status.host && status.port ? `${status.host}:${status.port}` : `localhost:${location.port || 17800}`;
+          $("#daemon-addr").textContent = addr;
+        } catch (_) {
+          pulse.classList.add("warn");
+          pulse.setAttribute("aria-label", "daemon unreachable");
+          $("#daemon-addr").textContent = "unreachable";
+        }
+      }
+      renderHeader();
+      setInterval(renderHeader, 5000);
+
+      const THEME_KEY = "cimcp.theme";
+      const THEMES = ["system", "light", "dark"];
+      function applyTheme(pref) {
+        const root = document.documentElement;
+        root.classList.remove("theme-light", "theme-dark");
+        if (pref === "light") root.classList.add("theme-light");
+        else if (pref === "dark") root.classList.add("theme-dark");
+        $("#theme-toggle").textContent = pref;
+      }
+      $("#theme-toggle").addEventListener("click", () => {
+        const cur = localStorage.getItem(THEME_KEY) || "system";
+        const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+        localStorage.setItem(THEME_KEY, next);
+        applyTheme(next);
+      });
+      applyTheme(localStorage.getItem(THEME_KEY) || "system");
     </script>
   </body>
 </html>

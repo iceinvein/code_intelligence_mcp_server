@@ -596,6 +596,8 @@
         palette.setAttribute("aria-hidden", "false");
         paletteInput.value = "";
         paletteInput.focus();
+        const main = document.querySelector("main");
+        if (main) main.inert = true;
         renderPalette();
       }
 
@@ -604,6 +606,8 @@
         paletteOpen = false;
         palette.classList.remove("open");
         palette.setAttribute("aria-hidden", "true");
+        const main = document.querySelector("main");
+        if (main) main.inert = false;
         paletteInput.blur();
         if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
         if (paletteMode !== "default") resetPaletteMode();

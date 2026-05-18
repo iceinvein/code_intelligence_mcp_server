@@ -20,7 +20,7 @@ Unchanged from PRODUCT.md. Two users on one surface:
 
 Top-down, no tabs. One scrolling page. Sections appear in this fixed order so the operator's eye lands in the same place every refresh.
 
-1. **Header strip.** Italic serif brand on the left ("code intelligence"), bound repo path as a crumb, healthy/unhealthy pulse on the right. One line. Sparse.
+1. **Header strip.** Italic serif brand on the left ("code intelligence"), daemon listening address as a crumb (e.g., `localhost:17800`), healthy/unhealthy pulse on the right. One line. Sparse.
 2. **Status grid.** Two columns separated by a dashed seam.
    - Left column: key/value rows. `daemon`, `repos`, `sessions`, `jobs`, `embed`, `version`. Numbers in tabular figures.
    - Right column: live tail. Last six log lines with timestamp, level, message. Warn lines coloured.
@@ -81,7 +81,7 @@ The dark palette intentionally pushes past PRODUCT.md's "dim paper, warm walnut"
 
 ### Header strip
 
-One line. Italic serif brand on the left. Dim crumb showing the bound repo absolute path (truncated with ellipsis if it overflows). Pulse circle on the right: filled accent when daemon is healthy, hollow warn ring when not. Tooltip on the pulse names the state.
+One line. Italic serif brand on the left. Dim crumb showing the daemon's listening address (e.g., `localhost:17800`). Pulse circle on the right: filled accent when daemon is healthy, hollow warn ring when not. Tooltip on the pulse names the state.
 
 ### Status grid
 

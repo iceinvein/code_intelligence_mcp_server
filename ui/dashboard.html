@@ -709,6 +709,61 @@
         document.querySelector("#status-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
         return `tail filter ${JSON.stringify(tailFilter)}`;
       }, "filter the live tail; `tail --grep bind --since 5m`");
+
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key === "/" && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
+          ev.preventDefault();
+          replIn.focus();
+        }
+      });
+      replIn.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape") replIn.blur();
+      });
+
+      const history = [];
+      let historyIdx = -1;
+      const _runCommand = runCommand;
+      runCommand = async function (line) {
+        if (line.trim()) { history.push(line); historyIdx = history.length; }
+        return _runCommand(line);
+      };
+
+      replIn.addEventListener("keydown", (ev) => {
+        if (ev.key === "ArrowUp") {
+          if (history.length === 0) return;
+          historyIdx = Math.max(0, historyIdx - 1);
+          replIn.value = history[historyIdx];
+          ev.preventDefault();
+        } else if (ev.key === "ArrowDown") {
+          if (historyIdx >= history.length - 1) { historyIdx = history.length; replIn.value = ""; }
+          else { historyIdx++; replIn.value = history[historyIdx]; }
+          ev.preventDefault();
+        } else if (ev.key === "l" && ev.ctrlKey) {
+          ev.preventDefault();
+          runCommand("clear");
+        }
+      });
+
+      replIn.addEventListener("keydown", (ev) => {
+        if (ev.key !== "Tab") return;
+        ev.preventDefault();
+        const cursor = replIn.selectionStart ?? replIn.value.length;
+        const before = replIn.value.slice(0, cursor);
+        const after  = replIn.value.slice(cursor);
+        const lastTok = (before.match(/[^\s]+$/) || [""])[0];
+        const tokens = before.trim().split(/\s+/);
+        const candidates = tokens.length <= 1
+          ? Object.keys(COMMANDS).concat(["?"])
+          : lastRepoList.map((r) => r.name || basename(r.path));
+        const matches = candidates.filter((c) => c.startsWith(lastTok));
+        if (matches.length === 1) {
+          const completion = matches[0].slice(lastTok.length);
+          replIn.value = before + completion + after;
+          replIn.setSelectionRange(cursor + completion.length, cursor + completion.length);
+        } else if (matches.length > 1) {
+          pushScrollback({ echo: `${before}<TAB>`, out: matches.join("  ") });
+        }
+      });
     </script>
   </body>
 </html>

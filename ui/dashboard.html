@@ -320,8 +320,8 @@
       }
 
       function pushTailLine(entry) {
-        entry.received_at = Date.now();
-        tailLines.push(entry);
+        const stamped = { ...entry, received_at: Date.now() };
+        tailLines.push(stamped);
         if (tailLines.length > 200) tailLines = tailLines.slice(-200);
         renderTail();
       }
@@ -699,8 +699,9 @@
         tailFilter.grep = flags.grep ?? null;
         if (flags.since) {
           const m = String(flags.since).match(/^(\d+)([smh])$/);
+          if (!m) throw new Error(`bad --since "${flags.since}"; use Ns, Nm, or Nh`);
           const unit = { s: 1000, m: 60000, h: 3600000 };
-          tailFilter.since_ms = m ? parseInt(m[1], 10) * unit[m[2]] : null;
+          tailFilter.since_ms = parseInt(m[1], 10) * unit[m[2]];
         } else {
           tailFilter.since_ms = null;
         }

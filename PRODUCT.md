@@ -31,7 +31,7 @@ Voice for UI copy: short, factual, lowercase-friendly for system terms (`mcp-ses
 - "AI startup" landing aesthetic (gradient text, glassmorphism, animated mesh backgrounds).
 - Datadog / Grafana template appearance: strong information design, weak identity. The dashboard must not look like every other DevOps panel.
 - Cramped tool UIs (Acrobat, traditional ops consoles) that pack everything into toolbars and tiny dense tables.
-- Cyberpunk dev-tool dark mode (neon-on-near-black, terminal-mimic). Dark mode must feel like dim paper, not a hacker movie set.
+- Cyberpunk neon-on-near-black: dark mode is high-contrast slate plus warm ivory, never saturated neon. The terminal layout is calm and considered, not a hacker movie set.
 - Hero-metric template: big number + small label + accent stripe + supporting stats, repeated four times across the top of the page.
 
 ## Design Principles
@@ -40,7 +40,7 @@ Voice for UI copy: short, factual, lowercase-friendly for system terms (`mcp-ses
 2. **Earned density.** Start sparse where users land. Grow denser inside expanded sections (repo detail, log stream) where attention is focused. Never make the top of the page dense.
 3. **Typography carries the design.** Hierarchy through scale, weight, and font choice. Color does not do hierarchy. Accent appears in less than ten percent of pixels.
 4. **State changes are honest.** Running, succeeded, failed, idle. Each state has one clear visual treatment. No ambiguous tints, no badges that look the same at a glance.
-5. **Dim paper in dark mode.** Dark mode is the same instrument viewed under low ambient light. Warm undertone preserved. Identity unchanged.
+5. **High-contrast dark, warm identity.** Dark mode uses a deep cool slate background with crisp warm-ivory ink and a brighter teal accent. Contrast is higher than the previous "dim paper" stance; identity (italic serif brand, mono body, single accent) is preserved across both themes. The light theme remains the warm-cream surface described elsewhere.
 
 ## Accessibility & Inclusion
 

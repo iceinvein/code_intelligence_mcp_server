@@ -266,10 +266,9 @@
       let logSource = null;
 
       function fmtTs(iso) {
-        try {
-          const d = new Date(iso);
-          return d.toTimeString().slice(0, 5);
-        } catch { return ""; }
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return "";
+        return d.toTimeString().slice(0, 5);
       }
 
       function lineMatchesFilter(l) {
@@ -313,11 +312,15 @@
           let entry = null;
           try {
             const obj = JSON.parse(ev.data);
-            entry = {
-              ts: fmtTs(obj.timestamp || obj.ts || Date.now()),
-              level: String(obj.level || "info").toLowerCase(),
-              message: String(obj.message || obj.msg || ev.data),
-            };
+            if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+              entry = {
+                ts: fmtTs(obj.timestamp || obj.ts || Date.now()),
+                level: String(obj.level || "info").toLowerCase(),
+                message: String(obj.message || obj.msg || ev.data),
+              };
+            } else {
+              entry = parseTextLogLine(ev.data);
+            }
           } catch (_) {
             entry = parseTextLogLine(ev.data);
           }
@@ -325,6 +328,15 @@
           if (tailLines.length > 200) tailLines = tailLines.slice(-200);
           renderTail();
         };
+        logSource.addEventListener("lagged", (ev) => {
+          tailLines.push({
+            ts: fmtTs(Date.now()),
+            level: "warn",
+            message: `[stream] lagged ${ev.data || "n/a"} entries`,
+          });
+          if (tailLines.length > 200) tailLines = tailLines.slice(-200);
+          renderTail();
+        });
         logSource.onerror = () => {
           if (logSource.readyState === EventSource.CLOSED) setTimeout(startTail, 2000);
         };

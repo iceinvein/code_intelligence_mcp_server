@@ -129,10 +129,9 @@ Fuzzy match: a basic substring-then-subsequence scorer. Highlights the matched s
 Built-in actions (V2):
 
 - `Refresh data now` (re-runs all pollers immediately).
-- `Reindex all repositories` (POSTs reindex for every repo; confirms first via a second-press pattern).
 - `Cycle theme` (system → light → dark → system; mirrors the header toggle).
-- `Filter live tail…` (opens the palette in a sub-input mode: a single line that takes a grep pattern and an optional `Ns|Nm|Nh` since; applies `tailFilter` and closes).
-- `Clear live tail filter` (resets `tailFilter` to defaults).
+
+Bulk reindex and tail filtering were deliberately not shipped in V2. Per-repo reindex is reachable via `⌘↵` on a highlighted repo; the live tail's six-row window makes filtering low value, and full log history is at `~/.code-intelligence/logs/`.
 
 Sections render in this order: Repositories, Sessions, Actions. Empty sections are omitted. When the search box is empty, all sections appear in full (with Repositories capped at 8 rows visible; the user can scroll). When the search box has text, only sections with at least one match render.
 
@@ -141,7 +140,7 @@ Sections render in this order: Repositories, Sessions, Actions. Empty sections a
 - `⌘K` (or `Ctrl+K`): open the palette from anywhere on the page (does not fire while the user is typing in a real `<input>` or `<textarea>` that is NOT the palette itself).
 - `Esc`: close the palette. If the palette is closed, do nothing.
 - `↑` / `↓`: move the highlight. Skips section header rows. Wraps within the visible result set.
-- `↵`: run the default action for the highlighted row, then close (unless the action keeps the palette open by design, e.g., `Filter live tail…`).
+- `↵`: run the default action for the highlighted row, then close.
 - `⌘↵` (or `Ctrl+↵`): on a Repository row, queue a reindex and close. Inactive on other row types.
 - `⌘⌫`: on a Repository row, start the two-step drop. The first press swaps the row's right-side kbd badge to a warn-coloured `confirm drop` and arms `pendingDrop`. The second press within 5 s issues the DELETE and closes. The third option for a wary user is `Esc` to cancel.
 - Typing: filters the current section list. Whitespace splits into AND tokens.
@@ -154,7 +153,7 @@ The V1 REPL commands `?`/`help`, `clear`, `status`, `version`, `tail --grep`, `t
 - `clear` → no scrollback to clear.
 - `status` → the status grid is permanently visible; "Refresh data now" forces a re-poll.
 - `version` → shown in the existing status grid `version` row and on the health-pulse tooltip.
-- `tail --grep` / `--since` → "Filter live tail…" palette action.
+- `tail --grep` / `--since` → not shipped in V2; use the on-disk log file at `~/.code-intelligence/logs/` for ad-hoc searches.
 - History (`↑`/`↓`) → unused in palette mode (you re-find the result by typing again, which is the Raycast convention).
 - `Tab` completion → unused; typing already fuzzy-filters.
 
@@ -213,7 +212,6 @@ None blocking. Items to resolve during planning:
 
 - Exact `aria-live` granularity for the tail (per row vs batch).
 - Whether the palette should announce result count to screen readers as the query changes (e.g., `aria-live="polite"` on a hidden status node).
-- Whether `Filter live tail…` should temporarily replace the palette body with a single-input mode (recommended), or use a chained command-style prompt.
 
 ## Implementation notes
 

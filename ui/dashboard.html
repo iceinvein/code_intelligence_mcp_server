@@ -585,7 +585,6 @@
       const paletteInput = $("#palette-input");
       const paletteFoot = $("#palette-foot");
       let paletteOpen = false;
-      let paletteMode = "default"; // "default" | "tail-filter"
       let lastFocus = null;
 
       function openPalette() {
@@ -610,7 +609,6 @@
         if (main) main.inert = false;
         paletteInput.blur();
         if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
-        if (paletteMode !== "default") resetPaletteMode();
       }
 
       function fuzzyMatch(query, label) {
@@ -678,43 +676,13 @@
         renderPaletteFoot(rows[paletteHighlight]);
       }
 
-      let reindexAllPending = null; // { expiresAt }
-
-      function confirmReindexAll() {
-        if (reindexAllPending && Date.now() < reindexAllPending.expiresAt) {
-          reindexAllPending = null;
-          (async () => {
-            for (const r of lastRepoList || []) {
-              try { await fetch(`/api/repos/${encodeURIComponent(r.id)}/reindex`, { method: "POST", headers: { accept: "application/json" } }); }
-              catch (_) { /* swallow; the next renderRepos cycle reflects actual state */ }
-            }
-          })();
-          return;
-        }
-        reindexAllPending = { expiresAt: Date.now() + 5000 };
-        alert(`Reindex all (${(lastRepoList || []).length}) repos? Run again within 5s to confirm.`);
-      }
-
       function cyclePaletteTheme() {
         $("#theme-toggle").click();
       }
 
-      function clearTailFilter() {
-        tailFilter.grep = null;
-        tailFilter.since_ms = null;
-        renderTail();
-      }
-
-      function openTailFilterMode() {
-        renderTailFilterMode();
-      }
-
       const PALETTE_ACTIONS = [
-        { id: "refresh",     label: "Refresh data now",         run: () => { renderHeader(); renderStatus(); renderRepos(); } },
-        { id: "reindex-all", label: "Reindex all repositories", run: confirmReindexAll },
-        { id: "cycle-theme", label: "Cycle theme",              run: cyclePaletteTheme },
-        { id: "filter-tail", label: "Filter live tail…",        run: openTailFilterMode, keepOpen: true },
-        { id: "clear-tail",  label: "Clear live tail filter",   run: clearTailFilter },
+        { id: "refresh",     label: "Refresh data now", run: () => { renderHeader(); renderStatus(); renderRepos(); } },
+        { id: "cycle-theme", label: "Cycle theme",      run: cyclePaletteTheme },
       ];
 
       function renderPalette() {
@@ -761,39 +729,7 @@
         setHighlight(0);
       }
 
-      function renderTailFilterMode() {
-        paletteMode = "tail-filter";
-        paletteInput.value = "";
-        paletteInput.placeholder = "grep pattern (optional --since Ns|Nm|Nh)";
-        const body = palette.querySelector(".body");
-        for (const child of Array.from(body.children)) {
-          child.style.display = "none";
-        }
-        const help = el("div", {
-          class: "empty",
-          text: "Type a substring to filter the live tail. Add --since 5m for an age window. Enter to apply.",
-        });
-        help.dataset.paletteTransient = "tail-filter";
-        body.appendChild(help);
-        renderPaletteFoot(null);
-      }
-
-      function resetPaletteMode() {
-        paletteMode = "default";
-        paletteInput.placeholder = "search repos, sessions, actions";
-        const body = palette.querySelector(".body");
-        const transient = body.querySelector('[data-palette-transient="tail-filter"]');
-        if (transient) transient.remove();
-        for (const child of Array.from(body.children)) {
-          child.style.display = "";
-        }
-        renderPalette();
-      }
-
-      paletteInput.addEventListener("input", () => {
-        if (paletteMode === "default") renderPalette();
-        // tail-filter mode: typing only updates the input value; render-on-Enter applies it.
-      });
+      paletteInput.addEventListener("input", renderPalette);
 
       function renderPaletteFoot(row) {
         const kind = row?.dataset?.kind;
@@ -829,24 +765,6 @@
       }
 
       paletteInput.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter" && paletteMode === "tail-filter") {
-          ev.preventDefault();
-          const text = paletteInput.value.trim();
-          // Parse `--since Ns|Nm|Nh` if present; the rest is the grep.
-          const sinceMatch = text.match(/--since\s+(\d+)([smh])/);
-          let grep = text.replace(/--since\s+\d+[smh]/, "").trim();
-          if (grep === "") grep = null;
-          if (sinceMatch) {
-            const unit = { s: 1000, m: 60000, h: 3600000 };
-            tailFilter.since_ms = parseInt(sinceMatch[1], 10) * unit[sinceMatch[2]];
-          } else {
-            tailFilter.since_ms = null;
-          }
-          tailFilter.grep = grep;
-          renderTail();
-          closePalette();
-          return;
-        }
         if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
           ev.preventDefault();
           const rows = paletteRowsFlat();

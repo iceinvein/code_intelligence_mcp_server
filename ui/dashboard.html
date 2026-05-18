@@ -585,6 +585,7 @@
       const paletteInput = $("#palette-input");
       const paletteFoot = $("#palette-foot");
       let paletteOpen = false;
+      let paletteMode = "default"; // "default" | "tail-filter"
       let lastFocus = null;
 
       function openPalette() {
@@ -605,6 +606,7 @@
         palette.setAttribute("aria-hidden", "true");
         paletteInput.blur();
         if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
+        if (paletteMode !== "default") resetPaletteMode();
       }
 
       function fuzzyMatch(query, label) {
@@ -699,9 +701,9 @@
         renderTail();
       }
 
-      // `openTailFilterMode` is implemented in Task 4. Stub for now so PALETTE_ACTIONS
-      // initialises cleanly; Task 4 replaces the body.
-      function openTailFilterMode() { /* Task 4 */ }
+      function openTailFilterMode() {
+        renderTailFilterMode();
+      }
 
       const PALETTE_ACTIONS = [
         { id: "refresh",     label: "Refresh data now",         run: () => { renderHeader(); renderStatus(); renderRepos(); } },
@@ -755,7 +757,27 @@
         setHighlight(0);
       }
 
-      paletteInput.addEventListener("input", renderPalette);
+      function renderTailFilterMode() {
+        paletteMode = "tail-filter";
+        paletteInput.value = "";
+        paletteInput.placeholder = "grep pattern (optional --since Ns|Nm|Nh)";
+        const body = palette.querySelector(".body");
+        body.replaceChildren(
+          el("div", { class: "empty", text: "Type a substring to filter the live tail. Add --since 5m for an age window. Enter to apply." })
+        );
+        renderPaletteFoot(null);
+      }
+
+      function resetPaletteMode() {
+        paletteMode = "default";
+        paletteInput.placeholder = "search repos, sessions, actions";
+        renderPalette();
+      }
+
+      paletteInput.addEventListener("input", () => {
+        if (paletteMode === "default") renderPalette();
+        // tail-filter mode: typing only updates the input value; render-on-Enter applies it.
+      });
 
       function renderPaletteFoot(row) {
         const kind = row?.dataset?.kind;
@@ -791,6 +813,24 @@
       }
 
       paletteInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" && paletteMode === "tail-filter") {
+          ev.preventDefault();
+          const text = paletteInput.value.trim();
+          // Parse `--since Ns|Nm|Nh` if present; the rest is the grep.
+          const sinceMatch = text.match(/--since\s+(\d+)([smh])/);
+          let grep = text.replace(/--since\s+\d+[smh]/, "").trim();
+          if (grep === "") grep = null;
+          if (sinceMatch) {
+            const unit = { s: 1000, m: 60000, h: 3600000 };
+            tailFilter.since_ms = parseInt(sinceMatch[1], 10) * unit[sinceMatch[2]];
+          } else {
+            tailFilter.since_ms = null;
+          }
+          tailFilter.grep = grep;
+          renderTail();
+          closePalette();
+          return;
+        }
         if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
           ev.preventDefault();
           const rows = paletteRowsFlat();

@@ -571,6 +571,82 @@
 
       replIn.addEventListener("focus", () => { replHint.textContent = "tab complete · ↑ history · esc"; });
       replIn.addEventListener("blur",  () => { replHint.textContent = "/ to focus"; });
+
+      const COMMANDS = {};
+      function registerCommand(name, handler, help) { COMMANDS[name] = { handler, help }; }
+
+      function parseCommand(line) {
+        const tokens = line.trim().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+        const verb = tokens.shift();
+        const args = [];
+        const flags = {};
+        for (let i = 0; i < tokens.length; i++) {
+          const t = tokens[i];
+          if (t.startsWith("--")) {
+            const key = t.slice(2);
+            const next = tokens[i + 1];
+            if (next && !next.startsWith("--")) { flags[key] = next.replace(/^"|"$/g, ""); i++; }
+            else flags[key] = true;
+          } else {
+            args.push(t.replace(/^"|"$/g, ""));
+          }
+        }
+        return { verb, args, flags };
+      }
+
+      let runCommand = async function (line) {
+        if (!line.trim()) return;
+        const { verb, args, flags } = parseCommand(line);
+        const entry = { echo: line, out: "", err: "" };
+        if (verb === "?" || verb === "help") {
+          entry.out = Object.entries(COMMANDS).map(([n, c]) => `${n.padEnd(12)} ${c.help}`).join("\n");
+        } else if (COMMANDS[verb]) {
+          try { entry.out = String((await COMMANDS[verb].handler(args, flags)) ?? ""); }
+          catch (e) { entry.err = e.message || String(e); }
+        } else {
+          entry.err = `unknown command; try ?`;
+        }
+        pushScrollback(entry);
+      };
+
+      replIn.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          const line = replIn.value;
+          replIn.value = "";
+          runCommand(line);
+        }
+      });
+
+      registerCommand("clear", () => {
+        scrollback.length = 0;
+        replOut.replaceChildren();
+        replOut.classList.remove("open");
+        return "";
+      }, "clear scrollback");
+
+      registerCommand("status", async () => {
+        const s = await fetchJson("/api/status");
+        return `daemon ok · up ${fmtUptime(s.uptime_s)} · ${s.bound_sessions ?? 0} bound · ${s.connected_sessions ?? 0} connected`;
+      }, "reprint daemon status");
+
+      registerCommand("version", async () => {
+        const v = await fetchJson("/api/version");
+        return v.version || "unknown";
+      }, "print daemon version");
+
+      registerCommand("repos", async (args) => {
+        const list = (await fetchJson("/api/repos")).repos ?? [];
+        if (args[0]) {
+          const target = list.find((r) => (r.name || basename(r.path)) === args[0]);
+          if (!target) return `no repo matches "${args[0]}"`;
+          await toggleExpand(target.id);
+          document.querySelector(`tr[data-id="${CSS.escape(target.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+          return `expanded ${target.name || basename(target.path)}`;
+        }
+        document.querySelector("#repo-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return `${list.length} repos`;
+      }, "list or focus a repo; `repos <name>` expands it");
     </script>
   </body>
 </html>

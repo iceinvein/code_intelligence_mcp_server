@@ -15,6 +15,7 @@ fn dashboard_contains_palette_layout_markers() {
         r#"class="brand""#,
         r#"id="health-pulse""#,
         r#"id="theme-toggle""#,
+        r#"id="palette-hint""#,
         r#"data-palette-section="repos""#,
         r#"data-palette-section="sessions""#,
         r#"data-palette-section="actions""#,

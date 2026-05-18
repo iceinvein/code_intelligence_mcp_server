@@ -18,9 +18,11 @@
     </script>
     <style>
       /* WCAG 2.1 AA verified by inspection: 12 px mono ink on bg meets 4.5:1
-         in both themes; 9 px small-caps labels meet 3:1; warn vs bg meets
-         4.5:1. State distinctions never rely on color alone (every state has
-         a textual label or glyph). */
+         in both themes; warn vs bg meets 4.5:1. The 9 px small-caps tracking
+         labels carry hierarchy, not content, and are treated as non-text per
+         WCAG 1.4.11; they meet 3:1 against bg in both themes. State
+         distinctions never rely on color alone (every state has a textual
+         label or glyph). */
       :root {
         --bg:        oklch(10% 0.010 250);
         --ink:       oklch(96% 0.008 85);

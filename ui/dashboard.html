@@ -371,6 +371,8 @@
       const repoDetailCache = new Map();
       let lastRepoList = [];
       let lastSessions = [];
+      let pendingDrop = null; // { id: string, expiresAt: number (ms epoch) }
+      let attachToken = 0;
 
       function activityLabel(r) {
         if (r.activity?.running) return "running";
@@ -422,6 +424,10 @@
         const dropLink = el("a", { href: "#", class: "drop-link", text: "drop repo" });
         dropLink.dataset.action = "drop";
         dropLink.dataset.id = repoId;
+        if (pendingDrop && pendingDrop.id === repoId && Date.now() < pendingDrop.expiresAt) {
+          dropLink.textContent = "confirm drop";
+          dropLink.classList.add("confirm");
+        }
         const actionsGroup = el("div", { class: "group" },
           el("h5", { text: "actions" }),
           el("div", null, dropLink),
@@ -432,6 +438,7 @@
       }
 
       async function renderRepos() {
+        if (pendingDrop && Date.now() < pendingDrop.expiresAt) return;
         let data;
         try { data = await fetchJson("/api/repos"); }
         catch (_) { return; }
@@ -446,6 +453,7 @@
       }
 
       async function attachDetail(id) {
+        const myToken = ++attachToken;
         document.querySelectorAll("tr.detail").forEach((tr) => tr.remove());
         document.querySelectorAll("tr[data-id]").forEach((tr) => tr.setAttribute("aria-expanded", tr.dataset.id === id ? "true" : "false"));
         const cached = repoDetailCache.get(id);
@@ -457,6 +465,7 @@
         } catch (_) {
           return;
         }
+        if (myToken !== attachToken) return;
         repoDetailCache.set(id, { fetchedAt: Date.now(), data: detail });
         let sessions = lastSessions;
         try {
@@ -464,6 +473,7 @@
           sessions = s.sessions ?? [];
           lastSessions = sessions;
         } catch (_) { /* keep last */ }
+        if (myToken !== attachToken) return;
         const host = document.querySelector(`tr[data-id="${CSS.escape(id)}"]`);
         if (!host) return;
         host.insertAdjacentElement("afterend", renderRepoDetail(detail, id, sessions));
@@ -486,6 +496,7 @@
           ev.preventDefault();
           if (link.classList.contains("confirm")) {
             const id = link.dataset.id;
+            pendingDrop = null;
             try {
               await fetch(`/api/repos/${encodeURIComponent(id)}`, { method: "DELETE", headers: { accept: "application/json" } });
             } catch (_) { /* swallow; the next renderRepos cycle will reflect actual state */ }
@@ -494,9 +505,16 @@
             renderRepos();
             return;
           }
+          pendingDrop = { id: link.dataset.id, expiresAt: Date.now() + 3000 };
           link.textContent = "confirm drop";
           link.classList.add("confirm");
-          setTimeout(() => { link.textContent = "drop repo"; link.classList.remove("confirm"); }, 3000);
+          setTimeout(() => {
+            if (pendingDrop && pendingDrop.id === link.dataset.id) pendingDrop = null;
+            if (link.isConnected) {
+              link.textContent = "drop repo";
+              link.classList.remove("confirm");
+            }
+          }, 3000);
           return;
         }
         const tr = ev.target.closest("tr[data-id]");

@@ -596,7 +596,6 @@
         paletteInput.value = "";
         paletteInput.focus();
         renderPalette();
-        renderPaletteFoot(null);
       }
 
       function closePalette() {
@@ -657,6 +656,8 @@
       }
 
       let paletteHighlight = 0;
+      let lastMouseX = -1;
+      let lastMouseY = -1;
 
       function paletteRowsFlat() {
         return [...palette.querySelectorAll(".body .row")];
@@ -672,6 +673,8 @@
       }
 
       function renderPalette() {
+        lastMouseX = -1;
+        lastMouseY = -1;
         const q = paletteInput.value;
 
         const repoHost = palette.querySelector('[data-palette-results="repos"]');
@@ -754,6 +757,9 @@
       });
 
       palette.addEventListener("mousemove", (ev) => {
+        if (ev.clientX === lastMouseX && ev.clientY === lastMouseY) return;
+        lastMouseX = ev.clientX;
+        lastMouseY = ev.clientY;
         const row = ev.target.closest(".row");
         if (!row) return;
         const rows = paletteRowsFlat();

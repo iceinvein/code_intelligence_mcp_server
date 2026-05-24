@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::storage::sqlite::schema::{SymbolHeaderRow, SymbolRow};
+use crate::storage::sqlite::schema::{RepoMapSymbolRow, SymbolHeaderRow, SymbolRow};
 
 pub fn upsert_symbol(conn: &Connection, symbol: &SymbolRow) -> Result<()> {
     conn.execute(
@@ -377,6 +377,46 @@ ORDER BY start_byte ASC
             start_line: row.get::<_, i64>(8)? as u32,
             end_line: row.get::<_, i64>(9)? as u32,
             text: row.get(10)?,
+        });
+    }
+    Ok(out)
+}
+
+pub fn list_repo_map_symbols(conn: &Connection, limit: usize) -> Result<Vec<RepoMapSymbolRow>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT
+  s.id, s.file_path, s.language, s.kind, s.name, s.exported,
+  s.start_line, s.end_line, s.text,
+  COALESCE(m.pagerank, 0.0) AS pagerank,
+  COALESCE(m.in_degree, 0) AS in_degree,
+  COALESCE(m.out_degree, 0) AS out_degree
+FROM symbols s
+LEFT JOIN symbol_metrics m ON m.symbol_id = s.id
+WHERE s.kind != 'file'
+ORDER BY pagerank DESC, s.exported DESC, s.file_path ASC, s.start_line ASC
+LIMIT ?1
+"#,
+        )
+        .context("Failed to prepare list_repo_map_symbols")?;
+
+    let mut rows = stmt.query(params![limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(RepoMapSymbolRow {
+            id: row.get(0)?,
+            file_path: row.get(1)?,
+            language: row.get(2)?,
+            kind: row.get(3)?,
+            name: row.get(4)?,
+            exported: row.get::<_, i64>(5)? != 0,
+            start_line: row.get::<_, i64>(6)? as u32,
+            end_line: row.get::<_, i64>(7)? as u32,
+            text: row.get(8)?,
+            pagerank: row.get(9)?,
+            in_degree: row.get::<_, i64>(10)? as u32,
+            out_degree: row.get::<_, i64>(11)? as u32,
         });
     }
     Ok(out)

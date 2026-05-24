@@ -20,6 +20,7 @@ mod investigation;
 mod learning;
 mod navigation;
 mod planning;
+mod repo_map;
 mod search;
 mod state;
 
@@ -51,6 +52,7 @@ pub use navigation::{
     handle_summarize_file,
 };
 pub use planning::handle_plan_code_investigation;
+pub use repo_map::{handle_repo_map, RepoMapOptions};
 pub use search::{handle_explain_search, handle_find_similar_code, handle_search_code};
 
 /// Parse tool arguments from MCP request

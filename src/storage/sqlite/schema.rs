@@ -116,6 +116,22 @@ pub struct SymbolMetricsRow {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoMapSymbolRow {
+    pub id: String,
+    pub file_path: String,
+    pub language: String,
+    pub kind: String,
+    pub name: String,
+    pub exported: bool,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub text: String,
+    pub pagerank: f64,
+    pub in_degree: u32,
+    pub out_degree: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuerySelectionRow {
     pub id: i64,

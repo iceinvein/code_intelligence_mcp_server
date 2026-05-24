@@ -75,6 +75,11 @@ impl SqliteStore {
         queries::symbols::list_symbols_by_file(&conn, file_path)
     }
 
+    pub fn list_repo_map_symbols(&self, limit: usize) -> Result<Vec<RepoMapSymbolRow>> {
+        let conn = self.read()?;
+        queries::symbols::list_repo_map_symbols(&conn, limit)
+    }
+
     pub fn search_symbols_by_name_prefix(
         &self,
         prefix: &str,

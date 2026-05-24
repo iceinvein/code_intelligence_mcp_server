@@ -16,6 +16,11 @@ pub enum Command {
     Stop,
     Status,
     Migrate(MigrateOpts),
+    Search(SearchOpts),
+    Investigate(InvestigateOpts),
+    Ask(AskOpts),
+    Hydrate(HydrateOpts),
+    RepoMap(RepoMapOpts),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -32,6 +37,71 @@ pub struct InstallOpts {
 pub struct MigrateOpts {
     /// When true, only report what would change without writing.
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SearchOpts {
+    pub repo: Option<String>,
+    pub query: String,
+    pub limit: Option<u32>,
+    pub context: Option<String>,
+    pub json: bool,
+    pub pretty: bool,
+    pub timeout: Option<String>,
+    pub no_start: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InvestigateOpts {
+    pub repo: Option<String>,
+    pub question: String,
+    pub target: Option<String>,
+    pub file_path: Option<String>,
+    pub mode: Option<String>,
+    pub max_hops: Option<u32>,
+    pub json: bool,
+    pub pretty: bool,
+    pub timeout: Option<String>,
+    pub no_start: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AskOpts {
+    pub repo: Option<String>,
+    pub question: String,
+    pub target: Option<String>,
+    pub file_path: Option<String>,
+    pub mode: Option<String>,
+    pub max_evidence: Option<u32>,
+    pub quality: Option<String>,
+    pub json: bool,
+    pub pretty: bool,
+    pub timeout: Option<String>,
+    pub no_start: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HydrateOpts {
+    pub repo: Option<String>,
+    pub ids: Vec<String>,
+    pub mode: Option<String>,
+    pub verbose: bool,
+    pub json: bool,
+    pub pretty: bool,
+    pub timeout: Option<String>,
+    pub no_start: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RepoMapOpts {
+    pub repo: Option<String>,
+    pub budget: Option<u32>,
+    pub max_files: Option<u32>,
+    pub max_symbols_per_file: Option<u32>,
+    pub json: bool,
+    pub pretty: bool,
+    pub timeout: Option<String>,
+    pub no_start: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +131,13 @@ pub fn parse_args(args: &[String]) -> CliArgs {
     let mut cli = CliArgs::default();
     let mut install_opts = InstallOpts::default();
     let mut migrate_opts = MigrateOpts::default();
+    let mut search_opts = SearchOpts::default();
+    let mut investigate_opts = InvestigateOpts::default();
+    let mut ask_opts = AskOpts::default();
+    let mut hydrate_opts = HydrateOpts::default();
+    let mut repo_map_opts = RepoMapOpts::default();
     let mut subcommand: Option<&str> = None;
+    let mut query_words: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -70,7 +146,8 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "-h" | "--help" | "help" => cli.help = true,
             "-V" | "--version" | "version" => cli.version = true,
             // Subcommands. The first one wins; later positionals are flag values.
-            "install" | "uninstall" | "start" | "stop" | "status" | "migrate"
+            "install" | "uninstall" | "start" | "stop" | "status" | "migrate" | "search"
+            | "investigate" | "ask" | "hydrate" | "repo-map"
                 if subcommand.is_none() =>
             {
                 subcommand = Some(match arg {
@@ -80,6 +157,11 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     "stop" => "stop",
                     "status" => "status",
                     "migrate" => "migrate",
+                    "search" => "search",
+                    "investigate" => "investigate",
+                    "ask" => "ask",
+                    "hydrate" => "hydrate",
+                    "repo-map" => "repo-map",
                     _ => unreachable!(),
                 });
             }
@@ -112,9 +194,205 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--patch-claude-json" => install_opts.patch_claude_json = Some(true),
             "--no-patch-claude-json" => install_opts.patch_claude_json = Some(false),
             "--dry-run" => migrate_opts.dry_run = true,
+            "--repo"
+                if matches!(
+                    subcommand,
+                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                ) =>
+            {
+                if i + 1 < args.len() {
+                    match subcommand {
+                        Some("search") => search_opts.repo = Some(args[i + 1].clone()),
+                        Some("investigate") => investigate_opts.repo = Some(args[i + 1].clone()),
+                        Some("ask") => ask_opts.repo = Some(args[i + 1].clone()),
+                        Some("hydrate") => hydrate_opts.repo = Some(args[i + 1].clone()),
+                        Some("repo-map") => repo_map_opts.repo = Some(args[i + 1].clone()),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--limit" if matches!(subcommand, Some("search")) => {
+                if i + 1 < args.len() {
+                    if let Ok(limit) = args[i + 1].parse::<u32>() {
+                        search_opts.limit = Some(limit);
+                    }
+                    i += 1;
+                }
+            }
+            "--context" if matches!(subcommand, Some("search")) => {
+                if i + 1 < args.len() {
+                    search_opts.context = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--mode" if matches!(subcommand, Some("investigate" | "ask" | "hydrate")) => {
+                if i + 1 < args.len() {
+                    match subcommand {
+                        Some("investigate") => investigate_opts.mode = Some(args[i + 1].clone()),
+                        Some("ask") => ask_opts.mode = Some(args[i + 1].clone()),
+                        Some("hydrate") => hydrate_opts.mode = Some(args[i + 1].clone()),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--target" if matches!(subcommand, Some("investigate" | "ask")) => {
+                if i + 1 < args.len() {
+                    match subcommand {
+                        Some("investigate") => investigate_opts.target = Some(args[i + 1].clone()),
+                        Some("ask") => ask_opts.target = Some(args[i + 1].clone()),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--file-path" if matches!(subcommand, Some("investigate" | "ask")) => {
+                if i + 1 < args.len() {
+                    match subcommand {
+                        Some("investigate") => {
+                            investigate_opts.file_path = Some(args[i + 1].clone())
+                        }
+                        Some("ask") => ask_opts.file_path = Some(args[i + 1].clone()),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--max-hops" if matches!(subcommand, Some("investigate")) => {
+                if i + 1 < args.len() {
+                    if let Ok(max_hops) = args[i + 1].parse::<u32>() {
+                        investigate_opts.max_hops = Some(max_hops);
+                    }
+                    i += 1;
+                }
+            }
+            "--max-evidence" if matches!(subcommand, Some("ask")) => {
+                if i + 1 < args.len() {
+                    if let Ok(max_evidence) = args[i + 1].parse::<u32>() {
+                        ask_opts.max_evidence = Some(max_evidence);
+                    }
+                    i += 1;
+                }
+            }
+            "--quality" if matches!(subcommand, Some("ask")) => {
+                if i + 1 < args.len() {
+                    ask_opts.quality = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--ids" if matches!(subcommand, Some("hydrate")) => {
+                if i + 1 < args.len() {
+                    hydrate_opts.ids = parse_id_list(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--verbose" if matches!(subcommand, Some("hydrate")) => {
+                hydrate_opts.verbose = true;
+            }
+            "--timeout"
+                if matches!(
+                    subcommand,
+                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                ) =>
+            {
+                if i + 1 < args.len() {
+                    match subcommand {
+                        Some("search") => search_opts.timeout = Some(args[i + 1].clone()),
+                        Some("investigate") => investigate_opts.timeout = Some(args[i + 1].clone()),
+                        Some("ask") => ask_opts.timeout = Some(args[i + 1].clone()),
+                        Some("hydrate") => hydrate_opts.timeout = Some(args[i + 1].clone()),
+                        Some("repo-map") => repo_map_opts.timeout = Some(args[i + 1].clone()),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--no-start"
+                if matches!(
+                    subcommand,
+                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                ) =>
+            {
+                match subcommand {
+                    Some("search") => search_opts.no_start = true,
+                    Some("investigate") => investigate_opts.no_start = true,
+                    Some("ask") => ask_opts.no_start = true,
+                    Some("hydrate") => hydrate_opts.no_start = true,
+                    Some("repo-map") => repo_map_opts.no_start = true,
+                    _ => {}
+                }
+            }
+            "--budget" if matches!(subcommand, Some("repo-map")) => {
+                if i + 1 < args.len() {
+                    if let Ok(budget) = args[i + 1].parse::<u32>() {
+                        repo_map_opts.budget = Some(budget);
+                    }
+                    i += 1;
+                }
+            }
+            "--max-files" if matches!(subcommand, Some("repo-map")) => {
+                if i + 1 < args.len() {
+                    if let Ok(max_files) = args[i + 1].parse::<u32>() {
+                        repo_map_opts.max_files = Some(max_files);
+                    }
+                    i += 1;
+                }
+            }
+            "--max-symbols-per-file" if matches!(subcommand, Some("repo-map")) => {
+                if i + 1 < args.len() {
+                    if let Ok(max_symbols_per_file) = args[i + 1].parse::<u32>() {
+                        repo_map_opts.max_symbols_per_file = Some(max_symbols_per_file);
+                    }
+                    i += 1;
+                }
+            }
+            "--json"
+                if matches!(
+                    subcommand,
+                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                ) =>
+            {
+                match subcommand {
+                    Some("search") => search_opts.json = true,
+                    Some("investigate") => investigate_opts.json = true,
+                    Some("ask") => ask_opts.json = true,
+                    Some("hydrate") => hydrate_opts.json = true,
+                    Some("repo-map") => repo_map_opts.json = true,
+                    _ => {}
+                }
+            }
+            "--pretty"
+                if matches!(
+                    subcommand,
+                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                ) =>
+            {
+                match subcommand {
+                    Some("search") => search_opts.pretty = true,
+                    Some("investigate") => investigate_opts.pretty = true,
+                    Some("ask") => ask_opts.pretty = true,
+                    Some("hydrate") => hydrate_opts.pretty = true,
+                    Some("repo-map") => repo_map_opts.pretty = true,
+                    _ => {}
+                }
+            }
+            _ if matches!(subcommand, Some("search" | "investigate" | "ask")) => {
+                query_words.push(arg.to_string());
+            }
             _ => {}
         }
         i += 1;
+    }
+
+    if matches!(subcommand, Some("search")) {
+        search_opts.query = query_words.join(" ");
+    }
+    if matches!(subcommand, Some("investigate")) {
+        investigate_opts.question = query_words.join(" ");
+    }
+    if matches!(subcommand, Some("ask")) {
+        ask_opts.question = query_words.join(" ");
     }
 
     cli.command = match subcommand {
@@ -124,10 +402,23 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         Some("stop") => Command::Stop,
         Some("status") => Command::Status,
         Some("migrate") => Command::Migrate(migrate_opts),
+        Some("search") => Command::Search(search_opts),
+        Some("investigate") => Command::Investigate(investigate_opts),
+        Some("ask") => Command::Ask(ask_opts),
+        Some("hydrate") => Command::Hydrate(hydrate_opts),
+        Some("repo-map") => Command::RepoMap(repo_map_opts),
         _ => Command::Run,
     };
 
     cli
+}
+
+fn parse_id_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 pub fn print_help() {
@@ -147,6 +438,17 @@ pub fn print_help() {
         "  code-intelligence-mcp-server status               Show daemon state, port, version"
     );
     println!("  code-intelligence-mcp-server migrate [--dry-run]  Rewrite v3 stdio MCP configs to v4 HTTP");
+    println!(
+        "  code-intelligence-mcp-server search [opts] QUERY  Search indexed code via the daemon"
+    );
+    println!(
+        "  code-intelligence-mcp-server investigate [opts] QUESTION  Run a multi-hop code investigation"
+    );
+    println!("  code-intelligence-mcp-server ask [opts] QUESTION  Retrieve grounded evidence for a question");
+    println!(
+        "  code-intelligence-mcp-server hydrate [opts] --ids IDS  Fetch source bodies for symbol IDs"
+    );
+    println!("  code-intelligence-mcp-server repo-map [opts]  Print a compact project map");
     println!();
     println!("Run-mode flags:");
     println!("  --host HOST             Override listen address (default: 127.0.0.1)");
@@ -161,6 +463,26 @@ pub fn print_help() {
     println!("  --no-launchd                Write the plist but skip launchctl bootstrap");
     println!("  --patch-claude-json         Patch ~/.claude.json without prompting");
     println!("  --no-patch-claude-json      Skip the ~/.claude.json patch without prompting");
+    println!();
+    println!("agent query flags:");
+    println!("  --repo PATH             Workspace root (default: current directory)");
+    println!("  --json                  Print machine-readable JSON");
+    println!("  --pretty                Pretty-print JSON");
+    println!("  --timeout DURATION      Daemon request timeout, e.g. 500ms, 2s, 1m");
+    println!("  --no-start              Fail if the daemon is not running");
+    println!("  --limit N               search result limit");
+    println!("  --context MODE          search context: none, snippets, or full");
+    println!("  --mode MODE             investigate mode: auto, discover, trace, data, impact, dependency, module");
+    println!("  --target SYMBOL         investigate pivot symbol");
+    println!("  --file-path PATH        investigate file disambiguation");
+    println!("  --max-hops N            investigate hop limit");
+    println!("  --max-evidence N        ask evidence limit");
+    println!("  --quality MODE          ask quality: fast or balanced");
+    println!("  --ids IDS               hydrate symbol IDs (comma-separated)");
+    println!("  --verbose               hydrate includes context item metadata");
+    println!("  --budget N              repo-map approximate token budget");
+    println!("  --max-files N           repo-map file cap");
+    println!("  --max-symbols-per-file N  repo-map symbol cap per file");
     println!();
     println!("Data location: ~/.code-intelligence/");
     println!("Configuration file: ~/.code-intelligence/server.toml");
@@ -283,5 +605,172 @@ mod tests {
     fn parse_args_parses_discovery_port() {
         let cli = parse_args(&["bin".into(), "--discovery-port".into(), "5000".into()]);
         assert_eq!(cli.discovery_port, Some(5000));
+    }
+
+    #[test]
+    fn parse_args_recognises_search_subcommand() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "search".into(),
+            "--repo".into(),
+            ".".into(),
+            "--limit".into(),
+            "7".into(),
+            "--context".into(),
+            "snippets".into(),
+            "--json".into(),
+            "FastAPI".into(),
+            "auth".into(),
+        ]);
+        match cli.command {
+            Command::Search(opts) => {
+                assert_eq!(opts.repo.as_deref(), Some("."));
+                assert_eq!(opts.limit, Some(7));
+                assert_eq!(opts.context.as_deref(), Some("snippets"));
+                assert!(opts.json);
+                assert_eq!(opts.query, "FastAPI auth");
+            }
+            _ => panic!("expected search command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_investigate_subcommand() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "investigate".into(),
+            "--repo".into(),
+            "/tmp/project".into(),
+            "--mode".into(),
+            "impact".into(),
+            "--target".into(),
+            "authenticate_request".into(),
+            "--max-hops".into(),
+            "4".into(),
+            "--json".into(),
+            "what".into(),
+            "breaks".into(),
+        ]);
+        match cli.command {
+            Command::Investigate(opts) => {
+                assert_eq!(opts.repo.as_deref(), Some("/tmp/project"));
+                assert_eq!(opts.mode.as_deref(), Some("impact"));
+                assert_eq!(opts.target.as_deref(), Some("authenticate_request"));
+                assert_eq!(opts.max_hops, Some(4));
+                assert!(opts.json);
+                assert_eq!(opts.question, "what breaks");
+            }
+            _ => panic!("expected investigate command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_ask_subcommand() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "ask".into(),
+            "--repo".into(),
+            ".".into(),
+            "--mode".into(),
+            "discover".into(),
+            "--target".into(),
+            "parse_args".into(),
+            "--max-evidence".into(),
+            "6".into(),
+            "--quality".into(),
+            "fast".into(),
+            "--json".into(),
+            "where".into(),
+            "is".into(),
+            "parse_args".into(),
+        ]);
+        match cli.command {
+            Command::Ask(opts) => {
+                assert_eq!(opts.repo.as_deref(), Some("."));
+                assert_eq!(opts.mode.as_deref(), Some("discover"));
+                assert_eq!(opts.target.as_deref(), Some("parse_args"));
+                assert_eq!(opts.max_evidence, Some(6));
+                assert_eq!(opts.quality.as_deref(), Some("fast"));
+                assert!(opts.json);
+                assert_eq!(opts.question, "where is parse_args");
+            }
+            _ => panic!("expected ask command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_hydrate_subcommand() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "hydrate".into(),
+            "--repo".into(),
+            "/tmp/project".into(),
+            "--ids".into(),
+            "sym_a,sym_b".into(),
+            "--mode".into(),
+            "full".into(),
+            "--verbose".into(),
+            "--json".into(),
+        ]);
+        match cli.command {
+            Command::Hydrate(opts) => {
+                assert_eq!(opts.repo.as_deref(), Some("/tmp/project"));
+                assert_eq!(opts.ids, vec!["sym_a".to_string(), "sym_b".to_string()]);
+                assert_eq!(opts.mode.as_deref(), Some("full"));
+                assert!(opts.verbose);
+                assert!(opts.json);
+            }
+            _ => panic!("expected hydrate command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_repo_map_subcommand() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "repo-map".into(),
+            "--repo".into(),
+            ".".into(),
+            "--budget".into(),
+            "2500".into(),
+            "--max-files".into(),
+            "12".into(),
+            "--max-symbols-per-file".into(),
+            "4".into(),
+            "--json".into(),
+        ]);
+        match cli.command {
+            Command::RepoMap(opts) => {
+                assert_eq!(opts.repo.as_deref(), Some("."));
+                assert_eq!(opts.budget, Some(2500));
+                assert_eq!(opts.max_files, Some(12));
+                assert_eq!(opts.max_symbols_per_file, Some(4));
+                assert!(opts.json);
+            }
+            _ => panic!("expected repo-map command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_common_agent_query_controls() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "search".into(),
+            "--repo".into(),
+            ".".into(),
+            "--timeout".into(),
+            "2s".into(),
+            "--no-start".into(),
+            "--json".into(),
+            "auth".into(),
+        ]);
+        match cli.command {
+            Command::Search(opts) => {
+                assert_eq!(opts.timeout.as_deref(), Some("2s"));
+                assert!(opts.no_start);
+                assert!(opts.json);
+            }
+            _ => panic!("expected search command, got {:?}", cli.command),
+        }
     }
 }

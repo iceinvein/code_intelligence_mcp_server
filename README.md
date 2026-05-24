@@ -9,6 +9,8 @@
 
 A local code indexing engine that gives LLM agents like **Claude Code**, **Cursor**, **Trae**, and **OpenCode** semantic search, call graphs, type hierarchies, and impact analysis across your codebase. Written in Rust with Metal GPU acceleration.
 
+MCP is the current integration surface, but the durable product boundary is the local code intelligence engine. The next interface layer is a first-class CLI plus stable JSON contracts over the same daemon APIs; see [Interface Direction](docs/architecture/interface-direction.md).
+
 **Zero config. Runs via `npx`. Indexes in the background.**
 
 ---
@@ -84,6 +86,22 @@ code-intelligence-mcp-server uninstall    # remove plist + bootout
 code-intelligence-mcp-server migrate      # rewrite v3 stdio configs
 ```
 
+### Agent query CLI
+
+The binary also exposes the first agent-query commands over the shared daemon API:
+
+```bash
+code-intelligence-mcp-server ask --repo . --json "how does auth work?"
+code-intelligence-mcp-server search --repo . --context snippets --json "auth handler"
+code-intelligence-mcp-server investigate --repo . --mode impact --target authenticate_request --json "what breaks if this changes?"
+code-intelligence-mcp-server hydrate --repo . --ids sym_1,sym_2 --json
+code-intelligence-mcp-server repo-map --repo . --budget 4000 --json
+```
+
+The CLI calls the loopback dashboard/API port (`mcp_port + 2`, default `17802`) and returns the same structured evidence contracts used by MCP handlers. The daemon must already be running. Use `--port` when targeting a daemon on a non-default MCP port.
+
+Agent-query commands support `--timeout`, `--no-start`, stable JSON failure envelopes, and distinct exit codes for invalid arguments, daemon unavailable, workspace unavailable, no results, timeout, and internal errors. See [Agent Query CLI](docs/agent-query-cli.md).
+
 > First-time `install` downloads three models (~3.2 GB total): the embedding model (Jina Code 1.5b, ~1.5 GB), the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB), and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB). Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
 
 ### Dashboard
@@ -115,6 +133,11 @@ For scripting outside the dashboard, every UI surface has a structured endpoint 
 | `GET` | `/api/sessions` | bound + connected MCP sessions |
 | `GET` | `/api/jobs` | running + recent (≤15 min) jobs |
 | `GET` | `/api/logs/stream` | SSE stream of log lines |
+| `POST` | `/api/query/ask` | CLI-facing `ask_code` wrapper with structured envelope |
+| `POST` | `/api/query/search` | CLI-facing `search_code` wrapper with structured envelope |
+| `POST` | `/api/query/investigate` | CLI-facing `investigate` wrapper with structured envelope |
+| `POST` | `/api/query/hydrate` | CLI-facing `hydrate_symbols` wrapper with structured envelope |
+| `POST` | `/api/query/repo-map` | CLI-facing compact project map with structured envelope |
 
 ---
 
@@ -391,6 +414,7 @@ src/
 ├── handlers/         # MCP tool implementations
 ├── server/           # MCP protocol routing (embedded + standalone)
 ├── tools/            # Tool definitions (32 MCP tools)
+├── cli.rs            # Daemon lifecycle and agent-query CLI
 ├── embeddings/       # jina-code-embeddings-1.5b (GGUF via llama.cpp + Metal)
 ├── llm/              # Qwen2.5-Coder-1.5B (GGUF via llama.cpp + Metal)
 ├── reranker/         # bge-reranker-v2-m3 cross-encoder (GGUF via llama.cpp + Metal)

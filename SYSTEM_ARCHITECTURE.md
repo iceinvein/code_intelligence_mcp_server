@@ -2,6 +2,8 @@
 
 This document describes the architecture of the Code Intelligence MCP Server (v4.x). Since v4.0 the server runs as a single shared HTTP daemon managed by launchd; the v3 stdio-per-client transport and leader-election machinery have been removed. The daemon builds a local knowledge graph of every registered repo and exposes it through 32 MCP tools, a JSON API, and an embedded dashboard.
 
+The long-term product boundary is the local code intelligence engine, not MCP itself. MCP is one adapter over the daemon. A first-class CLI and stable JSON contracts are the next durable interface layer; see [Interface Direction](docs/architecture/interface-direction.md).
+
 ## High-Level Overview
 
 The daemon scans a repo's source files, extracts semantic symbols with Tree-Sitter, generates 1536-dim Matryoshka vector embeddings (jina-code-embeddings-1.5b, GGUF via llama.cpp + Metal GPU), enriches BM25 keyword search with natural-language descriptions generated on-device by Qwen2.5-Coder-1.5B, builds a knowledge graph with PageRank scoring, and serves intelligent queries with cross-encoder reranking (bge-reranker-v2-m3, also via llama.cpp + Metal GPU) plus query-aware context assembly.
@@ -61,6 +63,16 @@ flowchart TB
 ```
 
 Every public port binds 127.0.0.1 only and rejects non-localhost `Origin` headers (DNS-rebinding defence). The internal SDK port (17900) is loopback-only.
+
+## Interface Strategy
+
+The daemon is the core system. It owns indexing, retrieval, graph traversal, local model lifecycle, background jobs, and repo registry state. Product interfaces should stay thin:
+
+- **CLI**: first-class programmable surface for humans, agents, hooks, and CI. It should call the daemon and return stable JSON for `search`, `investigate`, `ask`, `hydrate`, and `repo-map`.
+- **MCP**: compatibility adapter for MCP-capable coding clients. The long-term model-facing surface should become smaller and more composite so agents call one evidence-producing operation instead of chaining many specialist tools.
+- **JSON API + dashboard**: local operational surface for status, repositories, sessions, jobs, logs, and scripting.
+
+This keeps retrieval behavior consistent regardless of whether the caller is a shell command, an MCP client, or the dashboard.
 
 ### Session binding hierarchy
 
@@ -283,6 +295,11 @@ Port `mcp_port + 2` (default **17802**) hosts both the embedded dashboard and a 
 | `GET` | `/api/sessions` | bound + connected MCP sessions, with TTL state |
 | `GET` | `/api/jobs` | running + recently-finished jobs (≤15 min) |
 | `GET` | `/api/logs/stream` | SSE stream of log lines |
+| `POST` | `/api/query/ask` | CLI-facing `ask_code` wrapper with structured envelope |
+| `POST` | `/api/query/search` | CLI-facing `search_code` wrapper with structured envelope |
+| `POST` | `/api/query/investigate` | CLI-facing `investigate` wrapper with structured envelope |
+| `POST` | `/api/query/hydrate` | CLI-facing `hydrate_symbols` wrapper with structured envelope |
+| `POST` | `/api/query/repo-map` | CLI-facing compact project map with structured envelope |
 
 The dashboard renders these surfaces with a repo list (expand for stats, inline re-index / delete), MCP sessions card (connected vs bound, 5-minute inactivity TTL), jobs panel (status badge, live elapsed, success summary or error text), and a live log tail with pause / clear / level filter. A theme toggle (system / light / dark) lives in the header.
 

@@ -12,6 +12,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::handlers::framework_routes::route_exposures_for_symbol;
 use crate::handlers::planning::plan_code_investigation;
 use crate::tools::InvestigateTool;
 
@@ -277,6 +278,8 @@ struct VerifiedLocation {
     end_line: u32,
     via: &'static str,
     body: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    route_exposure: Vec<Value>,
 }
 
 async fn run_primary_hop(
@@ -327,6 +330,7 @@ fn extract_locations_from_search(
             }
         }
         let body = body_with_cap(&row.text, PER_BODY_LINES_CAP);
+        let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
         out.push(VerifiedLocation {
             symbol_id: row.id,
             symbol_name: row.name,
@@ -336,6 +340,7 @@ fn extract_locations_from_search(
             end_line: row.end_line,
             via,
             body,
+            route_exposure,
         });
     }
     Ok(out)
@@ -519,6 +524,7 @@ fn extract_locations_from_graph_nodes(
             continue;
         };
         let body = body_with_cap(&row.text, PER_BODY_LINES_CAP);
+        let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
         out.push(VerifiedLocation {
             symbol_id: row.id,
             symbol_name: row.name,
@@ -528,6 +534,7 @@ fn extract_locations_from_graph_nodes(
             end_line: row.end_line,
             via,
             body,
+            route_exposure,
         });
     }
     Ok(out)
@@ -551,6 +558,7 @@ fn extract_locations_from_flows(
             continue;
         };
         let body = body_with_cap(&row.text, PER_BODY_LINES_CAP);
+        let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
         out.push(VerifiedLocation {
             symbol_id: row.id,
             symbol_name: row.name,
@@ -560,6 +568,7 @@ fn extract_locations_from_flows(
             end_line: row.end_line,
             via,
             body,
+            route_exposure,
         });
     }
     Ok(out)
@@ -570,7 +579,7 @@ fn extract_locations_from_affected(
     raw: &Value,
     via: &'static str,
 ) -> Result<Vec<VerifiedLocation>> {
-    let Some(affected) = raw.get("affected_symbols").and_then(|v| v.as_array()) else {
+    let Some(affected) = raw.get("affected").and_then(|v| v.as_array()) else {
         return Ok(Vec::new());
     };
     let sqlite = &state.sqlite;
@@ -583,6 +592,7 @@ fn extract_locations_from_affected(
             continue;
         };
         let body = body_with_cap(&row.text, PER_BODY_LINES_CAP);
+        let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
         out.push(VerifiedLocation {
             symbol_id: row.id,
             symbol_name: row.name,
@@ -592,6 +602,7 @@ fn extract_locations_from_affected(
             end_line: row.end_line,
             via,
             body,
+            route_exposure,
         });
     }
     Ok(out)
@@ -703,7 +714,7 @@ fn summarize_secondary(raw: &Value, via: &str) -> Value {
         }),
         "find_affected_code" => json!({
             "affected_count": raw
-                .get("affected_symbols")
+                .get("affected")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0),
@@ -834,6 +845,21 @@ mod tests {
     }
 
     #[test]
+    fn summarize_find_affected_uses_affected_array() {
+        let summary = summarize_secondary(
+            &json!({
+                "affected": [
+                    {"symbol_id": "a"},
+                    {"symbol_id": "b"}
+                ]
+            }),
+            "find_affected_code",
+        );
+
+        assert_eq!(summary["affected_count"], 2);
+    }
+
+    #[test]
     fn classify_impact_radius_catches_third_person_past_tense() {
         // R006's q10 missed because the classifier didn't catch "would break"
         // / "downstream" / "if it changed". Ensure all three forms route to
@@ -948,6 +974,7 @@ mod tests {
             end_line: 2,
             via: "search_code",
             body: String::new(),
+            route_exposure: Vec::new(),
         };
         let result = dedup_locations(vec![
             loc("sym_a", "first"),

@@ -102,6 +102,21 @@ The CLI calls the loopback dashboard/API port (`mcp_port + 2`, default `17802`) 
 
 Agent-query commands support `--timeout`, `--no-start`, stable JSON failure envelopes, and distinct exit codes for invalid arguments, daemon unavailable, workspace unavailable, no results, timeout, and internal errors. See [Agent Query CLI](docs/agent-query-cli.md).
 
+Framework routes are surfaced as first-class context where available: `repo-map` includes per-file `routes` with handler links, and impact/investigation results annotate matching symbols with `route_exposure`.
+
+### Agent installer
+
+Use `install-agent` to add a managed Code Intelligence instruction block to agent-facing project files and print the MCP config snippet for the local daemon:
+
+```bash
+code-intelligence-mcp-server install-agent --repo . --target codex
+code-intelligence-mcp-server install-agent --repo . --target claude,cursor --dry-run
+code-intelligence-mcp-server install-agent --target all --print-config
+code-intelligence-mcp-server uninstall-agent --repo . --target all
+```
+
+Project-scope targets write only a marked block that can be safely replaced or removed later: `AGENTS.md` for Codex/generic/OpenCode, `CLAUDE.md` for Claude, and `.cursor/rules/code-intelligence.mdc` for Cursor. User-scope config is intentionally conservative; `--scope user --target claude --no-instructions` patches `~/.claude.json` through the same HTTP MCP entry used by the daemon installer. See [Agent Installer](docs/agent-installer.md).
+
 > First-time `install` downloads three models (~3.2 GB total): the embedding model (Jina Code 1.5b, ~1.5 GB), the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB), and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB). Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
 
 ### Dashboard

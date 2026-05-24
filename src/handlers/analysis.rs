@@ -9,6 +9,7 @@ use crate::storage::sqlite::SymbolRow;
 use crate::tools::*;
 use serde_json::json;
 
+use super::framework_routes::route_exposures_for_symbol;
 use super::AppState;
 
 // Re-import the other handlers called by handle_get_context_bundle
@@ -100,7 +101,13 @@ pub fn handle_find_affected_code(
                     _ => "medium",
                 };
 
-                affected_list.push(json!({
+                let route_exposure = sqlite
+                    .get_symbol_by_id(id)?
+                    .map(|row| route_exposures_for_symbol(sqlite, &row, 20))
+                    .transpose()?
+                    .unwrap_or_default();
+
+                let mut affected_entry = json!({
                     "symbol_id": id,
                     "symbol_name": node.get("name").and_then(|v| v.as_str()).unwrap_or(""),
                     "kind": node.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
@@ -109,7 +116,11 @@ pub fn handle_find_affected_code(
                     "severity": severity,
                     "impact": impact_level,
                     "in_degree": in_degree,
-                }));
+                });
+                if !route_exposure.is_empty() {
+                    affected_entry["route_exposure"] = json!(route_exposure);
+                }
+                affected_list.push(affected_entry);
             }
 
             // Sort by severity descending
@@ -1124,18 +1135,26 @@ pub fn handle_predict_impact(
             // Normalize structural score to 0.0-1.0 range
             let structural_score = severity as f64 / 10.0;
 
-            structural_impacts.insert(
-                id.to_string(),
-                json!({
-                    "symbol_id": id,
-                    "symbol_name": node.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                    "kind": node.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
-                    "file_path": file_path,
-                    "exported": exported,
-                    "structural_score": structural_score,
-                    "in_degree": in_degree,
-                }),
-            );
+            let route_exposure = sqlite
+                .get_symbol_by_id(id)?
+                .map(|row| route_exposures_for_symbol(sqlite, &row, 20))
+                .transpose()?
+                .unwrap_or_default();
+
+            let mut impact = json!({
+                "symbol_id": id,
+                "symbol_name": node.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                "kind": node.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                "file_path": file_path,
+                "exported": exported,
+                "structural_score": structural_score,
+                "in_degree": in_degree,
+            });
+            if !route_exposure.is_empty() {
+                impact["route_exposure"] = json!(route_exposure);
+            }
+
+            structural_impacts.insert(id.to_string(), impact);
         }
     }
 
@@ -1209,21 +1228,23 @@ pub fn handle_predict_impact(
             "structural"
         };
 
-        merged.insert(
-            id.clone(),
-            json!({
-                "symbol_id": val.get("symbol_id"),
-                "symbol_name": val.get("symbol_name"),
-                "kind": val.get("kind"),
-                "file_path": file_path,
-                "exported": val.get("exported"),
-                "structural_score": structural_score,
-                "cochange_confidence": cochange_confidence,
-                "merged_score": merged_score,
-                "source": source,
-                "in_degree": val.get("in_degree"),
-            }),
-        );
+        let mut prediction = json!({
+            "symbol_id": val.get("symbol_id"),
+            "symbol_name": val.get("symbol_name"),
+            "kind": val.get("kind"),
+            "file_path": file_path,
+            "exported": val.get("exported"),
+            "structural_score": structural_score,
+            "cochange_confidence": cochange_confidence,
+            "merged_score": merged_score,
+            "source": source,
+            "in_degree": val.get("in_degree"),
+        });
+        if let Some(route_exposure) = val.get("route_exposure") {
+            prediction["route_exposure"] = route_exposure.clone();
+        }
+
+        merged.insert(id.clone(), prediction);
     }
 
     // Add co-change-only impacts (files not found via structural analysis).

@@ -14,6 +14,7 @@ mod ask_code;
 mod ask_code_cache;
 mod budget;
 mod cross_repo;
+mod framework_routes;
 mod graph;
 mod index;
 mod investigation;

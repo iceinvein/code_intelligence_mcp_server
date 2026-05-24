@@ -16,6 +16,8 @@ pub enum Command {
     Stop,
     Status,
     Migrate(MigrateOpts),
+    InstallAgent(AgentInstallOpts),
+    UninstallAgent(AgentUninstallOpts),
     Search(SearchOpts),
     Investigate(InvestigateOpts),
     Ask(AskOpts),
@@ -37,6 +39,60 @@ pub struct InstallOpts {
 pub struct MigrateOpts {
     /// When true, only report what would change without writing.
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentInstallOpts {
+    pub targets: Vec<String>,
+    pub scope: String,
+    pub repo: Option<String>,
+    pub port: Option<u16>,
+    pub print_config: bool,
+    pub dry_run: bool,
+    pub yes: bool,
+    pub no_instructions: bool,
+    pub no_mcp: bool,
+}
+
+impl Default for AgentInstallOpts {
+    fn default() -> Self {
+        Self {
+            targets: vec!["auto".to_string()],
+            scope: "project".to_string(),
+            repo: None,
+            port: None,
+            print_config: false,
+            dry_run: false,
+            yes: false,
+            no_instructions: false,
+            no_mcp: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentUninstallOpts {
+    pub targets: Vec<String>,
+    pub scope: String,
+    pub repo: Option<String>,
+    pub dry_run: bool,
+    pub yes: bool,
+    pub no_instructions: bool,
+    pub no_mcp: bool,
+}
+
+impl Default for AgentUninstallOpts {
+    fn default() -> Self {
+        Self {
+            targets: vec!["auto".to_string()],
+            scope: "project".to_string(),
+            repo: None,
+            dry_run: false,
+            yes: false,
+            no_instructions: false,
+            no_mcp: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -131,6 +187,8 @@ pub fn parse_args(args: &[String]) -> CliArgs {
     let mut cli = CliArgs::default();
     let mut install_opts = InstallOpts::default();
     let mut migrate_opts = MigrateOpts::default();
+    let mut agent_install_opts = AgentInstallOpts::default();
+    let mut agent_uninstall_opts = AgentUninstallOpts::default();
     let mut search_opts = SearchOpts::default();
     let mut investigate_opts = InvestigateOpts::default();
     let mut ask_opts = AskOpts::default();
@@ -146,8 +204,8 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "-h" | "--help" | "help" => cli.help = true,
             "-V" | "--version" | "version" => cli.version = true,
             // Subcommands. The first one wins; later positionals are flag values.
-            "install" | "uninstall" | "start" | "stop" | "status" | "migrate" | "search"
-            | "investigate" | "ask" | "hydrate" | "repo-map"
+            "install" | "uninstall" | "start" | "stop" | "status" | "migrate" | "install-agent"
+            | "uninstall-agent" | "search" | "investigate" | "ask" | "hydrate" | "repo-map"
                 if subcommand.is_none() =>
             {
                 subcommand = Some(match arg {
@@ -157,6 +215,8 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     "stop" => "stop",
                     "status" => "status",
                     "migrate" => "migrate",
+                    "install-agent" => "install-agent",
+                    "uninstall-agent" => "uninstall-agent",
                     "search" => "search",
                     "investigate" => "investigate",
                     "ask" => "ask",
@@ -177,6 +237,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     if let Ok(port) = args[i + 1].parse::<u16>() {
                         cli.port = Some(port);
                         install_opts.port = Some(port);
+                        agent_install_opts.port = Some(port);
                     }
                     i += 1;
                 }
@@ -193,15 +254,33 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--no-launchd" => install_opts.no_launchd = true,
             "--patch-claude-json" => install_opts.patch_claude_json = Some(true),
             "--no-patch-claude-json" => install_opts.patch_claude_json = Some(false),
-            "--dry-run" => migrate_opts.dry_run = true,
+            "--dry-run" => match subcommand {
+                Some("install-agent") => agent_install_opts.dry_run = true,
+                Some("uninstall-agent") => agent_uninstall_opts.dry_run = true,
+                _ => migrate_opts.dry_run = true,
+            },
             "--repo"
                 if matches!(
                     subcommand,
-                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                    Some(
+                        "install-agent"
+                            | "uninstall-agent"
+                            | "search"
+                            | "investigate"
+                            | "ask"
+                            | "hydrate"
+                            | "repo-map"
+                    )
                 ) =>
             {
                 if i + 1 < args.len() {
                     match subcommand {
+                        Some("install-agent") => {
+                            agent_install_opts.repo = Some(args[i + 1].clone())
+                        }
+                        Some("uninstall-agent") => {
+                            agent_uninstall_opts.repo = Some(args[i + 1].clone())
+                        }
                         Some("search") => search_opts.repo = Some(args[i + 1].clone()),
                         Some("investigate") => investigate_opts.repo = Some(args[i + 1].clone()),
                         Some("ask") => ask_opts.repo = Some(args[i + 1].clone()),
@@ -210,6 +289,56 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         _ => {}
                     }
                     i += 1;
+                }
+            }
+            "--target" if matches!(subcommand, Some("install-agent" | "uninstall-agent")) => {
+                if i + 1 < args.len() {
+                    match subcommand {
+                        Some("install-agent") => {
+                            agent_install_opts.targets = parse_id_list(&args[i + 1])
+                        }
+                        Some("uninstall-agent") => {
+                            agent_uninstall_opts.targets = parse_id_list(&args[i + 1])
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--scope" if matches!(subcommand, Some("install-agent" | "uninstall-agent")) => {
+                if i + 1 < args.len() {
+                    match subcommand {
+                        Some("install-agent") => agent_install_opts.scope = args[i + 1].clone(),
+                        Some("uninstall-agent") => agent_uninstall_opts.scope = args[i + 1].clone(),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--print-config" if matches!(subcommand, Some("install-agent")) => {
+                agent_install_opts.print_config = true;
+            }
+            "--yes" if matches!(subcommand, Some("install-agent" | "uninstall-agent")) => {
+                match subcommand {
+                    Some("install-agent") => agent_install_opts.yes = true,
+                    Some("uninstall-agent") => agent_uninstall_opts.yes = true,
+                    _ => {}
+                }
+            }
+            "--no-instructions"
+                if matches!(subcommand, Some("install-agent" | "uninstall-agent")) =>
+            {
+                match subcommand {
+                    Some("install-agent") => agent_install_opts.no_instructions = true,
+                    Some("uninstall-agent") => agent_uninstall_opts.no_instructions = true,
+                    _ => {}
+                }
+            }
+            "--no-mcp" if matches!(subcommand, Some("install-agent" | "uninstall-agent")) => {
+                match subcommand {
+                    Some("install-agent") => agent_install_opts.no_mcp = true,
+                    Some("uninstall-agent") => agent_uninstall_opts.no_mcp = true,
+                    _ => {}
                 }
             }
             "--limit" if matches!(subcommand, Some("search")) => {
@@ -402,6 +531,8 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         Some("stop") => Command::Stop,
         Some("status") => Command::Status,
         Some("migrate") => Command::Migrate(migrate_opts),
+        Some("install-agent") => Command::InstallAgent(agent_install_opts),
+        Some("uninstall-agent") => Command::UninstallAgent(agent_uninstall_opts),
         Some("search") => Command::Search(search_opts),
         Some("investigate") => Command::Investigate(investigate_opts),
         Some("ask") => Command::Ask(ask_opts),
@@ -438,6 +569,8 @@ pub fn print_help() {
         "  code-intelligence-mcp-server status               Show daemon state, port, version"
     );
     println!("  code-intelligence-mcp-server migrate [--dry-run]  Rewrite v3 stdio MCP configs to v4 HTTP");
+    println!("  code-intelligence-mcp-server install-agent [opts] Install managed agent guidance");
+    println!("  code-intelligence-mcp-server uninstall-agent [opts] Remove managed agent guidance");
     println!(
         "  code-intelligence-mcp-server search [opts] QUERY  Search indexed code via the daemon"
     );
@@ -463,6 +596,17 @@ pub fn print_help() {
     println!("  --no-launchd                Write the plist but skip launchctl bootstrap");
     println!("  --patch-claude-json         Patch ~/.claude.json without prompting");
     println!("  --no-patch-claude-json      Skip the ~/.claude.json patch without prompting");
+    println!();
+    println!("agent install flags:");
+    println!("  --target LIST           auto, codex, claude, cursor, opencode, generic, or all");
+    println!("  --scope SCOPE           project or user (default: project)");
+    println!("  --repo PATH             Project root for instruction files");
+    println!("  --port PORT             MCP endpoint port in generated snippets");
+    println!("  --print-config          Print MCP config and instruction block without writing");
+    println!("  --dry-run               Print planned writes without changing files");
+    println!("  --yes                   Reserved for non-interactive installs");
+    println!("  --no-instructions       Skip instruction file updates");
+    println!("  --no-mcp                Skip MCP config/snippet output");
     println!();
     println!("agent query flags:");
     println!("  --repo PATH             Workspace root (default: current directory)");
@@ -586,6 +730,91 @@ mod tests {
         match cli.command {
             Command::Migrate(opts) => assert!(opts.dry_run),
             _ => panic!("expected migrate"),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_install_agent_defaults() {
+        let cli = parse_args(&["bin".into(), "install-agent".into()]);
+        match cli.command {
+            Command::InstallAgent(opts) => {
+                assert_eq!(opts.targets, vec!["auto".to_string()]);
+                assert_eq!(opts.scope, "project");
+                assert_eq!(opts.repo, None);
+                assert_eq!(opts.port, None);
+                assert!(!opts.print_config);
+                assert!(!opts.dry_run);
+                assert!(!opts.no_instructions);
+                assert!(!opts.no_mcp);
+            }
+            _ => panic!("expected install-agent command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_install_agent_flags() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "install-agent".into(),
+            "--target".into(),
+            "codex,claude".into(),
+            "--scope".into(),
+            "user".into(),
+            "--repo".into(),
+            "/tmp/project".into(),
+            "--port".into(),
+            "20000".into(),
+            "--print-config".into(),
+            "--dry-run".into(),
+            "--yes".into(),
+            "--no-instructions".into(),
+            "--no-mcp".into(),
+        ]);
+        match cli.command {
+            Command::InstallAgent(opts) => {
+                assert_eq!(
+                    opts.targets,
+                    vec!["codex".to_string(), "claude".to_string()]
+                );
+                assert_eq!(opts.scope, "user");
+                assert_eq!(opts.repo.as_deref(), Some("/tmp/project"));
+                assert_eq!(opts.port, Some(20000));
+                assert!(opts.print_config);
+                assert!(opts.dry_run);
+                assert!(opts.yes);
+                assert!(opts.no_instructions);
+                assert!(opts.no_mcp);
+            }
+            _ => panic!("expected install-agent command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_uninstall_agent_flags() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "uninstall-agent".into(),
+            "--target".into(),
+            "cursor".into(),
+            "--scope".into(),
+            "project".into(),
+            "--repo".into(),
+            "/tmp/project".into(),
+            "--dry-run".into(),
+            "--yes".into(),
+            "--no-mcp".into(),
+        ]);
+        match cli.command {
+            Command::UninstallAgent(opts) => {
+                assert_eq!(opts.targets, vec!["cursor".to_string()]);
+                assert_eq!(opts.scope, "project");
+                assert_eq!(opts.repo.as_deref(), Some("/tmp/project"));
+                assert!(opts.dry_run);
+                assert!(opts.yes);
+                assert!(!opts.no_instructions);
+                assert!(opts.no_mcp);
+            }
+            _ => panic!("expected uninstall-agent command, got {:?}", cli.command),
         }
     }
 

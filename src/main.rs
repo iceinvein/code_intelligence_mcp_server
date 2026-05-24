@@ -153,6 +153,7 @@ async fn dispatch_subcommand(
     cmd: code_intelligence_mcp_server::cli::Command,
     port_override: Option<u16>,
 ) -> anyhow::Result<()> {
+    use code_intelligence_mcp_server::agent_install;
     use code_intelligence_mcp_server::cli::Command;
     use code_intelligence_mcp_server::install;
     match cmd {
@@ -163,6 +164,8 @@ async fn dispatch_subcommand(
         Command::Stop => install::handle_stop(),
         Command::Status => install::handle_status(),
         Command::Migrate(opts) => install::handle_migrate(opts),
+        Command::InstallAgent(opts) => agent_install::handle_install_agent(opts),
+        Command::UninstallAgent(opts) => agent_install::handle_uninstall_agent(opts),
         Command::Search(opts) => handle_cli_search(opts, port_override).await,
         Command::Investigate(opts) => handle_cli_investigate(opts, port_override).await,
         Command::Ask(opts) => handle_cli_ask(opts, port_override).await,

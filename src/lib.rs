@@ -1,3 +1,4 @@
+pub mod agent_install;
 pub mod classify;
 pub mod cli;
 pub mod config;

@@ -1,5 +1,6 @@
+use super::framework_routes::{is_route_pattern, route_value};
 use super::AppState;
-use crate::storage::sqlite::RepoMapSymbolRow;
+use crate::storage::sqlite::{FrameworkPatternRow, RepoMapSymbolRow};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -24,14 +25,22 @@ struct FileEntry {
     symbol_count: usize,
     exported_count: usize,
     symbols: Vec<RepoMapSymbolRow>,
+    routes: Vec<FrameworkPatternRow>,
 }
 
 pub fn handle_repo_map(state: &AppState, options: RepoMapOptions) -> Result<Value, anyhow::Error> {
     let rows = state.sqlite.list_repo_map_symbols(MAX_SCAN_SYMBOLS)?;
-    Ok(build_repo_map(rows, options))
+    let routes = state
+        .sqlite
+        .search_framework_patterns(None, None, None, None, None, None, 2_000)?;
+    Ok(build_repo_map(rows, routes, options))
 }
 
-fn build_repo_map(rows: Vec<RepoMapSymbolRow>, options: RepoMapOptions) -> Value {
+fn build_repo_map(
+    rows: Vec<RepoMapSymbolRow>,
+    framework_patterns: Vec<FrameworkPatternRow>,
+    options: RepoMapOptions,
+) -> Value {
     let budget_tokens = options
         .budget_tokens
         .unwrap_or(DEFAULT_BUDGET_TOKENS)
@@ -56,6 +65,7 @@ fn build_repo_map(rows: Vec<RepoMapSymbolRow>, options: RepoMapOptions) -> Value
                 symbol_count: 0,
                 exported_count: 0,
                 symbols: Vec::new(),
+                routes: Vec::new(),
             });
         entry.importance += score;
         entry.symbol_count += 1;
@@ -63,6 +73,15 @@ fn build_repo_map(rows: Vec<RepoMapSymbolRow>, options: RepoMapOptions) -> Value
             entry.exported_count += 1;
         }
         entry.symbols.push(row);
+    }
+
+    for pattern in framework_patterns {
+        if !is_route_pattern(&pattern) {
+            continue;
+        }
+        if let Some(entry) = grouped.get_mut(&pattern.file_path) {
+            entry.routes.push(pattern);
+        }
     }
 
     let total_files = grouped.len();
@@ -129,6 +148,11 @@ fn symbol_score(symbol: &RepoMapSymbolRow) -> f64 {
 }
 
 fn file_to_value(file: FileEntry) -> Value {
+    let routes: Vec<Value> = file
+        .routes
+        .iter()
+        .map(|route| route_to_value(route, &file.symbols))
+        .collect();
     let symbols: Vec<Value> = file
         .symbols
         .into_iter()
@@ -145,14 +169,28 @@ fn file_to_value(file: FileEntry) -> Value {
         })
         .collect();
 
-    json!({
+    let mut value = json!({
         "file_path": file.file_path,
         "language": file.language,
         "importance": round_score(file.importance),
         "symbol_count": file.symbol_count,
         "exported_count": file.exported_count,
         "symbols": symbols,
-    })
+    });
+    if !routes.is_empty() {
+        value["routes"] = json!(routes);
+    }
+    value
+}
+
+fn route_to_value(route: &FrameworkPatternRow, symbols: &[RepoMapSymbolRow]) -> Value {
+    let handler_symbol_id = route.handler.as_ref().and_then(|handler| {
+        symbols
+            .iter()
+            .find(|symbol| symbol.name == *handler)
+            .map(|symbol| symbol.id.as_str())
+    });
+    route_value(route, handler_symbol_id)
 }
 
 fn extract_signature(text: &str) -> String {
@@ -215,6 +253,7 @@ mod tests {
                 row("b1", "src/b.rs", "high", true, 0.9),
                 row("b2", "src/b.rs", "hidden", false, 0.2),
             ],
+            vec![],
             RepoMapOptions {
                 budget_tokens: Some(10_000),
                 max_files: Some(1),
@@ -228,5 +267,42 @@ mod tests {
         assert_eq!(value["files"][0]["file_path"], "src/b.rs");
         assert_eq!(value["files"][0]["symbols"].as_array().unwrap().len(), 1);
         assert_eq!(value["files"][0]["symbols"][0]["name"], "high");
+    }
+
+    fn route(file_path: &str, handler: &str) -> FrameworkPatternRow {
+        FrameworkPatternRow {
+            id: "route:1".to_string(),
+            file_path: file_path.to_string(),
+            line: 7,
+            framework: "axum".to_string(),
+            kind: "route".to_string(),
+            http_method: Some("GET".to_string()),
+            path: Some("/users".to_string()),
+            name: None,
+            handler: Some(handler.to_string()),
+            arguments: None,
+            parent_chain: Some("Router::new".to_string()),
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn repo_map_surfaces_routes_with_handler_symbol_links() {
+        let value = build_repo_map(
+            vec![row("sym_list", "src/routes.rs", "list_users", true, 0.9)],
+            vec![route("src/routes.rs", "list_users")],
+            RepoMapOptions {
+                budget_tokens: Some(10_000),
+                max_files: Some(5),
+                max_symbols_per_file: Some(5),
+            },
+        );
+
+        let route = &value["files"][0]["routes"][0];
+        assert_eq!(route["framework"], "axum");
+        assert_eq!(route["http_method"], "GET");
+        assert_eq!(route["path"], "/users");
+        assert_eq!(route["handler"], "list_users");
+        assert_eq!(route["handler_symbol_id"], "sym_list");
     }
 }

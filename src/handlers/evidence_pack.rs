@@ -157,14 +157,14 @@ fn pack_kind(question: &str, shape: InvestigationShape) -> EvidencePackKind {
 
 fn is_callsite_question(question: &str) -> bool {
     let question = question.to_ascii_lowercase();
-    ["who calls", "callsites", "references", "invokes"]
+    ["who calls", "callsites", "invokes", "who references"]
         .iter()
         .any(|needle| question.contains(needle))
+        || question.contains("references to")
         || (question.contains("where is")
             && (question.contains(" called")
                 || question.contains(" call")
-                || question.contains(" referenced")
-                || question.contains(" reference")))
+                || question.contains(" referenced")))
 }
 
 fn row_from_location(
@@ -412,12 +412,44 @@ mod tests {
     }
 
     #[test]
+    fn where_is_reference_named_symbol_defined_stays_symbol_lookup() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "where is reference_count defined?".to_string(),
+            target: "reference_count".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "let reference_count = 0;")],
+            secondary: vec![],
+            secondary_via: None,
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["kind"], "symbol_lookup");
+    }
+
+    #[test]
     fn where_is_called_stays_callsite_enumeration() {
         let pack = build_evidence_pack(EvidencePackInput {
             question: "where is target_fn called?".to_string(),
             target: "target_fn".to_string(),
             shape: InvestigationShape::Discover,
             primary: vec![location(10, "target_fn();")],
+            secondary: vec![],
+            secondary_via: None,
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["kind"], "callsite_enumeration");
+    }
+
+    #[test]
+    fn where_is_referenced_stays_callsite_enumeration() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "where is createSession referenced?".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "createSession();")],
             secondary: vec![],
             secondary_via: None,
         });

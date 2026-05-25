@@ -16,6 +16,7 @@ use crate::handlers::framework_routes::route_exposures_for_symbol;
 use crate::handlers::planning::plan_code_investigation;
 use crate::tools::InvestigateTool;
 
+use super::evidence_pack::{build_evidence_pack, pack_to_value, EvidencePackInput, PackLocation};
 use super::AppState;
 
 /// Hard cap for the response JSON. Beyond this we degrade by dropping
@@ -631,6 +632,22 @@ fn dedup_locations(mut locations: Vec<VerifiedLocation>) -> Vec<VerifiedLocation
     out
 }
 
+fn pack_locations_from_verified(locations: &[VerifiedLocation]) -> Vec<PackLocation> {
+    locations
+        .iter()
+        .map(|loc| PackLocation {
+            symbol_id: Some(loc.symbol_id.clone()),
+            symbol_name: Some(loc.symbol_name.clone()),
+            file_path: Some(loc.file_path.clone()),
+            kind: Some(loc.kind.clone()),
+            start_line: Some(loc.start_line),
+            end_line: Some(loc.end_line),
+            via: Some(loc.via.to_string()),
+            body: Some(loc.body.clone()),
+        })
+        .collect()
+}
+
 fn build_response(
     question: &str,
     shape: InvestigationShape,
@@ -679,6 +696,22 @@ fn build_response(
             "summary": summarize_secondary(&s.raw, s.via),
         })
     });
+    let pack_target = primary
+        .locations
+        .first()
+        .map(|loc| loc.symbol_name.clone())
+        .unwrap_or_else(|| question.to_string());
+    let pack = build_evidence_pack(EvidencePackInput {
+        question: question.to_string(),
+        target: pack_target,
+        shape,
+        primary: pack_locations_from_verified(&primary.locations),
+        secondary: secondary
+            .as_ref()
+            .map(|s| pack_locations_from_verified(&s.locations))
+            .unwrap_or_default(),
+        secondary_via: secondary.as_ref().map(|s| s.via.to_string()),
+    });
 
     let mut response = json!({
         "question": question,
@@ -689,6 +722,7 @@ fn build_response(
         "primary_symbol": primary_symbol,
         "verified_locations": dedup,
         "secondary": secondary_summary,
+        "pack": pack_to_value(&pack),
         "context_chain": context_chain,
         "answer_hint": "Cite only entries from `verified_locations`. Identifiers \
             mentioned inside `body` text or in `context_chain` but NOT listed in \
@@ -1008,5 +1042,36 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].symbol_name, "first");
         assert_eq!(result[1].symbol_name, "second");
+    }
+
+    #[test]
+    fn build_response_includes_evidence_pack() {
+        let primary = PrimaryHop {
+            raw: json!({"context": "createSession();"}),
+            locations: vec![VerifiedLocation {
+                symbol_id: "sym_create".to_string(),
+                symbol_name: "createSession".to_string(),
+                file_path: "src/session.rs".to_string(),
+                kind: "function".to_string(),
+                start_line: 42,
+                end_line: 44,
+                via: "search_code",
+                body: "createSession();".to_string(),
+                route_exposure: Vec::new(),
+            }],
+        };
+
+        let response = build_response(
+            "who calls createSession",
+            InvestigationShape::Discover,
+            json!({}),
+            primary,
+            None,
+            3,
+        );
+
+        assert_eq!(response["pack"]["kind"], "callsite_enumeration");
+        assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(response["pack"]["coverage"]["status"], "complete");
     }
 }

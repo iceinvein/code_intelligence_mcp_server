@@ -140,7 +140,7 @@ pub fn pack_to_value(pack: &EvidencePack) -> Value {
 }
 
 fn pack_kind(question: &str, shape: InvestigationShape) -> EvidencePackKind {
-    if is_callsite_question(question) {
+    if matches!(shape, InvestigationShape::Discover) && is_callsite_question(question) {
         return EvidencePackKind::CallsiteEnumeration;
     }
 
@@ -480,6 +480,34 @@ mod tests {
         });
 
         assert_eq!(pack.kind, EvidencePackKind::CallsiteEnumeration);
+    }
+
+    #[test]
+    fn callsite_words_do_not_override_explicit_impact_radius_shape() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls createSession and what breaks if it changes?".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::ImpactRadius,
+            primary: vec![location(10, "createSession();")],
+            secondary: Vec::new(),
+            secondary_via: None,
+        });
+
+        assert_eq!(pack.kind, EvidencePackKind::ImpactRadius);
+    }
+
+    #[test]
+    fn callsite_words_do_not_override_explicit_call_trace_shape() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls createSession through the session pipeline?".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![location(10, "createSession();")],
+            secondary: Vec::new(),
+            secondary_via: None,
+        });
+
+        assert_eq!(pack.kind, EvidencePackKind::PipelineTrace);
     }
 
     #[test]

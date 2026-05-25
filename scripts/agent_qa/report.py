@@ -43,7 +43,8 @@ class QuestionDelta:
 class AggregateResult:
     per_toolset: Dict[str, ToolsetSummary]
     per_question: Dict[str, QuestionDelta]
-    tool_reach: Dict[str, Dict[str, int]]  # toolset -> tool name -> count
+    per_question_by_pair: Dict[str, Dict[str, QuestionDelta]] = field(default_factory=dict)
+    tool_reach: Dict[str, Dict[str, int]] = field(default_factory=dict)  # toolset -> tool name -> count
 
 
 def _summarize(runs: List[ScoredRun]) -> ToolsetSummary:
@@ -71,18 +72,26 @@ def aggregate_round(runs: List[ScoredRun]) -> AggregateResult:
         by_q[r.question_id][r.toolset] = r
 
     per_question: Dict[str, QuestionDelta] = {}
+    per_question_by_pair: Dict[str, Dict[str, QuestionDelta]] = {}
+    non_default = [ts for ts in by_toolset.keys() if ts != "default"]
     for qid, ts_map in by_q.items():
         d = ts_map.get("default")
-        c = ts_map.get("code_intel")
-        if d is None or c is None:
+        if d is None:
             continue
-        per_question[qid] = QuestionDelta(
-            question_id=qid,
-            repo=d.repo,
-            mech_delta=c.mech_score - d.mech_score,
-            judge_delta=c.judge_score - d.judge_score,
-            token_delta=c.input_tokens - d.input_tokens,
-        )
+        for ts in non_default:
+            c = ts_map.get(ts)
+            if c is None:
+                continue
+            delta = QuestionDelta(
+                question_id=qid,
+                repo=d.repo,
+                mech_delta=c.mech_score - d.mech_score,
+                judge_delta=c.judge_score - d.judge_score,
+                token_delta=c.input_tokens - d.input_tokens,
+            )
+            per_question_by_pair.setdefault(ts, {})[qid] = delta
+            if ts == "code_intel":
+                per_question[qid] = delta
 
     tool_reach: Dict[str, Dict[str, int]] = {}
     for ts, rs in by_toolset.items():
@@ -94,6 +103,7 @@ def aggregate_round(runs: List[ScoredRun]) -> AggregateResult:
     return AggregateResult(
         per_toolset=per_toolset,
         per_question=per_question,
+        per_question_by_pair=per_question_by_pair,
         tool_reach=tool_reach,
     )
 
@@ -115,15 +125,22 @@ def render_markdown(round_id: int, repos: List[str], aggregate: AggregateResult)
         )
     lines.append("")
 
-    lines.append("## Per-question delta (code_intel - default)")
-    lines.append("")
-    lines.append("| question | repo | mech delta | judge delta | token delta |")
-    lines.append("|---|---|---:|---:|---:|")
-    for qid, d in sorted(aggregate.per_question.items()):
-        lines.append(
-            f"| {qid} | {d.repo} | {d.mech_delta:+.2f} | {d.judge_delta:+d} | {d.token_delta:+,} |"
-        )
-    lines.append("")
+    pair_keys = sorted(aggregate.per_question_by_pair.keys()) or (
+        ["code_intel"] if aggregate.per_question else []
+    )
+    for ts in pair_keys:
+        deltas = aggregate.per_question_by_pair.get(ts, aggregate.per_question)
+        if not deltas:
+            continue
+        lines.append(f"## Per-question delta ({ts} - default)")
+        lines.append("")
+        lines.append("| question | repo | mech delta | judge delta | token delta |")
+        lines.append("|---|---|---:|---:|---:|")
+        for qid, d in sorted(deltas.items()):
+            lines.append(
+                f"| {qid} | {d.repo} | {d.mech_delta:+.2f} | {d.judge_delta:+d} | {d.token_delta:+,} |"
+            )
+        lines.append("")
 
     lines.append("## Tool reach")
     lines.append("")

@@ -1,0 +1,217 @@
+[
+  {
+    "id": "pylon-q1",
+    "question": "Who calls SessionManager.createSession across the main process? List the callsites and what each one is doing.",
+    "expected": {
+      "files": [
+        "src/main/ipc-handlers.ts",
+        "src/main/pr-review-manager.ts"
+      ],
+      "symbols": ["createSession"],
+      "facts": [
+        ["ipc-handlers", "IPC", "session-create"],
+        ["pr-review-manager", "PR review", "review run"],
+        ["pr-review", "pr-review-manager.ts:1421", "pr-review-manager.ts:1472", "pr-review-manager.ts:1577"]
+      ]
+    },
+    "rubric": "Names src/main/ipc-handlers.ts (~line 180, the IPC bridge call from the renderer) and src/main/pr-review-manager.ts (three callsites around lines 1421, 1472, 1577 — one per review-spawn path). Bonus for noting all PR-review callsites pass the 'pr-review' session-kind tag. Should NOT confuse this with provider.createSession (different method on AgentProvider; lives in test-manager.ts, provider-text-query.ts, worktree-recipe-service.ts and inside session-manager itself)."
+  },
+  {
+    "id": "pylon-q2",
+    "question": "Where is the provider registry's getProvider function called from outside the providers/ module? List callsites and the context each invocation runs in.",
+    "expected": {
+      "files": [
+        "src/main/session-manager.ts",
+        "src/main/pr-review-manager.ts"
+      ],
+      "symbols": ["getProvider"],
+      "facts": [
+        ["session-manager.ts:328", "session-manager.ts:682", "session-manager.ts:731"],
+        ["pr-review-manager.ts:676", "peer review", "peerProvider"]
+      ]
+    },
+    "rubric": "Identifies the four production callsites: three inside session-manager.ts (around lines 328, 682, 731 — covering create, send, and text-query paths) and one inside pr-review-manager.ts (~line 676, building the peer-review provider). Bonus for noting that the peer-review callsite uses a *different* provider id than the primary review (cross-provider peer review). Should ignore callsites inside providers/registry.ts itself and inside test files."
+  },
+  {
+    "id": "pylon-q3",
+    "question": "Where is the production SQLite database created in Pylon, and which adapter layer wraps node:sqlite?",
+    "expected": {
+      "files": [
+        "src/main/db.ts",
+        "src/main/sqlite-adapter.ts"
+      ],
+      "symbols": ["createSqliteDatabase", "createSqliteDatabaseFromNative"],
+      "facts": [
+        ["db.ts:458", "createSqliteDatabase(dbPath)"],
+        ["sqlite-adapter", "node:sqlite", "DatabaseSync"]
+      ]
+    },
+    "rubric": "Names db.ts (~line 458) as the single production callsite of createSqliteDatabase and src/main/sqlite-adapter.ts as the adapter wrapping node:sqlite's DatabaseSync. Bonus for noting createSqliteDatabaseFromNative is the test-time entry point used to inject an in-memory bun:sqlite database (the same pattern session-manager.test.ts uses to mock the DB)."
+  },
+  {
+    "id": "pylon-q4",
+    "question": "Which AST parsers are registered via registerParser, and which file performs the registration? Also list registerResolver invocations and the languages each covers.",
+    "expected": {
+      "files": [
+        "src/main/ast-analyzer.ts",
+        "src/main/ast-parsers/registry.ts"
+      ],
+      "symbols": ["registerParser", "registerResolver"],
+      "facts": [
+        ["ast-analyzer.ts:29", "registerParser('typescript', tsParser)"],
+        ["typescript", "rust", "go", "python", "fallback"]
+      ]
+    },
+    "rubric": "Identifies src/main/ast-analyzer.ts as the registration site, exactly one registerParser call (typescript -> tsParser at ~line 29), and lists the registerResolver languages: typescript (top-level), rust, python, go, and fallback (registered conditionally inside an init loop later in the same file). Bonus for noting only TypeScript has a registered Parser; other languages get an import resolver only. The questionable framing ('which AST parsers are registered') has a single concrete answer (typescript)."
+  },
+  {
+    "id": "pylon-q5",
+    "question": "Which classes implement the AgentProvider interface in Pylon? Where is the interface defined?",
+    "expected": {
+      "files": [
+        "src/main/providers/types.ts",
+        "src/main/providers/claude-provider.ts",
+        "src/main/providers/codex-provider.ts"
+      ],
+      "symbols": ["AgentProvider", "ClaudeProvider", "CodexProvider"],
+      "facts": [
+        ["types.ts:238", "AgentProvider"],
+        ["ClaudeProvider", "claude-provider.ts:84"],
+        ["CodexProvider", "codex-provider.ts:170"]
+      ]
+    },
+    "rubric": "Names two implementations: ClaudeProvider (src/main/providers/claude-provider.ts, ~line 84) and CodexProvider (src/main/providers/codex-provider.ts, ~line 170). Identifies the interface definition at src/main/providers/types.ts (~line 238). Should NOT count the AgentSession interface (a separate type) or test mocks as implementations."
+  },
+  {
+    "id": "pylon-q6",
+    "question": "Which modules implement the ImportResolver interface and which language does each one cover? Identify whether each export is a constant or a factory function.",
+    "expected": {
+      "files": [
+        "src/main/ast-parsers/import-resolvers/fallback.ts",
+        "src/main/ast-parsers/import-resolvers/typescript.ts",
+        "src/main/ast-parsers/import-resolvers/rust.ts",
+        "src/main/ast-parsers/import-resolvers/go.ts",
+        "src/main/ast-parsers/import-resolvers/python.ts"
+      ],
+      "symbols": [
+        "fallbackResolver",
+        "typescriptResolver",
+        "createRustResolver",
+        "createGoResolver",
+        "createPythonResolver"
+      ],
+      "facts": [
+        ["fallback", "typescript", "rust", "go", "python"],
+        ["constant", "factory"],
+        ["projectRoot"]
+      ]
+    },
+    "rubric": "Lists all five implementations correctly: fallbackResolver (constant), typescriptResolver (constant), createRustResolver (factory taking projectRoot), createGoResolver (factory taking projectRoot), createPythonResolver (factory taking projectRoot). Bonus for noting the constant-vs-factory split corresponds to whether the resolver needs project-rooted state (Rust/Go/Python all walk Cargo.toml/go.mod/pyproject; TS/fallback are stateless). Answer must distinguish the constant exports from the factory-function exports — agents that lump them all as 'classes' or all as 'functions' fail the rubric."
+  },
+  {
+    "id": "pylon-q7",
+    "question": "What test file covers the PR review dedupe logic, and which exported functions does it exercise? What module owns the production code under test?",
+    "expected": {
+      "files": [
+        "src/main/__tests__/pr-review-dedupe.test.ts",
+        "src/main/pr-review-dedupe.ts"
+      ],
+      "symbols": ["deduplicateFindings", "diceCoefficient", "tokenize"],
+      "facts": [
+        ["pr-review-dedupe", "tokenize", "diceCoefficient", "deduplicateFindings"],
+        ["pr-review-manager", "not the manager", "separate module"]
+      ]
+    },
+    "rubric": "Names src/main/__tests__/pr-review-dedupe.test.ts and identifies all three functions under test: deduplicateFindings, diceCoefficient, tokenize. Critically, the production code is src/main/pr-review-dedupe.ts (a separate module), NOT pr-review-manager.ts. Agents that conflate dedupe with pr-review-manager (the orchestrator that calls it) fail the rubric. Bonus for noting diceCoefficient + tokenize are the lower-level building blocks deduplicateFindings composes."
+  },
+  {
+    "id": "pylon-q8",
+    "question": "Where is SessionManager unit-tested, and how does the test isolate the production SQLite dependency? Walk through the mocking strategy.",
+    "expected": {
+      "files": [
+        "src/main/__tests__/session-manager.test.ts",
+        "src/main/sqlite-adapter.ts"
+      ],
+      "symbols": ["SessionManager", "createDbProxy", "createSqliteDatabaseFromNative"],
+      "facts": [
+        ["bun:sqlite", "in-memory", "Database"],
+        ["mock.module('electron'", "createDbProxy"],
+        ["adapter", "prepare", "transaction"]
+      ]
+    },
+    "rubric": "Names src/main/__tests__/session-manager.test.ts. Explains the mocking strategy: (a) mock.module('electron') stubs BrowserWindow and app, (b) bun:sqlite Database opens an in-memory DB, (c) a createDbProxy helper exposes the same prepare/get/all/run/transaction surface that sqlite-adapter.ts exports — letting SessionManager run against the in-memory DB without touching node:sqlite. Bonus for noting the same adapter shape is what production createSqliteDatabaseFromNative produces, so the test is an integration test of the adapter contract rather than a pure unit test."
+  },
+  {
+    "id": "pylon-q9",
+    "question": "Trace how a tool-use event flows from the Claude provider session out to the renderer. Name every hop: where the event is produced in the provider, how the session manager bridges it to IPC, the IPC channel constant, and where the renderer subscribes.",
+    "expected": {
+      "files": [
+        "src/main/providers/claude-provider.ts",
+        "src/main/session-manager.ts",
+        "src/shared/ipc-channels.ts",
+        "src/preload/index.ts"
+      ],
+      "symbols": ["onBeforeToolUse", "SESSION_MESSAGE", "onSessionMessage"],
+      "facts": [
+        ["claude-provider", "onBeforeToolUse", "claude-provider.ts:464"],
+        ["session-manager", "this.send", "IPC.SESSION_MESSAGE"],
+        ["ipc-channels", "SESSION_MESSAGE", "session:message"],
+        ["preload", "onSessionMessage", "ipcRenderer.on"]
+      ]
+    },
+    "rubric": "Names all four hops. (1) Producer: claude-provider.ts invokes config.onBeforeToolUse around line 464 (and similar in codex-provider.ts ~line 410). (2) Session manager: session-manager.ts emits IPC.SESSION_MESSAGE through this.send (~lines 389, 417, 502). (3) Channel constant: src/shared/ipc-channels.ts defines SESSION_MESSAGE as 'session:message' (~line 21). (4) Renderer subscriber: src/preload/index.ts exposes onSessionMessage (~line 282) which calls ipcRenderer.on(IPC.SESSION_MESSAGE, handler). Full credit requires all four hops with file paths. Three of four is partial credit. Bonus for noting Codex follows the same path through codex-provider.ts."
+  },
+  {
+    "id": "pylon-q10",
+    "question": "What happens when startReview is called in pr-review-manager.ts? Walk through the orchestration: diff fetching, context building, parallel agents, dedupe, peer review, and persistence. Name the supporting modules each step uses.",
+    "expected": {
+      "files": [
+        "src/main/pr-review-manager.ts",
+        "src/main/pr-review-dedupe.ts",
+        "src/main/pr-review-peer-review.ts",
+        "src/main/pr-review-critic.ts",
+        "src/main/pr-context"
+      ],
+      "symbols": ["startReview", "deduplicateFindings", "peer-review", "critic"],
+      "facts": [
+        ["pr-review-manager.ts:903", "startReview"],
+        ["gh", "GitHub CLI", "diff"],
+        ["parallel", "specialists", "agents"],
+        ["dedupe", "deduplicateFindings"],
+        ["peer", "critic"],
+        ["persist", "SQLite", "history"]
+      ]
+    },
+    "rubric": "Identifies startReview at pr-review-manager.ts:903 as the entry point. Walks the pipeline in order: (1) GitHub CLI fetches the PR diff (gh-cli-* helpers in src/main/), (2) pr-context/ builds review context (changed files, symbols, references, related tests via MCP or heuristic), (3) parallel review agents run via sessionManager.createSession (the same callsites identified in q1), (4) findings dedupe via pr-review-dedupe.deduplicateFindings, (5) peer-review pass via pr-review-peer-review.ts and critic via pr-review-critic.ts, (6) persistence to SQLite review history tables defined in db.ts. Full credit requires correct ordering AND naming the per-stage module. The agent must NOT conflate dedupe (lexical) with peer-review (LLM-driven second opinion); they are separate stages."
+  },
+  {
+    "id": "pylon-q11",
+    "question": "Which file in the main process has been edited most actively in the last 10 days, and what kind of changes (refactor, feat, fix) dominate? Map any test files that were updated alongside it.",
+    "expected": {
+      "files": [
+        "src/main/test-manager.ts",
+        "src/main/__tests__/test-manager-agent-settings.test.ts"
+      ],
+      "symbols": [],
+      "facts": [
+        ["test-manager.ts", "9 commits", "8 commits"],
+        ["refactor", "fix", "feat"],
+        ["test-manager-agent-settings.test.ts"]
+      ]
+    },
+    "rubric": "Names src/main/test-manager.ts as the most-edited main-process file in the window (9 commits since 2026-05-15, second most-edited overall after pr-review-manager.ts in /src). Categorises the dominant commit types: refactor (centralize agent event accumulation, share feature agent resolution, make goal suggestion context explicit), fix (handle goal fallback, handle callback goal reports, forward feature agent options), feat (run explorations through providers). Names src/main/__tests__/test-manager-agent-settings.test.ts as the paired test file with 7 commits in the same window. Full credit requires both the source file AND the paired test file AND a directional read on commit types."
+  },
+  {
+    "id": "pylon-q12",
+    "question": "Where is the default Electron BrowserWindow size for the Pylon main window configured? What dimensions does it use?",
+    "expected": {
+      "files": ["src/main/index.ts"],
+      "symbols": ["BrowserWindow"],
+      "facts": [
+        ["index.ts:19", "BrowserWindow"],
+        ["1280", "800"]
+      ]
+    },
+    "rubric": "Names src/main/index.ts (~line 19) and identifies the BrowserWindow construction with width=1280, height=800. Trivially lookup-shaped: should be answerable in a single read with grep+Read or with get_definition; the question exists as a baseline for filesystem-shape parity."
+  }
+]

@@ -19,12 +19,16 @@ Env:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import random
+import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlencode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -58,6 +62,50 @@ AGENT_SYSTEM_PROMPT = (
     "symbol with a one-paragraph explanation is better than a long survey."
 )
 
+CODE_INTEL_SYSTEM_PROMPT_EXTRA = (
+    "This run has the code-intelligence MCP available. Start codebase "
+    "investigations with `mcp__code-intelligence__ask_code`; use "
+    "`mcp__code-intelligence__investigate` or specialist code-intelligence MCP "
+    "tools for follow-up graph questions before falling back to Read/Grep/Glob. "
+    "When `ask_code` or `investigate` returns `pack.rows`, synthesize from those "
+    "rows and respect `pack.coverage.status` and `role=\"candidate\"`."
+)
+
+CODE_GRAPH_SYSTEM_PROMPT_EXTRA = (
+    "This run has the codegraph MCP available. Start codebase investigations "
+    "with `mcp__codegraph__codegraph_search`, then use "
+    "`mcp__codegraph__codegraph_context` or `mcp__codegraph__codegraph_callers` "
+    "for graph follow-up before falling back to Read/Grep/Glob."
+)
+
+TOOLSET_SYSTEM_PROMPT_EXTRAS = {
+    "code_intel": CODE_INTEL_SYSTEM_PROMPT_EXTRA,
+    "code_graph": CODE_GRAPH_SYSTEM_PROMPT_EXTRA,
+}
+
+CODE_INTEL_MCP_TOOLS = [
+    "mcp__code-intelligence__ask_code",
+    "mcp__code-intelligence__investigate",
+    "mcp__code-intelligence__search_code",
+    "mcp__code-intelligence__get_definition",
+    "mcp__code-intelligence__find_references",
+    "mcp__code-intelligence__get_call_hierarchy",
+    "mcp__code-intelligence__find_affected_code",
+    "mcp__code-intelligence__trace_data_flow",
+    "mcp__code-intelligence__explore_dependency_graph",
+]
+
+CODE_GRAPH_MCP_TOOLS = [
+    "mcp__codegraph__codegraph_search",
+    "mcp__codegraph__codegraph_context",
+    "mcp__codegraph__codegraph_callers",
+]
+
+TOOLSET_MCP_TOOLS = {
+    "code_intel": CODE_INTEL_MCP_TOOLS,
+    "code_graph": CODE_GRAPH_MCP_TOOLS,
+}
+
 
 def _system_prompt_for(toolset: str) -> str:
     """Build the system prompt, optionally appending an env-var extra.
@@ -68,9 +116,15 @@ def _system_prompt_for(toolset: str) -> str:
     """
     import os as _os
     key_specific = f"AGENT_SYSTEM_PROMPT_EXTRA_{toolset.upper()}"
-    extra = _os.environ.get(key_specific) or _os.environ.get("AGENT_SYSTEM_PROMPT_EXTRA", "")
-    if extra:
-        return AGENT_SYSTEM_PROMPT + "\n\n" + extra.strip()
+    extras = []
+    toolset_extra = TOOLSET_SYSTEM_PROMPT_EXTRAS.get(toolset)
+    if toolset_extra:
+        extras.append(toolset_extra)
+    env_extra = _os.environ.get(key_specific) or _os.environ.get("AGENT_SYSTEM_PROMPT_EXTRA", "")
+    if env_extra:
+        extras.append(env_extra.strip())
+    if extras:
+        return AGENT_SYSTEM_PROMPT + "\n\n" + "\n\n".join(extras)
     return AGENT_SYSTEM_PROMPT
 
 
@@ -78,23 +132,88 @@ def _build_default_mcp_config() -> Dict[str, Any]:
     return {"mcpServers": {}}
 
 
-def _build_code_intel_mcp_config(binary: Path, base_dir: Path) -> Dict[str, Any]:
+def _repo_mcp_url(mcp_url: str, base_dir: Path) -> str:
+    sep = "&" if "?" in mcp_url else "?"
+    return f"{mcp_url}{sep}{urlencode({'repo': str(base_dir)})}"
+
+
+def _build_code_intel_mcp_config(mcp_url: str, base_dir: Path) -> Dict[str, Any]:
     return {
         "mcpServers": {
             "code-intelligence": {
-                "command": str(binary),
-                "args": [],
-                "env": {"BASE_DIR": str(base_dir)},
+                "type": "streamable-http",
+                "url": _repo_mcp_url(mcp_url, base_dir),
+            }
+        }
+    }
+
+
+def _pick_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _wait_for_port(port: int, proc: subprocess.Popen, timeout_s: float = 20.0) -> None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"code-intelligence daemon exited early with code {proc.returncode}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise TimeoutError(f"code-intelligence daemon did not open port {port} within {timeout_s:.0f}s")
+
+
+def _terminate_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _start_code_intel_daemon(binary: Path, port: int) -> subprocess.Popen:
+    proc = subprocess.Popen(
+        [
+            str(binary),
+            "--port",
+            str(port),
+            "--discovery-port",
+            str(port + 1),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    atexit.register(_terminate_process, proc)
+    _wait_for_port(port, proc)
+    return proc
+
+
+def _build_code_graph_mcp_config(base_dir: Path) -> Dict[str, Any]:
+    import os as _os
+    binary = _os.environ.get("BENCH_CODE_GRAPH_BINARY", "codegraph")
+    return {
+        "mcpServers": {
+            "codegraph": {
+                "command": binary,
+                "args": ["serve", "--mcp", "-p", str(base_dir), "--no-watch"],
+                "env": {},
             }
         }
     }
 
 
 def _allowed_tools_for(toolset: str) -> List[str]:
-    # We restrict built-in tools to the same 4 in both runs. MCP tools are
-    # gated by --mcp-config (with --strict-mcp-config), so the only delta
-    # between toolsets is whether the code-intelligence MCP server is wired up.
-    return list(DEFAULT_BUILTIN_TOOLS)
+    # Keep built-in tools identical across runs. Add only the MCP tools that
+    # belong to the selected toolset, so the benchmark measures the intended
+    # tool layer instead of merely wiring an MCP server the agent may ignore.
+    return list(DEFAULT_BUILTIN_TOOLS) + list(TOOLSET_MCP_TOOLS.get(toolset, []))
 
 
 def main() -> None:
@@ -133,17 +252,33 @@ def main() -> None:
     raw_runs: List[dict] = []
     scored: List[ScoredRun] = []
 
-    toolset_configs = {
-        "default": _build_default_mcp_config(),
-        "code_intel": _build_code_intel_mcp_config(args.binary, base_dir),
-    }
-
     wanted_toolsets = _os.environ.get("BENCH_TOOLSETS")
+    requested_toolsets = {"default", "code_intel", "code_graph"}
     if wanted_toolsets:
-        keep = {s.strip() for s in wanted_toolsets.split(",")}
-        toolset_configs = {k: v for k, v in toolset_configs.items() if k in keep}
-        if not toolset_configs:
+        known = requested_toolsets
+        requested_toolsets = {s.strip() for s in wanted_toolsets.split(",")}
+        requested_toolsets = {k for k in requested_toolsets if k in known}
+        if not requested_toolsets:
             sys.exit(f"BENCH_TOOLSETS={wanted_toolsets} matched no known toolsets")
+
+    code_intel_proc = None
+    code_intel_url = _os.environ.get("BENCH_CODE_INTEL_URL")
+    if "code_intel" in requested_toolsets and not code_intel_url:
+        port = int(_os.environ.get("BENCH_CODE_INTEL_PORT") or _pick_free_port())
+        code_intel_proc = _start_code_intel_daemon(args.binary, port)
+        code_intel_url = f"http://127.0.0.1:{port}/mcp"
+        print(f"Started code-intelligence daemon for benchmark at {code_intel_url}", file=sys.stderr)
+
+    all_toolset_configs = {
+        "default": _build_default_mcp_config(),
+        "code_intel": _build_code_intel_mcp_config(code_intel_url or "", base_dir),
+        "code_graph": _build_code_graph_mcp_config(base_dir),
+    }
+    toolset_configs = {
+        k: all_toolset_configs[k]
+        for k in all_toolset_configs
+        if k in requested_toolsets
+    }
 
     print(f"Bench round {args.round} on {args.repo} ({base_dir})", file=sys.stderr)
     print(f"Agent: {agent_model}  Judge: {judge_model}", file=sys.stderr)
@@ -249,6 +384,9 @@ def main() -> None:
     ))
     md_path.write_text(render_markdown(round_id=args.round, repos=[args.repo], aggregate=aggregate))
     print(f"\nWrote {json_path} and {md_path}", file=sys.stderr)
+
+    if code_intel_proc is not None:
+        _terminate_process(code_intel_proc)
 
 
 if __name__ == "__main__":

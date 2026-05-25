@@ -766,10 +766,77 @@ fn summarize_secondary(raw: &Value, via: &str) -> Value {
 ///      first ~3 entries).
 ///   3. Truncate `context_chain` to a head slice.
 ///   4. Truncate verified_locations to top-K by index.
+///   5. Compact pack row evidence, then pack rows, if compact rows still
+///      exceed the hard cap.
 fn apply_response_budget(response: &mut Value) {
     fn estimate(v: &Value) -> usize {
         serde_json::to_string(v).map(|s| s.len()).unwrap_or(0)
     }
+
+    fn truncate_with_marker(s: &str, max_prefix_bytes: usize, marker: &str) -> String {
+        if s.len() <= max_prefix_bytes {
+            return s.to_string();
+        }
+
+        let mut end = max_prefix_bytes.min(s.len());
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        format!("{}{}", &s[..end], marker)
+    }
+
+    fn truncate_pack_row_evidence(response: &mut Value, max_prefix_bytes: usize) -> bool {
+        let mut truncated = false;
+        if let Some(rows) = response
+            .get_mut("pack")
+            .and_then(|v| v.get_mut("rows"))
+            .and_then(|v| v.as_array_mut())
+        {
+            for row in rows {
+                if let Some(evidence) = row.get_mut("evidence").and_then(|v| v.as_str()) {
+                    if evidence.len() > max_prefix_bytes {
+                        let compacted = truncate_with_marker(
+                            evidence,
+                            max_prefix_bytes,
+                            " ... [evidence truncated]",
+                        );
+                        row["evidence"] = json!(compacted);
+                        truncated = true;
+                    }
+                }
+            }
+        }
+
+        if truncated {
+            response["pack"]["row_evidence_truncated"] = json!(true);
+            response["pack_truncated"] = json!(true);
+        }
+
+        truncated
+    }
+
+    fn truncate_pack_rows(response: &mut Value, limit: usize) -> bool {
+        let Some(rows) = response
+            .get_mut("pack")
+            .and_then(|v| v.get_mut("rows"))
+            .and_then(|v| v.as_array_mut())
+        else {
+            return false;
+        };
+
+        if rows.len() <= limit {
+            return false;
+        }
+
+        let original_count = rows.len();
+        rows.truncate(limit);
+        response["pack"]["rows_truncated"] = json!(true);
+        response["pack"]["rows_original_count"] = json!(original_count);
+        response["pack_truncated"] = json!(true);
+        true
+    }
+
     if estimate(response) <= RESPONSE_BUDGET_BYTES {
         return;
     }
@@ -837,6 +904,25 @@ fn apply_response_budget(response: &mut Value) {
             response["verified_locations_truncated"] = json!(true);
         }
     }
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    // Stage 5: compact evidence-pack rows while preserving rows before
+    // dropping them. Single-line evidence can otherwise dominate the response.
+    truncate_pack_row_evidence(response, 300);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    for limit in [20, 10, 5] {
+        truncate_pack_rows(response, limit);
+        if estimate(response) <= RESPONSE_BUDGET_BYTES {
+            return;
+        }
+    }
+
+    truncate_pack_row_evidence(response, 120);
 }
 
 #[cfg(test)]
@@ -1154,5 +1240,48 @@ mod tests {
             );
             assert_eq!(entry["body_dropped"], true);
         }
+    }
+
+    #[test]
+    fn response_budget_truncates_long_pack_row_evidence() {
+        let long_evidence_line = format!("createSession(); {}", "x".repeat(5000));
+        let primary = PrimaryHop {
+            raw: json!({"context": "createSession();"}),
+            locations: (0..24)
+                .map(|i| VerifiedLocation {
+                    symbol_id: format!("sym_{i}"),
+                    symbol_name: format!("caller_{i}"),
+                    file_path: format!("src/file_{i}.ts"),
+                    kind: "function".to_string(),
+                    start_line: 1,
+                    end_line: 1,
+                    via: "search_code",
+                    body: long_evidence_line.clone(),
+                    route_exposure: Vec::new(),
+                })
+                .collect(),
+        };
+
+        let response = build_response(
+            "who calls createSession",
+            InvestigationShape::Discover,
+            json!({}),
+            primary,
+            None,
+            3,
+        );
+        let serialized = serde_json::to_string(&response).expect("response should serialize");
+
+        assert!(
+            serialized.len() <= RESPONSE_BUDGET_BYTES,
+            "serialized response should fit budget, got {} bytes",
+            serialized.len()
+        );
+        assert!(
+            !response["pack"]["rows"].as_array().expect("pack rows").is_empty(),
+            "pack rows should survive evidence compaction"
+        );
+        assert_eq!(response["pack"]["row_evidence_truncated"], true);
+        assert_eq!(response["pack_truncated"], true);
     }
 }

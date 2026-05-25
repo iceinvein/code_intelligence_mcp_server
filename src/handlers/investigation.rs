@@ -816,7 +816,23 @@ fn apply_response_budget(response: &mut Value) {
         truncated
     }
 
-    fn truncate_pack_rows(response: &mut Value, limit: usize) -> bool {
+    fn pack_row_count(response: &Value) -> Option<usize> {
+        response
+            .get("pack")
+            .and_then(|v| v.get("rows"))
+            .and_then(|v| v.as_array())
+            .map(|rows| rows.len())
+    }
+
+    fn mark_pack_rows_truncated(response: &mut Value, original_count: usize) {
+        response["pack"]["rows_truncated"] = json!(true);
+        if response["pack"].get("rows_original_count").is_none() {
+            response["pack"]["rows_original_count"] = json!(original_count);
+        }
+        response["pack_truncated"] = json!(true);
+    }
+
+    fn truncate_pack_rows(response: &mut Value, limit: usize, original_count: usize) -> bool {
         let Some(rows) = response
             .get_mut("pack")
             .and_then(|v| v.get_mut("rows"))
@@ -829,12 +845,104 @@ fn apply_response_budget(response: &mut Value) {
             return false;
         }
 
-        let original_count = rows.len();
         rows.truncate(limit);
-        response["pack"]["rows_truncated"] = json!(true);
-        response["pack"]["rows_original_count"] = json!(original_count);
-        response["pack_truncated"] = json!(true);
+        mark_pack_rows_truncated(response, original_count);
         true
+    }
+
+    fn strip_nonessential_first_pack_row_fields(response: &mut Value) {
+        let Some(row) = response
+            .get_mut("pack")
+            .and_then(|v| v.get_mut("rows"))
+            .and_then(|v| v.as_array_mut())
+            .and_then(|rows| rows.first_mut())
+            .and_then(|v| v.as_object_mut())
+        else {
+            return;
+        };
+
+        for field in [
+            "symbol_id",
+            "symbol_name",
+            "end_line",
+            "enclosing_symbol",
+            "reason",
+            "risk",
+        ] {
+            row.remove(field);
+        }
+
+        if let Some(path) = row.get("file_path").and_then(|v| v.as_str()) {
+            if path.len() > 240 {
+                row.insert(
+                    "file_path".to_string(),
+                    json!(truncate_with_marker(path, 240, " ... [path truncated]")),
+                );
+                response["pack"]["row_fields_truncated"] = json!(true);
+                response["pack_truncated"] = json!(true);
+            }
+        }
+    }
+
+    fn minimize_pack_to_first_row(response: &mut Value) {
+        if let Some(pack) = response.get_mut("pack").and_then(|v| v.as_object_mut()) {
+            pack.insert("edges".to_string(), json!([]));
+            pack.insert("answer_guidance".to_string(), json!([]));
+            pack.insert("top_level_fields_truncated".to_string(), json!(true));
+            if let Some(target) = pack.get("target").and_then(|v| v.as_str()) {
+                if target.len() > 120 {
+                    pack.insert(
+                        "target".to_string(),
+                        json!(truncate_with_marker(target, 120, " ... [target truncated]")),
+                    );
+                }
+            }
+            if let Some(coverage) = pack.get_mut("coverage").and_then(|v| v.as_object_mut()) {
+                coverage.insert("basis".to_string(), json!("truncated for response budget"));
+                coverage.insert("missing".to_string(), json!(""));
+            }
+        }
+        response["pack_truncated"] = json!(true);
+    }
+
+    fn minimize_first_pack_row(response: &mut Value) {
+        let Some(rows) = response
+            .get_mut("pack")
+            .and_then(|v| v.get_mut("rows"))
+            .and_then(|v| v.as_array_mut())
+        else {
+            return;
+        };
+        let Some(row) = rows.first_mut() else {
+            return;
+        };
+
+        let role = row
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("evidence")
+            .to_string();
+        let ordinal = row.get("ordinal").cloned();
+        let line = row.get("line").cloned();
+        let evidence = row
+            .get("evidence")
+            .and_then(|v| v.as_str())
+            .map(|s| truncate_with_marker(s, 80, " ... [evidence truncated]"))
+            .unwrap_or_default();
+
+        let mut compact = serde_json::Map::new();
+        compact.insert("role".to_string(), json!(role));
+        if let Some(ordinal) = ordinal {
+            compact.insert("ordinal".to_string(), ordinal);
+        }
+        if let Some(line) = line {
+            compact.insert("line".to_string(), line);
+        }
+        compact.insert("evidence".to_string(), json!(evidence));
+        *row = Value::Object(compact);
+        response["pack"]["row_fields_truncated"] = json!(true);
+        response["pack"]["row_evidence_truncated"] = json!(true);
+        response["pack_truncated"] = json!(true);
     }
 
     if estimate(response) <= RESPONSE_BUDGET_BYTES {
@@ -910,19 +1018,49 @@ fn apply_response_budget(response: &mut Value) {
 
     // Stage 5: compact evidence-pack rows while preserving rows before
     // dropping them. Single-line evidence can otherwise dominate the response.
+    let original_pack_row_count = pack_row_count(response).unwrap_or(0);
     truncate_pack_row_evidence(response, 300);
     if estimate(response) <= RESPONSE_BUDGET_BYTES {
         return;
     }
 
     for limit in [20, 10, 5] {
-        truncate_pack_rows(response, limit);
+        truncate_pack_rows(response, limit, original_pack_row_count);
         if estimate(response) <= RESPONSE_BUDGET_BYTES {
             return;
         }
     }
 
     truncate_pack_row_evidence(response, 120);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    truncate_pack_rows(response, 1, original_pack_row_count);
+    truncate_pack_row_evidence(response, 80);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    response["context_chain"] = json!("");
+    response["verified_locations"] = json!([]);
+    response["verified_locations_truncated"] = json!(true);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    strip_nonessential_first_pack_row_fields(response);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    minimize_pack_to_first_row(response);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    minimize_first_pack_row(response);
+    let _ = estimate(response);
 }
 
 #[cfg(test)]
@@ -1245,13 +1383,15 @@ mod tests {
     #[test]
     fn response_budget_truncates_long_pack_row_evidence() {
         let long_evidence_line = format!("createSession(); {}", "x".repeat(5000));
+        let original_row_count = 260;
+        let long_path_segment = "deep_component_name_".repeat(450);
         let primary = PrimaryHop {
             raw: json!({"context": "createSession();"}),
-            locations: (0..24)
+            locations: (0..original_row_count)
                 .map(|i| VerifiedLocation {
                     symbol_id: format!("sym_{i}"),
                     symbol_name: format!("caller_{i}"),
-                    file_path: format!("src/file_{i}.ts"),
+                    file_path: format!("src/{long_path_segment}/file_{i}.ts"),
                     kind: "function".to_string(),
                     start_line: 1,
                     end_line: 1,
@@ -1278,10 +1418,15 @@ mod tests {
             serialized.len()
         );
         assert!(
-            !response["pack"]["rows"].as_array().expect("pack rows").is_empty(),
-            "pack rows should survive evidence compaction"
+            response["pack"]["rows"].as_array().expect("pack rows").len() < original_row_count,
+            "pack rows should be truncated when row count dominates"
         );
+        assert_eq!(response["pack"]["rows_truncated"], true);
         assert_eq!(response["pack"]["row_evidence_truncated"], true);
+        assert_eq!(
+            response["pack"]["rows_original_count"],
+            json!(original_row_count)
+        );
         assert_eq!(response["pack_truncated"], true);
     }
 }

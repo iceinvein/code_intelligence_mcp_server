@@ -183,7 +183,7 @@ fn row_from_location(
         (None, _) => None,
     };
     let role = match kind {
-        EvidencePackKind::CallsiteEnumeration => "callsite".to_string(),
+        EvidencePackKind::CallsiteEnumeration => callsite_role(location.via.as_deref()),
         EvidencePackKind::PipelineTrace => infer_pipeline_role(body.unwrap_or(&evidence)),
         _ => location.via.as_deref().unwrap_or(fallback_role).to_string(),
     };
@@ -205,6 +205,23 @@ fn row_from_location(
         reason: location.kind,
         risk: None,
     }
+}
+
+fn callsite_role(via: Option<&str>) -> String {
+    if via.is_some_and(is_verified_callsite_source) {
+        "callsite"
+    } else {
+        "candidate"
+    }
+    .to_string()
+}
+
+fn is_verified_callsite_source(via: &str) -> bool {
+    let via = via.to_ascii_lowercase();
+    via == "find_references"
+        || via.contains("reference")
+        || via.contains("call_hierarchy")
+        || via.contains("call")
 }
 
 struct SelectedEvidenceLine {
@@ -289,21 +306,42 @@ fn coverage_for(kind: EvidencePackKind, rows: &[EvidenceRow]) -> Coverage {
         };
     }
 
-    if matches!(kind, EvidencePackKind::PipelineTrace) {
-        let required = ["producer", "bridge", "subscriber"];
-        let missing = required
-            .iter()
-            .filter(|role| !rows.iter().any(|row| row.role == **role))
-            .copied()
-            .collect::<Vec<_>>();
+    match kind {
+        EvidencePackKind::CallsiteEnumeration => {
+            if rows
+                .iter()
+                .any(|row| row.role == "callsite" || row.role == "caller")
+            {
+                return Coverage {
+                    status: CoverageStatus::Complete,
+                    basis: "evidence rows cover the requested shape".to_string(),
+                    missing: String::new(),
+                };
+            }
 
-        if !missing.is_empty() {
             return Coverage {
                 status: CoverageStatus::Partial,
-                basis: "pipeline evidence is missing required roles".to_string(),
-                missing: missing.join(","),
+                basis: "callsite evidence is limited to search candidates".to_string(),
+                missing: "callsite references not verified; rows are search candidates".to_string(),
             };
         }
+        EvidencePackKind::PipelineTrace => {
+            let required = ["producer", "bridge", "subscriber"];
+            let missing = required
+                .iter()
+                .filter(|role| !rows.iter().any(|row| row.role == **role))
+                .copied()
+                .collect::<Vec<_>>();
+
+            if !missing.is_empty() {
+                return Coverage {
+                    status: CoverageStatus::Partial,
+                    basis: "pipeline evidence is missing required roles".to_string(),
+                    missing: missing.join(","),
+                };
+            }
+        }
+        _ => {}
     }
 
     Coverage {
@@ -344,6 +382,10 @@ mod tests {
     use crate::handlers::investigation::InvestigationShape;
 
     fn location(start_line: u32, body: &str) -> PackLocation {
+        location_via(start_line, body, None)
+    }
+
+    fn location_via(start_line: u32, body: &str, via: Option<&str>) -> PackLocation {
         PackLocation {
             symbol_id: Some("sym-1".to_string()),
             symbol_name: Some("handler".to_string()),
@@ -351,7 +393,7 @@ mod tests {
             kind: Some("function".to_string()),
             start_line: Some(start_line),
             end_line: Some(start_line + 1),
-            via: None,
+            via: via.map(str::to_string),
             body: Some(body.to_string()),
         }
     }
@@ -480,6 +522,55 @@ mod tests {
         });
 
         assert_eq!(pack.kind, EvidencePackKind::CallsiteEnumeration);
+    }
+
+    #[test]
+    fn search_code_callsite_pack_marks_rows_as_candidates_and_coverage_partial() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls createSession".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location_via(10, "createSession();", Some("search_code"))],
+            secondary: Vec::new(),
+            secondary_via: None,
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["kind"], "callsite_enumeration");
+        assert_eq!(value["rows"][0]["role"], "candidate");
+        assert_eq!(value["coverage"]["status"], "partial");
+        assert_eq!(
+            value["coverage"]["missing"],
+            "callsite references not verified; rows are search candidates"
+        );
+    }
+
+    #[test]
+    fn verified_callsite_pack_marks_rows_as_callsites_and_coverage_complete() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls createSession".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location_via(
+                10,
+                "createSession();",
+                Some("find_references"),
+            )],
+            secondary: vec![location_via(
+                20,
+                "createSession();",
+                Some("get_call_hierarchy"),
+            )],
+            secondary_via: None,
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["kind"], "callsite_enumeration");
+        assert_eq!(value["rows"][0]["role"], "callsite");
+        assert_eq!(value["rows"][1]["role"], "callsite");
+        assert_eq!(value["coverage"]["status"], "complete");
     }
 
     #[test]

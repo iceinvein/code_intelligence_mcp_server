@@ -1072,6 +1072,7 @@ mod tests {
 
         assert_eq!(response["pack"]["kind"], "callsite_enumeration");
         assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(response["pack"]["coverage"]["status"], "complete");
+        assert_eq!(response["pack"]["rows"][0]["role"], "candidate");
+        assert_eq!(response["pack"]["coverage"]["status"], "partial");
     }
 }

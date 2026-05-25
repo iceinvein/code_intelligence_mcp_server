@@ -724,13 +724,13 @@ fn build_response(
         "secondary": secondary_summary,
         "pack": pack_to_value(&pack),
         "context_chain": context_chain,
-        "answer_hint": "Cite only entries from `verified_locations`. Identifiers \
-            mentioned inside `body` text or in `context_chain` but NOT listed in \
-            verified_locations are NOT verified locations - do not state their \
-            file paths or line numbers without a separate get_definition or \
-            find_references call. The server has already executed the appropriate \
-            multi-hop chain for this question's shape; do NOT call Grep, Read, or \
-            search_code to verify or expand."
+        "answer_hint": "Cite only entries from `verified_locations` or `pack.rows` \
+            with line-level file evidence. Respect `pack.coverage.status`: `partial` \
+            means returned rows are candidates or a truncated subset, not exhaustive \
+            proof. Identifiers mentioned inside `body` text or in `context_chain` but \
+            NOT listed in verified_locations or pack.rows are NOT verified locations - \
+            do not state their file paths or line numbers without a separate \
+            get_definition, find_references, or specialist graph call."
     });
 
     apply_response_budget(&mut response);
@@ -829,7 +829,32 @@ fn apply_response_budget(response: &mut Value) {
         if response["pack"].get("rows_original_count").is_none() {
             response["pack"]["rows_original_count"] = json!(original_count);
         }
+        mark_pack_coverage_partial_for_truncation(response, original_count);
         response["pack_truncated"] = json!(true);
+    }
+
+    fn mark_pack_coverage_partial_for_truncation(response: &mut Value, original_count: usize) {
+        let returned_count = pack_row_count(response).unwrap_or(0);
+        let omitted_count = original_count.saturating_sub(returned_count);
+        let Some(coverage) = response
+            .get_mut("pack")
+            .and_then(|v| v.get_mut("coverage"))
+            .and_then(|v| v.as_object_mut())
+        else {
+            return;
+        };
+
+        coverage.insert("status".to_string(), json!("partial"));
+        coverage.insert(
+            "basis".to_string(),
+            json!("evidence rows were truncated for response budget"),
+        );
+        coverage.insert(
+            "missing".to_string(),
+            json!(format!(
+                "{omitted_count} rows omitted by response budget; returned rows are not exhaustive"
+            )),
+        );
     }
 
     fn truncate_pack_rows(response: &mut Value, limit: usize, original_count: usize) -> bool {
@@ -898,8 +923,12 @@ fn apply_response_budget(response: &mut Value) {
                 }
             }
             if let Some(coverage) = pack.get_mut("coverage").and_then(|v| v.as_object_mut()) {
+                coverage.insert("status".to_string(), json!("partial"));
                 coverage.insert("basis".to_string(), json!("truncated for response budget"));
-                coverage.insert("missing".to_string(), json!(""));
+                coverage.insert(
+                    "missing".to_string(),
+                    json!("rows and fields omitted by response budget"),
+                );
             }
         }
         response["pack_truncated"] = json!(true);
@@ -984,6 +1013,20 @@ fn apply_response_budget(response: &mut Value) {
                 pack.insert("rows_truncated".to_string(), json!(true));
                 pack.entry("rows_original_count".to_string())
                     .or_insert_with(|| json!(original_count));
+                if let Some(coverage) = pack.get_mut("coverage").and_then(|v| v.as_object_mut()) {
+                    coverage.insert("status".to_string(), json!("partial"));
+                    coverage.insert(
+                        "basis".to_string(),
+                        json!("evidence rows were truncated for response budget"),
+                    );
+                    coverage.insert(
+                        "missing".to_string(),
+                        json!(format!(
+                            "{} rows omitted by response budget; returned rows are not exhaustive",
+                            original_count.saturating_sub(1)
+                        )),
+                    );
+                }
             }
             pack.insert("row_evidence_truncated".to_string(), json!(true));
             pack.insert("row_fields_truncated".to_string(), json!(true));
@@ -1378,6 +1421,15 @@ mod tests {
         assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
         assert_eq!(response["pack"]["rows"][0]["role"], "candidate");
         assert_eq!(response["pack"]["coverage"]["status"], "partial");
+        let answer_hint = response["answer_hint"].as_str().expect("answer_hint");
+        assert!(
+            answer_hint.contains("pack.coverage.status"),
+            "answer_hint should direct callers to coverage semantics: {answer_hint}",
+        );
+        assert!(
+            !answer_hint.contains("do NOT call Grep, Read, or search_code to verify or expand"),
+            "answer_hint must not forbid follow-up verification for partial/candidate packs: {answer_hint}",
+        );
     }
 
     #[test]
@@ -1473,7 +1525,11 @@ mod tests {
             serialized.len()
         );
         assert!(
-            response["pack"]["rows"].as_array().expect("pack rows").len() < original_row_count,
+            response["pack"]["rows"]
+                .as_array()
+                .expect("pack rows")
+                .len()
+                < original_row_count,
             "pack rows should be truncated when row count dominates"
         );
         assert_eq!(response["pack"]["rows_truncated"], true);
@@ -1483,6 +1539,51 @@ mod tests {
             json!(original_row_count)
         );
         assert_eq!(response["pack_truncated"], true);
+    }
+
+    #[test]
+    fn response_budget_downgrades_complete_coverage_when_rows_are_truncated() {
+        let long_evidence_line = format!("createSession(); {}", "x".repeat(5000));
+        let original_row_count = 260;
+        let primary = PrimaryHop {
+            raw: json!({"context": "createSession();"}),
+            locations: (0..original_row_count)
+                .map(|i| VerifiedLocation {
+                    symbol_id: format!("sym_{i}"),
+                    symbol_name: format!("caller_{i}"),
+                    file_path: format!("src/file_{i}.ts"),
+                    kind: "function".to_string(),
+                    start_line: 1,
+                    end_line: 1,
+                    via: "find_references",
+                    body: long_evidence_line.clone(),
+                    route_exposure: Vec::new(),
+                })
+                .collect(),
+        };
+
+        let response = build_response(
+            "who calls createSession",
+            InvestigationShape::Discover,
+            json!({}),
+            primary,
+            None,
+            3,
+        );
+
+        assert_eq!(response["pack"]["rows_truncated"], true);
+        assert_eq!(
+            response["pack"]["rows_original_count"],
+            json!(original_row_count)
+        );
+        assert_eq!(response["pack"]["coverage"]["status"], "partial");
+        assert!(
+            response["pack"]["coverage"]["missing"]
+                .as_str()
+                .unwrap()
+                .contains("rows omitted"),
+            "coverage missing should explain row truncation"
+        );
     }
 
     #[test]
@@ -1551,7 +1652,13 @@ mod tests {
         assert_eq!(response["response_budget_truncated"], true);
         assert_eq!(response["plan"], json!({"truncated": true}));
         assert_eq!(response["verified_locations"], json!([]));
-        assert_eq!(response["pack"]["rows"].as_array().expect("pack rows").len(), 1);
+        assert_eq!(
+            response["pack"]["rows"]
+                .as_array()
+                .expect("pack rows")
+                .len(),
+            1
+        );
         assert_eq!(response["pack"]["rows_truncated"], true);
         assert_eq!(response["pack"]["row_evidence_truncated"], true);
         assert_eq!(
@@ -1574,11 +1681,9 @@ mod tests {
             3,
         );
 
-        assert!(
-            response["context_chain"]
-                .as_str()
-                .unwrap()
-                .contains("[context_chain truncated]")
-        );
+        assert!(response["context_chain"]
+            .as_str()
+            .unwrap()
+            .contains("[context_chain truncated]"));
     }
 }

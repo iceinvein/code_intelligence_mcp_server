@@ -624,10 +624,7 @@ mod tests {
 
     #[test]
     fn ask_code_description_mentions_evidence_packs() {
-        let desc = AskCodeTool::tool()
-            .description
-            .clone()
-            .unwrap_or_default();
+        let desc = AskCodeTool::tool().description.clone().unwrap_or_default();
         assert!(
             desc.contains("pack"),
             "ask_code description must mention structured evidence packs, got: {desc}"

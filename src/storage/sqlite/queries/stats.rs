@@ -84,6 +84,63 @@ LIMIT 1
     .context("Failed to query latest index run")
 }
 
+pub fn latest_index_run_version(conn: &Connection) -> Result<Option<String>> {
+    conn.query_row(
+        r#"
+SELECT started_at, id
+FROM index_runs
+ORDER BY started_at DESC, id DESC
+LIMIT 1
+"#,
+        [],
+        |row| {
+            let started_at: i64 = row.get(0)?;
+            let id: i64 = row.get(1)?;
+            Ok(format!("{started_at}:{id}"))
+        },
+    )
+    .optional()
+    .context("Failed to query latest index run version")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::sqlite::schema::SCHEMA_SQL;
+
+    fn run(started_at_unix_s: i64) -> IndexRunRow {
+        IndexRunRow {
+            started_at_unix_s,
+            duration_ms: 1,
+            files_scanned: 1,
+            files_indexed: 1,
+            files_skipped: 0,
+            files_unchanged: 0,
+            files_deleted: 0,
+            symbols_indexed: 1,
+        }
+    }
+
+    #[test]
+    fn latest_index_run_version_distinguishes_same_second_runs() {
+        let conn = Connection::open_in_memory().expect("memory sqlite");
+        conn.execute_batch(SCHEMA_SQL).expect("schema");
+        insert_index_run(&conn, &run(123)).expect("first run");
+        let first = latest_index_run_version(&conn)
+            .expect("first version")
+            .expect("first version present");
+
+        insert_index_run(&conn, &run(123)).expect("second run");
+        let second = latest_index_run_version(&conn)
+            .expect("second version")
+            .expect("second version present");
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("123:"));
+        assert!(second.starts_with("123:"));
+    }
+}
+
 pub fn latest_search_run(conn: &Connection) -> Result<Option<SearchRunRow>> {
     conn.query_row(
         r#"

@@ -23,7 +23,7 @@ const CACHE_CAPACITY: usize = 256;
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct AskCodeCacheKey {
     pub question_hash: u64,
-    pub repo_index_version: i64,
+    pub repo_index_version: String,
     pub quality: AnswerQuality,
     pub target: Option<String>,
     pub file_path: Option<String>,
@@ -34,7 +34,7 @@ pub struct AskCodeCacheKey {
 impl AskCodeCacheKey {
     pub fn new(
         question: &str,
-        repo_index_version: i64,
+        repo_index_version: String,
         quality: AnswerQuality,
         target: Option<&str>,
         file_path: Option<&str>,
@@ -138,12 +138,20 @@ mod tests {
     use serde_json::json;
 
     fn key(question: &str, repo_index_version: i64, quality: AnswerQuality) -> AskCodeCacheKey {
-        key_with(question, repo_index_version, quality, None, None, None, 8)
+        key_with(
+            question,
+            &repo_index_version.to_string(),
+            quality,
+            None,
+            None,
+            None,
+            8,
+        )
     }
 
     fn key_with(
         question: &str,
-        repo_index_version: i64,
+        repo_index_version: &str,
         quality: AnswerQuality,
         target: Option<&str>,
         file_path: Option<&str>,
@@ -152,7 +160,7 @@ mod tests {
     ) -> AskCodeCacheKey {
         AskCodeCacheKey::new(
             question,
-            repo_index_version,
+            repo_index_version.to_string(),
             quality,
             target,
             file_path,
@@ -208,7 +216,7 @@ mod tests {
     fn key_distinct_per_target() {
         let a = key_with(
             "q",
-            1,
+            "1",
             AnswerQuality::Balanced,
             Some("createSession"),
             None,
@@ -217,7 +225,7 @@ mod tests {
         );
         let b = key_with(
             "q",
-            1,
+            "1",
             AnswerQuality::Balanced,
             Some("deleteSession"),
             None,
@@ -231,7 +239,7 @@ mod tests {
     fn key_distinct_per_mode_or_max_evidence() {
         let base = key_with(
             "q",
-            1,
+            "1",
             AnswerQuality::Balanced,
             None,
             None,
@@ -240,7 +248,7 @@ mod tests {
         );
         let different_mode = key_with(
             "q",
-            1,
+            "1",
             AnswerQuality::Balanced,
             None,
             None,
@@ -249,7 +257,7 @@ mod tests {
         );
         let different_max_evidence = key_with(
             "q",
-            1,
+            "1",
             AnswerQuality::Balanced,
             None,
             None,
@@ -262,9 +270,17 @@ mod tests {
 
     #[test]
     fn key_normalizes_empty_target_like_none() {
-        let none = key_with("q", 1, AnswerQuality::Balanced, None, None, None, 8);
-        let empty = key_with("q", 1, AnswerQuality::Balanced, Some(""), None, None, 8);
-        let whitespace = key_with("q", 1, AnswerQuality::Balanced, Some("  \n"), None, None, 8);
+        let none = key_with("q", "1", AnswerQuality::Balanced, None, None, None, 8);
+        let empty = key_with("q", "1", AnswerQuality::Balanced, Some(""), None, None, 8);
+        let whitespace = key_with(
+            "q",
+            "1",
+            AnswerQuality::Balanced,
+            Some("  \n"),
+            None,
+            None,
+            8,
+        );
         assert_eq!(none, empty);
         assert_eq!(none, whitespace);
     }

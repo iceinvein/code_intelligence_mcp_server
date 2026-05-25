@@ -82,11 +82,10 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
     // ---- Cache lookup (keyed on question + index version + response shape) ----
     let repo_index_version = state
         .sqlite
-        .latest_index_run()
+        .latest_index_run_version()
         .ok()
         .flatten()
-        .map(|run| run.started_at_unix_s)
-        .unwrap_or(0);
+        .unwrap_or_else(|| "0".to_string());
     let cache_key = AskCodeCacheKey::new(
         &question,
         repo_index_version,
@@ -122,7 +121,9 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
     // had read the structured evidence directly. We default to skipping the
     // local synthesis step entirely; set `ASK_CODE_LLM_SYNTHESIS=true` to
     // restore the LLM path (e.g. for experiments with a stronger model).
-    if !llm_synthesis_enabled() {
+    if !llm_synthesis_enabled()
+        || evidence_count == 0 && investigate_pack_has_rows(&investigate_response)
+    {
         evidence.truncate(max_evidence as usize);
         let response = build_evidence_only_response(
             &question,
@@ -311,6 +312,7 @@ fn build_unavailable_response(
     investigate_response: &Value,
     evidence: &[EvidenceItem],
 ) -> Value {
+    let pack = pack_from_investigate(investigate_response);
     json!({
         "question": question,
         "answer": "",
@@ -318,13 +320,23 @@ fn build_unavailable_response(
         "evidence": evidence_to_json(evidence),
         "confidence": Confidence::Low.as_str(),
         "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
-        "pack": pack_from_investigate(investigate_response),
+        "pack": pack,
         "stop_reason": "llm_unavailable",
         "quality": quality.as_str(),
         "follow_up": "ask_code's answer LLM is not available (LLM_ENABLED=false, missing model, or load failure). Use the evidence[] array below or call `investigate` / specialist tools directly.",
         "dropped_citation_count": 0,
         "evidence_count": evidence.len(),
     })
+}
+
+fn investigate_pack_has_rows(investigate_response: &Value) -> bool {
+    investigate_response.get("pack").is_some_and(pack_has_rows)
+}
+
+fn pack_has_rows(pack: &Value) -> bool {
+    pack.get("rows")
+        .and_then(|v| v.as_array())
+        .is_some_and(|rows| !rows.is_empty())
 }
 
 /// Has local-LLM prose synthesis been re-enabled? Default is `false`: ask_code
@@ -422,6 +434,24 @@ fn build_synthesized_response(
     follow_up: Option<&'static str>,
     dropped_citation_count: usize,
 ) -> Value {
+    let pack = pack_from_investigate(investigate_response);
+    let has_pack_rows = pack_has_rows(&pack);
+    let stop_reason = if evidence_count == 0 && has_pack_rows && stop_reason == "no_evidence" {
+        "low_confidence"
+    } else {
+        stop_reason
+    };
+    let follow_up = if evidence_count == 0 && has_pack_rows {
+        Some(
+            "ask_code returned structured `pack.rows` without hydrated evidence bodies. \
+            Synthesise the final answer from `pack.rows`, respecting `role=\"candidate\"` \
+            and `pack.coverage.status`; call specialist tools if definitive line-level \
+            verification is required.",
+        )
+    } else {
+        follow_up
+    };
+
     json!({
         "question": question,
         "answer": answer_text,
@@ -429,7 +459,7 @@ fn build_synthesized_response(
         "evidence": evidence_to_json(evidence),
         "confidence": confidence.as_str(),
         "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
-        "pack": pack_from_investigate(investigate_response),
+        "pack": pack,
         "stop_reason": stop_reason,
         "quality": quality.as_str(),
         "follow_up": follow_up,
@@ -766,6 +796,43 @@ mod tests {
         );
         assert_eq!(response["pack"]["kind"], "symbol_lookup");
         assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn synthesized_response_treats_pack_rows_as_available_evidence() {
+        let investigate_response = json!({
+            "mode_used": "discover",
+            "pack": {
+                "kind": "callsite_enumeration",
+                "target": "createSession",
+                "coverage": {"status": "partial", "basis": ["search_code"], "missing": []},
+                "rows": [{"role": "candidate", "file_path": "src/a.rs", "line": 1, "evidence": "createSession()"}],
+                "edges": [],
+                "answer_guidance": "Treat candidate rows as candidates."
+            }
+        });
+        let response = build_synthesized_response(
+            "who calls createSession?",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            "",
+            vec![],
+            &[],
+            0,
+            Confidence::Low,
+            "no_evidence",
+            Some("No evidence retrieved."),
+            0,
+        );
+
+        assert_eq!(response["stop_reason"], "low_confidence");
+        assert!(
+            response["follow_up"]
+                .as_str()
+                .unwrap()
+                .contains("pack.rows"),
+            "pack-only synthesized responses should direct callers to pack.rows"
+        );
     }
 
     #[test]

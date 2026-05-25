@@ -35,7 +35,7 @@ pub struct AppState {
     /// indexing. `ask_code` needs a resident generator for low-latency
     /// query-time inference.
     pub answer_generator: Arc<OnceCell<Option<Arc<dyn LlmGenerator>>>>,
-    /// Per-process LRU cache of `ask_code` responses keyed by
-    /// (question_hash, repo_index_version, quality).
+    /// Per-process LRU cache of `ask_code` responses keyed by question,
+    /// index-run version, quality, and response-shaping inputs.
     pub ask_code_cache: Arc<AskCodeCache>,
 }

@@ -242,6 +242,11 @@ impl SqliteStore {
         queries::stats::latest_index_run(&conn)
     }
 
+    pub fn latest_index_run_version(&self) -> Result<Option<String>> {
+        let conn = self.read()?;
+        queries::stats::latest_index_run_version(&conn)
+    }
+
     pub fn latest_search_run(&self) -> Result<Option<SearchRunRow>> {
         let conn = self.read()?;
         queries::stats::latest_search_run(&conn)

@@ -821,6 +821,30 @@ mod tests {
     }
 
     #[test]
+    fn classify_callsite_enumeration_phrases_as_discover_for_pack_adapter() {
+        assert_eq!(
+            classify_shape("who calls SessionManager.createSession", None, None),
+            InvestigationShape::Discover
+        );
+        assert_eq!(
+            classify_shape("list callsites for getProvider", None, None),
+            InvestigationShape::Discover
+        );
+    }
+
+    #[test]
+    fn pipeline_trace_outranks_callsite_words() {
+        assert_eq!(
+            classify_shape(
+                "trace how the provider calls flow through IPC to the renderer subscriber",
+                None,
+                None,
+            ),
+            InvestigationShape::CallTrace
+        );
+    }
+
+    #[test]
     fn classify_data_trace_for_data_flow_questions() {
         assert_eq!(
             classify_shape("trace data flow for HYBRID_ALPHA", None, None),

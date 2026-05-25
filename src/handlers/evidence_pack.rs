@@ -460,6 +460,29 @@ mod tests {
     }
 
     #[test]
+    fn pack_kind_maps_callsite_question_to_callsite_enumeration() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "list callsites for createSession".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![PackLocation {
+                symbol_id: Some("a".to_string()),
+                symbol_name: Some("run".to_string()),
+                file_path: Some("src/a.ts".to_string()),
+                kind: Some("search_code".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                via: None,
+                body: Some("createSession()\n".to_string()),
+            }],
+            secondary: Vec::new(),
+            secondary_via: None,
+        });
+
+        assert_eq!(pack.kind, EvidencePackKind::CallsiteEnumeration);
+    }
+
+    #[test]
     fn pipeline_pack_orders_roles_and_marks_missing_subscriber() {
         let pack = build_evidence_pack(EvidencePackInput {
             question: "trace the message pipeline".to_string(),

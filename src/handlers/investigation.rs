@@ -761,10 +761,11 @@ fn summarize_secondary(raw: &Value, via: &str) -> Value {
 }
 
 /// Trim the response to fit `RESPONSE_BUDGET_BYTES`. Degrades in stages:
-///   1. Drop bodies from secondary verified_locations (anything past the
+///   1. Drop oversized raw bodies from verified_locations.
+///   2. Drop bodies from secondary verified_locations (anything past the
 ///      first ~3 entries).
-///   2. Truncate `context_chain` to a head slice.
-///   3. Truncate verified_locations to top-K by index.
+///   3. Truncate `context_chain` to a head slice.
+///   4. Truncate verified_locations to top-K by index.
 fn apply_response_budget(response: &mut Value) {
     fn estimate(v: &Value) -> usize {
         serde_json::to_string(v).map(|s| s.len()).unwrap_or(0)
@@ -773,7 +774,31 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 1: drop bodies past index 2.
+    // Stage 1: drop oversized raw bodies before compact pack rows are at risk.
+    if let Some(arr) = response
+        .get_mut("verified_locations")
+        .and_then(|v| v.as_array_mut())
+    {
+        for entry in arr.iter_mut() {
+            if let Some(obj) = entry.as_object_mut() {
+                if obj
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+                    > 1200
+                {
+                    obj.insert("body".to_string(), json!(""));
+                    obj.insert("body_dropped".to_string(), json!(true));
+                }
+            }
+        }
+    }
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    // Stage 2: drop bodies past index 2.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
@@ -791,7 +816,7 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 2: truncate context_chain.
+    // Stage 3: truncate context_chain.
     if let Some(s) = response.get("context_chain").and_then(|v| v.as_str()) {
         let max = (RESPONSE_BUDGET_BYTES / 4).min(s.len());
         let mut head = s[..max].to_string();
@@ -802,7 +827,7 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 3: truncate verified_locations to first 8.
+    // Stage 4: truncate verified_locations to first 8.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
@@ -1074,5 +1099,60 @@ mod tests {
         assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
         assert_eq!(response["pack"]["rows"][0]["role"], "candidate");
         assert_eq!(response["pack"]["coverage"]["status"], "partial");
+    }
+
+    #[test]
+    fn response_budget_preserves_pack_rows_before_code_bodies() {
+        let huge_body = (0..500)
+            .map(|i| format!("line {i} createSession();"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let primary = PrimaryHop {
+            raw: json!({"context": huge_body}),
+            locations: (0..20)
+                .map(|i| VerifiedLocation {
+                    symbol_id: format!("sym_{i}"),
+                    symbol_name: format!("caller_{i}"),
+                    file_path: format!("src/file_{i}.ts"),
+                    kind: "function".to_string(),
+                    start_line: 1,
+                    end_line: 500,
+                    via: "search_code",
+                    body: (0..300)
+                        .map(|line| format!("body {line} createSession();"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    route_exposure: Vec::new(),
+                })
+                .collect(),
+        };
+
+        let response = build_response(
+            "who calls createSession",
+            InvestigationShape::Discover,
+            json!({}),
+            primary,
+            None,
+            3,
+        );
+
+        let rows = response["pack"]["rows"].as_array().expect("pack rows");
+        assert!(!rows.is_empty(), "pack rows must survive budget trimming");
+        assert!(
+            rows.len() >= 8,
+            "budget trimming should drop raw bodies before removing compact rows, got {} rows",
+            rows.len()
+        );
+
+        let verified_locations = response["verified_locations"]
+            .as_array()
+            .expect("verified locations");
+        for entry in verified_locations.iter().take(8) {
+            assert_eq!(
+                entry["body"], "",
+                "oversized raw bodies should be dropped before compact pack rows"
+            );
+            assert_eq!(entry["body_dropped"], true);
+        }
     }
 }

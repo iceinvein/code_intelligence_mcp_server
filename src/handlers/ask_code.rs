@@ -185,6 +185,7 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
         "evidence": evidence_to_json(&evidence),
         "confidence": confidence.as_str(),
         "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
+        "pack": pack_from_investigate(&investigate_response),
         "stop_reason": stop_reason,
         "quality": quality.as_str(),
         "follow_up": follow_up,
@@ -257,6 +258,10 @@ fn evidence_to_json(evidence: &[EvidenceItem]) -> Vec<Value> {
         .collect()
 }
 
+fn pack_from_investigate(response: &Value) -> Value {
+    response.get("pack").cloned().unwrap_or(json!(null))
+}
+
 fn citation_to_json(claim_index: usize, raw: &str, span: &ResolvedSpan) -> Value {
     json!({
         "claim_index": claim_index,
@@ -307,6 +312,7 @@ fn build_unavailable_response(
         "evidence": evidence_to_json(evidence),
         "confidence": Confidence::Low.as_str(),
         "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
+        "pack": pack_from_investigate(investigate_response),
         "stop_reason": "llm_unavailable",
         "quality": quality.as_str(),
         "follow_up": "ask_code's answer LLM is not available (LLM_ENABLED=false, missing model, or load failure). Use the evidence[] array below or call `investigate` / specialist tools directly.",
@@ -364,6 +370,7 @@ fn build_evidence_only_response(
         "evidence": evidence_to_json(evidence),
         "confidence": confidence.as_str(),
         "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
+        "pack": pack_from_investigate(investigate_response),
         "stop_reason": stop_reason,
         "quality": quality.as_str(),
         "follow_up": "ask_code returned verified evidence without LLM prose (Path 2 default). \
@@ -538,6 +545,29 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_response_passes_through_pack() {
+        let evidence = vec![ev("sym_a", "src/a.rs", 1, 5)];
+        let investigate_response = json!({
+            "mode_used": "discover",
+            "pack": {
+                "kind": "symbol_lookup",
+                "target": "fn_x",
+                "coverage": {"status": "complete", "basis": ["search_code"], "missing": []},
+                "rows": [],
+                "edges": [],
+                "answer_guidance": "Use the definition row."
+            }
+        });
+        let response = build_unavailable_response(
+            "what is fn_x?",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &evidence,
+        );
+        assert_eq!(response["pack"]["kind"], "symbol_lookup");
+    }
+
+    #[test]
     fn follow_up_hint_no_evidence_prompts_rephrase() {
         assert!(follow_up_hint(Confidence::Low, 0, 0, 0)
             .unwrap()
@@ -594,6 +624,31 @@ mod tests {
             follow_up.contains("evidence"),
             "follow_up must direct the agent at evidence[], got: {follow_up}",
         );
+    }
+
+    #[test]
+    fn evidence_only_response_passes_through_pack() {
+        let evidence = vec![ev("sym_a", "src/a.rs", 1, 5)];
+        let investigate_response = json!({
+            "mode_used": "discover",
+            "pack": {
+                "kind": "callsite_enumeration",
+                "target": "createSession",
+                "coverage": {"status": "complete", "basis": ["find_references"], "missing": []},
+                "rows": [{"role": "caller", "file_path": "src/a.rs", "line": 1, "evidence": "createSession()"}],
+                "edges": [],
+                "answer_guidance": "Use one bullet per row."
+            }
+        });
+        let response = build_evidence_only_response(
+            "who calls createSession?",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &evidence,
+            evidence.len(),
+        );
+        assert_eq!(response["pack"]["kind"], "callsite_enumeration");
+        assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
     }
 
     #[test]

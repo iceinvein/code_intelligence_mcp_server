@@ -357,17 +357,40 @@ fn build_evidence_only_response(
     evidence: &[EvidenceItem],
     evidence_count: usize,
 ) -> Value {
+    let pack = pack_from_investigate(investigate_response);
+    let has_pack_rows = pack
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .map(|rows| !rows.is_empty())
+        .unwrap_or(false);
     let confidence = if evidence_count >= 3 {
         Confidence::Medium
     } else if evidence_count > 0 {
         Confidence::Low
+    } else if has_pack_rows {
+        Confidence::Low
     } else {
         Confidence::Low
     };
-    let stop_reason = if evidence_count == 0 {
+    let stop_reason = if evidence_count == 0 && !has_pack_rows {
         "no_evidence"
     } else {
         "evidence_only"
+    };
+    let follow_up = if evidence_count == 0 && has_pack_rows {
+        "ask_code returned structured `pack.rows` without hydrated evidence bodies. \
+            Synthesise the final answer from `pack.rows`, respecting `role=\"candidate\"` \
+            and `pack.coverage.status`; call specialist tools if definitive line-level \
+            verification is required."
+            .to_string()
+    } else {
+        "ask_code returned verified evidence without LLM prose (Path 2 default). \
+            Synthesise the final answer yourself from the `evidence[]` array below: each item carries \
+            symbol_name, file_path, line range, and the actual code body. Use these as the source of \
+            truth -- they were already retrieved and shape-classified by `investigate`. If you need \
+            more context call specialist tools (find_references, get_call_hierarchy, get_definition) \
+            with the symbol_ids from evidence."
+            .to_string()
     };
     json!({
         "question": question,
@@ -376,15 +399,10 @@ fn build_evidence_only_response(
         "evidence": evidence_to_json(evidence),
         "confidence": confidence.as_str(),
         "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
-        "pack": pack_from_investigate(investigate_response),
+        "pack": pack,
         "stop_reason": stop_reason,
         "quality": quality.as_str(),
-        "follow_up": "ask_code returned verified evidence without LLM prose (Path 2 default). \
-            Synthesise the final answer yourself from the `evidence[]` array below: each item carries \
-            symbol_name, file_path, line range, and the actual code body. Use these as the source of \
-            truth -- they were already retrieved and shape-classified by `investigate`. If you need \
-            more context call specialist tools (find_references, get_call_hierarchy, get_definition) \
-            with the symbol_ids from evidence.",
+        "follow_up": follow_up,
         "dropped_citation_count": 0,
         "evidence_count": evidence_count,
         "cached": false,
@@ -685,6 +703,38 @@ mod tests {
         );
         assert_eq!(response["pack"]["kind"], "callsite_enumeration");
         assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn evidence_only_response_treats_pack_rows_as_available_evidence() {
+        let investigate_response = json!({
+            "mode_used": "discover",
+            "pack": {
+                "kind": "callsite_enumeration",
+                "target": "createSession",
+                "coverage": {"status": "partial", "basis": ["search_code"], "missing": []},
+                "rows": [{"role": "candidate", "file_path": "src/a.rs", "line": 1, "evidence": "createSession()"}],
+                "edges": [],
+                "answer_guidance": "Treat candidate rows as candidates."
+            }
+        });
+        let response = build_evidence_only_response(
+            "who calls createSession?",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &[],
+            0,
+        );
+        assert_eq!(response["stop_reason"], "evidence_only");
+        assert_eq!(response["evidence_count"], 0);
+        assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
+        assert!(
+            response["follow_up"]
+                .as_str()
+                .unwrap()
+                .contains("pack.rows"),
+            "follow_up should direct agents to pack.rows when bodies were trimmed"
+        );
     }
 
     #[test]

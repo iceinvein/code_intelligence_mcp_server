@@ -1040,8 +1040,7 @@ fn apply_response_budget(response: &mut Value) {
     // Stage 3: truncate context_chain.
     if let Some(s) = response.get("context_chain").and_then(|v| v.as_str()) {
         let max = (RESPONSE_BUDGET_BYTES / 4).min(s.len());
-        let mut head = s[..max].to_string();
-        head.push_str("\n... [context_chain truncated]");
+        let head = truncate_with_marker(s, max, "\n... [context_chain truncated]");
         response["context_chain"] = json!(head);
     }
     if estimate(response) <= RESPONSE_BUDGET_BYTES {
@@ -1558,6 +1557,28 @@ mod tests {
         assert_eq!(
             response["pack"]["rows_original_count"],
             json!(original_row_count)
+        );
+    }
+
+    #[test]
+    fn response_budget_truncates_unicode_context_chain_on_char_boundary() {
+        let response = build_response(
+            "what is unicode context",
+            InvestigationShape::Discover,
+            json!({}),
+            PrimaryHop {
+                raw: json!({"context": "日".repeat(30_000)}),
+                locations: Vec::new(),
+            },
+            None,
+            3,
+        );
+
+        assert!(
+            response["context_chain"]
+                .as_str()
+                .unwrap()
+                .contains("[context_chain truncated]")
         );
     }
 }

@@ -46,3 +46,11 @@ fn dashboard_does_not_render_fake_job_progress_percent() {
         );
     }
 }
+
+#[test]
+fn dashboard_activity_label_uses_persisted_index_activity() {
+    assert!(
+        DASHBOARD_HTML.contains("latest_index_run"),
+        "repo activity should use durable latest_index_run data, not only transient jobs"
+    );
+}

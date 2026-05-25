@@ -431,7 +431,12 @@
 
       function activityLabel(r) {
         if (r.activity?.running) return "running";
-        if (r.activity?.last_finished) return "idle";
+        if (
+          r.activity?.last_finished ||
+          r.activity?.latest_index_run ||
+          r.activity?.last_updated_unix_s ||
+          r.activity?.latest_search_run
+        ) return "idle";
         return "never";
       }
 

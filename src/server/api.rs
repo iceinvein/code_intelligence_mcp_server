@@ -45,6 +45,7 @@ use crate::log_broadcast::LogBroadcaster;
 use crate::server::jobs::{self, JobRegistry};
 use crate::server::standalone::SessionRepos;
 use crate::session::SessionManager;
+use crate::storage::sqlite::schema::{IndexRunRow, SearchRunRow};
 
 #[derive(Clone)]
 struct ApiState {
@@ -178,7 +179,8 @@ async fn handle_repos(State(state): State<Arc<ApiState>>) -> Result<Json<Value>,
         .into_iter()
         .map(|e| {
             let id = crate::registry::RepoRegistry::path_hash(&e.path);
-            let activity = build_repo_activity(&state.job_registry, &id);
+            let persisted_activity = read_repo_persisted_activity(&e);
+            let activity = build_repo_activity(&state.job_registry, &id, persisted_activity);
             json!({
                 "id": id,
                 "name": e.name,
@@ -196,16 +198,48 @@ async fn handle_repos(State(state): State<Arc<ApiState>>) -> Result<Json<Value>,
 /// Build the per-repo `activity` block surfaced by `/api/repos`.
 ///
 /// Returns the most recent Running job (if any) plus the most recent
-/// finished job, so the dashboard can render either a live "indexing…"
-/// indicator or a "last reindex Xm ago" hint without a second API call.
-fn build_repo_activity(job_registry: &JobRegistry, repo_id: &str) -> Value {
+/// finished job, plus durable SQLite activity so the dashboard does not
+/// report "never" after job TTL eviction or daemon restart.
+fn build_repo_activity(
+    job_registry: &JobRegistry,
+    repo_id: &str,
+    persisted: PersistedRepoActivity,
+) -> Value {
     let running = jobs::most_recent_running_for_repo(job_registry, repo_id);
     let last_finished = jobs::most_recent_finished_for_repo(job_registry, repo_id);
     json!({
         "running": running.is_some(),
         "current": running,
         "last_finished": last_finished,
+        "latest_index_run": persisted.latest_index_run,
+        "latest_search_run": persisted.latest_search_run,
+        "last_updated_unix_s": persisted.last_updated_unix_s,
     })
+}
+
+#[derive(Default)]
+struct PersistedRepoActivity {
+    latest_index_run: Option<IndexRunRow>,
+    latest_search_run: Option<SearchRunRow>,
+    last_updated_unix_s: Option<i64>,
+}
+
+fn read_repo_persisted_activity(entry: &crate::registry::RepoEntry) -> PersistedRepoActivity {
+    let db_path = entry.data_dir.join("code-intelligence.db");
+    if !db_path.as_std_path().exists() {
+        return PersistedRepoActivity::default();
+    }
+
+    let Ok(sqlite) = crate::storage::sqlite::SqliteStore::open(&db_path) else {
+        tracing::warn!(path = %db_path, "failed to open repo db for activity");
+        return PersistedRepoActivity::default();
+    };
+
+    PersistedRepoActivity {
+        latest_index_run: sqlite.latest_index_run().ok().flatten(),
+        latest_search_run: sqlite.latest_search_run().ok().flatten(),
+        last_updated_unix_s: sqlite.most_recent_symbol_update().ok().flatten(),
+    }
 }
 
 async fn handle_status(State(state): State<Arc<ApiState>>) -> Result<Json<Value>, ApiError> {
@@ -762,6 +796,10 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::Utf8PathBuf;
+    use crate::registry::RepoEntry;
+    use crate::storage::sqlite::SqliteStore;
+    use tempfile::tempdir;
 
     #[test]
     fn is_local_origin_accepts_localhost_variants() {
@@ -807,5 +845,64 @@ mod tests {
             assert_eq!(envelope["warnings"].as_array().unwrap().len(), 0);
             assert_eq!(envelope["result"]["value"], true);
         }
+    }
+
+    #[test]
+    fn read_repo_persisted_activity_reads_latest_index_run() {
+        let tmp = tempdir().expect("tempdir");
+        let data_dir = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 path");
+        let db_path = data_dir.join("code-intelligence.db");
+        let sqlite = SqliteStore::open(&db_path).expect("open sqlite");
+        sqlite.init().expect("init sqlite");
+        sqlite
+            .insert_index_run(&IndexRunRow {
+                started_at_unix_s: 123,
+                duration_ms: 45,
+                files_scanned: 10,
+                files_indexed: 2,
+                files_skipped: 0,
+                files_unchanged: 8,
+                files_deleted: 0,
+                symbols_indexed: 9,
+            })
+            .expect("insert index run");
+
+        let entry = RepoEntry {
+            path: "/repo".to_string(),
+            name: "repo".to_string(),
+            data_dir,
+            created_at: "2026-05-25T00:00:00Z".to_string(),
+            last_accessed: "2026-05-25T00:00:00Z".to_string(),
+        };
+
+        let activity = read_repo_persisted_activity(&entry);
+
+        assert_eq!(activity.latest_index_run.unwrap().started_at_unix_s, 123);
+    }
+
+    #[test]
+    fn build_repo_activity_includes_persisted_index_run_when_jobs_are_empty() {
+        let registry = jobs::new_job_registry();
+        let activity = build_repo_activity(
+            &registry,
+            "repo-id",
+            PersistedRepoActivity {
+                latest_index_run: Some(IndexRunRow {
+                    started_at_unix_s: 456,
+                    duration_ms: 20,
+                    files_scanned: 3,
+                    files_indexed: 1,
+                    files_skipped: 0,
+                    files_unchanged: 2,
+                    files_deleted: 0,
+                    symbols_indexed: 4,
+                }),
+                latest_search_run: None,
+                last_updated_unix_s: None,
+            },
+        );
+
+        assert_eq!(activity["running"], false);
+        assert_eq!(activity["latest_index_run"]["started_at_unix_s"], 456);
     }
 }

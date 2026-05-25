@@ -558,9 +558,7 @@ impl TantivyIndex {
         for &(field, boost) in field_boosts {
             query_parser.set_field_boost(field, boost);
         }
-        let parsed_query = query_parser
-            .parse_query(query)
-            .with_context(|| format!("Failed to parse tantivy query: {query}"))?;
+        let (parsed_query, _parse_errors) = query_parser.parse_query_lenient(query);
 
         let top_docs = searcher
             .search(&parsed_query, &TopDocs::with_limit(limit))
@@ -1059,6 +1057,34 @@ mod tests {
         let reopened = TantivyIndex::open_or_create(&dir).unwrap();
         let hits2 = reopened.search("beta", 10).unwrap();
         assert!(hits2.iter().any(|h| h.id == "id2"));
+    }
+
+    #[test]
+    fn natural_language_query_with_punctuation_does_not_fail_parse() {
+        let dir = tmp_index_dir();
+        let index = TantivyIndex::open_or_create(&dir).unwrap();
+        index
+            .upsert_symbol(
+                &sample_symbol(
+                    "id1",
+                    "emitToolUse",
+                    "tool-use event flows from Claude provider session to renderer",
+                ),
+                "",
+                "",
+                None,
+            )
+            .unwrap();
+        index.commit().unwrap();
+
+        let hits = index
+            .search(
+                "Trace tool-use event flows Claude provider session out renderer. Name hop: event produced provider, session manager bridges IPC, IPC channel constant, renderer subscribes.",
+                10,
+            )
+            .unwrap();
+
+        assert!(hits.iter().any(|h| h.id == "id1"));
     }
 
     #[test]

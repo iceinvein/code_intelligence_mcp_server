@@ -5,7 +5,7 @@ from scripts.agent_qa.report import (
 )
 
 
-def _sr(question_id, toolset, repo, mech, judge, tokens, tool_calls):
+def _sr(question_id, toolset, repo, mech, judge, tokens, tool_calls, judge_baseline=None):
     return ScoredRun(
         question_id=question_id,
         toolset=toolset,
@@ -18,6 +18,7 @@ def _sr(question_id, toolset, repo, mech, judge, tokens, tool_calls):
         wall_ms=1000,
         final_answer="...",
         stop_reason="end_turn",
+        judge_baseline_score=judge_baseline,
     )
 
 
@@ -52,6 +53,18 @@ def test_aggregate_computes_per_question_deltas():
     assert abs(delta.mech_delta - 0.4) < 1e-9
     assert delta.judge_delta == 3
     assert delta.token_delta == -6000
+
+
+def test_aggregate_uses_pair_specific_judge_baseline():
+    runs = [
+        _sr("q1", "default", "self", 1.0, 8, 10000, []),
+        _sr("q1", "code_graph", "self", 1.0, 6, 12000, [], judge_baseline=4),
+    ]
+
+    agg = aggregate_round(runs)
+    delta = agg.per_question_by_pair["code_graph"]["q1"]
+
+    assert delta.judge_delta == 2
 
 
 def test_render_markdown_includes_headlines():

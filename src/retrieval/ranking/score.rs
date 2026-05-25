@@ -971,7 +971,11 @@ pub(crate) fn structural_adjustment(
     if path.contains("/node_modules/")
         || path.contains("/target/")
         || path.contains("/dist/")
+        || path.starts_with("dist/")
         || path.contains("/build/")
+        || path.starts_with("build/")
+        || path.contains("/out/")
+        || path.starts_with("out/")
         || path.contains("/vendor/")
         || path.contains("/generated/")
         || path.contains("/gen/")
@@ -1714,6 +1718,34 @@ mod tests {
         assert!(
             adj > bad,
             "matched result ({adj}) should score higher than unmatched ({bad})"
+        );
+    }
+
+    #[test]
+    fn structural_adjustment_penalizes_top_level_build_output_dirs() {
+        let cfg = test_config(0.0);
+        let source = structural_adjustment(
+            &cfg,
+            true,
+            "src/preload/index.ts",
+            "function",
+            "onSessionMessage",
+            &None,
+            "renderer subscribes to IPC session message",
+        );
+        let generated = structural_adjustment(
+            &cfg,
+            true,
+            "out/preload/index.js",
+            "function",
+            "onSessionMessage",
+            &None,
+            "renderer subscribes to IPC session message",
+        );
+
+        assert!(
+            generated < source - 10.0,
+            "build output should rank well below source: source={source}, generated={generated}"
         );
     }
 

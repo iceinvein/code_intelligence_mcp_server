@@ -54,7 +54,9 @@ pub(super) fn filter_and_boost(
 }
 
 fn filter_hits_by_controls(hits: Vec<RankedHit>, controls: &QueryControls) -> Vec<RankedHit> {
+    let explicit_path_filter = controls.path.is_some() || controls.file.is_some();
     hits.into_iter()
+        .filter(|h| explicit_path_filter || !is_generated_output_path(&h.file_path))
         .filter(|h| {
             controls
                 .lang
@@ -82,12 +84,69 @@ fn filter_hits_by_controls(hits: Vec<RankedHit>, controls: &QueryControls) -> Ve
         .collect()
 }
 
+fn is_generated_output_path(file_path: &str) -> bool {
+    let path = file_path.to_lowercase();
+    path.starts_with("out/")
+        || path.contains("/out/")
+        || path.starts_with("dist/")
+        || path.contains("/dist/")
+        || path.starts_with("build/")
+        || path.contains("/build/")
+        || path.contains(".min.")
+}
+
 fn kind_matches(kind: &str, control: &str) -> bool {
     control
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .any(|k| kind.eq_ignore_ascii_case(k))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(id: &str, file_path: &str) -> RankedHit {
+        RankedHit {
+            id: id.to_string(),
+            score: 1.0,
+            name: id.to_string(),
+            kind: "function".to_string(),
+            file_path: file_path.to_string(),
+            exported: true,
+            language: "typescript".to_string(),
+        }
+    }
+
+    #[test]
+    fn filters_generated_output_paths_by_default() {
+        let hits = vec![
+            hit("source", "src/preload/index.ts"),
+            hit("out", "out/preload/index.js"),
+            hit("dist", "dist/main/index.js"),
+            hit("build", "packages/app/build/index.js"),
+        ];
+
+        let filtered = filter_hits_by_controls(hits, &QueryControls::default());
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "source");
+    }
+
+    #[test]
+    fn keeps_generated_output_paths_when_explicitly_requested() {
+        let hits = vec![hit("out", "out/preload/index.js")];
+        let controls = QueryControls {
+            path: Some("out/preload".to_string()),
+            ..QueryControls::default()
+        };
+
+        let filtered = filter_hits_by_controls(hits, &controls);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "out");
+    }
 }
 
 fn path_matches(file_path: &str, control: &str) -> bool {

@@ -315,6 +315,7 @@ fn build_unavailable_response(
     let pack = pack_from_investigate(investigate_response);
     json!({
         "question": question,
+        "response_shape": "compact_evidence",
         "answer": "",
         "citations": [],
         "evidence": evidence_to_json(evidence),
@@ -396,16 +397,19 @@ fn build_evidence_only_response(
             verification is required."
             .to_string()
     } else {
-        "ask_code returned verified evidence without LLM prose (Path 2 default). \
+        "ask_code returned verified compact evidence without LLM prose (Path 2 default). \
             Synthesise the final answer yourself from the `evidence[]` array below: each item carries \
             symbol_name, file_path, line range, and the actual code body. Use these as the source of \
-            truth -- they were already retrieved and shape-classified by `investigate`. If you need \
-            more context call specialist tools (find_references, get_call_hierarchy, get_definition) \
-            with the symbol_ids from evidence."
+            truth -- they were already retrieved and shape-classified by `investigate`. If \
+            `pack.coverage.status` is complete and the needed line-level source is present, \
+            Do not call Grep, Read, or Glob to re-check the same files. Call specialist tools \
+            only for partial/no_hits coverage, candidate rows, or missing source bodies needed \
+            for citation."
             .to_string()
     };
     json!({
         "question": question,
+        "response_shape": "compact_evidence",
         "answer": "",
         "citations": [],
         "evidence": evidence_to_json(evidence),
@@ -454,6 +458,7 @@ fn build_synthesized_response(
 
     json!({
         "question": question,
+        "response_shape": "compact_evidence",
         "answer": answer_text,
         "citations": citations_json,
         "evidence": evidence_to_json(evidence),
@@ -733,6 +738,43 @@ mod tests {
         );
         assert_eq!(response["pack"]["kind"], "callsite_enumeration");
         assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn evidence_only_response_marks_compact_and_preserves_grounding_fields() {
+        let evidence = vec![ev("src/lib.rs::answer", "src/lib.rs", 10, 12)];
+        let investigate_response = json!({
+            "mode_used": "discover",
+            "pack": {
+                "coverage": {"status": "complete"},
+                "rows": [{
+                    "role": "verified",
+                    "file_path": "src/lib.rs",
+                    "line_start": 10,
+                    "line_end": 12,
+                    "body": "fn answer() {}"
+                }]
+            }
+        });
+
+        let response = build_evidence_only_response(
+            "Where is answer?",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            &evidence,
+            evidence.len(),
+        );
+
+        assert_eq!(response["response_shape"], "compact_evidence");
+        assert_eq!(response["pack"]["coverage"]["status"], "complete");
+        assert_eq!(response["pack"]["rows"][0]["file_path"], "src/lib.rs");
+        assert_eq!(response["evidence"][0]["file_path"], "src/lib.rs");
+        assert_eq!(response["evidence"][0]["start_line"], 10);
+        assert_eq!(response["evidence"][0]["body"], "body");
+        assert!(response["follow_up"]
+            .as_str()
+            .unwrap()
+            .contains("Do not call Grep, Read, or Glob"));
     }
 
     #[test]

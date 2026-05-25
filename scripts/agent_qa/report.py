@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
 class ScoredRun:
     question_id: str
-    toolset: str  # "default" | "code_intel"
+    toolset: str
     repo: str
     mech_score: float
     judge_score: int
@@ -19,6 +19,7 @@ class ScoredRun:
     wall_ms: int
     final_answer: str
     stop_reason: str
+    judge_baseline_score: Optional[int] = None
 
 
 @dataclass
@@ -86,7 +87,11 @@ def aggregate_round(runs: List[ScoredRun]) -> AggregateResult:
                 question_id=qid,
                 repo=d.repo,
                 mech_delta=c.mech_score - d.mech_score,
-                judge_delta=c.judge_score - d.judge_score,
+                judge_delta=c.judge_score - (
+                    c.judge_baseline_score
+                    if c.judge_baseline_score is not None
+                    else d.judge_score
+                ),
                 token_delta=c.input_tokens - d.input_tokens,
             )
             per_question_by_pair.setdefault(ts, {})[qid] = delta

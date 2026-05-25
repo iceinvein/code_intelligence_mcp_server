@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 from urllib.parse import urlencode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +42,9 @@ from scripts.agent_qa.claude_cli import (
 from scripts.agent_qa.scoring import mech_score
 from scripts.agent_qa.judge import judge_pair
 from scripts.agent_qa.report import ScoredRun, aggregate_round, render_markdown
+
+
+CompleteFn = Callable[[str, str], str]
 
 
 DEFAULT_BINARY = REPO_ROOT / "target" / "release" / "code-intelligence-mcp-server"
@@ -63,12 +66,20 @@ AGENT_SYSTEM_PROMPT = (
 )
 
 CODE_INTEL_SYSTEM_PROMPT_EXTRA = (
-    "This run has the code-intelligence MCP available. Start codebase "
-    "investigations with `mcp__code-intelligence__ask_code`; use "
-    "`mcp__code-intelligence__investigate` or specialist code-intelligence MCP "
-    "tools for follow-up graph questions before falling back to Read/Grep/Glob. "
+    "This run has the code-intelligence MCP available and should answer from "
+    "code-intelligence evidence rather than built-in file-reading tools. Start "
+    "codebase investigations with `mcp__code-intelligence__ask_code`; use "
+    "`mcp__code-intelligence__investigate` for follow-up graph questions. "
+    "Call `mcp__code-intelligence__ask_code` at most once per question and "
+    "`mcp__code-intelligence__investigate` at most once for a specific missing "
+    "graph hop; do not repeat code-intelligence calls with paraphrased prompts. "
     "When `ask_code` or `investigate` returns `pack.rows`, synthesize from those "
-    "rows and respect `pack.coverage.status` and `role=\"candidate\"`."
+    "rows and respect `pack.coverage.status` and `role=\"candidate\"`. If "
+    "`pack.coverage.status` coverage is complete and `evidence[]` or `pack.rows` "
+    "contains the needed line-level source, do not call Read, Grep, or Glob to "
+    "re-check the same files. If the response has partial/no_hits coverage, "
+    "candidate rows, or missing source bodies, report uncertainty from the "
+    "evidence instead of falling back to file-reading tools."
 )
 
 CODE_GRAPH_SYSTEM_PROMPT_EXTRA = (
@@ -86,13 +97,6 @@ TOOLSET_SYSTEM_PROMPT_EXTRAS = {
 CODE_INTEL_MCP_TOOLS = [
     "mcp__code-intelligence__ask_code",
     "mcp__code-intelligence__investigate",
-    "mcp__code-intelligence__search_code",
-    "mcp__code-intelligence__get_definition",
-    "mcp__code-intelligence__find_references",
-    "mcp__code-intelligence__get_call_hierarchy",
-    "mcp__code-intelligence__find_affected_code",
-    "mcp__code-intelligence__trace_data_flow",
-    "mcp__code-intelligence__explore_dependency_graph",
 ]
 
 CODE_GRAPH_MCP_TOOLS = [
@@ -213,7 +217,98 @@ def _allowed_tools_for(toolset: str) -> List[str]:
     # Keep built-in tools identical across runs. Add only the MCP tools that
     # belong to the selected toolset, so the benchmark measures the intended
     # tool layer instead of merely wiring an MCP server the agent may ignore.
+    if toolset == "code_intel":
+        return list(CODE_INTEL_MCP_TOOLS)
     return list(DEFAULT_BUILTIN_TOOLS) + list(TOOLSET_MCP_TOOLS.get(toolset, []))
+
+
+def _extra_args_for(toolset: str) -> List[str]:
+    if toolset == "code_intel":
+        return ["--disallowed-tools", " ".join(DEFAULT_BUILTIN_TOOLS)]
+    return []
+
+
+def _score_question_records(
+    entry: Any,
+    per_q_records: Dict[str, dict],
+    *,
+    skip_judge: bool,
+    complete_fn: CompleteFn,
+) -> None:
+    """Attach mechanical and judge scores to every toolset record for one question."""
+    for rec in per_q_records.values():
+        rec["mech_score"] = mech_score(entry, rec["final_answer"]).combined
+
+    default_rec = per_q_records.get("default")
+    candidate_toolsets = [ts for ts in per_q_records if ts != "default"]
+
+    if default_rec is None or skip_judge or not candidate_toolsets:
+        for rec in per_q_records.values():
+            rec.setdefault("judge_score", 0)
+        return
+
+    default_pair_scores: Dict[str, int] = {}
+    default_pair_justifications: Dict[str, str] = {}
+    for toolset in candidate_toolsets:
+        rec = per_q_records[toolset]
+        seed = random.randint(0, 1)
+        try:
+            jr = judge_pair(
+                complete_fn=complete_fn,
+                question=entry.question,
+                rubric=entry.rubric,
+                default_answer=default_rec["final_answer"],
+                code_intel_answer=rec["final_answer"],
+                seed=seed,
+            )
+            default_pair_scores[toolset] = jr.default_score
+            default_pair_justifications[toolset] = jr.default_justification
+            rec["judge_baseline_score"] = jr.default_score
+            rec["judge_baseline_justification"] = jr.default_justification
+            rec["judge_justification"] = jr.code_intel_justification
+            rec["judge_score"] = jr.code_intel_score
+        except Exception as e:
+            print(f"  judge failed for {toolset}: {e}", file=sys.stderr)
+            rec["judge_baseline_score"] = 0
+            rec["judge_score"] = 0
+
+    if default_pair_scores:
+        default_rec["judge_scores_by_pair"] = default_pair_scores
+        default_rec["judge_justifications_by_pair"] = default_pair_justifications
+        primary_toolset = (
+            "code_intel" if "code_intel" in default_pair_scores else next(iter(default_pair_scores))
+        )
+        default_rec["judge_score"] = default_pair_scores[primary_toolset]
+        default_rec["judge_justification"] = default_pair_justifications[primary_toolset]
+    else:
+        default_rec.setdefault("judge_score", 0)
+
+
+def _scored_runs_from_records(per_q_records: Dict[str, dict]) -> List[ScoredRun]:
+    scored: List[ScoredRun] = []
+    for rec in per_q_records.values():
+        if "mech_score" not in rec or "judge_score" not in rec:
+            continue
+        # input_tokens here is the TOTAL the model saw (uncached + cache write + cache read)
+        # because Claude Code's default-system-prompt overhead lands almost entirely in
+        # cache_creation/read; comparing only the uncached fraction would be misleading.
+        scored.append(
+            ScoredRun(
+                question_id=rec["question_id"],
+                toolset=rec["toolset"],
+                repo=rec["repo"],
+                mech_score=rec["mech_score"],
+                judge_score=rec["judge_score"],
+                input_tokens=rec.get("total_input_tokens", rec["input_tokens"]),
+                output_tokens=rec["output_tokens"],
+                tool_calls=[tc["name"] for tc in rec["tool_calls"]],
+                wall_ms=rec["wall_ms"],
+                final_answer=rec["final_answer"],
+                stop_reason=rec["stop_reason"],
+                judge_baseline_score=rec.get("judge_baseline_score"),
+            )
+        )
+    return scored
 
 
 def main() -> None:
@@ -297,6 +392,7 @@ def main() -> None:
                 model=agent_model,
                 cwd=base_dir,
                 timeout_s=args.agent_timeout,
+                extra_args=_extra_args_for(toolset_name),
             )
             rec = run_with_tools(opts)
             rec.question_id = entry.id
@@ -313,65 +409,15 @@ def main() -> None:
             raw_runs.append(d)
             per_q_records[toolset_name] = d
 
-        default_rec = per_q_records.get("default")
-        ci_rec = per_q_records.get("code_intel")
-
-        if default_rec is not None:
-            default_rec["mech_score"] = mech_score(entry, default_rec["final_answer"]).combined
-        if ci_rec is not None:
-            ci_rec["mech_score"] = mech_score(entry, ci_rec["final_answer"]).combined
-
-        # Judge requires both records; skip if either is missing or skip-judge requested.
-        can_judge = (default_rec is not None) and (ci_rec is not None) and not args.skip_judge
-        if can_judge:
-            seed = random.randint(0, 1)
-            try:
-                jr = judge_pair(
-                    complete_fn=lambda system, user: run_one_shot(
-                        prompt=user, system_prompt=system, model=judge_model
-                    ),
-                    question=entry.question,
-                    rubric=entry.rubric,
-                    default_answer=default_rec["final_answer"],
-                    code_intel_answer=ci_rec["final_answer"],
-                    seed=seed,
-                )
-                default_rec["judge_justification"] = jr.default_justification
-                ci_rec["judge_justification"] = jr.code_intel_justification
-                default_rec["judge_score"] = jr.default_score
-                ci_rec["judge_score"] = jr.code_intel_score
-            except Exception as e:
-                print(f"  judge failed: {e}", file=sys.stderr)
-                if default_rec is not None:
-                    default_rec["judge_score"] = 0
-                if ci_rec is not None:
-                    ci_rec["judge_score"] = 0
-        else:
-            if default_rec is not None:
-                default_rec["judge_score"] = 0
-            if ci_rec is not None:
-                ci_rec["judge_score"] = 0
-
-        rec_pairs = [(r, r["mech_score"], r["judge_score"]) for r in (default_rec, ci_rec) if r is not None]
-        for rec, mech_v, judge_v in rec_pairs:
-            # input_tokens here is the TOTAL the model saw (uncached + cache write + cache read)
-            # because Claude Code's default-system-prompt overhead lands almost entirely in
-            # cache_creation/read; comparing only the uncached fraction would be misleading.
-            scored.append(
-                ScoredRun(
-                    question_id=rec["question_id"],
-                    toolset=rec["toolset"],
-                    repo=rec["repo"],
-                    mech_score=mech_v,
-                    judge_score=judge_v,
-                    input_tokens=rec.get("total_input_tokens", rec["input_tokens"]),
-                    output_tokens=rec["output_tokens"],
-                    tool_calls=[tc["name"] for tc in rec["tool_calls"]],
-                    wall_ms=rec["wall_ms"],
-                    final_answer=rec["final_answer"],
-                    stop_reason=rec["stop_reason"],
-                )
-            )
+        _score_question_records(
+            entry,
+            per_q_records,
+            skip_judge=args.skip_judge,
+            complete_fn=lambda system, user: run_one_shot(
+                prompt=user, system_prompt=system, model=judge_model
+            ),
+        )
+        scored.extend(_scored_runs_from_records(per_q_records))
 
     aggregate = aggregate_round(scored)
     rnnn = f"R{args.round:03d}"

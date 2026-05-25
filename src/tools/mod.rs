@@ -27,7 +27,7 @@ pub struct RefreshIndexTool {
 
 #[macros::mcp_tool(
     name = "get_definition",
-    description = "Get definition context for a symbol. Use file to disambiguate duplicate names."
+    description = "Get definition context for a specific symbol name. This low-level lookup does not return source bodies for a full natural-language investigation. For natural-language questions, flows, callsite enumeration, or anything that needs grounded synthesis, prefer ask_code or investigate because they return evidence bodies and pack.rows in one response. Use this only when you already know the exact symbol and need its definition metadata; use hydrate_symbols if bodies are needed."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct GetDefinitionTool {
@@ -40,7 +40,7 @@ pub struct GetDefinitionTool {
 
 #[macros::mcp_tool(
     name = "find_references",
-    description = "Find imports, uses, or calls of a symbol."
+    description = "Find imports, uses, or calls of a specific symbol name. This low-level lookup does not return source bodies for a full natural-language investigation. For natural-language callsite enumeration or questions that ask what each caller is doing, prefer ask_code or investigate because they return evidence bodies and pack.rows in one response. Use this only when you already know the exact symbol and need raw reference edges; use hydrate_symbols if bodies are needed."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindReferencesTool {
@@ -160,7 +160,7 @@ pub struct PlanCodeInvestigationTool {
 
 #[macros::mcp_tool(
     name = "investigate",
-    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns `pack.rows` plus `verified_locations`. Use `pack.rows` as the synthesis outline for callsite enumeration, pipeline traces, data flow, impact radius, dependency maps, and symbol lookup. Rows with role=\"candidate\" or a `pack.coverage.status` of partial/no_hits must be presented as candidates or followed up with `verified_locations`/specialist tools before making definitive line-level claims. Avoid Grep/Read unless `pack.coverage.status` is partial/no_hits or rows are candidates. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
+    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns `pack.rows` plus `verified_locations`. Use `pack.rows` as the synthesis outline for callsite enumeration, pipeline traces, data flow, impact radius, dependency maps, and symbol lookup. Rows with role=\"candidate\" or a `pack.coverage.status` of partial/no_hits must be presented as candidates or followed up with `verified_locations`/specialist tools before making definitive line-level claims. When coverage is complete and rows or verified locations include the needed line-level source, Do not call Grep/Read to re-check the same files. Use Grep/Read only for partial/no_hits coverage, candidate rows, or missing source bodies needed for citation. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct InvestigateTool {
@@ -178,7 +178,7 @@ pub struct InvestigateTool {
 
 #[macros::mcp_tool(
     name = "ask_code",
-    description = "Ask a question about the codebase and retrieve grounded evidence. The server runs the full investigate chain and returns structured `pack.rows`, `evidence[]`, mode metadata, and `pack.coverage.status`. The `answer` field is empty by default because local prose caused hallucinations; synthesize the user-facing answer yourself. Prefer `pack.rows` when present as the synthesis outline, but treat rows with role=\"candidate\" or `pack.coverage.status` partial/no_hits as candidates until confirmed with `evidence[]`, verified locations, or specialist tools. The evidence[] array contains source bodies and line ranges for verification and citation."
+    description = "Ask a question about the codebase and retrieve grounded evidence. The server runs the full investigate chain and returns structured `pack.rows`, `evidence[]`, mode metadata, and `pack.coverage.status`. The `answer` field is empty by default because local prose caused hallucinations; synthesize the user-facing answer yourself. Prefer `pack.rows` when present as the synthesis outline, but treat rows with role=\"candidate\" or `pack.coverage.status` partial/no_hits as candidates until confirmed with `evidence[]`, verified locations, or specialist tools. The evidence[] array contains source bodies and line ranges for verification and citation. When coverage is complete and `evidence[]` or `pack.rows` includes the needed line-level source, Do not call Grep/Read to re-check the same files. Use follow-up tools only for partial/no_hits coverage, candidate rows, or missing source bodies needed for citation."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct AskCodeTool {
@@ -614,7 +614,15 @@ mod tests {
             desc.contains("callsite") || desc.contains("pipeline"),
             "investigate description must advertise graph-shaped pack kinds, got: {desc}"
         );
-        for required in ["pack.coverage.status", "partial", "no_hits", "candidate"] {
+        for required in [
+            "pack.coverage.status",
+            "partial",
+            "no_hits",
+            "candidate",
+            "coverage is complete",
+            "Do not call Grep/Read",
+            "missing source bodies",
+        ] {
             assert!(
                 desc.contains(required),
                 "investigate description must mention {required}, got: {desc}"
@@ -633,11 +641,48 @@ mod tests {
             desc.contains("evidence[]"),
             "ask_code description must preserve evidence[] contract, got: {desc}"
         );
-        for required in ["pack.coverage.status", "partial", "no_hits", "candidate"] {
+        for required in [
+            "pack.coverage.status",
+            "partial",
+            "no_hits",
+            "candidate",
+            "coverage is complete",
+            "Do not call Grep/Read",
+            "missing source bodies",
+        ] {
             assert!(
                 desc.contains(required),
                 "ask_code description must mention {required}, got: {desc}"
             );
+        }
+    }
+
+    #[test]
+    fn low_level_navigation_descriptions_route_natural_language_to_composites() {
+        let find_refs = FindReferencesTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        let get_def = GetDefinitionTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+
+        for (name, desc) in [
+            ("find_references", find_refs.as_str()),
+            ("get_definition", get_def.as_str()),
+        ] {
+            for required in [
+                "natural-language",
+                "ask_code",
+                "investigate",
+                "does not return source bodies",
+            ] {
+                assert!(
+                    desc.contains(required),
+                    "{name} description must mention {required}, got: {desc}"
+                );
+            }
         }
     }
 

@@ -945,6 +945,52 @@ fn apply_response_budget(response: &mut Value) {
         response["pack_truncated"] = json!(true);
     }
 
+    fn apply_terminal_response_budget_fallback(response: &mut Value) {
+        response["response_budget_truncated"] = json!(true);
+        response["context_chain"] = json!("");
+        response["plan"] = json!({"truncated": true});
+        response["verified_locations"] = json!([]);
+        response["verified_locations_truncated"] = json!(true);
+        response["question"] = json!("[truncated for response budget]");
+
+        if let Some(pack) = response.get_mut("pack").and_then(|v| v.as_object_mut()) {
+            let original_count = pack
+                .get("rows_original_count")
+                .and_then(|v| v.as_u64())
+                .or_else(|| {
+                    pack.get("rows")
+                        .and_then(|v| v.as_array())
+                        .map(|rows| rows.len() as u64)
+                })
+                .unwrap_or(0);
+            let mut rows_truncated = false;
+            if let Some(rows) = pack.get_mut("rows").and_then(|v| v.as_array_mut()) {
+                if rows.len() > 1 {
+                    rows.truncate(1);
+                    rows_truncated = true;
+                }
+                if let Some(row) = rows.first_mut().and_then(|v| v.as_object_mut()) {
+                    let evidence = row
+                        .get("evidence")
+                        .and_then(|v| v.as_str())
+                        .map(|s| truncate_with_marker(s, 40, " ... [evidence truncated]"))
+                        .unwrap_or_default();
+                    row.clear();
+                    row.insert("role".to_string(), json!("evidence"));
+                    row.insert("evidence".to_string(), json!(evidence));
+                }
+            }
+            if rows_truncated {
+                pack.insert("rows_truncated".to_string(), json!(true));
+                pack.entry("rows_original_count".to_string())
+                    .or_insert_with(|| json!(original_count));
+            }
+            pack.insert("row_evidence_truncated".to_string(), json!(true));
+            pack.insert("row_fields_truncated".to_string(), json!(true));
+        }
+        response["pack_truncated"] = json!(true);
+    }
+
     if estimate(response) <= RESPONSE_BUDGET_BYTES {
         return;
     }
@@ -1060,6 +1106,16 @@ fn apply_response_budget(response: &mut Value) {
     }
 
     minimize_first_pack_row(response);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    apply_terminal_response_budget_fallback(response);
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    response["primary_symbol"] = Value::Null;
     let _ = estimate(response);
 }
 
@@ -1428,5 +1484,80 @@ mod tests {
             json!(original_row_count)
         );
         assert_eq!(response["pack_truncated"], true);
+    }
+
+    #[test]
+    fn response_budget_terminal_fallback_truncates_top_level_fields() {
+        let original_row_count = 2;
+        let mut response = json!({
+            "question": "who calls createSession ".repeat(4000),
+            "shape": "discover",
+            "plan": {
+                "steps": ["oversized plan step".repeat(5000)],
+                "notes": "oversized plan notes".repeat(5000)
+            },
+            "primary_symbol": {
+                "symbol_id": "sym_create",
+                "name": "createSession",
+                "metadata": "oversized primary symbol metadata".repeat(5000)
+            },
+            "context_chain": "oversized context".repeat(5000),
+            "verified_locations": [{
+                "symbol_id": "sym_create",
+                "symbol_name": "createSession",
+                "file_path": "src/session.rs",
+                "body": "createSession(); ".repeat(5000)
+            }],
+            "pack": {
+                "kind": "callsite_enumeration",
+                "target": "createSession",
+                "coverage": {
+                    "status": "partial",
+                    "basis": "evidence rows cover the requested shape",
+                    "missing": ""
+                },
+                "rows": [
+                    {
+                        "role": "candidate",
+                        "ordinal": 1,
+                        "symbol_id": "sym_1",
+                        "symbol_name": "caller_1",
+                        "file_path": "src/session.rs",
+                        "line": 1,
+                        "evidence": format!("createSession(); {}", "x".repeat(5000))
+                    },
+                    {
+                        "role": "candidate",
+                        "ordinal": 2,
+                        "symbol_id": "sym_2",
+                        "symbol_name": "caller_2",
+                        "file_path": "src/session.rs",
+                        "line": 2,
+                        "evidence": format!("createSession(); {}", "y".repeat(5000))
+                    }
+                ],
+                "edges": [],
+                "answer_guidance": ["Answer from evidence."]
+            }
+        });
+
+        apply_response_budget(&mut response);
+        let serialized = serde_json::to_string(&response).expect("response should serialize");
+
+        assert!(
+            serialized.len() <= RESPONSE_BUDGET_BYTES,
+            "serialized response should fit budget, got {} bytes",
+            serialized.len()
+        );
+        assert_eq!(response["response_budget_truncated"], true);
+        assert_eq!(response["plan"], json!({"truncated": true}));
+        assert_eq!(response["verified_locations"], json!([]));
+        assert_eq!(response["pack"]["rows"].as_array().expect("pack rows").len(), 1);
+        assert_eq!(response["pack"]["rows_truncated"], true);
+        assert_eq!(response["pack"]["row_evidence_truncated"], true);
+        assert_eq!(
+            response["pack"]["rows_original_count"],
+            json!(original_row_count)
+        );
     }
 }

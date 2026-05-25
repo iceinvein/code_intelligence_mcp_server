@@ -23,11 +23,12 @@ use std::sync::Arc;
 /// before it commits to lower-level search tools.
 pub fn server_instructions() -> &'static str {
     "Code Intelligence is a retrieval engine for code questions. `ask_code(question)` is the \
-fastest path to grounded evidence: it runs `investigate` server-side, returns the \
-verified `evidence[]` array (symbol name, file path, line range, code body) and a \
-`mode_used` shape classification, then YOU synthesise the user-facing answer from that \
-evidence. The `answer` field in the response is intentionally empty -- local-model \
-prose was found to introduce hallucinations the agent then anchored on. \
+fastest path to grounded evidence: it runs `investigate` server-side and returns \
+structured `pack.rows` plus verified `evidence[]` (symbol name, file path, line range, \
+code body), `mode_used` shape classification, and coverage metadata. Prefer pack.rows \
+when present, then YOU synthesise the user-facing answer yourself from that evidence. \
+The `answer` field in the response is intentionally empty -- local-model prose was found \
+to introduce hallucinations the agent then anchored on. \
 \
 For specialist queries call `investigate` (composite multi-hop), `search_code` \
 (hybrid search), `get_definition`, `find_references`, `get_call_hierarchy`, \
@@ -418,6 +419,10 @@ mod tests {
         assert!(
             instructions.contains("evidence"),
             "server instructions must describe evidence-only contract, got: {instructions}"
+        );
+        assert!(
+            instructions.contains("pack.rows"),
+            "server instructions must direct models to structured pack rows, got: {instructions}"
         );
         assert!(
             instructions.contains("synthesise") || instructions.contains("synthesize"),

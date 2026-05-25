@@ -160,7 +160,7 @@ pub struct PlanCodeInvestigationTool {
 
 #[macros::mcp_tool(
     name = "investigate",
-    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns a single bundled response with the symbol bodies you need plus an explicit `verified_locations` list. Use this for non-trivial questions instead of orchestrating Grep/Read or chaining MCP tools yourself - the server's chain is structurally complete so you do not need to verify or follow up. Cite only entries from `verified_locations`; identifiers seen inside body text or context_chain but not in that list are NOT verified locations. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
+    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns `pack.rows` plus `verified_locations`. Pack rows are graph-shaped facts for callsite enumeration, pipeline traces, data flow, impact radius, dependency maps, and symbol lookup. Cite rows first; use `verified_locations` when you need source bodies and line ranges. Do not Grep/Read unless coverage.status is partial or no_hits. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct InvestigateTool {
@@ -178,7 +178,7 @@ pub struct InvestigateTool {
 
 #[macros::mcp_tool(
     name = "ask_code",
-    description = "Ask a question about the codebase and get a grounded answer with citations. The server retrieves the relevant evidence (running the full investigate chain), drafts an answer with the local LLM, and validates every citation against retrieved code bodies before returning. Prefer this over any other code-intelligence tool for natural-language questions: the response includes the answer text plus a citations[] list of resolved {file:line, symbol_id} pairs and an evidence[] array with the source bodies. Citations that did not resolve are dropped server-side, so file paths and line numbers in the response are guaranteed to exist. When confidence=\"low\", the server flags low evidence or low citation resolution; only then should you consider calling specialist tools (investigate, search_code, find_references, get_call_hierarchy) directly."
+    description = "Ask a question about the codebase and retrieve grounded evidence. The server runs the full investigate chain and returns structured `pack.rows`, `evidence[]`, mode metadata, and coverage metadata. The `answer` field is empty by default because local prose caused hallucinations; synthesize the user-facing answer yourself. Prefer pack.rows when present: they are the structured evidence pack. The evidence[] array contains source bodies and line ranges for verification and citation."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct AskCodeTool {
@@ -597,6 +597,38 @@ mod tests {
         assert!(
             desc.contains("does not execute"),
             "plan_code_investigation description must say it only recommends, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn investigate_description_mentions_evidence_packs() {
+        let desc = InvestigateTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.contains("pack.rows"),
+            "investigate description must tell agents to use pack.rows, got: {desc}"
+        );
+        assert!(
+            desc.contains("callsite") || desc.contains("pipeline"),
+            "investigate description must advertise graph-shaped pack kinds, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn ask_code_description_mentions_evidence_packs() {
+        let desc = AskCodeTool::tool()
+            .description
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            desc.contains("pack"),
+            "ask_code description must mention structured evidence packs, got: {desc}"
+        );
+        assert!(
+            desc.contains("evidence[]"),
+            "ask_code description must preserve evidence[] contract, got: {desc}"
         );
     }
 

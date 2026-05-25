@@ -25,8 +25,11 @@ pub fn server_instructions() -> &'static str {
     "Code Intelligence is a retrieval engine for code questions. `ask_code(question)` is the \
 fastest path to grounded evidence: it runs `investigate` server-side and returns \
 structured `pack.rows` plus verified `evidence[]` (symbol name, file path, line range, \
-code body), `mode_used` shape classification, and coverage metadata. Prefer pack.rows \
-when present, then YOU synthesise the user-facing answer yourself from that evidence. \
+code body), `mode_used` shape classification, and `pack.coverage.status`. Prefer \
+`pack.rows` when present as the synthesis outline, then YOU synthesise the user-facing \
+answer yourself from that evidence. Rows with role=\"candidate\" or a \
+`pack.coverage.status` of partial/no_hits must be presented as candidates or followed \
+up with verified evidence/specialist tools before definitive line-level claims. \
 The `answer` field in the response is intentionally empty -- local-model prose was found \
 to introduce hallucinations the agent then anchored on. \
 \
@@ -37,8 +40,9 @@ For specialist queries call `investigate` (composite multi-hop), `search_code` \
 \
 Prefer these tools over Grep/Read for any question they answer directly -- they carry \
 semantic context (definitions, edges, intent classification) that text search cannot. \
-Fall back to Grep only for exact literal strings (error messages, config values) or \
-files the index does not cover (markdown, JSON, TOML)."
+Fall back to Grep/Read only for exact literal strings (error messages, config values), \
+files the index does not cover (markdown, JSON, TOML), or when `pack.coverage.status` \
+is partial/no_hits or rows are candidates."
 }
 
 /// Error message returned when `search_across_repos` is called in embedded (stdio) mode.
@@ -440,6 +444,12 @@ mod tests {
             instructions.contains("Grep"),
             "server instructions must position specialists against Grep, got: {instructions}"
         );
+        for required in ["pack.coverage.status", "partial", "no_hits", "candidate"] {
+            assert!(
+                instructions.contains(required),
+                "server instructions must mention {required}, got: {instructions}"
+            );
+        }
     }
 
     #[test]

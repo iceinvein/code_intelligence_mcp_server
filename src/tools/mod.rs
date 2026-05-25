@@ -160,7 +160,7 @@ pub struct PlanCodeInvestigationTool {
 
 #[macros::mcp_tool(
     name = "investigate",
-    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns `pack.rows` plus `verified_locations`. Pack rows are graph-shaped facts for callsite enumeration, pipeline traces, data flow, impact radius, dependency maps, and symbol lookup. Cite rows first; use `verified_locations` when you need source bodies and line ranges. Do not Grep/Read unless coverage.status is partial or no_hits. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
+    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns `pack.rows` plus `verified_locations`. Use `pack.rows` as the synthesis outline for callsite enumeration, pipeline traces, data flow, impact radius, dependency maps, and symbol lookup. Rows with role=\"candidate\" or a `pack.coverage.status` of partial/no_hits must be presented as candidates or followed up with `verified_locations`/specialist tools before making definitive line-level claims. Avoid Grep/Read unless `pack.coverage.status` is partial/no_hits or rows are candidates. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct InvestigateTool {
@@ -178,7 +178,7 @@ pub struct InvestigateTool {
 
 #[macros::mcp_tool(
     name = "ask_code",
-    description = "Ask a question about the codebase and retrieve grounded evidence. The server runs the full investigate chain and returns structured `pack.rows`, `evidence[]`, mode metadata, and coverage metadata. The `answer` field is empty by default because local prose caused hallucinations; synthesize the user-facing answer yourself. Prefer pack.rows when present: they are the structured evidence pack. The evidence[] array contains source bodies and line ranges for verification and citation."
+    description = "Ask a question about the codebase and retrieve grounded evidence. The server runs the full investigate chain and returns structured `pack.rows`, `evidence[]`, mode metadata, and `pack.coverage.status`. The `answer` field is empty by default because local prose caused hallucinations; synthesize the user-facing answer yourself. Prefer `pack.rows` when present as the synthesis outline, but treat rows with role=\"candidate\" or `pack.coverage.status` partial/no_hits as candidates until confirmed with `evidence[]`, verified locations, or specialist tools. The evidence[] array contains source bodies and line ranges for verification and citation."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct AskCodeTool {
@@ -614,6 +614,12 @@ mod tests {
             desc.contains("callsite") || desc.contains("pipeline"),
             "investigate description must advertise graph-shaped pack kinds, got: {desc}"
         );
+        for required in ["pack.coverage.status", "partial", "no_hits", "candidate"] {
+            assert!(
+                desc.contains(required),
+                "investigate description must mention {required}, got: {desc}"
+            );
+        }
     }
 
     #[test]
@@ -630,6 +636,12 @@ mod tests {
             desc.contains("evidence[]"),
             "ask_code description must preserve evidence[] contract, got: {desc}"
         );
+        for required in ["pack.coverage.status", "partial", "no_hits", "candidate"] {
+            assert!(
+                desc.contains(required),
+                "ask_code description must mention {required}, got: {desc}"
+            );
+        }
     }
 
     #[test]

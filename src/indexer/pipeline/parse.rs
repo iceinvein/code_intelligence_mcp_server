@@ -270,16 +270,8 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         &symbol_rows,
     );
 
-    // 12. Check if test file
-    let is_test_file = conn
-        .query_row(
-            "SELECT 1 FROM test_files WHERE file_path = ?1",
-            [&rel],
-            |_| Ok(true),
-        )
-        .optional()
-        .unwrap_or(None)
-        .unwrap_or(false);
+    // 12. Check if test file (path-based classifier shared with retrieval)
+    let is_test_file = crate::classify::is_test_file(&rel);
 
     // 13. Build decorator rows
     let decorators: Vec<DecoratorRow> = extracted

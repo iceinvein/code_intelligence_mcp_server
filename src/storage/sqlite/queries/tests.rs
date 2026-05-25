@@ -13,55 +13,52 @@ pub fn is_test_file(path: &str) -> bool {
     crate::classify::is_test_file(path)
 }
 
-/// Infer source file path from test file path
+/// Infer source file path from test file path.
+///
+/// Strips a leading test-directory segment AND a test extension marker
+/// (e.g. `src/foo/__tests__/bar.test.ts` -> `src/foo/bar.ts`). The previous
+/// implementation returned after the first match, so files that combined
+/// both a `__tests__/` directory and a `.test.` extension produced a
+/// non-existent source path.
 pub fn infer_source_from_test(test_path: &str) -> Option<String> {
-    let lower = test_path.to_lowercase();
+    if !is_test_file(test_path) {
+        return None;
+    }
 
-    // .test.ts -> .ts
+    let mut path = test_path.to_string();
+
+    // Step 1: collapse a test-directory segment, leaving the trailing slash.
+    let lower = path.to_lowercase();
+    for pat in ["/__tests__/", "/tests/", "/test/"] {
+        if let Some(pos) = lower.find(pat) {
+            let mut buf = String::with_capacity(path.len());
+            buf.push_str(&path[..pos]);
+            buf.push('/');
+            buf.push_str(&path[pos + pat.len()..]);
+            path = buf;
+            break;
+        }
+    }
+
+    // Step 2: strip extension marker on the resulting path.
+    let lower = path.to_lowercase();
     if lower.contains(".test.") {
-        return Some(test_path.replace(".test.", ".").replace(".TEST.", "."));
+        path = path.replacen(".test.", ".", 1);
+    } else if lower.contains(".spec.") {
+        path = path.replacen(".spec.", ".", 1);
+    } else if let Some(ext) = [".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".py"]
+        .into_iter()
+        .find(|ext| lower.ends_with(&format!("_test{ext}")))
+    {
+        let trim_to = path.len() - format!("_test{ext}").len();
+        path = format!("{}{ext}", &path[..trim_to]);
     }
 
-    // .spec.ts -> .ts
-    if lower.contains(".spec.") {
-        return Some(test_path.replace(".spec.", "."));
+    if path == test_path {
+        None
+    } else {
+        Some(path)
     }
-
-    // _test.ts -> .ts
-    if lower.ends_with("_test.ts") {
-        return Some(test_path.replace("_test.ts", ".ts"));
-    }
-    if lower.ends_with("_test.tsx") {
-        return Some(test_path.replace("_test.tsx", ".tsx"));
-    }
-    if lower.ends_with("_test.js") {
-        return Some(test_path.replace("_test.js", ".js"));
-    }
-    if lower.ends_with("_test.rs") {
-        return Some(test_path.replace("_test.rs", ".rs"));
-    }
-
-    // /test/ or /tests/ directories
-    if let Some(pos) = lower.find("/test/") {
-        // /path/to/test/module.ts -> /path/to/module.ts
-        let before = &test_path[..pos];
-        let after = &test_path[pos + 5..]; // Skip "/test/"
-        return Some(format!("{}{}", before, after));
-    }
-
-    if let Some(pos) = lower.find("/tests/") {
-        let before = &test_path[..pos];
-        let after = &test_path[pos + 6..]; // Skip "/tests/"
-        return Some(format!("{}{}", before, after));
-    }
-
-    if let Some(pos) = lower.find("/__tests__/") {
-        let before = &test_path[..pos];
-        let after = &test_path[pos + 10..]; // Skip "/__tests__/"
-        return Some(format!("{}{}", before, after));
-    }
-
-    None
 }
 
 /// Create or update a test-source link
@@ -248,4 +245,62 @@ LIMIT ?{limit_param_idx}
         ));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod infer_source_tests {
+    use super::infer_source_from_test;
+
+    #[test]
+    fn maps_test_dot_extension_to_source_extension() {
+        assert_eq!(
+            infer_source_from_test("src/foo/bar.test.ts").as_deref(),
+            Some("src/foo/bar.ts")
+        );
+        assert_eq!(
+            infer_source_from_test("src/foo/bar.spec.tsx").as_deref(),
+            Some("src/foo/bar.tsx")
+        );
+    }
+
+    #[test]
+    fn maps_underscore_test_suffix_per_language() {
+        assert_eq!(
+            infer_source_from_test("crates/foo/src/bar_test.rs").as_deref(),
+            Some("crates/foo/src/bar.rs")
+        );
+        assert_eq!(
+            infer_source_from_test("internal/parser_test.go").as_deref(),
+            Some("internal/parser.go")
+        );
+    }
+
+    #[test]
+    fn collapses_tests_subdirectory_into_source_path() {
+        assert_eq!(
+            infer_source_from_test("src/main/tests/foo.ts").as_deref(),
+            Some("src/main/foo.ts")
+        );
+    }
+
+    /// Regression: previously the `.test.` check fired first and returned
+    /// `src/main/__tests__/pr-review-dedupe.ts` (a path that does not exist
+    /// on disk), so the test_links row pointed nowhere and
+    /// `find_tests_for_symbol` could never resolve the link.
+    #[test]
+    fn collapses_underscored_tests_dir_alongside_dot_test_extension() {
+        assert_eq!(
+            infer_source_from_test("src/main/__tests__/pr-review-dedupe.test.ts").as_deref(),
+            Some("src/main/pr-review-dedupe.ts")
+        );
+        assert_eq!(
+            infer_source_from_test("packages/ui/__tests__/Button.spec.tsx").as_deref(),
+            Some("packages/ui/Button.tsx")
+        );
+    }
+
+    #[test]
+    fn returns_none_for_non_test_paths() {
+        assert_eq!(infer_source_from_test("src/main/pr-review-dedupe.ts"), None);
+    }
 }

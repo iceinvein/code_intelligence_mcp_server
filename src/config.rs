@@ -154,7 +154,6 @@ impl Default for StandaloneConfig {
                 "**/dist/**".to_string(),
                 "**/build/**".to_string(),
                 "**/.git/**".to_string(),
-                "**/*.test.*".to_string(),
             ],
             default_watch_mode: true,
             embedding_truncate_dim: None,
@@ -628,11 +627,10 @@ impl Config {
                 "**/dist/**",
                 "**/build/**",
                 "**/.git/**",
-                "**/*.test.*",
-                // Generated files
-                "**/*.gen.*",
-                "**/*.generated.*",
-                // Minified files
+                // Minified files: single-line mangled source has no useful symbols.
+                // Generated source (`*.gen.*`, `*.generated.*`) and tests (`*.test.*`,
+                // `*.spec.*`) are intentionally indexed when committed -- retrieval-side
+                // structural ranking handles deprioritisation.
                 "**/*.min.*",
             ],
         );
@@ -1578,6 +1576,46 @@ warm_ttl_seconds = 600
                 standalone_defaults.contains(&pattern),
                 "StandaloneConfig::default().default_index_patterns is missing pattern '{pattern}' \
                  (extension .{ext} is supported by language_id_for_path but not indexed by default)"
+            );
+        }
+    }
+
+    /// Regression: committed test files and committed generated source must be
+    /// indexed by default. Tests cover the "what test exercises X" question
+    /// shape; generated sources (`*.gen.*`, `*.generated.*`) are often the
+    /// only place specific types/clients live. Retrieval-time structural
+    /// ranking (test penalty, generated-output filter in
+    /// `retrieval::postprocess`) keeps them out of normal results unless the
+    /// caller explicitly asks for them.
+    #[test]
+    fn default_exclude_patterns_keep_committed_test_and_generated_sources() {
+        let banned = [
+            "**/*.test.*",
+            "**/*.spec.*",
+            "**/*.gen.*",
+            "**/*.generated.*",
+        ];
+
+        let standalone_excludes = StandaloneConfig::default().default_exclude_patterns;
+        for pat in &banned {
+            assert!(
+                !standalone_excludes.iter().any(|p| p == pat),
+                "StandaloneConfig::default().default_exclude_patterns must not contain '{pat}' \
+                 -- committed source is intentional and retrieval handles ranking; got {standalone_excludes:?}"
+            );
+        }
+
+        let from_env_excludes: Vec<String> = {
+            let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            clear_env();
+            std::env::set_var("BASE_DIR", "/tmp");
+            let cfg = Config::from_env().expect("from_env must succeed");
+            cfg.exclude_patterns
+        };
+        for pat in &banned {
+            assert!(
+                !from_env_excludes.iter().any(|p| p == pat),
+                "Config::from_env default exclude_patterns must not contain '{pat}'; got {from_env_excludes:?}"
             );
         }
     }

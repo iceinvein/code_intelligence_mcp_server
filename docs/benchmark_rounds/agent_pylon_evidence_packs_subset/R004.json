@@ -400,7 +400,10 @@
           "is_error": false
         }
       ],
-      "total_input_tokens": 222289
+      "total_input_tokens": 222289,
+      "mech_score": 0.4666666666666667,
+      "judge_score": 1,
+      "judge_justification": "Answer B commits the exact error the rubric explicitly warns against: confusing SessionManager.createSession with provider.createSession. Lists 6 callsites (sendMessage, sendGitAiQuery, runProviderTextQuery, TestManager.suggestGoals/runExploration, WorktreeRecipeService.analyzeProject) but all are calls to provider.createSession on AgentProvider, not SessionManager.createSession. The final paragraph acknowledges this distinction only after listing all wrong callsites, making the answer fundamentally incorrect for the question asked."
     },
     {
       "question_id": "pylon-q7",
@@ -552,7 +555,10 @@
           "is_error": false
         }
       ],
-      "total_input_tokens": 105756
+      "total_input_tokens": 105756,
+      "mech_score": 1.0,
+      "judge_score": 9,
+      "judge_justification": "Answer A fully satisfies all rubric requirements: names the test file correctly, identifies all three functions, correctly identifies the production module as pr-review-dedupe.ts (not pr-review-manager.ts), and explicitly emphasizes the critical distinction by noting that pr-review-manager 'consumes only deduplicateFindings from it.' Additionally, it addresses the bonus criterion by explicitly framing diceCoefficient and tokenize as building blocks that feed into the dedup logic. The answer is concise and directly aligned with the rubric's weighted priorities. The code snippet adds helpful verification."
     },
     {
       "question_id": "pylon-q9",
@@ -1078,7 +1084,10 @@
           "is_error": false
         }
       ],
-      "total_input_tokens": 502732
+      "total_input_tokens": 502732,
+      "mech_score": 0.8666666666666667,
+      "judge_score": 6,
+      "judge_justification": "Answer A identifies all four file locations (claude-provider.ts, session-manager.ts:417, ipc-channels.ts:21, preload/index.ts:282) but fails the first hop: describes consumeStream yielding raw_passthrough events instead of the rubric's required config.onBeforeToolUse callback at line 464. Gets 3/4 hops per rubric (partial credit tier). No Codex bonus. Presentation is clean with a helpful summary table, but misses the specified mechanism and codex path."
     },
     {
       "question_id": "pylon-q10",
@@ -1286,7 +1295,10 @@
           "is_error": false
         }
       ],
-      "total_input_tokens": 320114
+      "total_input_tokens": 320114,
+      "mech_score": 0.5,
+      "judge_score": 6,
+      "judge_justification": "Correctly identifies startReview@903 and walks the core pipeline with appropriate module names (gh-cli, review-scope, diff-chunker, pr-context/*, session-manager, pr-review-dedupe, pr-review-critic, pr-review-peer-review, db, revalidation-worker). However, three issues: (1) Section 5 conflates dedupe and critic under a single heading with contradictory line ranges ('1249-1253' vs '1458'), weakening clarity; (2) doesn't name supporting modules like pr-review-prompts.ts and pr-review-output.ts that implement internal orchestration; (3) combines two stages into one section rather than clearly naming each per-stage module separately. Does correctly separate dedupe from peer-review (rubric's explicit requirement). Provides helpful summary table but misses function-level detail for replicability."
     },
     {
       "question_id": "pylon-q12",
@@ -1442,7 +1454,10 @@
           "is_error": false
         }
       ],
-      "total_input_tokens": 215304
+      "total_input_tokens": 215304,
+      "mech_score": 0.5,
+      "judge_score": 7,
+      "judge_justification": "Correctly identifies src/main/index.ts with dimensions 1280\u00d7800. However, the answer is verbose; it adds minHeight, titleBarStyle, trafficLightPosition, and backgroundColor details not asked for. The rubric explicitly rewards concise answers over verbose ones. The line range (18-33) is also broader than necessary when the rubric indicates the answer should be near line 19."
     }
   ],
   "round": 4,

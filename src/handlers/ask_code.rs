@@ -79,7 +79,7 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
         .clamp(1, MAX_EVIDENCE_HARD_CAP);
     let quality = AnswerQuality::from_str(tool.quality.as_deref());
 
-    // ---- Cache lookup (keyed on question + index version + quality) ----
+    // ---- Cache lookup (keyed on question + index version + response shape) ----
     let repo_index_version = state
         .sqlite
         .latest_index_run()
@@ -87,7 +87,15 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
         .flatten()
         .map(|run| run.started_at_unix_s)
         .unwrap_or(0);
-    let cache_key = AskCodeCacheKey::new(&question, repo_index_version, quality);
+    let cache_key = AskCodeCacheKey::new(
+        &question,
+        repo_index_version,
+        quality,
+        tool.target.as_deref(),
+        tool.file_path.as_deref(),
+        tool.mode.as_deref(),
+        max_evidence,
+    );
     if let Some(mut cached) = state.ask_code_cache.get(&cache_key) {
         if let Some(obj) = cached.as_object_mut() {
             obj.insert("cached".to_string(), json!(true));
@@ -178,23 +186,21 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
         .map(|(idx, (parsed_cite, span))| citation_to_json(idx, parsed_cite.raw.as_str(), span))
         .collect();
 
-    let response = json!({
-        "question": question,
-        "answer": answer_text,
-        "citations": citations_json,
-        "evidence": evidence_to_json(&evidence),
-        "confidence": confidence.as_str(),
-        "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
-        "pack": pack_from_investigate(&investigate_response),
-        "stop_reason": stop_reason,
-        "quality": quality.as_str(),
-        "follow_up": follow_up,
-        "dropped_citation_count": validation.dropped_count(),
-        "evidence_count": evidence_count,
-        "cached": false,
-    });
+    let response = build_synthesized_response(
+        &question,
+        quality,
+        &investigate_response,
+        &answer_text,
+        citations_json,
+        &evidence,
+        evidence_count,
+        confidence,
+        stop_reason,
+        follow_up,
+        validation.dropped_count(),
+    );
     // is_cacheable() drops llm_unavailable; everything else is deterministic
-    // given (question, index_version, quality) so it's safe to memoise.
+    // given the full AskCodeCacheKey, so it's safe to memoise.
     state.ask_code_cache.put(cache_key, response.clone());
     Ok(response)
 }
@@ -380,6 +386,36 @@ fn build_evidence_only_response(
             more context call specialist tools (find_references, get_call_hierarchy, get_definition) \
             with the symbol_ids from evidence.",
         "dropped_citation_count": 0,
+        "evidence_count": evidence_count,
+        "cached": false,
+    })
+}
+
+fn build_synthesized_response(
+    question: &str,
+    quality: AnswerQuality,
+    investigate_response: &Value,
+    answer_text: &str,
+    citations_json: Vec<Value>,
+    evidence: &[EvidenceItem],
+    evidence_count: usize,
+    confidence: Confidence,
+    stop_reason: &str,
+    follow_up: Option<&'static str>,
+    dropped_citation_count: usize,
+) -> Value {
+    json!({
+        "question": question,
+        "answer": answer_text,
+        "citations": citations_json,
+        "evidence": evidence_to_json(evidence),
+        "confidence": confidence.as_str(),
+        "mode_used": investigate_response.get("mode_used").cloned().unwrap_or(json!(null)),
+        "pack": pack_from_investigate(investigate_response),
+        "stop_reason": stop_reason,
+        "quality": quality.as_str(),
+        "follow_up": follow_up,
+        "dropped_citation_count": dropped_citation_count,
         "evidence_count": evidence_count,
         "cached": false,
     })
@@ -648,6 +684,37 @@ mod tests {
             evidence.len(),
         );
         assert_eq!(response["pack"]["kind"], "callsite_enumeration");
+        assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn synthesized_response_passes_through_pack() {
+        let evidence = vec![ev("sym_a", "src/a.rs", 1, 5)];
+        let investigate_response = json!({
+            "mode_used": "discover",
+            "pack": {
+                "kind": "symbol_lookup",
+                "target": "fn_x",
+                "coverage": {"status": "complete", "basis": ["search_code"], "missing": []},
+                "rows": [{"role": "definition", "file_path": "src/a.rs", "line": 1}],
+                "edges": [],
+                "answer_guidance": "Use the definition row."
+            }
+        });
+        let response = build_synthesized_response(
+            "what is fn_x?",
+            AnswerQuality::Balanced,
+            &investigate_response,
+            "fn_x is defined in src/a.rs.",
+            vec![],
+            &evidence,
+            evidence.len(),
+            Confidence::Medium,
+            "answered",
+            None,
+            0,
+        );
+        assert_eq!(response["pack"]["kind"], "symbol_lookup");
         assert_eq!(response["pack"]["rows"].as_array().unwrap().len(), 1);
     }
 

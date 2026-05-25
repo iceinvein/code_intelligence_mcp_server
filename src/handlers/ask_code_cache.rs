@@ -1,9 +1,10 @@
 //! Per-process LRU cache for `ask_code` responses.
 //!
-//! Keyed by (question_hash, repo_index_version, quality). When the index
-//! changes (new `index_runs` row), `repo_index_version` shifts and stale
-//! entries naturally miss. Responses that should not be cached (e.g.
-//! transient `llm_unavailable`) are filtered by the caller via
+//! Keyed by the normalized question, index version, quality, and retrieval /
+//! response-shaping inputs. When the index changes (new `index_runs` row),
+//! `repo_index_version` shifts and stale entries naturally miss. Responses
+//! that should not be cached (e.g. transient `llm_unavailable`) are filtered by
+//! the caller via
 //! [`AskCodeCache::is_cacheable`].
 
 use std::num::NonZeroUsize;
@@ -24,14 +25,30 @@ pub struct AskCodeCacheKey {
     pub question_hash: u64,
     pub repo_index_version: i64,
     pub quality: AnswerQuality,
+    pub target: Option<String>,
+    pub file_path: Option<String>,
+    pub mode: Option<String>,
+    pub max_evidence: u32,
 }
 
 impl AskCodeCacheKey {
-    pub fn new(question: &str, repo_index_version: i64, quality: AnswerQuality) -> Self {
+    pub fn new(
+        question: &str,
+        repo_index_version: i64,
+        quality: AnswerQuality,
+        target: Option<&str>,
+        file_path: Option<&str>,
+        mode: Option<&str>,
+        max_evidence: u32,
+    ) -> Self {
         Self {
             question_hash: hash_question(question),
             repo_index_version,
             quality,
+            target: normalize_optional_string(target),
+            file_path: normalize_optional_string(file_path),
+            mode: normalize_optional_string(mode),
+            max_evidence,
         }
     }
 }
@@ -106,10 +123,43 @@ fn hash_question(question: &str) -> u64 {
     u64::from_le_bytes(buf)
 }
 
+fn normalize_optional_string(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn key(question: &str, repo_index_version: i64, quality: AnswerQuality) -> AskCodeCacheKey {
+        key_with(question, repo_index_version, quality, None, None, None, 8)
+    }
+
+    fn key_with(
+        question: &str,
+        repo_index_version: i64,
+        quality: AnswerQuality,
+        target: Option<&str>,
+        file_path: Option<&str>,
+        mode: Option<&str>,
+        max_evidence: u32,
+    ) -> AskCodeCacheKey {
+        AskCodeCacheKey::new(
+            question,
+            repo_index_version,
+            quality,
+            target,
+            file_path,
+            mode,
+            max_evidence,
+        )
+    }
 
     fn answered() -> Value {
         json!({
@@ -128,43 +178,108 @@ mod tests {
 
     #[test]
     fn key_deterministic_for_same_question() {
-        let a = AskCodeCacheKey::new("Where is X?", 42, AnswerQuality::Balanced);
-        let b = AskCodeCacheKey::new("Where is X?", 42, AnswerQuality::Balanced);
+        let a = key("Where is X?", 42, AnswerQuality::Balanced);
+        let b = key("Where is X?", 42, AnswerQuality::Balanced);
         assert_eq!(a, b);
     }
 
     #[test]
     fn key_ignores_question_leading_trailing_whitespace() {
-        let a = AskCodeCacheKey::new("Where is X?", 1, AnswerQuality::Balanced);
-        let b = AskCodeCacheKey::new("  Where is X?\n", 1, AnswerQuality::Balanced);
+        let a = key("Where is X?", 1, AnswerQuality::Balanced);
+        let b = key("  Where is X?\n", 1, AnswerQuality::Balanced);
         assert_eq!(a, b);
     }
 
     #[test]
     fn key_distinct_per_index_version() {
-        let a = AskCodeCacheKey::new("q", 1, AnswerQuality::Balanced);
-        let b = AskCodeCacheKey::new("q", 2, AnswerQuality::Balanced);
+        let a = key("q", 1, AnswerQuality::Balanced);
+        let b = key("q", 2, AnswerQuality::Balanced);
         assert_ne!(a, b);
     }
 
     #[test]
     fn key_distinct_per_quality() {
-        let a = AskCodeCacheKey::new("q", 1, AnswerQuality::Balanced);
-        let b = AskCodeCacheKey::new("q", 1, AnswerQuality::Fast);
+        let a = key("q", 1, AnswerQuality::Balanced);
+        let b = key("q", 1, AnswerQuality::Fast);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn key_distinct_per_target() {
+        let a = key_with(
+            "q",
+            1,
+            AnswerQuality::Balanced,
+            Some("createSession"),
+            None,
+            None,
+            8,
+        );
+        let b = key_with(
+            "q",
+            1,
+            AnswerQuality::Balanced,
+            Some("deleteSession"),
+            None,
+            None,
+            8,
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn key_distinct_per_mode_or_max_evidence() {
+        let base = key_with(
+            "q",
+            1,
+            AnswerQuality::Balanced,
+            None,
+            None,
+            Some("discover"),
+            8,
+        );
+        let different_mode = key_with(
+            "q",
+            1,
+            AnswerQuality::Balanced,
+            None,
+            None,
+            Some("trace"),
+            8,
+        );
+        let different_max_evidence = key_with(
+            "q",
+            1,
+            AnswerQuality::Balanced,
+            None,
+            None,
+            Some("discover"),
+            4,
+        );
+        assert_ne!(base, different_mode);
+        assert_ne!(base, different_max_evidence);
+    }
+
+    #[test]
+    fn key_normalizes_empty_target_like_none() {
+        let none = key_with("q", 1, AnswerQuality::Balanced, None, None, None, 8);
+        let empty = key_with("q", 1, AnswerQuality::Balanced, Some(""), None, None, 8);
+        let whitespace = key_with("q", 1, AnswerQuality::Balanced, Some("  \n"), None, None, 8);
+        assert_eq!(none, empty);
+        assert_eq!(none, whitespace);
     }
 
     #[test]
     fn get_returns_none_on_miss() {
         let cache = AskCodeCache::default();
-        let key = AskCodeCacheKey::new("anything", 0, AnswerQuality::Balanced);
+        let key = key("anything", 0, AnswerQuality::Balanced);
         assert!(cache.get(&key).is_none());
     }
 
     #[test]
     fn put_then_get_round_trips_cacheable_response() {
         let cache = AskCodeCache::default();
-        let key = AskCodeCacheKey::new("q", 1, AnswerQuality::Balanced);
+        let key = key("q", 1, AnswerQuality::Balanced);
         cache.put(key.clone(), answered());
         let v = cache.get(&key).expect("hit");
         assert_eq!(v["answer"], "an answer");
@@ -174,7 +289,7 @@ mod tests {
     #[test]
     fn put_drops_uncacheable_response() {
         let cache = AskCodeCache::default();
-        let key = AskCodeCacheKey::new("q", 1, AnswerQuality::Balanced);
+        let key = key("q", 1, AnswerQuality::Balanced);
         cache.put(key.clone(), unavailable());
         assert!(cache.get(&key).is_none());
         assert_eq!(cache.len(), 0);
@@ -200,9 +315,9 @@ mod tests {
     #[test]
     fn eviction_at_capacity_drops_oldest() {
         let cache = AskCodeCache::with_capacity(2);
-        let k1 = AskCodeCacheKey::new("q1", 1, AnswerQuality::Balanced);
-        let k2 = AskCodeCacheKey::new("q2", 1, AnswerQuality::Balanced);
-        let k3 = AskCodeCacheKey::new("q3", 1, AnswerQuality::Balanced);
+        let k1 = key("q1", 1, AnswerQuality::Balanced);
+        let k2 = key("q2", 1, AnswerQuality::Balanced);
+        let k3 = key("q3", 1, AnswerQuality::Balanced);
         cache.put(k1.clone(), answered());
         cache.put(k2.clone(), answered());
         cache.put(k3.clone(), answered());
@@ -218,9 +333,9 @@ mod tests {
     #[test]
     fn get_promotes_entry_in_lru_order() {
         let cache = AskCodeCache::with_capacity(2);
-        let k1 = AskCodeCacheKey::new("q1", 1, AnswerQuality::Balanced);
-        let k2 = AskCodeCacheKey::new("q2", 1, AnswerQuality::Balanced);
-        let k3 = AskCodeCacheKey::new("q3", 1, AnswerQuality::Balanced);
+        let k1 = key("q1", 1, AnswerQuality::Balanced);
+        let k2 = key("q2", 1, AnswerQuality::Balanced);
+        let k3 = key("q3", 1, AnswerQuality::Balanced);
         cache.put(k1.clone(), answered());
         cache.put(k2.clone(), answered());
         // Touch k1 to make it most-recent.

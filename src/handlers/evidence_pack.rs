@@ -157,15 +157,14 @@ fn pack_kind(question: &str, shape: InvestigationShape) -> EvidencePackKind {
 
 fn is_callsite_question(question: &str) -> bool {
     let question = question.to_ascii_lowercase();
-    [
-        "who calls",
-        "callsites",
-        "where is",
-        "references",
-        "invokes",
-    ]
-    .iter()
-    .any(|needle| question.contains(needle))
+    ["who calls", "callsites", "references", "invokes"]
+        .iter()
+        .any(|needle| question.contains(needle))
+        || (question.contains("where is")
+            && (question.contains(" called")
+                || question.contains(" call")
+                || question.contains(" referenced")
+                || question.contains(" reference")))
 }
 
 fn row_from_location(
@@ -176,7 +175,13 @@ fn row_from_location(
     fallback_ordinal: u32,
 ) -> EvidenceRow {
     let body = location.body.as_deref();
-    let evidence = evidence_line(body, target);
+    let selected = select_evidence_line(body, target);
+    let evidence = selected.text;
+    let line = match (location.start_line, selected.offset) {
+        (Some(start_line), Some(offset)) => Some(start_line + offset),
+        (Some(start_line), None) => Some(start_line),
+        (None, _) => None,
+    };
     let role = match kind {
         EvidencePackKind::CallsiteEnumeration => "callsite".to_string(),
         EvidencePackKind::PipelineTrace => infer_pipeline_role(body.unwrap_or(&evidence)),
@@ -193,7 +198,7 @@ fn row_from_location(
         symbol_id: location.symbol_id,
         symbol_name: location.symbol_name,
         file_path: location.file_path,
-        line: location.start_line,
+        line,
         end_line: location.end_line,
         enclosing_symbol: None,
         evidence,
@@ -202,9 +207,17 @@ fn row_from_location(
     }
 }
 
-fn evidence_line(body: Option<&str>, target: &str) -> String {
+struct SelectedEvidenceLine {
+    text: String,
+    offset: Option<u32>,
+}
+
+fn select_evidence_line(body: Option<&str>, target: &str) -> SelectedEvidenceLine {
     let Some(body) = body else {
-        return String::new();
+        return SelectedEvidenceLine {
+            text: String::new(),
+            offset: None,
+        };
     };
     let final_segment = target
         .split(['.', ':', '#'])
@@ -212,12 +225,28 @@ fn evidence_line(body: Option<&str>, target: &str) -> String {
         .next_back()
         .unwrap_or(target);
 
-    body.lines()
-        .map(str::trim)
-        .find(|line| line.contains(target) || line.contains(final_segment))
-        .or_else(|| body.lines().map(str::trim).find(|line| !line.is_empty()))
-        .unwrap_or("")
-        .to_string()
+    let selected = body
+        .lines()
+        .enumerate()
+        .map(|(offset, line)| (offset as u32, line.trim()))
+        .find(|(_, line)| line.contains(target) || line.contains(final_segment))
+        .or_else(|| {
+            body.lines()
+                .enumerate()
+                .map(|(offset, line)| (offset as u32, line.trim()))
+                .find(|(_, line)| !line.is_empty())
+        });
+
+    match selected {
+        Some((offset, line)) => SelectedEvidenceLine {
+            text: line.to_string(),
+            offset: Some(offset),
+        },
+        None => SelectedEvidenceLine {
+            text: String::new(),
+            offset: None,
+        },
+    }
 }
 
 fn infer_pipeline_role(evidence: &str) -> String {
@@ -334,8 +363,8 @@ mod tests {
             target: "target_fn".to_string(),
             shape: InvestigationShape::Discover,
             primary: vec![
-                location(10, "caller_one();\ntarget_fn();"),
-                location(24, "caller_two();\ntarget_fn();"),
+                location(10, "target_fn();\ncaller_one();"),
+                location(24, "target_fn();\ncaller_two();"),
             ],
             secondary: vec![],
             secondary_via: None,
@@ -347,6 +376,55 @@ mod tests {
         assert_eq!(value["rows"].as_array().unwrap().len(), 2);
         assert_eq!(value["rows"][0]["line"], 10);
         assert_eq!(value["rows"][1]["line"], 24);
+    }
+
+    #[test]
+    fn evidence_line_uses_body_offset_for_citation_line() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls target_fn".to_string(),
+            target: "target_fn".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "setup();\nmore_setup();\ntarget_fn();")],
+            secondary: vec![],
+            secondary_via: None,
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"][0]["line"], 12);
+        assert_eq!(value["rows"][0]["evidence"], "target_fn();");
+    }
+
+    #[test]
+    fn where_is_defined_stays_symbol_lookup() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "where is target_fn defined?".to_string(),
+            target: "target_fn".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "fn target_fn() {}")],
+            secondary: vec![],
+            secondary_via: None,
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["kind"], "symbol_lookup");
+    }
+
+    #[test]
+    fn where_is_called_stays_callsite_enumeration() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "where is target_fn called?".to_string(),
+            target: "target_fn".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "target_fn();")],
+            secondary: vec![],
+            secondary_via: None,
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["kind"], "callsite_enumeration");
     }
 
     #[test]

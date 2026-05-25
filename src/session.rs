@@ -125,6 +125,14 @@ impl SessionManager {
             if let Some((_, (_, cancel))) = self.repos.remove(&key) {
                 cancel.cancel();
             }
+            if let Some(registry) = &self.job_registry {
+                let repo_id = RepoRegistry::path_hash(&key);
+                crate::server::jobs::mark_running_watch_jobs_for_repo_failed(
+                    registry,
+                    &repo_id,
+                    "repo evicted while watch job was running".to_string(),
+                );
+            }
             self.last_accessed.remove(&key);
             self.init_locks.remove(&key);
 
@@ -269,6 +277,13 @@ impl SessionManager {
         //    Tantivy, LanceDB handles before we rmtree the dir).
         if let Some((_, (_state, cancel))) = self.repos.remove(&canonical) {
             cancel.cancel();
+        }
+        if let Some(registry) = &self.job_registry {
+            crate::server::jobs::mark_running_watch_jobs_for_repo_failed(
+                registry,
+                hash,
+                "repo deleted while watch job was running".to_string(),
+            );
         }
         self.last_accessed.remove(&canonical);
         self.init_locks.remove(&canonical);

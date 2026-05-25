@@ -110,6 +110,10 @@ pub fn register_running_with_coalesced(
     repo_path: String,
     coalesced_count: u32,
 ) -> Job {
+    if matches!(kind, JobKind::InitialBind | JobKind::WatchReindex) {
+        supersede_running_watch_jobs_for_repo(registry, &repo_id, &job_id);
+    }
+
     let job = Job {
         id: job_id.clone(),
         kind,
@@ -125,6 +129,60 @@ pub fn register_running_with_coalesced(
     };
     registry.insert(job_id, job.clone());
     job
+}
+
+fn finish_job(job: &mut Job, now: u64) {
+    job.finished_at_unix_s = Some(now);
+    job.duration_ms = Some(
+        now.saturating_sub(job.started_at_unix_s)
+            .saturating_mul(1000),
+    );
+}
+
+fn supersede_running_watch_jobs_for_repo(registry: &JobRegistry, repo_id: &str, new_job_id: &str) {
+    mark_running_watch_jobs_for_repo_failed(
+        registry,
+        repo_id,
+        format!("superseded by newer watch job {new_job_id}"),
+    );
+}
+
+/// Mark all running watch-driven jobs for `repo_id` as failed.
+///
+/// Manual reindex jobs are intentionally left alone; they have their own
+/// worker watchdog and can represent explicit user work.
+pub fn mark_running_watch_jobs_for_repo_failed(
+    registry: &JobRegistry,
+    repo_id: &str,
+    error: String,
+) -> usize {
+    let ids: Vec<String> = registry
+        .iter()
+        .filter(|e| {
+            let j = e.value();
+            j.repo_id == repo_id
+                && j.status == JobStatus::Running
+                && matches!(j.kind, JobKind::InitialBind | JobKind::WatchReindex)
+        })
+        .map(|e| e.key().clone())
+        .collect();
+
+    let mut marked = 0;
+    for id in ids {
+        if let Some(mut entry) = registry.get_mut(&id) {
+            if entry.status == JobStatus::Running
+                && entry.repo_id == repo_id
+                && matches!(entry.kind, JobKind::InitialBind | JobKind::WatchReindex)
+            {
+                let now = unix_now();
+                entry.status = JobStatus::Failed;
+                finish_job(&mut entry, now);
+                entry.error = Some(error.clone());
+                marked += 1;
+            }
+        }
+    }
+    marked
 }
 
 /// Most recent `Running` job for `repo_id`, if any. Used by `/api/repos`
@@ -154,13 +212,12 @@ pub fn most_recent_finished_for_repo(registry: &JobRegistry, repo_id: &str) -> O
 /// Mark a job as succeeded with final stats.
 pub fn mark_succeeded(registry: &JobRegistry, job_id: &str, stats: Value) {
     if let Some(mut entry) = registry.get_mut(job_id) {
+        if entry.status != JobStatus::Running {
+            return;
+        }
         let now = unix_now();
         entry.status = JobStatus::Succeeded;
-        entry.finished_at_unix_s = Some(now);
-        entry.duration_ms = Some(
-            now.saturating_sub(entry.started_at_unix_s)
-                .saturating_mul(1000),
-        );
+        finish_job(&mut entry, now);
         entry.stats = Some(stats);
     }
 }
@@ -168,13 +225,12 @@ pub fn mark_succeeded(registry: &JobRegistry, job_id: &str, stats: Value) {
 /// Mark a job as failed with an error string.
 pub fn mark_failed(registry: &JobRegistry, job_id: &str, error: String) {
     if let Some(mut entry) = registry.get_mut(job_id) {
+        if entry.status != JobStatus::Running {
+            return;
+        }
         let now = unix_now();
         entry.status = JobStatus::Failed;
-        entry.finished_at_unix_s = Some(now);
-        entry.duration_ms = Some(
-            now.saturating_sub(entry.started_at_unix_s)
-                .saturating_mul(1000),
-        );
+        finish_job(&mut entry, now);
         entry.error = Some(error);
     }
 }
@@ -188,11 +244,7 @@ pub fn mark_failed_if_running(registry: &JobRegistry, job_id: &str, error: Strin
         if entry.status == JobStatus::Running {
             let now = unix_now();
             entry.status = JobStatus::Failed;
-            entry.finished_at_unix_s = Some(now);
-            entry.duration_ms = Some(
-                now.saturating_sub(entry.started_at_unix_s)
-                    .saturating_mul(1000),
-            );
+            finish_job(&mut entry, now);
             entry.error = Some(error);
         }
     }
@@ -440,6 +492,100 @@ mod tests {
         assert_eq!(job.coalesced_count, 7);
         let stored = reg.get("j").unwrap().clone();
         assert_eq!(stored.coalesced_count, 7);
+    }
+
+    #[test]
+    fn watch_registration_supersedes_prior_running_watch_job_for_same_repo() {
+        let reg = new_job_registry();
+        register_running_with_coalesced(
+            &reg,
+            "old-watch".to_string(),
+            JobKind::InitialBind,
+            "target".to_string(),
+            "/target".to_string(),
+            38,
+        );
+        register_running_with_coalesced(
+            &reg,
+            "other-repo".to_string(),
+            JobKind::WatchReindex,
+            "other".to_string(),
+            "/other".to_string(),
+            0,
+        );
+        register_running_with_coalesced(
+            &reg,
+            "new-watch".to_string(),
+            JobKind::InitialBind,
+            "target".to_string(),
+            "/target".to_string(),
+            0,
+        );
+
+        let old = reg.get("old-watch").unwrap().clone();
+        assert_eq!(old.status, JobStatus::Failed);
+        assert_eq!(
+            old.error.as_deref(),
+            Some("superseded by newer watch job new-watch")
+        );
+
+        let target_running = snapshot(&reg)
+            .into_iter()
+            .filter(|j| j.repo_id == "target" && j.status == JobStatus::Running)
+            .count();
+        assert_eq!(target_running, 1);
+        assert_eq!(reg.get("new-watch").unwrap().status, JobStatus::Running);
+        assert_eq!(reg.get("other-repo").unwrap().status, JobStatus::Running);
+    }
+
+    #[test]
+    fn late_completion_does_not_overwrite_failed_job() {
+        let reg = new_job_registry();
+        register_running(
+            &reg,
+            "stale".to_string(),
+            JobKind::WatchReindex,
+            "target".to_string(),
+            "/target".to_string(),
+        );
+        mark_failed(&reg, "stale", "superseded".to_string());
+
+        mark_succeeded(&reg, "stale", json!({ "files_indexed": 99 }));
+
+        let after = reg.get("stale").unwrap().clone();
+        assert_eq!(after.status, JobStatus::Failed);
+        assert_eq!(after.error.as_deref(), Some("superseded"));
+        assert!(after.stats.is_none());
+    }
+
+    #[test]
+    fn mark_running_watch_jobs_for_repo_failed_leaves_manual_jobs_running() {
+        let reg = new_job_registry();
+        register_running_with_coalesced(
+            &reg,
+            "watch".to_string(),
+            JobKind::WatchReindex,
+            "target".to_string(),
+            "/target".to_string(),
+            0,
+        );
+        register_running(
+            &reg,
+            "manual".to_string(),
+            JobKind::ManualReindex,
+            "target".to_string(),
+            "/target".to_string(),
+        );
+
+        let marked = mark_running_watch_jobs_for_repo_failed(
+            &reg,
+            "target",
+            "repo evicted while watch job was running".to_string(),
+        );
+
+        assert_eq!(marked, 1);
+        assert_eq!(reg.get("watch").unwrap().status, JobStatus::Failed);
+        assert_eq!(reg.get("manual").unwrap().status, JobStatus::Running);
     }
 
     #[test]

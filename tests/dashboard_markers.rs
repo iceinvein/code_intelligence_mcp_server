@@ -36,3 +36,13 @@ fn dashboard_does_not_contain_repl_markers() {
         );
     }
 }
+
+#[test]
+fn dashboard_does_not_render_fake_job_progress_percent() {
+    for absent in [r#"running[0]?.progress"#, r#"bar(runPct)"#] {
+        assert!(
+            !DASHBOARD_HTML.contains(absent),
+            "dashboard should not render fake job progress from missing API field: {absent}"
+        );
+    }
+}

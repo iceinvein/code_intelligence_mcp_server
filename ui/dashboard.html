@@ -230,12 +230,10 @@
         const parts = (p || "").split("/").filter(Boolean);
         return parts[parts.length - 1] || p || "";
       }
-      function bar(pct) {
-        const filled = Math.round(Math.max(0, Math.min(1, pct)) * 10);
+      function activityBar() {
         return el("span", { class: "bar" },
-          el("span", { class: "fill", text: "▮".repeat(filled) }),
-          el("span", { class: "gap",  text: "▯".repeat(10 - filled) }),
-          ` ${Math.round(pct * 100)}%`
+          el("span", { class: "fill", text: "▮▮▮" }),
+          el("span", { class: "gap",  text: "▯▯▯▯▯▯▯" })
         );
       }
       function kvRow(key, value) {
@@ -261,7 +259,6 @@
           const totalSymbols = repoList.reduce((a, r) => a + (r.symbol_count || 0), 0);
           const sessionNames = sessionList.map((s) => basename(s.repo) || s.client || s.session_id || s.id || "session");
           const running = jobList.filter((j) => j.status === "running");
-          const runPct = running[0]?.progress ?? 0;
           const ok = status.healthy !== false;
           const uptime = status.uptime_s ?? status.uptime_seconds;
 
@@ -276,7 +273,9 @@
             `${sessionNames.length} · `,
             el("span", { class: "dim", text: sessionNames.slice(0, 3).join(", ") || "none" })
           );
-          const jobsV  = el("span", null, `${running.length} running  `, bar(runPct));
+          const jobsV  = running.length
+            ? el("span", null, `${running.length} running  `, activityBar())
+            : el("span", null, "0 running");
           const embedV = el("span", { class: "dim", text: "telemetry not exposed yet" });
           const verV   = `${version.version || "unknown"} · llama.cpp metal`;
 

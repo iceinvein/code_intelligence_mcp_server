@@ -1,4 +1,4 @@
-use crate::classify::{is_test_file, is_test_symbol};
+use crate::classify::{is_generated_output_path, is_test_file, is_test_symbol};
 use crate::retrieval::query::Intent;
 use crate::retrieval::ranking::score::{intent_adjustment, symbol_importance_adjustment};
 use crate::retrieval::RankedHit;
@@ -140,6 +140,9 @@ pub fn expand_with_edges(
                             if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
                                 continue;
                             }
+                            if is_generated_output_path(&row.file_path) {
+                                continue;
+                            }
                             let line_count = row.end_line.saturating_sub(row.start_line) + 1;
                             let si = symbol_importance_adjustment(line_count, row.exported);
                             if si < -1.0 && !row.exported {
@@ -202,6 +205,9 @@ pub fn expand_with_edges(
                     if is_new {
                         if let Some(row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? {
                             if is_test_file(&row.file_path) || is_test_symbol(&row.name) {
+                                continue;
+                            }
+                            if is_generated_output_path(&row.file_path) {
                                 continue;
                             }
                             let line_count = row.end_line.saturating_sub(row.start_line) + 1;

@@ -190,6 +190,7 @@ fn promote_vector_results(
     let missing: Vec<&RankedHit> = top_vector
         .into_iter()
         .filter(|h| !final_ids.contains(h.id.as_str()))
+        .filter(|h| !crate::classify::is_generated_output_path(&h.file_path))
         .filter(|h| {
             // Skip if this file already has enough entries (respect diversity)
             let count = file_counts.get(h.file_path.as_str()).copied().unwrap_or(0);
@@ -635,6 +636,9 @@ impl Retriever {
                     if !is_test_intent && ranking::is_test_file(&h.file_path) {
                         continue;
                     }
+                    if crate::classify::is_generated_output_path(&h.file_path) {
+                        continue;
+                    }
                     // Respect file diversity in gap fill
                     let fc = gap_file_counts.get(&h.file_path).copied().unwrap_or(0);
                     if fc >= gap_max_per_file {
@@ -680,6 +684,9 @@ impl Retriever {
                         continue;
                     }
                     if files_with_fn.contains(&h.file_path) {
+                        continue;
+                    }
+                    if crate::classify::is_generated_output_path(&h.file_path) {
                         continue;
                     }
                     if let Ok(symbols) = sqlite.list_symbols_by_file(&h.file_path) {
@@ -836,6 +843,9 @@ impl Retriever {
                         if hit_ids_set.contains(&c.id) || c.kind == "file" || c.score < 0.5 {
                             continue;
                         }
+                        if crate::classify::is_generated_output_path(&c.file_path) {
+                            continue;
+                        }
                         let name_lower = c.name.to_lowercase();
                         let path_lower = c.file_path.to_lowercase();
                         let name_match = synonym_terms.iter().any(|t| name_lower.contains(t));
@@ -899,6 +909,9 @@ impl Retriever {
                                     && (fallback_tests.contains(&fh.id)
                                         || ranking::is_test_file(&fh.file_path))
                                 {
+                                    continue;
+                                }
+                                if crate::classify::is_generated_output_path(&fh.file_path) {
                                     continue;
                                 }
                                 let name_lower = fh.name.to_lowercase();

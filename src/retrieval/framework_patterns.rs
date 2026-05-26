@@ -125,6 +125,9 @@ pub(super) fn inject_framework_patterns(
         if injection_count >= MAX_FRAMEWORK_INJECTIONS {
             break;
         }
+        if crate::classify::is_generated_output_path(fw_file) {
+            continue;
+        }
         if let Ok(file_symbols) = sqlite.list_symbols_by_file(fw_file) {
             for &(ref fp, line) in &fw_file_lines {
                 if fp != fw_file {

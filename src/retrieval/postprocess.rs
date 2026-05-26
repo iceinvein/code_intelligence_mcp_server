@@ -7,6 +7,7 @@ use super::ranking::{
     apply_selection_boost_with_signals,
 };
 use super::{HitSignals, RankedHit};
+use crate::classify::is_generated_output_path;
 use crate::config::Config;
 use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
@@ -82,17 +83,6 @@ fn filter_hits_by_controls(hits: Vec<RankedHit>, controls: &QueryControls) -> Ve
                 .is_none_or(|f| file_matches(&h.file_path, f))
         })
         .collect()
-}
-
-fn is_generated_output_path(file_path: &str) -> bool {
-    let path = file_path.to_lowercase();
-    path.starts_with("out/")
-        || path.contains("/out/")
-        || path.starts_with("dist/")
-        || path.contains("/dist/")
-        || path.starts_with("build/")
-        || path.contains("/build/")
-        || path.contains(".min.")
 }
 
 fn kind_matches(kind: &str, control: &str) -> bool {

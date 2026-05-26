@@ -36,6 +36,25 @@ pub fn is_test_file(file_path: &str) -> bool {
         || path_lower.contains("/spec/")
 }
 
+/// Check whether a file path is a generated build output (`dist/`,
+/// `build/`, `out/`, or any `.min.` minified bundle).
+///
+/// Build outputs are intentionally indexed when committed to the repo so
+/// project-specific search remains possible, but retrieval needs to
+/// downrank or filter them so they do not surface as primary evidence
+/// for source-code questions. This is the canonical check used by both
+/// the retrieval post-process filter and the edge-expansion pruner.
+pub fn is_generated_output_path(file_path: &str) -> bool {
+    let path = file_path.to_lowercase();
+    path.starts_with("out/")
+        || path.contains("/out/")
+        || path.starts_with("dist/")
+        || path.contains("/dist/")
+        || path.starts_with("build/")
+        || path.contains("/build/")
+        || path.contains(".min.")
+}
+
 /// Check if a symbol name looks like a test function/helper.
 ///
 /// Matches: `test_*`, `create_test_*`, `make_test_*`, `setup_test*`, `mock_*`,

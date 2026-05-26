@@ -1052,8 +1052,13 @@ fn apply_response_budget(response: &mut Value) {
     // shrinking it costs nothing and frees the most slack (10-25 KB on
     // typical multi-hop responses). Bodies and pack rows carry the
     // citation material we need to preserve.
+    //
+    // Cap at 1 KB: a head slice is enough for the agent to see the
+    // investigation chain shape, while leaving the rest of the 32 KB
+    // budget for pack.rows + verified_location bodies.
+    const CONTEXT_CHAIN_TRIM_BYTES: usize = 1024;
     if let Some(s) = response.get("context_chain").and_then(|v| v.as_str()) {
-        let max = (RESPONSE_BUDGET_BYTES / 8).min(s.len());
+        let max = CONTEXT_CHAIN_TRIM_BYTES.min(s.len());
         let head = truncate_with_marker(s, max, "\n... [context_chain truncated]");
         response["context_chain"] = json!(head);
     }
@@ -1061,21 +1066,16 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 2: drop oversized raw bodies (>1200c) from verified_locations.
-    // This protects pack.rows row count before we start losing rows.
+    // Stage 2: drop bodies past index 2. The top 3 hits are the ones the
+    // agent will cite most often, so they keep their bodies even when
+    // those bodies are large.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
     {
-        for entry in arr.iter_mut() {
-            if let Some(obj) = entry.as_object_mut() {
-                if obj
-                    .get("body")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.len())
-                    .unwrap_or(0)
-                    > 1200
-                {
+        for (i, entry) in arr.iter_mut().enumerate() {
+            if i >= 3 {
+                if let Some(obj) = entry.as_object_mut() {
                     obj.insert("body".to_string(), json!(""));
                     obj.insert("body_dropped".to_string(), json!(true));
                 }
@@ -1086,14 +1086,26 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 3: drop bodies past index 2.
+    // Stage 3: only if Stage 2 was not enough, drop oversized raw bodies
+    // (>1200c) from the remaining top-3 entries. We still keep at least
+    // the first (highest-ranked) body intact -- the agent typically cites
+    // the top hit and synthesises around it.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
     {
         for (i, entry) in arr.iter_mut().enumerate() {
-            if i >= 3 {
-                if let Some(obj) = entry.as_object_mut() {
+            if i == 0 {
+                continue;
+            }
+            if let Some(obj) = entry.as_object_mut() {
+                if obj
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+                    > 1200
+                {
                     obj.insert("body".to_string(), json!(""));
                     obj.insert("body_dropped".to_string(), json!(true));
                 }
@@ -1492,10 +1504,20 @@ mod tests {
         let verified_locations = response["verified_locations"]
             .as_array()
             .expect("verified locations");
-        for entry in verified_locations.iter().take(8) {
+        // The top body must survive: agents cite the highest-ranked
+        // location and synthesise around it. Bodies past index 0 may be
+        // dropped (Stage 2: past index 2 always; Stage 3: oversized
+        // bodies at indexes 1 and 2 when still over budget).
+        let first_body = verified_locations[0]["body"].as_str().unwrap_or("");
+        assert!(
+            !first_body.is_empty(),
+            "top body must survive budget trimming so the agent has at least one full citation source"
+        );
+        // Bodies past index 2 must be dropped to make room for pack rows.
+        for entry in verified_locations.iter().skip(3).take(5) {
             assert_eq!(
                 entry["body"], "",
-                "oversized raw bodies should be dropped before compact pack rows"
+                "bodies past index 2 should be dropped before compact pack rows"
             );
             assert_eq!(entry["body_dropped"], true);
         }

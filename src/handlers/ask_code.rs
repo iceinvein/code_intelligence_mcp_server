@@ -313,7 +313,7 @@ fn build_unavailable_response(
     evidence: &[EvidenceItem],
 ) -> Value {
     let pack = pack_from_investigate(investigate_response);
-    json!({
+    let mut response = json!({
         "question": question,
         "response_shape": "compact_evidence",
         "answer": "",
@@ -327,7 +327,9 @@ fn build_unavailable_response(
         "follow_up": "ask_code's answer LLM is not available (LLM_ENABLED=false, missing model, or load failure). Use the evidence[] array below or call `investigate` / specialist tools directly.",
         "dropped_citation_count": 0,
         "evidence_count": evidence.len(),
-    })
+    });
+    forward_test_coverage(investigate_response, &mut response);
+    response
 }
 
 fn investigate_pack_has_rows(investigate_response: &Value) -> bool {
@@ -408,7 +410,7 @@ fn build_evidence_only_response(
             rephrased prompts."
             .to_string()
     };
-    json!({
+    let mut response = json!({
         "question": question,
         "response_shape": "compact_evidence",
         "answer": "",
@@ -423,7 +425,21 @@ fn build_evidence_only_response(
         "dropped_citation_count": 0,
         "evidence_count": evidence_count,
         "cached": false,
-    })
+    });
+    forward_test_coverage(investigate_response, &mut response);
+    response
+}
+
+/// Copy investigate's `test_coverage` block through to the ask_code
+/// response. Test-coverage questions ("which tests cover X") were
+/// thrashing because ask_code's BM25 hit list returned production
+/// symbols only, hiding the answer the test_links table already had;
+/// surfacing the block at the top level lets the agent cite test_files
+/// without a second tool call.
+fn forward_test_coverage(investigate_response: &Value, response: &mut Value) {
+    if let Some(tc) = investigate_response.get("test_coverage") {
+        response["test_coverage"] = tc.clone();
+    }
 }
 
 fn build_synthesized_response(
@@ -457,7 +473,7 @@ fn build_synthesized_response(
         follow_up
     };
 
-    json!({
+    let mut response = json!({
         "question": question,
         "response_shape": "compact_evidence",
         "answer": answer_text,
@@ -472,7 +488,9 @@ fn build_synthesized_response(
         "dropped_citation_count": dropped_citation_count,
         "evidence_count": evidence_count,
         "cached": false,
-    })
+    });
+    forward_test_coverage(investigate_response, &mut response);
+    response
 }
 
 fn follow_up_hint(

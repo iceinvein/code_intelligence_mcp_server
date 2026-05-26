@@ -222,6 +222,39 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| text.contains(n))
 }
 
+/// Detect questions that ask about the test suite for a piece of production
+/// code (e.g. "what test file covers X", "which tests exercise Y").
+///
+/// Investigate auto-runs `get_tests_for_source` on the primary symbol when
+/// this fires so the test file shows up in the first response instead of
+/// being hidden behind a separate `find_tests_for_symbol` call the agent
+/// often forgets to make.
+fn is_test_coverage_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    if !contains_any(&q, &[" test", "tests", "spec ", "specs"]) {
+        return false;
+    }
+    contains_any(
+        &q,
+        &[
+            "what test",
+            "which test",
+            "what tests",
+            "which tests",
+            "test file",
+            "test files",
+            "test coverage",
+            "covers",
+            "covered by",
+            "exercise",
+            "exercises",
+            "exercised",
+            "unit test",
+            "spec file",
+        ],
+    )
+}
+
 /// Public entry point wired from the dispatcher.
 pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Result<Value> {
     let question = tool.question.trim().to_string();
@@ -264,8 +297,69 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         None
     };
 
-    let bundle = build_response(&question, shape, plan_value, primary, secondary, max_hops);
+    // Step 3.5: auto-include test files for test-coverage questions.
+    // ask_code's BM25 ranking returns production symbols when the user
+    // asks "what test covers X", which sends the agent into thrash mode
+    // hunting for the test file. Resolve it server-side from the
+    // test_links table so the first response carries the answer.
+    let test_coverage = if is_test_coverage_question(&question) {
+        run_test_coverage_lookup(state, &primary)?
+    } else {
+        None
+    };
+
+    let bundle = build_response(
+        &question,
+        shape,
+        plan_value,
+        primary,
+        secondary,
+        test_coverage,
+        max_hops,
+    );
     Ok(bundle)
+}
+
+/// Test-coverage data resolved for the primary symbol when the question
+/// shape asks "what tests cover this".
+struct TestCoverage {
+    /// Symbol whose tests we resolved.
+    source_symbol: String,
+    /// Source file we looked tests up from.
+    source_file: String,
+    /// Test files linked to the source file via test_links.
+    test_files: Vec<String>,
+    /// Specific test symbols that call the source symbol via call-graph edges.
+    callers: Vec<(String, String, String, u32, String)>,
+}
+
+fn run_test_coverage_lookup(
+    state: &AppState,
+    primary: &PrimaryHop,
+) -> Result<Option<TestCoverage>> {
+    // Skip if the top hit is itself a test file: the question is most
+    // likely "how does this test work", not "which tests cover X".
+    let Some(top) = primary.locations.first() else {
+        return Ok(None);
+    };
+    if crate::classify::is_test_file(&top.file_path) {
+        return Ok(None);
+    }
+
+    let sqlite = &state.sqlite;
+    let test_files = sqlite.get_tests_for_source(&top.file_path)?;
+    if test_files.is_empty() {
+        return Ok(None);
+    }
+
+    let callers = sqlite.find_test_symbols_calling(&test_files, &top.symbol_id, 8)?;
+
+    Ok(Some(TestCoverage {
+        source_symbol: top.symbol_name.clone(),
+        source_file: top.file_path.clone(),
+        test_files,
+        callers,
+    }))
 }
 
 /// Result of the first hop: the search_code response plus a list of
@@ -663,6 +757,7 @@ fn build_response(
     plan: Value,
     primary: PrimaryHop,
     secondary: Option<SecondaryHop>,
+    test_coverage: Option<TestCoverage>,
     max_hops: u32,
 ) -> Value {
     let mut all_locations = primary.locations.clone();
@@ -722,6 +817,24 @@ fn build_response(
         secondary_via: secondary.as_ref().map(|s| s.via.to_string()),
     });
 
+    let test_coverage_value = test_coverage.as_ref().map(|tc| {
+        json!({
+            "source_symbol": tc.source_symbol,
+            "source_file": tc.source_file,
+            "test_files": tc.test_files,
+            "callers": tc.callers.iter().map(|(id, name, file, line, edge)| json!({
+                "test_id": id,
+                "test_name": name,
+                "test_file": file,
+                "line": line,
+                "edge_type": edge,
+            })).collect::<Vec<_>>(),
+            "note": "test_files is the verified answer: paths resolved via test_links \
+                (path-pattern inference at index time) and confirmed against the \
+                symbols table. Cite test_files[0] directly without Read/Grep verification."
+        })
+    });
+
     let mut response = json!({
         "question": question,
         "mode_used": shape.as_str(),
@@ -741,6 +854,10 @@ fn build_response(
             do not state their file paths or line numbers without a separate \
             get_definition, find_references, or specialist graph call."
     });
+
+    if let Some(tc_value) = test_coverage_value {
+        response["test_coverage"] = tc_value;
+    }
 
     apply_response_budget(&mut response);
     response
@@ -1440,6 +1557,7 @@ mod tests {
             json!({}),
             primary,
             None,
+            None,
             3,
         );
 
@@ -1489,6 +1607,7 @@ mod tests {
             InvestigationShape::Discover,
             json!({}),
             primary,
+            None,
             None,
             3,
         );
@@ -1551,6 +1670,7 @@ mod tests {
             json!({}),
             primary,
             None,
+            None,
             3,
         );
         let serialized = serde_json::to_string(&response).expect("response should serialize");
@@ -1603,6 +1723,7 @@ mod tests {
             InvestigationShape::Discover,
             json!({}),
             primary,
+            None,
             None,
             3,
         );
@@ -1714,6 +1835,7 @@ mod tests {
                 locations: Vec::new(),
             },
             None,
+            None,
             3,
         );
 
@@ -1721,6 +1843,37 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("[context_chain truncated]"));
+    }
+
+    #[test]
+    fn test_coverage_question_detector_catches_test_file_questions() {
+        for q in [
+            "What test file covers the dedupe logic?",
+            "which tests exercise deduplicateFindings?",
+            "what unit test covers tokenize",
+            "Is there test coverage for the pr-review module?",
+            "what spec file covers the auth flow",
+            "what tests are covered by the auth integration",
+        ] {
+            assert!(
+                is_test_coverage_question(q),
+                "should detect as test-coverage question: {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_coverage_question_detector_rejects_unrelated_questions() {
+        for q in [
+            "How does createSession work?",
+            "what is the test runner config",
+            "trace data flow for HYBRID_ALPHA",
+        ] {
+            assert!(
+                !is_test_coverage_question(q),
+                "should NOT detect as test-coverage question: {q}"
+            );
+        }
     }
 
     /// Regression: when only context_chain + bodies push the response over
@@ -1751,6 +1904,7 @@ mod tests {
             InvestigationShape::CallTrace,
             json!({}),
             primary,
+            None,
             None,
             3,
         );

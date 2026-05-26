@@ -160,7 +160,7 @@ pub struct PlanCodeInvestigationTool {
 
 #[macros::mcp_tool(
     name = "investigate",
-    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns `pack.rows` plus `verified_locations`. Use `pack.rows` as the synthesis outline for callsite enumeration, pipeline traces, data flow, impact radius, dependency maps, and symbol lookup. Rows with role=\"candidate\" or a `pack.coverage.status` of partial/no_hits must be presented as candidates or followed up with `verified_locations`/specialist tools before making definitive line-level claims. When coverage is complete and rows or verified locations include the needed line-level source, Do not call Grep/Read to re-check the same files. Use Grep/Read only for partial/no_hits coverage, candidate rows, or missing source bodies needed for citation. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
+    description = "Run a complete multi-step code investigation in one call. Pass a natural-language question; the server picks the right specialist chain (search_code -> get_call_hierarchy / trace_data_flow / find_affected_code / explore_dependency_graph based on question shape), executes it, and returns `pack.rows` plus `verified_locations`. Use `pack.rows` as the synthesis outline for callsite enumeration, pipeline traces, data flow, impact radius, dependency maps, and symbol lookup. Rows with role=\"candidate\" or a `pack.coverage.status` of partial/no_hits must be presented as candidates or followed up with `verified_locations`/specialist tools before making definitive line-level claims. Don't Read or Grep files the rows already cover; cite directly. If the question names a file, symbol, or path that no row contains (the coverage classifier can mark complete and still miss test files, configs, or files outside the question's main noun-phrase), fall back to Grep/Glob/Read once -- don't re-query investigate with rephrased prompts. Pass mode=\"auto\" (default) to let the server classify, or override with discover/trace/data/impact/dependency/module."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct InvestigateTool {
@@ -178,7 +178,7 @@ pub struct InvestigateTool {
 
 #[macros::mcp_tool(
     name = "ask_code",
-    description = "Ask a question about the codebase and retrieve grounded evidence. The server runs the full investigate chain and returns structured `pack.rows`, `evidence[]`, mode metadata, and `pack.coverage.status`. The `answer` field is empty by default because local prose caused hallucinations; synthesize the user-facing answer yourself. Prefer `pack.rows` when present as the synthesis outline, but treat rows with role=\"candidate\" or `pack.coverage.status` partial/no_hits as candidates until confirmed with `evidence[]`, verified locations, or specialist tools. The evidence[] array contains source bodies and line ranges for verification and citation. When coverage is complete and `evidence[]` or `pack.rows` includes the needed line-level source, Do not call Grep/Read to re-check the same files. Use follow-up tools only for partial/no_hits coverage, candidate rows, or missing source bodies needed for citation."
+    description = "Ask a question about the codebase and retrieve grounded evidence. The server runs the full investigate chain and returns structured `pack.rows`, `evidence[]`, mode metadata, and `pack.coverage.status`. The `answer` field is empty by default because local prose caused hallucinations; synthesize the user-facing answer yourself. Prefer `pack.rows` when present as the synthesis outline, but treat rows with role=\"candidate\" or `pack.coverage.status` partial/no_hits as candidates until confirmed with `evidence[]`, verified locations, or specialist tools. The evidence[] array contains source bodies and line ranges for verification and citation. Don't Read or Grep files the rows already cover; cite directly. If the question names a file, symbol, or path that no row contains (the coverage classifier can mark complete and still miss test files, configs, or files outside the question's main noun-phrase), fall back to Grep/Glob/Read once -- don't re-query ask_code or investigate with rephrased prompts."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct AskCodeTool {
@@ -619,9 +619,9 @@ mod tests {
             "partial",
             "no_hits",
             "candidate",
-            "coverage is complete",
-            "Do not call Grep/Read",
-            "missing source bodies",
+            "Don't Read or Grep files the rows already cover",
+            "fall back to Grep/Glob/Read once",
+            "don't re-query",
         ] {
             assert!(
                 desc.contains(required),
@@ -646,9 +646,9 @@ mod tests {
             "partial",
             "no_hits",
             "candidate",
-            "coverage is complete",
-            "Do not call Grep/Read",
-            "missing source bodies",
+            "Don't Read or Grep files the rows already cover",
+            "fall back to Grep/Glob/Read once",
+            "don't re-query",
         ] {
             assert!(
                 desc.contains(required),

@@ -400,11 +400,12 @@ fn build_evidence_only_response(
         "ask_code returned verified compact evidence without LLM prose (Path 2 default). \
             Synthesise the final answer yourself from the `evidence[]` array below: each item carries \
             symbol_name, file_path, line range, and the actual code body. Use these as the source of \
-            truth -- they were already retrieved and shape-classified by `investigate`. If \
-            `pack.coverage.status` is complete and the needed line-level source is present, \
-            Do not call Grep, Read, or Glob to re-check the same files. Call specialist tools \
-            only for partial/no_hits coverage, candidate rows, or missing source bodies needed \
-            for citation."
+            truth -- they were already retrieved and shape-classified by `investigate`. Don't Read \
+            or Grep the files the rows already cover; cite directly. If the question names a \
+            file, symbol, or path that no row contains (the coverage classifier can mark complete \
+            and still miss test files, configs, or files outside the question's main noun-phrase), \
+            fall back to Grep/Glob/Read once -- don't re-query ask_code or investigate with \
+            rephrased prompts."
             .to_string()
     };
     json!({
@@ -771,10 +772,19 @@ mod tests {
         assert_eq!(response["evidence"][0]["file_path"], "src/lib.rs");
         assert_eq!(response["evidence"][0]["start_line"], 10);
         assert_eq!(response["evidence"][0]["body"], "body");
-        assert!(response["follow_up"]
-            .as_str()
-            .unwrap()
-            .contains("Do not call Grep, Read, or Glob"));
+        let follow_up = response["follow_up"].as_str().unwrap();
+        assert!(
+            follow_up.contains("Don't Read or Grep the files the rows already cover"),
+            "follow_up should keep Grep/Read off the happy path, got: {follow_up}"
+        );
+        assert!(
+            follow_up.contains("fall back to Grep/Glob/Read once"),
+            "follow_up must offer a single fallback path when rows miss the named target, got: {follow_up}"
+        );
+        assert!(
+            follow_up.contains("don't re-query ask_code or investigate"),
+            "follow_up must forbid the rephrase-loop failure mode, got: {follow_up}"
+        );
     }
 
     #[test]

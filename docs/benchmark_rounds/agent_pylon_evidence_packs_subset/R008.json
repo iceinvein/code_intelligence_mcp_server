@@ -1,0 +1,860 @@
+{
+  "runs": [
+    {
+      "question_id": "pylon-q1",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "There are four production callsites of `sessionManager.createSession` across the main process:\n\n---\n\n**1. `src/main/ipc-handlers.ts` line 180 \u2014 `IPC.SESSION_CREATE` handler**\nThe `SESSION_CREATE` IPC channel handler. The renderer calls this when it needs a new user-facing session (lazy creation on first message in `SessionView`). Passes `cwd`, optional `model`, and optional `useWorktree` from the renderer args. This is the only callsite that creates sessions directly on behalf of the user.\n\n---\n\n**2. `src/main/pr-review-manager.ts` line 1421 \u2014 `runRevalidationSession()`**\nCreates a throw-away `pr-review`-tagged session to run the revalidation pass on PR findings (re-running specific findings through the model to confirm they still hold). Immediately sets `auto-approve` permissions, subscribes to streaming text to collect the response, sends one message, then stops the session.\n\n---\n\n**3. `src/main/pr-review-manager.ts` line 1472 \u2014 `runCriticPass()` (via inner `runWithAgent()`)**\nCreates a throw-away `pr-review` session to run the critic/filter pass (the generator+critic pattern). Sets `auto-approve` and `effort`, calls `sendGitAiQuery` with a critic prompt to get verdicts on candidate findings, then stops the session. Falls back to a peer provider and creates a second session if the primary fails.\n\n---\n\n**4. `src/main/pr-review-manager.ts` line 1577 \u2014 `runPeerReviewPass()`**\nCreates a throw-away `pr-review` session for the peer-provider \"second opinion\" pass: the alternate provider (Claude vs Codex) reviews the primary agent's findings and proposes additions/updates. Sets `auto-approve` and `effort`, calls `sendGitAiQuery`, parses the diff of changes, then stops the session.\n\n---\n\n**5. `src/main/pr-review-manager.ts` line 1679 \u2014 `runAgentSession()`**\nCreates the primary agent session for each parallel specialist review agent (one per focus area/chunk). This is the main per-agent session that does the actual PR diff analysis. Optionally passes an MCP config (`code-intelligence` server) for semantic context. Sets `auto-approve` and `effort`, then drives the full agent loop to collect findings.",
+      "input_tokens": 8,
+      "output_tokens": 1853,
+      "wall_ms": 39846,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 20404,
+      "cache_read_input_tokens": 209840,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "createSession",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main",
+            "output_mode": "content",
+            "glob": "*.ts",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts",
+            "offset": 170,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1410,
+            "limit": 100
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1565,
+            "limit": 130
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1520,
+            "limit": 50
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1510,
+            "limit": 12
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 230252,
+      "mech_score": 1.0,
+      "judge_scores_by_pair": {
+        "code_intel": 8,
+        "code_graph": 8
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Answer A correctly identifies all 4 required callsites per the rubric: IPC handler at line 180 + three PR-review callsites at lines 1421, 1472, 1577. Captures the bonus by explicitly noting the 'pr-review' session-kind tag for all three PR-review callsites. Provides clear context about what each callsite does (revalidation, critic pass, peer review). Main penalty: hallucinated 5th callsite (line 1679 runAgentSession) not mentioned in rubric, which is not part of the specified three PR-review callsites.",
+        "code_graph": "Answer A correctly addresses SessionManager.createSession callsites per the rubric. It identifies ipc-handlers.ts:180 (renderer IPC bridge), and all three pr-review-manager.ts callsites at the specified lines (1421, 1472, 1577), with accurate descriptions of each review-spawn path. Correctly notes the 'pr-review' session-kind tag on PR callsites. Includes a 4th callsite at 1679 (runAgentSession) which adds useful context but wasn't explicitly required. Minor: line numbers are approximate per rubric language ('around lines'), so exact matches are acceptable."
+      },
+      "judge_score": 8,
+      "judge_justification": "Answer A correctly identifies all 4 required callsites per the rubric: IPC handler at line 180 + three PR-review callsites at lines 1421, 1472, 1577. Captures the bonus by explicitly noting the 'pr-review' session-kind tag for all three PR-review callsites. Provides clear context about what each callsite does (revalidation, critic pass, peer review). Main penalty: hallucinated 5th callsite (line 1679 runAgentSession) not mentioned in rubric, which is not part of the specified three PR-review callsites."
+    },
+    {
+      "question_id": "pylon-q1",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "There are **5 direct callsites** of `sessionManager.createSession` in the main process:\n\n---\n\n**1. `src/main/ipc-handlers.ts` ~line 180 \u2014 `registerIpcHandlers`**\nHandles the `SESSION_CREATE` IPC channel. The renderer calls `window.api.createSession(cwd, model, useWorktree)`, which arrives here and is forwarded to `sessionManager.createSession`, returning the new session ID. This is the entry point for user-initiated sessions.\n\n---\n\n**2. `src/main/pr-review-manager.ts` ~line 1421 \u2014 `runRevalidationSession`**\nCreates a session tagged `'pr-review'` for a revalidation pass. After the primary review runs, a subset of findings is re-run through an agent to confirm or dismiss them before results are surfaced.\n\n---\n\n**3. `src/main/pr-review-manager.ts` ~line 1472 \u2014 `runCriticPass`**\nCreates a session for the critic/peer agent (inside a `runWithAgent` local constant). This agent reads the primary review's candidate findings and produces verdicts (accept / escalate / reject).\n\n---\n\n**4. `src/main/pr-review-manager.ts` ~line 1577 \u2014 `runPeerReviewPass`**\nCreates a session for a second-opinion peer review agent that independently re-examines findings and can suggest updates or additions, providing a checks-and-balances layer over the primary reviewer.\n\n---\n\n**5. `src/main/pr-review-manager.ts` ~line 1679 \u2014 `runAgentSession`**\nCreates a session for one specialist focus-area agent (security, bugs, performance, style, etc.), passing `source: 'pr-review'` and optionally injecting an MCP code-intelligence server config. This is the general-purpose factory the PR review orchestrator uses for its parallel specialist agents.\n\n---\n\n**Summary:** IPC handles user-facing session creation (1 callsite); the PR review manager accounts for all other callsites (4), covering its specialist agents, critic pass, and revalidation pass, all driven internally without user interaction.",
+      "input_tokens": 16,
+      "output_tokens": 1621,
+      "wall_ms": 134463,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 24591,
+      "cache_read_input_tokens": 267141,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Who calls SessionManager.createSession across the main process? List all callsites and what each one is doing.",
+            "target": "SessionManager.createSession",
+            "mode": "trace",
+            "max_evidence": 12
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__find_references",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__find_references",
+          "args": {
+            "symbol_name": "createSession",
+            "file": "src/main/session-manager.ts",
+            "reference_type": "call"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__investigate",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__investigate",
+          "args": {
+            "question": "Find all callsites of sessionManager.createSession across the main process",
+            "target": "createSession",
+            "file_path": "src/main/session-manager.ts",
+            "mode": "trace",
+            "max_hops": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Agent",
+          "args": {
+            "description": "Read persisted investigation JSON and extract callsites",
+            "prompt": "Read the file at /Users/dikrana/.claude/projects/-Users-dikrana-Documents-workspace-pylon/ebdb16ef-1a2f-4a2a-a37d-16ade66ef7b7/tool-results/toolu_01XX88C873C2q1HgZ3pLGk13.json and extract every location where `sessionManager.createSession` (or `this.createSession`) is called. For each callsite report: file path, line number, caller function/context, and a one-line description of what it's doing. Return only the callsite list, no prose.",
+            "subagent_type": "general-purpose"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:Read",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:Read,Write,Edit",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:Read",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "read file filesystem",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:LSP",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__find_references",
+          "args": {
+            "file_path": "src/main/session-manager.ts",
+            "symbol_name": "createSession"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__find_references",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__find_references",
+          "args": {
+            "symbol_name": "createSession",
+            "reference_type": "call"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Where is sessionManager.createSession or this.createSession called? List every callsite with file path, line number, caller function/context, and what it does.",
+            "target": "createSession",
+            "max_evidence": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "sessionManager.createSession",
+            "context": "snippets",
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "this.createSession cwd model useWorktree",
+            "context": "snippets",
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:WebSearch",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "LSP",
+          "args": {
+            "operation": "findReferences",
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "line": 237,
+            "character": 9
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "LSP",
+          "args": {
+            "operation": "findReferences",
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "line": 237,
+            "character": 11
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "LSP",
+          "args": {
+            "operation": "documentSymbol",
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts",
+            "line": 1,
+            "character": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "LSP",
+          "args": {
+            "operation": "hover",
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts",
+            "line": 180,
+            "character": 29
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "LSP",
+          "args": {
+            "operation": "hover",
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "line": 1421,
+            "character": 44
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "LSP",
+          "args": {
+            "operation": "documentSymbol",
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "line": 1,
+            "character": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 291748,
+      "mech_score": 1.0,
+      "judge_baseline_score": 8,
+      "judge_baseline_justification": "Answer A correctly identifies all 4 required callsites per the rubric: IPC handler at line 180 + three PR-review callsites at lines 1421, 1472, 1577. Captures the bonus by explicitly noting the 'pr-review' session-kind tag for all three PR-review callsites. Provides clear context about what each callsite does (revalidation, critic pass, peer review). Main penalty: hallucinated 5th callsite (line 1679 runAgentSession) not mentioned in rubric, which is not part of the specified three PR-review callsites.",
+      "judge_justification": "Answer B correctly identifies the same 4 required callsites but with less detail and context per callsite. Mentions the 'pr-review' tag only once (line 2), missing the bonus by not noting it consistently for all three PR-review callsites (lines 3 and 4 omit it). Same hallucination problem: adds line 1679 runAgentSession not in rubric. While the summary is helpful, it doesn't compensate for missing bonus details and being less informative about what each callsite actually does.",
+      "judge_score": 6
+    },
+    {
+      "question_id": "pylon-q1",
+      "toolset": "code_graph",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here are all six main-process callsites of `provider.createSession` (the provider-level factory that backs `SessionManager`):\n\n---\n\n**1. `SessionManager.sendMessage` \u2014 `src/main/session-manager.ts:329`**\nThe primary interactive callsite. When the first message arrives for a session, it calls `provider.createSession(...)` with the session's persisted `cwd`, `model`, `effort`, and `permissionMode`, wiring up the live IPC permission/question callbacks so the renderer can prompt the user. This is the session users interact with in the chat UI.\n\n**2. `SessionManager.sendGitAiQuery` \u2014 `src/main/session-manager.ts:732`**\nCreates a fire-and-forget text-only provider session scoped to the existing session's `cwd`/`model`, with `permissionMode: 'auto-approve'` and a fresh `AbortController`. Used for background git AI queries (e.g. commit-message generation) that must never appear in the chat UI.\n\n**3. `runProviderTextQuery` \u2014 `src/main/provider-text-query.ts:19`**\nA standalone utility that opens a single-shot text-only provider session with `permissionMode: 'never'` and tool-use denied. Used for lightweight one-off LLM calls from anywhere in the main process that needs a text response outside of a user session.\n\n**4. `TestManager.suggestGoals` \u2014 `src/main/test-manager.ts:119`**\nCalls `agent.provider.createSession(...)` with `permissionMode: 'auto-approve'` to run a goal-suggestion agent against the project scan. Feeds results back over IPC as `TEST_GOAL_SUGGESTION` events. Aborts any prior in-flight suggestion first.\n\n**5. `TestManager.runExploration` \u2014 `src/main/test-manager.ts:497`**\nSame pattern: `agent.provider.createSession(...)` with `auto-approve`, but for a full test-exploration run. The session drives an agent that navigates a URL, reports findings, and optionally generates Playwright tests; results stream back as `TEST_EXPLORATION_UPDATE` events.\n\n**6. `WorktreeRecipeService.analyzeProject` \u2014 `src/main/worktree-recipe-service.ts:274`**\nCreates a minimal text-only session (`effort: 'low'`, `permissionMode: 'auto-approve'`) using whatever Claude model is resolved for the project, to generate a `WorktreeRecipe` (the setup-steps document for fresh worktrees). Purely analytical -- no tool use expected.",
+      "input_tokens": 10,
+      "output_tokens": 1978,
+      "wall_ms": 37437,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 19337,
+      "cache_read_input_tokens": 205289,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_callers",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_callers",
+          "args": {
+            "symbol": "createSession"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/provider-text-query.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "offset": 305,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "offset": 715,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "offset": 65,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "offset": 419,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/worktree-recipe-service.ts",
+            "offset": 256,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "offset": 94,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "offset": 455,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "offset": 484,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 224636,
+      "mech_score": 0.4666666666666667,
+      "judge_baseline_score": 8,
+      "judge_baseline_justification": "Answer A correctly addresses SessionManager.createSession callsites per the rubric. It identifies ipc-handlers.ts:180 (renderer IPC bridge), and all three pr-review-manager.ts callsites at the specified lines (1421, 1472, 1577), with accurate descriptions of each review-spawn path. Correctly notes the 'pr-review' session-kind tag on PR callsites. Includes a 4th callsite at 1679 (runAgentSession) which adds useful context but wasn't explicitly required. Minor: line numbers are approximate per rubric language ('around lines'), so exact matches are acceptable.",
+      "judge_justification": "Answer B fundamentally answers the wrong question. The rubric explicitly warns: 'Should NOT confuse this with provider.createSession (different method on AgentProvider; lives in test-manager.ts, provider-text-query.ts, worktree-recipe-service.ts...).' Answer B does exactly this: it lists provider.createSession callsites (from session-manager.ts, provider-text-query.ts, test-manager.ts, worktree-recipe-service.ts) instead of SessionManager.createSession callsites. While the provider-specific information may be technically accurate, it fails the core requirement to answer the asked question. The rubric explicitly enumerates these files as places NOT to confuse with the target method.",
+      "judge_score": 1
+    },
+    {
+      "question_id": "pylon-q10",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is the full orchestration walk-through.\n\n---\n\n## `startReview` entry point (line 903)\n\n`startReview` is synchronous from the caller's perspective. It:\n\n1. **Fetches PR detail** via `getPrDetail` (`gh-cli.ts`) to obtain `baseSha`, `headSha`, `headBranch`, etc.\n2. **Resolves review mode** (full vs incremental) by calling `ensureReviewSeries` and `getLatestSuccessfulReviewBaseline` against SQLite (`db.ts`). Incremental kicks in only when the previous review's `baseSha` matches the current one.\n3. **Seeds the DB row** -- inserts into `pr_reviews` with `status = 'running'` and fires `IPC.GH_REVIEW_UPDATE` to the renderer.\n4. **Fires `runParallelReview` as a detached promise** (`.catch` handles failures) and immediately returns the `PrReview` object.\n\n---\n\n## `runParallelReview` (line 1017) -- the real work\n\n### 1. Worktree creation (line 1038)\n`createPrWorktree` runs `git fetch origin pull/<n>/head:pr-review/<n>` then `git worktree add` to check out the PR head at `~/.pylon/worktrees/<repo>/pr-<n>-<reviewId>`. Falls back to fetching the branch name directly.\n\n### 2. Scope resolution (line 1049)\nCalls `resolveReviewScope` (`review-scope.ts`) which computes the actual diff (full PR or head-to-head incremental range), the touched file list, and the canonical SHA range. The result is persisted via `updateReviewScopeMetadata` and `persistReviewRunFiles`.\n\n### 3. Diff chunking (line 1065-1078)\n`getTokenBudget` and `chunkDiff` (both from `diff-chunker.ts`) split the diff into token-budget-aware chunks so no single agent prompt exceeds the model's context window. Oversized files are skipped.\n\n### 4. Context building (lines 1125-1203)\n- `resolveCodeIntelligenceMcpConfig` (`pr-review-mcp-config.ts`) resolves an MCP stdio config (from the DB override or auto-discovery).\n- `HeuristicContextBackend` (`pr-context/heuristic-context-backend.ts`) is always created as the fallback.\n- `McpContextBackend` (`pr-context/mcp-context-backend.ts`) wraps a `CodeIntelligenceMcpClient` (`pr-context/mcp-client.ts`) for semantic context if a config is available.\n- `PrContextBuilder` (`pr-context/pr-context-builder.ts`) runs `builder.build(...)` with a 20-second total timeout, enriching the agents' view with changed symbols, references, and related tests. Progress is pushed to the renderer via `IPC.GH_REVIEW_CONTEXT_UPDATE`.\n\n### 5. Parallel agent sessions (lines 1205-1225)\nOne `runAgentSession` call per focus area (security, bugs, performance, etc.) is launched concurrently via `Promise.allSettled`. Each agent:\n- Creates an isolated provider session via `sessionManager.createSession` (injecting the MCP config as `mcpServers.code-intelligence`).\n- Iterates over diff chunks, sending the first with `buildPrReviewFirstChunkPrompt` and subsequent ones with `buildPrReviewContinuationPrompt` (both from `pr-review-prompts.ts`).\n- Streams text back via `sessionManager.onMessage`; `extractReviewOutputText`/`appendReviewOutputText` (`pr-review-output.ts`) accumulate it.\n- Parses structured `ReviewFinding[]` from the accumulated text via `parseFindings`.\n- After completion, counts MCP tool calls via `countMcpToolUses` (`pr-review-prompts.ts`) for telemetry.\n- The worktree is torn down in the `finally` block once all agents settle.\n\n### 6. Deduplication (line 1249)\n`deduplicateFindings` (`pr-review-dedupe.ts`) merges near-duplicate findings from all agents into a single list.\n\n### 7. Critic pass (line 1253)\n`runCriticPass` implements a generator+critic pattern:\n- `partitionForCritic` (`pr-review-critic.ts`) auto-keeps high-severity findings (blocker/high + must-fix + anchored) and sends the rest as candidates.\n- A new provider session runs the critic prompt (`buildCriticPrompt`).\n- `parseCriticVerdicts` and `applyCriticVerdicts` (both `pr-review-critic.ts`) remove findings the critic rejects. If the primary provider fails, `resolvePeerReviewAgent` picks the other provider and retries once.\n\n### 8. Peer review pass (line 1254)\n`runPeerReviewPass` routes the filtered findings to the opposite provider (Claude vs Codex):\n- `buildPeerReviewPrompt` (`pr-review-peer-review.ts`) constructs the cross-provider prompt.\n- The response is parsed via `parsePeerReviewChanges` and applied via `applyPeerReviewChanges` (both `pr-review-peer-review.ts`).\n- `deduplicateFindings` runs again on the merged result.\n- The second-opinion summary is persisted via `updateReviewSecondOpinion`.\n\n### 9. Thread assignment and lifecycle (lines 1261-1323)\n`assignFindingThreads` fingerprints each finding (`domain|file|line-bucket|title`) and matches it against `pr_review_threads` in SQLite -- marking findings as `new`, `persisting`, or `resolved`. `applyThreadLifecycle` then carries forward or resolves any threads that weren't touched by this run.\n\nIn incremental mode, `runRevalidationPass` (`revalidation-worker.ts`, dynamically imported) re-checks previously-seen threads whose files were touched, and `resolveMappedCommentsForOutcomes` auto-resolves any matching GitHub review comments.\n\n### 10. Persistence (lines 1326-1378)\nAll `ThreadAssignment` entries are bulk-inserted into `pr_review_findings` via SQLite (`db.ts`). `updateReviewStatus`, `updateReviewSummary`, and the `pr_review_series.latest_review_id` pointer are all updated.\n\n### 11. Final IPC push (lines 1387-1411)\n`IPC.GH_REVIEW_UPDATE` is sent to the renderer with `status: 'done'`, the complete findings list (hydrated with GitHub post URLs), cost, and per-agent progress. `activeReviews` is cleared.\n\n---\n\n**Supporting modules at a glance:**\n\n| Step | Module |\n|---|---|\n| PR diff + metadata | `gh-cli.ts` |\n| Scope / incremental diff | `review-scope.ts` |\n| Token budget + chunking | `diff-chunker.ts` |\n| Context building | `pr-context/pr-context-builder.ts`, `mcp-context-backend.ts`, `heuristic-context-backend.ts`, `mcp-client.ts` |\n| MCP config | `pr-review-mcp-config.ts` |\n| Prompt construction | `pr-review-prompts.ts` |\n| Stream text helpers | `pr-review-output.ts` |\n| Deduplication | `pr-review-dedupe.ts` |\n| Critic pass | `pr-review-critic.ts` |\n| Peer review pass | `pr-review-peer-review.ts` |\n| Revalidation | `revalidation-worker.ts` |\n| Session lifecycle | `session-manager.ts` |\n| Provider resolution | `providers/registry.ts` |\n| Persistence | `db.ts` (SQLite via `node:sqlite`) |",
+      "input_tokens": 4,
+      "output_tokens": 3437,
+      "wall_ms": 75039,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 39683,
+      "cache_read_input_tokens": 54895,
+      "tool_calls": [
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 94582,
+      "mech_score": 0.6000000000000001,
+      "judge_scores_by_pair": {
+        "code_intel": 9,
+        "code_graph": 9
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Answer B correctly walks the full pipeline with proper ordering and explicitly separates all stages. It identifies startReview entry point with PR detail fetching via gh-cli.ts, then traces runParallelReview's sequential steps: worktree creation, scope resolution, context building (naming all three backends: pr-context-builder.ts, mcp-context-backend.ts, heuristic-context-backend.ts), parallel agents via sessionManager.createSession, deduplication via pr-review-dedupe.ts, critic pass via pr-review-critic.ts, and peer-review pass via pr-review-peer-review.ts. Critically, it distinguishes dedupe (line 1249, lexical merging), critic (line 1253, first LLM pass), and peer-review (line 1254, opposite-provider second opinion)\u2014exactly as required. Persistence and thread assignment follow clearly. The per-stage module attribution is complete and accurate (gh-cli.ts, pr-context/*, session-manager.ts, pr-review-dedupe.ts, pr-review-critic.ts, pr-review-peer-review.ts, db.ts). The final summary table anchors all mappings. No conflation of stages.",
+        "code_graph": "Comprehensive and accurate. Correctly identifies startReview at line 903, walks the entire pipeline in proper order (PR diff \u2192 scope \u2192 chunking \u2192 context \u2192 parallel agents \u2192 dedupe \u2192 critic \u2192 peer-review \u2192 threads \u2192 persistence), names every supporting module with full paths and line numbers, explicitly distinguishes dedupe (lexical merge: 'merges near-duplicate findings') from critic (scoring) from peer-review (second opinion, 'cross-provider'), includes helpful summary table at the end. No hallucinations. Slightly verbose but thorough; the summary table adds real value rather than padding."
+      },
+      "judge_score": 9,
+      "judge_justification": "Answer B correctly walks the full pipeline with proper ordering and explicitly separates all stages. It identifies startReview entry point with PR detail fetching via gh-cli.ts, then traces runParallelReview's sequential steps: worktree creation, scope resolution, context building (naming all three backends: pr-context-builder.ts, mcp-context-backend.ts, heuristic-context-backend.ts), parallel agents via sessionManager.createSession, deduplication via pr-review-dedupe.ts, critic pass via pr-review-critic.ts, and peer-review pass via pr-review-peer-review.ts. Critically, it distinguishes dedupe (line 1249, lexical merging), critic (line 1253, first LLM pass), and peer-review (line 1254, opposite-provider second opinion)\u2014exactly as required. Persistence and thread assignment follow clearly. The per-stage module attribution is complete and accurate (gh-cli.ts, pr-context/*, session-manager.ts, pr-review-dedupe.ts, pr-review-critic.ts, pr-review-peer-review.ts, db.ts). The final summary table anchors all mappings. No conflation of stages."
+    },
+    {
+      "question_id": "pylon-q10",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "I have enough from the complete `startReview` body (evidence lines 903-1015), the partial `runParallelReview` preview (lines 1017+), and the CLAUDE.md architecture description to give a thorough, well-cited answer.\n\n---\n\n## `startReview` orchestration walkthrough\n\n`startReview` is defined at **`src/main/pr-review-manager.ts` lines 903-1015**. It handles setup and record creation synchronously, then hands off the real work asynchronously.\n\n### 1. Pre-flight and mode selection (lines 903-935)\n\n- `resolveReviewAgent(options.agentModel, options.agentEffort)` picks the provider/model/effort tuple.\n- `getPrDetail(repo.fullName, prNumber)` fetches live PR metadata (head SHA, base SHA, branch name) via the GitHub CLI wrapper (lives in **`src/main/gh-cli.ts`** or **`gh-cli-review.ts`**).\n- `ensureReviewSeries` + `getLatestSuccessfulReviewBaseline` query SQLite (**`db.ts`** via **`sqlite-adapter.ts`**) to determine whether this is a fresh series or a re-review, and to find the parent review for incremental diffing.\n- `tentativeMode` is set to `'incremental'` if the base SHA hasn't moved since the last successful review, otherwise `'full'`.\n\n### 2. DB record creation (lines 935-985)\n\nA row is inserted into `pr_reviews` via `db.prepare(...).run(...)` with status `'running'`, the tentative mode, SHA snapshot (`base_sha`, `head_sha`, `compared_from_sha`, `compared_to_sha`), and an empty `summary_json`. This is pure **`db.ts`** / **`sqlite-adapter.ts`** work.\n\n### 3. In-memory registration + IPC broadcast (lines 985-1005)\n\n`this.activeReviews.set(reviewId, {...})` registers the review so streaming events can be routed. `this.send(IPC.GH_REVIEW_UPDATE, {...})` pushes the initial `running` status with per-focus-area `agentProgress` stubs to the renderer. Channel constants come from **`src/shared/ipc-channels.ts`**.\n\n### 4. Fire-and-forget to `runParallelReview` (lines 1008-1015)\n\n`this.runParallelReview(...)` is called without `await`. Errors are caught and translated into an `error` IPC event. `startReview` returns the in-progress `PrReview` object immediately.\n\n---\n\n## Inside `runParallelReview` (lines 1017-1413)\n\n### 5. Worktree isolation\n\n`this.createPrWorktree(repo.projectPath, detail.number, detail.headBranch, reviewId)` checks out the PR head into an isolated git worktree under `~/.pylon/worktrees/`. This uses **`git-worktree-service.ts`**. Falls back to `repo.projectPath` on failure.\n\n### 6. Scope resolution\n\n`resolveReviewScope({ repoPath, current, previous, requestedMode })` from **`pr-context/`** computes the exact file set and SHA range to review (full PR diff vs. incremental head-range since last review). `updateReviewScopeMetadata` and `persistReviewRunFiles` then write that scope back to SQLite.\n\n### 7. Context building\n\nThe **`pr-context/`** directory contains MCP-backed and heuristic builders:\n- Changed-file context, symbol references, and related tests are assembled into a context bundle (matching the schema in **`src/shared/pr-context-schema.json`**).\n- This bundle is passed as system context to each parallel specialist agent.\n\n### 8. Parallel specialist agents\n\nOne agent is spawned per entry in `focusAreas` (e.g., security, correctness, style). Each agent runs through **`session-manager.ts`** \u2192 **`providers/`** (Claude or Codex adapter, resolved via **`providers/registry.ts`**), gets the diff + context bundle, and streams findings back. Each agent's progress is broadcast via `IPC.GH_REVIEW_UPDATE` with per-`agentId` status updates.\n\n### 9. Deduplication\n\nRaw findings from all agents are merged and deduplicated. The dedup logic applies \u00b13-line proximity clustering across identical files (implemented in **`pr-review-manager.ts`** itself or a helper in **`src/main/`**), severity backfilling, and heuristic reordering to suppress MCP-trigger noise.\n\n### 10. Peer review (critic agent)\n\nA second-pass critic agent reviews the deduplicated findings for false positives. This is another `sendGitAiQuery`-style call through the session provider. The revalidation step (`includeRevalidation` flag from `startReview`'s options) can be skipped for re-runs where the caller wants raw findings.\n\n### 11. Persistence and final broadcast\n\nSurviving findings are written to the `pr_review_findings` table in SQLite (**`db.ts`**). The review row is updated from `'running'` to `'completed'` (or `'error'`) via `updateReviewStatus`. A final `IPC.GH_REVIEW_UPDATE` with `status: 'completed'`, all findings, and the review summary JSON is sent to the renderer.\n\nPosting findings back to GitHub as inline PR comments is a separate step driven by the renderer calling `postReviewToGithub`, which calls `prepareReviewPost` in **`src/main/gh-cli-review.ts`** (line 382) to map findings to GitHub's review comment API format.",
+      "input_tokens": 20,
+      "output_tokens": 6275,
+      "wall_ms": 121439,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 25468,
+      "cache_read_input_tokens": 347585,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "What happens when startReview is called in pr-review-manager.ts? Walk through the full orchestration: diff fetching, context building, parallel agents, dedupe, peer review, and persistence. Name the supporting modules each step uses.",
+            "target": "startReview",
+            "file_path": "src/main/pr-review-manager.ts",
+            "max_evidence": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__investigate",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__investigate",
+          "args": {
+            "question": "What does runParallelReview do? Walk through context building, parallel agents, dedupe, peer review, revalidation, and persistence steps. What supporting functions and modules does each step call?",
+            "target": "runParallelReview",
+            "file_path": "src/main/pr-review-manager.ts",
+            "mode": "trace",
+            "max_hops": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:Read",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "read file",
+            "max_results": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__get_context_bundle",
+          "args": {
+            "question": "runParallelReview context building parallel agents dedupe peer review persistence",
+            "symbol_ids": "[\"53b2aad4e374d3fa\"]"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__search_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "runParallelReview buildPrContext deduplicateFindings peerReview revalidate persist findings pr-review-manager",
+            "context": "snippets",
+            "limit": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 373073,
+      "mech_score": 0.4466666666666667,
+      "judge_baseline_score": 9,
+      "judge_baseline_justification": "Answer B correctly walks the full pipeline with proper ordering and explicitly separates all stages. It identifies startReview entry point with PR detail fetching via gh-cli.ts, then traces runParallelReview's sequential steps: worktree creation, scope resolution, context building (naming all three backends: pr-context-builder.ts, mcp-context-backend.ts, heuristic-context-backend.ts), parallel agents via sessionManager.createSession, deduplication via pr-review-dedupe.ts, critic pass via pr-review-critic.ts, and peer-review pass via pr-review-peer-review.ts. Critically, it distinguishes dedupe (line 1249, lexical merging), critic (line 1253, first LLM pass), and peer-review (line 1254, opposite-provider second opinion)\u2014exactly as required. Persistence and thread assignment follow clearly. The per-stage module attribution is complete and accurate (gh-cli.ts, pr-context/*, session-manager.ts, pr-review-dedupe.ts, pr-review-critic.ts, pr-review-peer-review.ts, db.ts). The final summary table anchors all mappings. No conflation of stages.",
+      "judge_justification": "Answer A correctly identifies startReview at line 903 and covers the main orchestration stages, naming gh-cli.ts, db.ts, pr-context/, and session-manager.ts. However, it has critical gaps: (1) It conflates dedupe with peer-review by listing 'Peer review (critic agent)' as a single step, violating the rubric's explicit warning that dedupe (lexical) and peer-review (LLM-driven second opinion) are separate stages. (2) It never mentions the peer-review pass from pr-review-peer-review.ts at all\u2014only mentions a 'critic agent' without acknowledging the separate peer-review pass. (3) For deduplication, it vaguely attributes to 'pr-review-manager.ts itself or a helper' rather than specifically naming pr-review-dedupe.ts. (4) The module table is absent. The narrative is reasonably clear but structurally incomplete.",
+      "judge_score": 5
+    },
+    {
+      "question_id": "pylon-q10",
+      "toolset": "code_graph",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "I have everything needed. Here is the full orchestration walkthrough:\n\n---\n\n## `startReview` orchestration in `pr-review-manager.ts`\n\nAll code is in `src/main/pr-review-manager.ts` unless another module is named.\n\n---\n\n### 1. Setup and immediate return (lines 903\u20131015)\n\n`startReview` does five things synchronously before handing off:\n\n1. **Resolves the agent** via `resolveReviewAgent` (same file), choosing model/effort from options or defaults (`claude-opus-4-7`, effort `high`).\n2. **Fetches PR detail** via `getPrDetail` from `src/main/gh-cli.ts` -- this shells out to `gh pr view` to get base/head SHAs, branches, and the full diff.\n3. **Determines full vs incremental mode**: if a prior successful review in the same series (`ensureReviewSeries`, `getLatestSuccessfulReviewBaseline`) has the same base SHA, the run is `incremental`; otherwise `full`.\n4. **Persists an initial `pr_reviews` row** via `src/main/db.ts` (`getDb()`), status `running`.\n5. **Fires `runParallelReview` without awaiting it** (`catch` handles errors) and returns the skeleton `PrReview` object immediately so the UI can render a running state.\n\n---\n\n### 2. Worktree and diff scoping (lines 1037\u20131079 in `runParallelReview`)\n\n- **Worktree**: `createPrWorktree` checks out the PR head branch into an isolated worktree at `~/.pylon/worktrees/` so agents operate on the right code.\n- **Scope resolution**: `resolveReviewScope` from `src/main/review-scope.ts` computes the precise diff. For incremental reviews it compares `parentReview.headSha \u2192 detail.headSha`; for full reviews it uses the entire PR diff.\n- **Chunking**: `chunkDiff` + `getTokenBudget` from `src/main/diff-chunker.ts` splits the scoped diff into token-budget chunks, skipping lock files and generated code. If all files are skipped, the review completes early.\n\n---\n\n### 3. Context building (lines 1125\u20131203)\n\n`PrContextBuilder` (from `src/main/pr-context/pr-context-builder.ts`) assembles a `PrContextBundle` written to `.pylon/pr-context.json` in the worktree. It tries two backends in order:\n\n- **MCP backend** (`src/main/pr-context/mcp-context-backend.ts`) via `CodeIntelligenceMcpClient` (`src/main/pr-context/mcp-client.ts`): calls the code-intelligence MCP server for changed-file symbols, call references, and related tests. Falls back automatically if the server is unreachable.\n- **Heuristic backend** (`src/main/pr-context/heuristic-context-backend.ts`): static grep/AST-based context extraction.\n\nThis runs with a 20-second total timeout and 8-second per-call timeout. The result (or degraded bundle on failure) is broadcast to the renderer via `IPC.GH_REVIEW_CONTEXT_UPDATE`.\n\n---\n\n### 4. Parallel specialist agents (lines 1205\u20131221)\n\nOne `runAgentSession` call per focus area (e.g., `security`, `correctness`, `performance`, ...) is launched concurrently with `Promise.allSettled`. Each agent session:\n\n- Builds the first-chunk prompt with `buildPrReviewFirstChunkPrompt` from `src/main/pr-review-prompts.ts` (includes the context bundle and diff chunk).\n- Streams additional chunks using `buildPrReviewContinuationPrompt` (same module).\n- Runs through `sessionManager` (`src/main/session-manager.ts`), which delegates to the provider resolved via `src/main/providers/registry.ts`.\n- Parses streaming output via `extractReviewOutputText` / `appendReviewOutputText` from `src/main/pr-review-output.ts`.\n\nAfter all agents settle, the PR worktree is immediately cleaned up (`removePrWorktree`).\n\n---\n\n### 5. Deduplication (line 1249)\n\n`deduplicateFindings` from `src/main/pr-review-dedupe.ts` merges the raw findings from all agents, collapsing near-duplicate findings from overlapping agents (same file/line/title).\n\n---\n\n### 6. Critic pass (line 1253)\n\n`runCriticPass` calls a separate provider session using helpers from `src/main/pr-review-critic.ts`: `partitionForCritic` selects candidates, `buildCriticPrompt` prompts the LLM to score them, `parseCriticVerdicts` parses the response, and `applyCriticVerdicts` discards low-signal findings.\n\n---\n\n### 7. Peer review pass (line 1254)\n\n`runPeerReviewPass` runs a second provider session using `src/main/pr-review-peer-review.ts`: `buildPeerReviewPrompt` \u2192 `parsePeerReviewChanges` \u2192 `applyPeerReviewChanges`. This cross-checks and annotates findings with a second opinion.\n\n---\n\n### 8. Revalidation (incremental only, lines 1270\u20131318)\n\nFor incremental reviews, `runRevalidationPass` is dynamically imported from `src/main/revalidation-worker.ts`. It checks prior-series findings whose files overlap the current diff, running a short provider session per thread to determine if each old finding is still present (`persisting`), now resolved, or stale.\n\n---\n\n### 9. Thread lifecycle (lines 1261, 1320)\n\n`assignFindingThreads` and `applyThreadLifecycle` (both in `pr-review-manager.ts`) match findings to persistent `pr_review_threads` rows using fingerprints, marking each finding as `new`, `persisting`, `resolved`, or `stale` across the review series.\n\n---\n\n### 10. Persistence and final broadcast (lines 1326\u20131404)\n\nAll findings are bulk-inserted into `pr_review_findings` (via `getDb()` from `src/main/db.ts`). The review status and summary are updated in `pr_reviews`. The series row's `latest_review_id` is updated. Finally, `IPC.GH_REVIEW_UPDATE` is sent to the renderer with the complete findings list, cost, mode, snapshot SHAs, and summary counts.",
+      "input_tokens": 12,
+      "output_tokens": 3392,
+      "wall_ms": 68505,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 25132,
+      "cache_read_input_tokens": 290274,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_search,mcp__codegraph__codegraph_context,mcp__codegraph__codegraph_callees",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_context",
+          "args": {
+            "task": "startReview orchestration in pr-review-manager.ts: diff fetching, context building, parallel agents, dedupe, peer review, persistence",
+            "maxNodes": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_callees",
+          "args": {
+            "symbol": "startReview",
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "startReview"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 903,
+            "limit": 250
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1153,
+            "limit": 250
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 315418,
+      "mech_score": 1.0,
+      "judge_baseline_score": 9,
+      "judge_baseline_justification": "Comprehensive and accurate. Correctly identifies startReview at line 903, walks the entire pipeline in proper order (PR diff \u2192 scope \u2192 chunking \u2192 context \u2192 parallel agents \u2192 dedupe \u2192 critic \u2192 peer-review \u2192 threads \u2192 persistence), names every supporting module with full paths and line numbers, explicitly distinguishes dedupe (lexical merge: 'merges near-duplicate findings') from critic (scoring) from peer-review (second opinion, 'cross-provider'), includes helpful summary table at the end. No hallucinations. Slightly verbose but thorough; the summary table adds real value rather than padding.",
+      "judge_justification": "Equally comprehensive and accurate. Correctly identifies startReview at line 903, walks the full pipeline in proper order with identical stage coverage (PR diff \u2192 scope/chunking \u2192 context \u2192 parallel agents \u2192 dedupe \u2192 critic \u2192 peer-review \u2192 revalidation \u2192 threads \u2192 persistence), names all supporting modules correctly with full paths, clearly distinguishes dedupe ('collapsing near-duplicate findings') from critic ('score them') from peer-review ('second opinion'). Better formatting with numbered sections, bullets, and cleaner visual hierarchy makes the orchestration easier to scan. Mentions specific detail (20s timeout, fallback behavior, worktree cleanup timing). Slightly more concise presentation without sacrificing completeness or accuracy. Per rubric instruction to reward conciseness, marginal edge.",
+      "judge_score": 9
+    }
+  ],
+  "round": 8,
+  "repo": "custom",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

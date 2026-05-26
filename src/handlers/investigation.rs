@@ -22,7 +22,16 @@ use super::AppState;
 /// Hard cap for the response JSON. Beyond this we degrade by dropping
 /// secondary `body` fields, then by trimming `context_chain`, then by
 /// truncating `verified_locations`.
-const RESPONSE_BUDGET_BYTES: usize = 64 * 1024;
+///
+/// Sized so a multi-hop investigate response stays small enough for the
+/// MCP host's tool-result display to render inline. Empirically Claude
+/// Code starts spilling tool results to a session-storage file around
+/// the 50 KB mark; when that happens the agent treats the spill file as
+/// the canonical output and tries to Read it, which is a hard fail (the
+/// file lives in Claude Code's private state and is not visible to the
+/// model). 32 KB keeps the response inline while the existing trim
+/// cascade absorbs the extra slack.
+const RESPONSE_BUDGET_BYTES: usize = 32 * 1024;
 
 /// Per-symbol body cap (lines) for verified_locations entries.
 const PER_BODY_LINES_CAP: usize = 200;
@@ -1038,7 +1047,22 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 1: drop oversized raw bodies before compact pack rows are at risk.
+    // Stage 1: truncate context_chain first. It is plan-debug text; the
+    // `answer_hint` explicitly tells the agent NOT to cite from it, so
+    // shrinking it costs nothing and frees the most slack (10-25 KB on
+    // typical multi-hop responses). Bodies and pack rows carry the
+    // citation material we need to preserve.
+    if let Some(s) = response.get("context_chain").and_then(|v| v.as_str()) {
+        let max = (RESPONSE_BUDGET_BYTES / 8).min(s.len());
+        let head = truncate_with_marker(s, max, "\n... [context_chain truncated]");
+        response["context_chain"] = json!(head);
+    }
+    if estimate(response) <= RESPONSE_BUDGET_BYTES {
+        return;
+    }
+
+    // Stage 2: drop oversized raw bodies (>1200c) from verified_locations.
+    // This protects pack.rows row count before we start losing rows.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
@@ -1062,7 +1086,7 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 2: drop bodies past index 2.
+    // Stage 3: drop bodies past index 2.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
@@ -1075,16 +1099,6 @@ fn apply_response_budget(response: &mut Value) {
                 }
             }
         }
-    }
-    if estimate(response) <= RESPONSE_BUDGET_BYTES {
-        return;
-    }
-
-    // Stage 3: truncate context_chain.
-    if let Some(s) = response.get("context_chain").and_then(|v| v.as_str()) {
-        let max = (RESPONSE_BUDGET_BYTES / 4).min(s.len());
-        let head = truncate_with_marker(s, max, "\n... [context_chain truncated]");
-        response["context_chain"] = json!(head);
     }
     if estimate(response) <= RESPONSE_BUDGET_BYTES {
         return;
@@ -1685,5 +1699,67 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("[context_chain truncated]"));
+    }
+
+    /// Regression: when only context_chain + bodies push the response over
+    /// the budget, the cascade must shrink context_chain first and leave
+    /// body fields intact. Earlier the order was reversed, so q10 (a
+    /// multi-hop trace with bodies the agent needs to cite) had its bodies
+    /// stripped while a 25 KB context_chain debug blob survived.
+    #[test]
+    fn response_budget_shrinks_context_chain_before_dropping_bodies() {
+        let body = "body-line\n".repeat(200); // 2000 chars, exceeds 1200c trigger
+        let primary = PrimaryHop {
+            raw: json!({"context": "x".repeat(40_000)}),
+            locations: vec![VerifiedLocation {
+                symbol_id: "id-1".to_string(),
+                symbol_name: "primary_symbol".to_string(),
+                file_path: "src/foo.rs".to_string(),
+                kind: "function".to_string(),
+                start_line: 1,
+                end_line: 200,
+                via: "search_code",
+                body,
+                route_exposure: Vec::new(),
+            }],
+        };
+
+        let response = build_response(
+            "trace primary_symbol",
+            InvestigationShape::CallTrace,
+            json!({}),
+            primary,
+            None,
+            3,
+        );
+
+        // Budget cascade must have fired: context_chain truncated.
+        assert!(
+            response["context_chain"]
+                .as_str()
+                .unwrap()
+                .contains("[context_chain truncated]"),
+            "context_chain should be truncated when response exceeds budget"
+        );
+
+        // Body of the first verified_location must NOT have been dropped:
+        // bodies are citation material; context_chain is debug.
+        let first = &response["verified_locations"][0];
+        assert!(
+            first
+                .get("body_dropped")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                == false,
+            "primary body must survive while context_chain still has slack; got {first}"
+        );
+        assert!(
+            first
+                .get("body")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
+            "primary body must be non-empty; got {first}"
+        );
     }
 }

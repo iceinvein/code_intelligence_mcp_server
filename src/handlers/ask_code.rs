@@ -25,7 +25,7 @@ use crate::llm::LlmGenerator;
 use crate::tools::{AskCodeTool, InvestigateTool};
 
 use super::ask_code_cache::AskCodeCacheKey;
-use super::investigation::handle_investigate;
+use super::investigation::{handle_investigate, is_hook_callback_question};
 use super::AppState;
 
 /// Default evidence budget for the answer prompt. Clamped 1..=15.
@@ -329,6 +329,8 @@ fn build_unavailable_response(
         "evidence_count": evidence.len(),
     });
     forward_test_coverage(investigate_response, &mut response);
+    forward_callsites(investigate_response, &mut response);
+    forward_supporting_modules(investigate_response, &mut response);
     response
 }
 
@@ -392,7 +394,7 @@ fn build_evidence_only_response(
     } else {
         "evidence_only"
     };
-    let follow_up = if evidence_count == 0 && has_pack_rows {
+    let mut follow_up = if evidence_count == 0 && has_pack_rows {
         "ask_code returned structured `pack.rows` without hydrated evidence bodies. \
             Synthesise the final answer from `pack.rows`, respecting `role=\"candidate\"` \
             and `pack.coverage.status`; call specialist tools if definitive line-level \
@@ -410,6 +412,16 @@ fn build_evidence_only_response(
             rephrased prompts."
             .to_string()
     };
+    if is_hook_callback_question(question) {
+        follow_up.push_str(
+            " Hook/callback note: when the question names a callback or hook by camelCase \
+             property (onBeforeToolUse, beforeRequest, afterSave, ...), it is usually a property \
+             reference passed to a config/options object, not a defined symbol the indexer tracks. \
+             If no `evidence` row has `symbol_name` equal to the hook name, Grep the most-relevant \
+             file in the rows for the literal hook name to locate its definition line before \
+             answering.",
+        );
+    }
     let mut response = json!({
         "question": question,
         "response_shape": "compact_evidence",
@@ -427,6 +439,8 @@ fn build_evidence_only_response(
         "cached": false,
     });
     forward_test_coverage(investigate_response, &mut response);
+    forward_callsites(investigate_response, &mut response);
+    forward_supporting_modules(investigate_response, &mut response);
     response
 }
 
@@ -439,6 +453,29 @@ fn build_evidence_only_response(
 fn forward_test_coverage(investigate_response: &Value, response: &mut Value) {
     if let Some(tc) = investigate_response.get("test_coverage") {
         response["test_coverage"] = tc.clone();
+    }
+}
+
+/// Copy investigate's `callsites` block through. Callsite-enumeration
+/// questions ("who calls X") were under-enumerated because ask_code's
+/// `pack.rows` carried only the target's BM25 hits, not its verified
+/// callers. Surfacing the block at the top level lets the agent
+/// enumerate every caller by file:line in its first response.
+fn forward_callsites(investigate_response: &Value, response: &mut Value) {
+    if let Some(cs) = investigate_response.get("callsites") {
+        response["callsites"] = cs.clone();
+    }
+}
+
+/// Copy investigate's `supporting_modules` block through. Pipeline /
+/// orchestration questions ("walk through the review pipeline, name
+/// every module each step uses") were omitting sibling modules because
+/// the agent's investigate hit returned only the orchestrator file's
+/// symbols. Surfacing the cross-file callee map lets the agent
+/// enumerate the supporting modules in its first response.
+fn forward_supporting_modules(investigate_response: &Value, response: &mut Value) {
+    if let Some(sm) = investigate_response.get("supporting_modules") {
+        response["supporting_modules"] = sm.clone();
     }
 }
 
@@ -490,6 +527,8 @@ fn build_synthesized_response(
         "cached": false,
     });
     forward_test_coverage(investigate_response, &mut response);
+    forward_callsites(investigate_response, &mut response);
+    forward_supporting_modules(investigate_response, &mut response);
     response
 }
 
@@ -537,6 +576,110 @@ mod tests {
             end_line: end,
             body: "body".to_string(),
         }
+    }
+
+    #[test]
+    fn forward_callsites_copies_block_through() {
+        let investigate = json!({
+            "callsites": {
+                "target_symbol": "createSession",
+                "target_file": "src/session-manager.ts",
+                "callers": [
+                    { "caller_name": "registerIpcHandlers", "caller_file": "src/main/ipc-handlers.ts", "at_line": 180, "edge_type": "call" },
+                    { "caller_name": "runAgentSession", "caller_file": "src/main/pr-review-manager.ts", "at_line": 1679, "edge_type": "call" },
+                ],
+                "note": "verified call-graph edges",
+                "truncated": false,
+            }
+        });
+        let mut response = json!({"existing": "field"});
+        forward_callsites(&investigate, &mut response);
+        let block = response
+            .get("callsites")
+            .expect("callsites block forwarded");
+        assert_eq!(block["target_symbol"], "createSession");
+        assert_eq!(block["callers"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn evidence_only_follow_up_adds_hook_hint_when_question_names_callback() {
+        let investigate = json!({"verified_locations": []});
+        let response = build_evidence_only_response(
+            "Where does config.onBeforeToolUse fire in the Claude provider?",
+            AnswerQuality::Balanced,
+            &investigate,
+            &[ev("a", "src/main/providers/claude-provider.ts", 459, 526)],
+            1,
+        );
+        let follow_up = response["follow_up"].as_str().expect("follow_up string");
+        assert!(
+            follow_up.contains("Hook/callback note"),
+            "hook hint must be appended for callback-named questions: {follow_up}"
+        );
+        assert!(
+            follow_up.contains("Grep"),
+            "hook hint must instruct the agent to Grep: {follow_up}"
+        );
+    }
+
+    #[test]
+    fn evidence_only_follow_up_omits_hook_hint_for_non_hook_questions() {
+        let investigate = json!({"verified_locations": []});
+        let response = build_evidence_only_response(
+            "How does createSession work?",
+            AnswerQuality::Balanced,
+            &investigate,
+            &[ev("a", "src/main/session-manager.ts", 100, 200)],
+            1,
+        );
+        let follow_up = response["follow_up"].as_str().expect("follow_up string");
+        assert!(
+            !follow_up.contains("Hook/callback note"),
+            "hook hint must NOT appear for non-hook questions: {follow_up}"
+        );
+    }
+
+    #[test]
+    fn forward_supporting_modules_copies_block_through() {
+        let investigate = json!({
+            "supporting_modules": {
+                "anchor_file": "src/main/pr-review-manager.ts",
+                "modules": [
+                    { "file": "src/main/pr-review-peer-review.ts", "callee_count": 3, "callees": [] },
+                    { "file": "src/main/pr-review-critic.ts", "callee_count": 4, "callees": [] },
+                ],
+                "note": "supporting modules"
+            }
+        });
+        let mut response = json!({"existing": "field"});
+        forward_supporting_modules(&investigate, &mut response);
+        let block = response
+            .get("supporting_modules")
+            .expect("supporting_modules block forwarded");
+        assert_eq!(block["anchor_file"], "src/main/pr-review-manager.ts");
+        assert_eq!(block["modules"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn forward_supporting_modules_noop_when_absent() {
+        let investigate = json!({"unrelated": true});
+        let mut response = json!({"existing": "field"});
+        forward_supporting_modules(&investigate, &mut response);
+        assert!(
+            response.get("supporting_modules").is_none(),
+            "no supporting_modules block should be added when investigate response lacks one"
+        );
+    }
+
+    #[test]
+    fn forward_callsites_noop_when_absent() {
+        let investigate = json!({"unrelated": true});
+        let mut response = json!({"existing": "field"});
+        forward_callsites(&investigate, &mut response);
+        assert!(
+            response.get("callsites").is_none(),
+            "no callsites block should be added when investigate response lacks one"
+        );
     }
 
     #[test]

@@ -59,8 +59,10 @@ pub fn should_skip_dir(config: &Config, path: &Path) -> bool {
     match name {
         // VCS
         ".git" | ".worktrees" => return true,
-        // Build output
-        "dist" | "build" | "target" | ".output" | ".next" | ".nuxt" | ".svelte-kit" => return true,
+        // Build output (Electron defaults to `out/`, see electron-builder)
+        "dist" | "build" | "target" | "out" | ".output" | ".next" | ".nuxt" | ".svelte-kit" => {
+            return true;
+        }
         // Caches
         "__pycache__" | ".mypy_cache" | ".pytest_cache" | ".turbo" | ".cache" => return true,
         // Test coverage output

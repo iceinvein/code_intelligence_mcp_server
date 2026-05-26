@@ -153,6 +153,7 @@ impl Default for StandaloneConfig {
                 "**/node_modules/**".to_string(),
                 "**/dist/**".to_string(),
                 "**/build/**".to_string(),
+                "**/out/**".to_string(),
                 "**/.git/**".to_string(),
             ],
             default_watch_mode: true,
@@ -1587,6 +1588,18 @@ warm_ttl_seconds = 600
     /// ranking (test penalty, generated-output filter in
     /// `retrieval::postprocess`) keeps them out of normal results unless the
     /// caller explicitly asks for them.
+    /// Electron projects emit bundled output to `out/` which contains
+    /// 23k+ symbols on the Pylon repo and dominates BM25. The default
+    /// excludes must drop it before it enters the index.
+    #[test]
+    fn default_exclude_patterns_drop_electron_out_dir() {
+        let standalone_excludes = StandaloneConfig::default().default_exclude_patterns;
+        assert!(
+            standalone_excludes.iter().any(|p| p == "**/out/**"),
+            "StandaloneConfig defaults must exclude **/out/** (electron build output); got {standalone_excludes:?}"
+        );
+    }
+
     #[test]
     fn default_exclude_patterns_keep_committed_test_and_generated_sources() {
         let banned = [

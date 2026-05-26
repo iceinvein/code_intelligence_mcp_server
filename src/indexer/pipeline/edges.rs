@@ -6,7 +6,7 @@ use crate::indexer::extract::symbol::{DataFlowEdge, DataFlowType, Import};
 use crate::storage::sqlite::{EdgeEvidenceRow, EdgeRow, SymbolRow};
 
 use super::parsing::{
-    extract_callee_names, extract_identifiers, identifier_evidence, parse_type_relations,
+    extract_calls, extract_identifiers, identifier_evidence, parse_type_relations,
 };
 use super::utils::{
     build_import_map, resolve_imported_symbol_id, resolve_imported_symbol_id_with_db,
@@ -87,6 +87,69 @@ pub type PackageLookupFn<'a> = Box<dyn Fn(&str) -> Option<String> + 'a>;
 /// Helper to create None package lookup
 pub fn no_package_lookup(_: &str) -> Option<String> {
     None
+}
+
+/// Resolve a `receiver.method()` call to the target symbol id.
+///
+/// When `method` isn't locally defined and isn't directly imported into
+/// the calling file, this looks up `method` as ANY symbol (exported or
+/// not) in the file that `receiver` was imported from. That catches
+/// class methods like `SessionManager.createSession` -- the class is the
+/// imported binding, the method is a non-exported member, and the
+/// standard `resolve_imported_symbol_id_with_db` would reject it for
+/// not being a top-level export.
+fn resolve_method_on_receiver(
+    conn: Option<&Connection>,
+    from_file: &str,
+    receiver: &str,
+    method: &str,
+    import_map: &HashMap<&str, &Import>,
+) -> Option<String> {
+    use crate::storage::sqlite::queries;
+
+    let conn = conn?;
+    let receiver_import = import_map.get(receiver)?;
+    let target_path = super::utils::resolve_path(from_file, &receiver_import.source).or(None)?;
+
+    // Try the canonical target path, then common alternatives (.tsx,
+    // /index.ts, /index.tsx). For each, accept the first matching
+    // symbol regardless of `exported` -- class methods carry the call
+    // edge on the class, not the file's top-level export list.
+    let mut candidate_paths = vec![target_path.clone()];
+    candidate_paths.extend(alternative_import_paths(&target_path));
+
+    for path in candidate_paths {
+        let Ok(results) =
+            queries::symbols::search_symbols_by_exact_name(conn, method, Some(&path), 1)
+        else {
+            continue;
+        };
+        if let Some(symbol) = results.into_iter().next() {
+            return Some(symbol.id);
+        }
+    }
+    None
+}
+
+/// Mirror of utils::alternative_import_paths kept private here to avoid
+/// re-exporting through utils.
+fn alternative_import_paths(base_path: &str) -> Vec<String> {
+    let mut alternatives = Vec::new();
+    if let Some(dir_path) = base_path.strip_suffix(".ts") {
+        alternatives.push(format!("{}x", base_path));
+        alternatives.push(format!("{}/index.ts", dir_path));
+        alternatives.push(format!("{}/index.tsx", dir_path));
+    } else if let Some(ts_path) = base_path.strip_suffix('x') {
+        if ts_path.ends_with(".ts") {
+            alternatives.push(ts_path.to_string());
+        }
+    } else if !base_path.contains('.') {
+        alternatives.push(format!("{}.ts", base_path));
+        alternatives.push(format!("{}.tsx", base_path));
+        alternatives.push(format!("{}/index.ts", base_path));
+        alternatives.push(format!("{}/index.tsx", base_path));
+    }
+    alternatives
 }
 
 /// Get the package ID for a symbol's file path.
@@ -202,7 +265,8 @@ pub fn extract_edges_for_symbol(
         }
     };
 
-    for callee in extract_callee_names(&row.text) {
+    for call in extract_calls(&row.text) {
+        let callee = call.method.clone();
         let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&callee) {
             if local_id == &row.id {
                 continue;
@@ -211,6 +275,19 @@ pub fn extract_edges_for_symbol(
         } else if let Some(imp) = import_map.get(callee.as_str()) {
             // Resolve import using DB when available, path-based otherwise
             (resolve_import(&row.file_path, imp), true)
+        } else if let Some(receiver) = call.receiver.as_deref() {
+            // `receiver.callee(...)` where `callee` is not locally defined and
+            // not directly imported. Resolve via the receiver's import: if
+            // `receiver` is imported from "./session-manager", look up
+            // `callee` as ANY symbol (method, function, const) in that file.
+            // resolve_imported_symbol_id_with_db only matches `exported=true`
+            // symbols, which excludes class methods like
+            // `SessionManager.createSession` -- those carry the method on the
+            // class, not as a top-level export.
+            (
+                resolve_method_on_receiver(conn, &row.file_path, receiver, &callee, &import_map),
+                true,
+            )
         } else {
             (None, false)
         };
@@ -587,6 +664,75 @@ mod tests {
             end_line: 1,
             text: text.to_string(),
         }
+    }
+
+    /// Regression: when the call is `receiver.method()` and `method` is
+    /// not directly imported but `receiver` is, the resolver must look up
+    /// `method` as ANY symbol (not just exported) in the file that
+    /// `receiver` was imported from. This catches class methods like
+    /// `sessionManager.createSession` where createSession lives as a
+    /// method on the SessionManager class (not as a top-level export).
+    #[test]
+    fn resolve_method_on_receiver_resolves_class_method_through_import() {
+        use crate::storage::sqlite::queries;
+        use crate::storage::sqlite::schema::SCHEMA_SQL;
+        use rusqlite::Connection;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+
+        // Seed: session-manager.ts has a non-exported createSession method.
+        let target_id = "real_create_session_id";
+        let create_session = symbol(
+            target_id,
+            "createSession",
+            "function",
+            "createSession(cwd: string) { ... }",
+            "src/main/session-manager.ts",
+        );
+        let mut sm_row = create_session.clone();
+        sm_row.exported = false; // method, not top-level export
+        queries::symbols::batch_upsert_symbols(&conn, std::slice::from_ref(&sm_row)).unwrap();
+
+        // The calling file imports `sessionManager` (the instance), then
+        // invokes its method `createSession`.
+        let row = symbol(
+            "ipc_id",
+            "registerIpcHandlers",
+            "function",
+            "export function registerIpcHandlers() {\n  return sessionManager.createSession(cwd);\n}",
+            "src/main/ipc-handlers.ts",
+        );
+        let name_to_id = HashMap::new();
+        let id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+        let imports = vec![Import {
+            name: "sessionManager".to_string(),
+            source: "./session-manager".to_string(),
+            alias: None,
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &imports,
+            &[],
+            &[],
+            None,
+            Some(&conn),
+        );
+
+        let call_edge = edges
+            .iter()
+            .find(|(e, _)| e.edge_type == "call" && e.to_symbol_id == target_id);
+        assert!(
+            call_edge.is_some(),
+            "expected a call edge to src/main/session-manager.ts::createSession; got edges: {:?}",
+            edges
+                .iter()
+                .map(|(e, _)| (e.edge_type.clone(), e.to_symbol_id.clone()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

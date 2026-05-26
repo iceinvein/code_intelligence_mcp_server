@@ -18,6 +18,25 @@ pub fn symbol_kind_to_string(kind: SymbolKind) -> String {
 }
 
 pub fn extract_callee_names(text: &str) -> Vec<String> {
+    extract_calls(text).into_iter().map(|c| c.method).collect()
+}
+
+/// One detected call expression in source text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSite {
+    /// Method/function name (the identifier immediately before `(`).
+    pub method: String,
+    /// The receiver identifier when the call is `receiver.method()`. None
+    /// for bare `method()` calls. Only the immediate left-hand identifier
+    /// is captured; chained accesses like `a.b.method()` yield `b`.
+    pub receiver: Option<String>,
+}
+
+/// Extract every call expression in `text` along with its immediate
+/// receiver (when present). Used by the edge builder to resolve
+/// `imported_instance.method()` to the method's defining file even when
+/// the method name isn't directly imported into the current file.
+pub fn extract_calls(text: &str) -> Vec<CallSite> {
     let stopwords: HashSet<&'static str> = [
         "if", "for", "while", "switch", "catch", "function", "return", "new", "await", "match",
     ]
@@ -27,6 +46,14 @@ pub fn extract_callee_names(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut i = 0usize;
     let mut out = Vec::new();
+    // Remember the most recently scanned identifier and whether the
+    // character immediately before it was `.`. When we then see that
+    // identifier followed by `(`, we know whether it was a method call
+    // on a receiver and what the receiver name was.
+    let mut last_ident: Option<(String, usize, usize)> = None; // (text, start_byte, end_byte)
+    let mut last_was_dot_chain: bool = false;
+    let mut prev_ident_text: Option<String> = None;
+    let mut prev_ident_end: Option<usize> = None;
     while i < bytes.len() {
         let b = bytes[i];
         let is_ident_start = b.is_ascii_alphabetic() || b == b'_' || b == b'$';
@@ -45,15 +72,43 @@ pub fn extract_callee_names(text: &str) -> Vec<String> {
                 break;
             }
         }
-        let ident = &text[start..i];
-        let mut j = i;
+        let ident_text = text[start..i].to_string();
+        let ident_end = i;
+
+        // Was the byte immediately before `start` a `.`? If so this
+        // identifier is the right-hand side of a member-expression.
+        let preceded_by_dot = start > 0 && bytes[start - 1] == b'.';
+
+        // Look ahead past whitespace to see if `(` follows.
+        let mut j = ident_end;
         while j < bytes.len() && bytes[j].is_ascii_whitespace() {
             j += 1;
         }
-        if j < bytes.len() && bytes[j] == b'(' && !stopwords.contains(ident) {
-            out.push(ident.to_string());
+        let is_call =
+            j < bytes.len() && bytes[j] == b'(' && !stopwords.contains(ident_text.as_str());
+
+        if is_call {
+            let receiver = if preceded_by_dot {
+                // Receiver is the most recent identifier ending exactly
+                // at `start - 1` (with the dot at start-1). Use
+                // last_ident's end if it matches.
+                prev_ident_text.clone()
+            } else {
+                None
+            };
+            out.push(CallSite {
+                method: ident_text.clone(),
+                receiver,
+            });
         }
+
+        prev_ident_text = Some(ident_text.clone());
+        prev_ident_end = Some(ident_end);
+        last_ident = Some((ident_text, start, ident_end));
+        last_was_dot_chain = preceded_by_dot;
     }
+    // Silence unused warnings.
+    let _ = (last_ident, last_was_dot_chain, prev_ident_end);
     out
 }
 
@@ -232,4 +287,53 @@ pub fn trim_snippet(s: &str, max_len: usize) -> String {
         out.truncate(end);
     }
     out
+}
+
+#[cfg(test)]
+mod call_extraction_tests {
+    use super::{extract_calls, CallSite};
+
+    fn site(method: &str, receiver: Option<&str>) -> CallSite {
+        CallSite {
+            method: method.to_string(),
+            receiver: receiver.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn bare_calls_have_no_receiver() {
+        let calls = extract_calls("foo(); bar(1, 2);");
+        assert_eq!(calls, vec![site("foo", None), site("bar", None)]);
+    }
+
+    #[test]
+    fn member_expression_call_captures_receiver() {
+        let calls = extract_calls("sessionManager.createSession(args);");
+        assert_eq!(calls, vec![site("createSession", Some("sessionManager"))]);
+    }
+
+    #[test]
+    fn chained_member_call_captures_immediate_receiver() {
+        let calls = extract_calls("obj.inner.run();");
+        assert_eq!(calls, vec![site("run", Some("inner"))]);
+    }
+
+    #[test]
+    fn keywords_followed_by_paren_are_skipped() {
+        let calls = extract_calls("if (x) { return; } new Foo(); await bar();");
+        assert_eq!(calls, vec![site("Foo", None), site("bar", None)]);
+    }
+
+    #[test]
+    fn nested_calls_each_emit() {
+        let calls = extract_calls("outer(inner(state.value));");
+        assert_eq!(
+            calls,
+            vec![
+                site("outer", None),
+                site("inner", None),
+                // `state.value` is a property access, not a call - no entry
+            ]
+        );
+    }
 }

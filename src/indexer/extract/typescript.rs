@@ -497,40 +497,46 @@ fn extract_imports(node: Node<'_>, source: &str, out: &mut Vec<Import>) {
         .trim_matches(|c| c == '"' || c == '\'')
         .to_string();
 
+    // tree-sitter-typescript does NOT register field names on import_clause
+    // children, so `child_by_field_name("name")` / `("named_imports")` /
+    // `("namespace_import")` all return None for every TS file. Match by
+    // node KIND instead, which is what the grammar actually exposes.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "import_clause" {
-            // default import: import A from "..."
-            if let Some(name_node) = child.child_by_field_name("name") {
-                out.push(Import {
-                    name: text_for_node(name_node, source),
-                    source: source_path.clone(),
-                    alias: Some("default".to_string()), // It imports the 'default' export
-                });
-            }
-            // named imports
-            if let Some(named) = child.child_by_field_name("named_imports") {
-                extract_import_specifiers(named, source, &source_path, out);
-            }
-            // namespace import
-            if let Some(ns) = child.child_by_field_name("namespace_import") {
-                // import * as ns from ...
-                // The symbol * is imported as ns
-                // This is tricky. We import "everything".
-                // Let's treat it as name="*" alias="ns"
-                if let Some(alias_node) = ns
-                    .children(&mut ns.walk())
-                    .find(|n| n.kind() == "identifier")
-                {
-                    out.push(Import {
-                        name: "*".to_string(),
-                        source: source_path.clone(),
-                        alias: Some(text_for_node(alias_node, source)),
-                    });
+            let mut clause_cursor = child.walk();
+            for clause_child in child.children(&mut clause_cursor) {
+                match clause_child.kind() {
+                    "identifier" => {
+                        // default import: `import A from "..."`
+                        out.push(Import {
+                            name: text_for_node(clause_child, source),
+                            source: source_path.clone(),
+                            alias: Some("default".to_string()),
+                        });
+                    }
+                    "named_imports" => {
+                        extract_import_specifiers(clause_child, source, &source_path, out);
+                    }
+                    "namespace_import" => {
+                        // `import * as ns from "..."`
+                        let mut ns_cursor = clause_child.walk();
+                        let alias_node = clause_child
+                            .children(&mut ns_cursor)
+                            .find(|n| n.kind() == "identifier");
+                        if let Some(alias_node) = alias_node {
+                            out.push(Import {
+                                name: "*".to_string(),
+                                source: source_path.clone(),
+                                alias: Some(text_for_node(alias_node, source)),
+                            });
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
-        // export clause: export { A } from "..."
+        // export clause: `export { A } from "..."`
         if child.kind() == "export_clause" {
             extract_export_specifiers(child, source, &source_path, out);
         }
@@ -543,16 +549,25 @@ fn extract_import_specifiers(
     source_path: &str,
     out: &mut Vec<Import>,
 ) {
+    // tree-sitter-typescript does not register field names on
+    // import_specifier children either. Walk identifier children: the
+    // first identifier is the remote name, an optional second is the
+    // local alias (`import { A as B }`).
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "import_specifier" {
-            let name_node = child.child_by_field_name("name").unwrap(); // This is the local name OR remote name?
-                                                                        // import { A } -> name=A.
-                                                                        // import { A as B } -> name=A, alias=B.
-
-            let name = text_for_node(name_node, source);
-            let alias_node = child.child_by_field_name("alias");
-            let alias = alias_node.map(|n| text_for_node(n, source));
+            let mut spec_cursor = child.walk();
+            let idents: Vec<_> = child
+                .children(&mut spec_cursor)
+                .filter(|n| n.kind() == "identifier")
+                .collect();
+            let Some(name_node) = idents.first() else {
+                continue;
+            };
+            let name = text_for_node(*name_node, source);
+            let alias = idents
+                .get(1)
+                .map(|alias_node| text_for_node(*alias_node, source));
 
             out.push(Import {
                 name,
@@ -569,19 +584,23 @@ fn extract_export_specifiers(
     source_path: &str,
     out: &mut Vec<Import>,
 ) {
+    // Same field-name caveat as extract_import_specifiers above.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "export_specifier" {
-            // export { A } from "..."
-            // export { A as B } from "..."
-            let name_node = child.child_by_field_name("name").unwrap();
+            let mut spec_cursor = child.walk();
+            let name_node = child
+                .children(&mut spec_cursor)
+                .find(|n| n.kind() == "identifier");
+            let Some(name_node) = name_node else {
+                continue;
+            };
             let name = text_for_node(name_node, source);
-            // Logic for exports is similar, they depend on the remote file.
 
             out.push(Import {
                 name,
                 source: source_path.to_string(),
-                alias: None, // We don't care about alias for graph edge purposes locally, it re-exports.
+                alias: None,
             });
         }
     }

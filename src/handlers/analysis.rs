@@ -352,12 +352,30 @@ pub fn handle_find_tests_for_symbol(
         )
     });
 
+    let follow_up = if budgeted_test_files.items.is_empty() {
+        "No test_links rows resolved for this symbol's source file. \
+            The repository may genuinely have no dedicated unit test, or the \
+            test file may live outside the inferred path. If the question \
+            demands certainty, fall back to Glob/Grep on `*.test.*` / `*.spec.*` \
+            once."
+    } else {
+        "`test_files` is the verified answer: these paths were resolved via \
+            test_links (path-pattern inference at index time) and confirmed \
+            against the symbols table. Do not Read the files to verify their \
+            existence -- they are guaranteed indexed and on disk. \
+            `tests_for_symbol` lists the specific test functions that call \
+            the target symbol via call-graph edges. Cite `test_files[0]` \
+            directly without further investigation; do not re-run ask_code or \
+            investigate with rephrased prompts."
+    };
+
     let mut response = json!({
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "source_file": root.file_path,
         "test_file_count": budgeted_test_files.returned_count,
         "tests_for_symbol": tests_for_symbol,
+        "follow_up": follow_up,
     });
     insert_budgeted_array(&mut response, "test_files", budgeted_test_files)?;
     insert_budgeted_array(

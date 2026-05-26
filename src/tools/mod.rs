@@ -342,7 +342,7 @@ pub struct SearchTodosTool {
 
 #[macros::mcp_tool(
     name = "find_tests_for_symbol",
-    description = "Find tests associated with a symbol or source file."
+    description = "Find tests associated with a symbol or source file. Returns `test_files` (verified test-source links from path-pattern inference at index time) and `tests_for_symbol` (specific test functions calling the target via call-graph edges). When `test_files` is non-empty, the paths are guaranteed to be indexed: cite them directly without Read/Grep verification. Use this BEFORE falling back to ask_code/investigate for test-coverage questions; it gives a direct test-file answer that ask_code's BM25 ranking often misses because production symbols outrank test wrappers."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindTestsForSymbolTool {

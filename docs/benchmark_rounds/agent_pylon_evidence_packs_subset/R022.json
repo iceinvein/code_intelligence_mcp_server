@@ -1,0 +1,196 @@
+{
+  "runs": [
+    {
+      "question_id": "pylon-q7",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "**Test file:** `src/main/__tests__/pr-review-dedupe.test.ts`\n\n**Production module:** `src/main/pr-review-dedupe.ts`\n\n**Exported functions exercised** (imported directly at line 3):\n\n- `tokenize` -- lowercases input, strips punctuation, drops short tokens and stopwords, returns a `Set<string>`\n- `diceCoefficient` -- computes S\u00f8rensen-Dice similarity between two token sets; tested for identical, disjoint, partial-overlap, and empty-set edge cases\n- `deduplicateFindings` -- the main logic; tested across 11 scenarios covering: same-line merging, \u00b13-line proximity merging, severity-wins-as-primary, suggestion inheritance, same-domain vs cross-domain `mergedFrom` annotation, file-level (`line=null`) clustering, and cases where unrelated or out-of-radius findings must stay separate",
+      "input_tokens": 5,
+      "output_tokens": 442,
+      "wall_ms": 13519,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 17384,
+      "cache_read_input_tokens": 89167,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "dedupe|dedup",
+            "glob": "**/*.test.ts",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/__tests__/pr-review-dedupe.test.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 106556,
+      "mech_score": 0.9,
+      "judge_scores_by_pair": {
+        "code_intel": 9
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Correctly identifies test file (pr-review-dedupe.test.ts), all three exported functions (tokenize, diceCoefficient, deduplicateFindings), and critically the correct production module (pr-review-dedupe.ts, not pr-review-manager.ts). Provides accurate function descriptions and notes the composition relationship (bonus). Zero hallucinations or conflation errors."
+      },
+      "judge_score": 9,
+      "judge_justification": "Correctly identifies test file (pr-review-dedupe.test.ts), all three exported functions (tokenize, diceCoefficient, deduplicateFindings), and critically the correct production module (pr-review-dedupe.ts, not pr-review-manager.ts). Provides accurate function descriptions and notes the composition relationship (bonus). Zero hallucinations or conflation errors."
+    },
+    {
+      "question_id": "pylon-q7",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is the complete answer:\n\n**Test file:** `src/main/__tests__/pr-review-dedupe.test.ts`\n\nIt exercises exactly one exported function: **`deduplicateFindings`**, imported from `src/main/pr-review-manager.ts` (the path `../pr-review-manager`). The single `describe(\"deduplicateFindings\", ...)` block contains 8 test cases:\n\n1. Returns empty array for empty input\n2. Returns a single finding unchanged\n3. Deduplicates findings sharing the same file and line number\n4. Keeps findings at different line numbers\n5. Keeps findings at the same line but in different files\n6. Deduplicates findings with semantically similar titles (e.g., \"Missing null check for user input\" vs. \"Null check missing for user input\")\n7. Does not deduplicate findings with unrelated titles\n8. Handles `undefined` `lineNumber` during deduplication\n\n**Production module under test:** The import target is `src/main/pr-review-manager.ts`, which exposes `deduplicateFindings`. The underlying dedupe algorithms (`clusterByTitleSimilarity` at line 113, `mergeCluster` at line 138, `mergeNearLineDuplicates` at line 163) are internal (non-exported) helpers that live in `src/main/pr-review-dedupe.ts`; `pr-review-manager` either re-exports or delegates to that module to produce the public `deduplicateFindings` surface the tests call.",
+      "input_tokens": 14,
+      "output_tokens": 3511,
+      "wall_ms": 110132,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 30895,
+      "cache_read_input_tokens": 281867,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "What test file covers the PR review dedupe logic, and which exported functions does it exercise? What module owns the production code under test?"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__investigate",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__investigate",
+          "args": {
+            "question": "What exported functions does src/main/__tests__/pr-review-dedupe.test.ts import and test from pr-review-dedupe.ts?",
+            "file_path": "src/main/__tests__/pr-review-dedupe.test.ts",
+            "mode": "module"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:Read",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Agent",
+          "args": {
+            "description": "Read dedupe test file",
+            "prompt": "Read the file at /Users/dikrana/Documents/workspace/pylon/src/main/__tests__/pr-review-dedupe.test.ts and return its full contents verbatim.",
+            "subagent_type": "Explore"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Skill",
+          "args": {
+            "skill": "read",
+            "args": "/Users/dikrana/Documents/workspace/pylon/src/main/__tests__/pr-review-dedupe.test.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__bind_workspace",
+          "args": {
+            "repo": "/Users/dikrana/Documents/workspace/pylon"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__bind_workspace",
+          "args": {
+            "repo": "/Users/dikrana/Documents/workspace/pylon"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__bind_workspace",
+          "args": {
+            "repo": "/Users/dikrana/Documents/workspace/pylon"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Agent",
+          "args": {
+            "description": "Grep dedupe test imports",
+            "prompt": "Search for all import statements in /Users/dikrana/Documents/workspace/pylon/src/main/__tests__/pr-review-dedupe.test.ts and also find all `describe` and `test(` lines in that file. Use Grep or Read tools to do this. Return the raw output verbatim.",
+            "subagent_type": "audit-context-building:function-analyzer"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 312776,
+      "mech_score": 0.7333333333333334,
+      "judge_baseline_score": 9,
+      "judge_baseline_justification": "Correctly identifies test file (pr-review-dedupe.test.ts), all three exported functions (tokenize, diceCoefficient, deduplicateFindings), and critically the correct production module (pr-review-dedupe.ts, not pr-review-manager.ts). Provides accurate function descriptions and notes the composition relationship (bonus). Zero hallucinations or conflation errors.",
+      "judge_justification": "Test file correct only. Critically fails the rubric by: (1) identifying only one of three exported functions, (2) claiming the import comes from pr-review-manager.ts instead of pr-review-dedupe.ts, which directly violates the rubric's explicit warning ('Agents that conflate dedupe with pr-review-manager fail the rubric'), and (3) placing module ownership backwards. Misses the composition relationship.",
+      "judge_score": 2
+    }
+  ],
+  "round": 22,
+  "repo": "custom",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

@@ -1,0 +1,120 @@
+{
+  "runs": [
+    {
+      "question_id": "pylon-q7",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The test file is `src/main/__tests__/pr-review-dedupe.test.ts`, and it exercises three exported functions from `src/main/pr-review-dedupe.ts`:\n\n- **`tokenize`** - lowercases text, strips punctuation, drops stopwords and short tokens; returns a `Set<string>`\n- **`diceCoefficient`** - computes Sorensen-Dice similarity between two token sets (used to judge title similarity)\n- **`deduplicateFindings`** - the main entry point: clusters `ReviewFinding` objects by `file:line` proximity (exact or within \u00b13 lines) and title similarity (Dice), picks the highest-severity finding as primary, inherits suggestions from clustered duplicates, and annotates cross-domain merges with `mergedFrom` metadata\n\nThe production module under test is **`src/main/pr-review-dedupe.ts`** (imported at line 3 as `'../pr-review-dedupe'`). The test suite has 15 cases covering edge cases including: singleton pass-through, different-line non-merging, same-file/same-line merging, severity tiebreaking, suggestion inheritance, same-domain suppression of `mergedFrom`, file-level (`line=null`) clustering, and the \u00b13-line near-duplicate radius.",
+      "input_tokens": 5,
+      "output_tokens": 537,
+      "wall_ms": 15509,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 17387,
+      "cache_read_input_tokens": 89170,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "dedupe|dedup",
+            "glob": "**/*.test.ts",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/__tests__/pr-review-dedupe.test.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 106562,
+      "mech_score": 0.9,
+      "judge_scores_by_pair": {
+        "code_intel": 10
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Answer B fully satisfies the rubric. It names the correct test file and production module; correctly identifies all three exported functions (deduplicateFindings, diceCoefficient, tokenize) with accurate technical descriptions of their roles; clearly distinguishes the dedupe module as separate from pr-review-manager (avoiding the conflation trap); and notes the composition hierarchy (tokenize and diceCoefficient as building blocks for deduplicateFindings). It supports claims with concrete details (test case count, edge cases covered, Sorensen-Dice algorithm reference) without hedging or speculation."
+      },
+      "judge_score": 10,
+      "judge_justification": "Answer B fully satisfies the rubric. It names the correct test file and production module; correctly identifies all three exported functions (deduplicateFindings, diceCoefficient, tokenize) with accurate technical descriptions of their roles; clearly distinguishes the dedupe module as separate from pr-review-manager (avoiding the conflation trap); and notes the composition hierarchy (tokenize and diceCoefficient as building blocks for deduplicateFindings). It supports claims with concrete details (test case count, edge cases covered, Sorensen-Dice algorithm reference) without hedging or speculation."
+    },
+    {
+      "question_id": "pylon-q7",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The test file body for `pr-review-dedupe.test.ts` was not returned in any evidence row (both calls returned \"complete\" coverage but omitted that file's source body), so I'll report what is verified and flag the uncertainty.\n\n---\n\n**Test file:** `src/main/__tests__/pr-review-dedupe.test.ts`\n\nThis is the confirmed test file for the dedupe logic, surfaced via the `test_coverage.test_files` link in the code-intelligence index (which resolves by path-pattern inference against the symbols table).\n\n**Production module under test:** `src/main/pr-review-dedupe.ts`\n\nThe module contains three verified functions:\n\n| Function | Lines | Role |\n|---|---|---|\n| `clusterByTitleSimilarity` | 113\u2013136 | Groups `ReviewFinding[]` into clusters using Dice-coefficient token similarity + minimum overlap threshold |\n| `mergeCluster` | 138\u2013161 | Collapses a cluster into a single canonical finding, picking the highest-severity item as primary and annotating cross-domain merges |\n| `mergeNearLineDuplicates` | 163\u2013221 | Secondary dedup pass: within each file, absorbs findings whose line numbers fall within `\u00b1NEAR_LINE_RADIUS` of an already-kept finding if their titles are sufficiently similar |\n\nAll three are internal (non-exported) helpers. The public API exported to callers (and therefore exercised by the test) is almost certainly a single orchestrating function (likely `dedupeFindings` or similar) that calls these three in sequence; however, the test file's import list was not returned in the evidence, so the exact exported name(s) cannot be stated with line-level certainty from the available evidence. The production module lives entirely in `src/main/pr-review-dedupe.ts`.",
+      "input_tokens": 11,
+      "output_tokens": 3509,
+      "wall_ms": 75060,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 26883,
+      "cache_read_input_tokens": 150072,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "What test file covers the PR review dedupe logic, and which exported functions does it exercise? What module owns the production code under test?"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__investigate",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__investigate",
+          "args": {
+            "question": "What exported functions does src/main/__tests__/pr-review-dedupe.test.ts import and test from pr-review-dedupe.ts?",
+            "file_path": "src/main/__tests__/pr-review-dedupe.test.ts",
+            "mode": "module"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 176966,
+      "mech_score": 0.5,
+      "judge_baseline_score": 10,
+      "judge_baseline_justification": "Answer B fully satisfies the rubric. It names the correct test file and production module; correctly identifies all three exported functions (deduplicateFindings, diceCoefficient, tokenize) with accurate technical descriptions of their roles; clearly distinguishes the dedupe module as separate from pr-review-manager (avoiding the conflation trap); and notes the composition hierarchy (tokenize and diceCoefficient as building blocks for deduplicateFindings). It supports claims with concrete details (test case count, edge cases covered, Sorensen-Dice algorithm reference) without hedging or speculation.",
+      "judge_justification": "Answer A correctly names the test file (src/main/__tests__/pr-review-dedupe.test.ts) and production module (src/main/pr-review-dedupe.ts), but completely fails the core rubric requirement. It lists three wrong functions (clusterByTitleSimilarity, mergeCluster, mergeNearLineDuplicates) instead of the three required exported functions (deduplicateFindings, diceCoefficient, tokenize). It explicitly states these are 'internal (non-exported) helpers' and admits uncertainty about the actual exported API, contradicting the rubric's demand for exported function identification. The answer speculates about 'likely dedupeFindings' rather than confidently stating the required three.",
+      "judge_score": 2
+    }
+  ],
+  "round": 23,
+  "repo": "custom",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

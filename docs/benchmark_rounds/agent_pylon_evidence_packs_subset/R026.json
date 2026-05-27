@@ -1,0 +1,112 @@
+{
+  "runs": [
+    {
+      "question_id": "pylon-q12",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The default window size is configured in `src/main/index.ts` at lines 19-21, inside the `createWindow()` function:\n\n```ts\nconst mainWindow = new BrowserWindow({\n  width: 1280,\n  height: 800,\n  ...\n})\n```\n\n**1280 \u00d7 800 pixels.**",
+      "input_tokens": 4,
+      "output_tokens": 258,
+      "wall_ms": 10125,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 13446,
+      "cache_read_input_tokens": 54875,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "width|height|BrowserWindow",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main/index.ts",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 68325,
+      "mech_score": 1.0,
+      "judge_scores_by_pair": {
+        "code_intel": 9
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Directly answers the rubric: names src/main/index.ts, cites precise lines (19-21 vs ~19), shows correct BrowserWindow construction with width=1280 and height=800. Concise code snippet without padding. Fully correct."
+      },
+      "judge_score": 9,
+      "judge_justification": "Directly answers the rubric: names src/main/index.ts, cites precise lines (19-21 vs ~19), shows correct BrowserWindow construction with width=1280 and height=800. Concise code snippet without padding. Fully correct."
+    },
+    {
+      "question_id": "pylon-q12",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The `createWindow` function in **`src/main/index.ts`** (lines 18-59) configures the main BrowserWindow. The relevant options:\n\n```ts\nconst mainWindow = new BrowserWindow({\n  width: 1280,\n  height: 800,\n  minWidth: 900,\n  minHeight: 600,\n  ...\n})\n```\n\n- **Default size:** 1280 \u00d7 800 px\n- **Minimum size:** 900 \u00d7 600 px (the window cannot be resized smaller than this)\n\nAdditional relevant settings: `titleBarStyle: 'hiddenInset'` (macOS traffic lights inset), `trafficLightPosition: { x: 15, y: 15 }`, and `backgroundColor: '#1a1714'`.",
+      "input_tokens": 11,
+      "output_tokens": 912,
+      "wall_ms": 24105,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 25469,
+      "cache_read_input_tokens": 142062,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Where is the default Electron BrowserWindow size configured for the Pylon main window, and what width and height dimensions does it use?",
+            "target": "BrowserWindow"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__investigate",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__investigate",
+          "args": {
+            "question": "Where is new BrowserWindow created with width and height options in src/main/index.ts?",
+            "file_path": "src/main/index.ts",
+            "mode": "discover"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 167542,
+      "mech_score": 1.0,
+      "judge_baseline_score": 9,
+      "judge_baseline_justification": "Directly answers the rubric: names src/main/index.ts, cites precise lines (19-21 vs ~19), shows correct BrowserWindow construction with width=1280 and height=800. Concise code snippet without padding. Fully correct.",
+      "judge_justification": "Also correct on file, location, and dimensions. However, adds unnecessary information (backgroundColor, trafficLightPosition) unrelated to the question about window dimensions. minWidth/minHeight are somewhat relevant context but push beyond what was asked. Violates the rubric's emphasis on rewarding conciseness over verbose padding.",
+      "judge_score": 7
+    }
+  ],
+  "round": 26,
+  "repo": "custom",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

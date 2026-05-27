@@ -1,0 +1,99 @@
+{
+  "runs": [
+    {
+      "question_id": "pylon-q7",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The test file is `src/main/__tests__/pr-review-dedupe.test.ts`. It imports from and exercises three exported functions in `src/main/pr-review-dedupe.ts`:\n\n- **`tokenize`** - lowercases input, strips punctuation, drops stopwords and short tokens, returns a `Set<string>`\n- **`diceCoefficient`** - computes S\u00f8rensen-Dice similarity between two token sets (used to judge title similarity)\n- **`deduplicateFindings`** - the main dedup function: clusters findings by file+line proximity (exact match and \u00b13-line window), merges near-duplicate titles using Dice similarity, promotes the highest-severity finding as primary, inherits suggestions from merged findings, and annotates cross-domain merges\n\nThe production module under test is **`src/main/pr-review-dedupe.ts`** (the import path on line 3 confirms it). The test suite has 13 cases covering exact-line merging, near-line (\u00b13) merging, severity promotion, suggestion inheritance, same-domain vs. cross-domain merge annotation, and the negative cases that keep unrelated findings separate.",
+      "input_tokens": 5,
+      "output_tokens": 496,
+      "wall_ms": 22637,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 17386,
+      "cache_read_input_tokens": 89169,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "dedupe|dedup",
+            "glob": "**/*.test.ts",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/__tests__/pr-review-dedupe.test.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 106560,
+      "mech_score": 0.9,
+      "judge_scores_by_pair": {
+        "code_intel": 9
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Answer A correctly identifies the test file and production module, lists all three exported functions with accurate descriptions (tokenize, diceCoefficient using S\u00f8rensen-Dice coefficient terminology, and deduplicateFindings). Explicitly earns the bonus by stating 'diceCoefficient + tokenize are the lower-level building blocks deduplicateFindings composes.' Provides concrete test coverage examples. Minor deduction: no line numbers provided, less structured formatting than B."
+      },
+      "judge_score": 9,
+      "judge_justification": "Answer A correctly identifies the test file and production module, lists all three exported functions with accurate descriptions (tokenize, diceCoefficient using S\u00f8rensen-Dice coefficient terminology, and deduplicateFindings). Explicitly earns the bonus by stating 'diceCoefficient + tokenize are the lower-level building blocks deduplicateFindings composes.' Provides concrete test coverage examples. Minor deduction: no line numbers provided, less structured formatting than B."
+    },
+    {
+      "question_id": "pylon-q7",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The test file is **`src/main/__tests__/pr-review-dedupe.test.ts`**.\n\nThe production module under test is **`src/main/pr-review-dedupe.ts`**, which exports three public functions:\n\n| Exported function | Role |\n|---|---|\n| `tokenize` (line 90) | Tokenizes a finding title for similarity comparison |\n| `diceCoefficient` (line 99) | Computes bigram Dice coefficient between two token sets |\n| `deduplicateFindings` (line 223) | Top-level dedup entry point: clusters by title similarity then merges near-line duplicates |\n\nThe internal helpers `clusterByTitleSimilarity` (line 113), `mergeCluster` (line 138), and `mergeNearLineDuplicates` (line 163) are not exported; the test file exercises them indirectly through `deduplicateFindings`.",
+      "input_tokens": 7,
+      "output_tokens": 509,
+      "wall_ms": 19555,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 18253,
+      "cache_read_input_tokens": 76842,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "What test file covers the PR review dedupe logic, which exported functions does it exercise, and what module owns the production code under test?",
+            "mode": "discover",
+            "max_evidence": 10
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 95102,
+      "mech_score": 0.9,
+      "judge_baseline_score": 9,
+      "judge_baseline_justification": "Answer A correctly identifies the test file and production module, lists all three exported functions with accurate descriptions (tokenize, diceCoefficient using S\u00f8rensen-Dice coefficient terminology, and deduplicateFindings). Explicitly earns the bonus by stating 'diceCoefficient + tokenize are the lower-level building blocks deduplicateFindings composes.' Provides concrete test coverage examples. Minor deduction: no line numbers provided, less structured formatting than B.",
+      "judge_justification": "Answer B correctly identifies test file and production module, lists all three functions, uses clearer table formatting with line numbers (90, 99, 223). However, loses points for: (1) claiming 'bigram Dice coefficient' which is misleading (Dice coefficient works on token sets, not bigrams specifically) - potential hallucination, (2) unverified line numbers that cannot be validated - explicit penalty per rubric, (3) fails to explicitly capture the bonus by not calling the two functions 'building blocks' (only says 'exercises them indirectly'), (4) vaguer function descriptions compared to A.",
+      "judge_score": 7
+    }
+  ],
+  "round": 24,
+  "repo": "custom",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

@@ -1,0 +1,711 @@
+meta:
+  repo: django
+  upstream_url: "https://github.com/django/django.git"
+  upstream_sha: "3e5887b9b1c1f06fabf96568a6ba7f19aeb9ad6d"
+  authored_at: "2026-05-27"
+  authored_against_schema_version: 22
+
+questions:
+  # ---------------------------------------------------------------------------
+  # symbol_lookup (4)
+  # ---------------------------------------------------------------------------
+
+  - id: django-symbol-01
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "Where is the `Model` class defined in Django? Give the file path and line."
+    rubric: |
+      Must cite django/db/models/base.py at line 459. Correct answer identifies
+      Model as a class with metaclass=ModelBase that also inherits from AltersData.
+      The metaclass (ModelBase, line 92) handles field registration and contributes
+      to class setup; the student must distinguish Model from ModelBase.
+      Bonus: notes the AltersData mixin and the ModelBase metaclass in the same file.
+      Penalize: citing ModelBase (line 92) as the primary answer instead of Model,
+      or citing django/db/models/__init__.py (the re-export barrel) as the definition
+      site.
+    expected:
+      citations:
+        - { file: "django/db/models/base.py", line_range: [459, 530], symbol: "Model" }
+      files:
+        - "django/db/models/base.py"
+      facts:
+        - "Model"
+        - ["metaclass=ModelBase", "ModelBase"]
+        - ["AltersData", "base.py"]
+      forbidden:
+        - "django/db/models/__init__.py"
+      forbidden_strict: false
+
+  - id: django-symbol-02
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "Where is the `QuerySet` class defined? Give the file path and line."
+    rubric: |
+      Must cite django/db/models/query.py at line 293. Correct answer identifies
+      QuerySet as a class inheriting from AltersData that provides lazy evaluation
+      via _result_cache. The __init__ sets up self._query = sql.Query(self.model),
+      which is the underlying SQL query object.
+      Bonus: notes _result_cache for lazy evaluation and the AltersData parent class.
+      Penalize: citing django/db/models/__init__.py (barrel re-export) or
+      django/db/models/manager.py (which creates QuerySets but does not define
+      the class).
+    expected:
+      citations:
+        - { file: "django/db/models/query.py", line_range: [293, 320], symbol: "QuerySet" }
+      files:
+        - "django/db/models/query.py"
+      facts:
+        - "QuerySet"
+        - ["AltersData", "lazy"]
+        - ["_result_cache", "sql.Query"]
+      forbidden:
+        - "django/db/models/__init__.py"
+        - "django/db/models/manager.py"
+      forbidden_strict: false
+
+  - id: django-symbol-03
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "Where is `get_user_model` defined? Give the file path and line."
+    rubric: |
+      Must cite django/contrib/auth/__init__.py at line 183. Correct answer
+      identifies it as a function that calls django_apps.get_model using the
+      AUTH_USER_MODEL setting. It raises ImproperlyConfigured for bad settings
+      or uninstalled models.
+      Bonus: notes require_ready=False is passed to allow use before app registry
+      is fully populated.
+      Penalize: citing django/contrib/auth/models.py (where the default User model
+      lives) or any other file.
+    expected:
+      citations:
+        - { file: "django/contrib/auth/__init__.py", line_range: [183, 197], symbol: "get_user_model" }
+      files:
+        - "django/contrib/auth/__init__.py"
+      facts:
+        - "get_user_model"
+        - ["AUTH_USER_MODEL", "get_model"]
+        - ["ImproperlyConfigured", "require_ready"]
+      forbidden:
+        - "django/contrib/auth/models.py"
+      forbidden_strict: false
+
+  - id: django-symbol-04
+    task_type: symbol_lookup
+    difficulty: medium
+    question: "Where are `URLPattern` and `URLResolver` defined? Give file paths and lines."
+    rubric: |
+      Both classes are defined in django/urls/resolvers.py: URLPattern at line 412
+      and URLResolver at line 493. URLPattern wraps a single route pattern and its
+      callback view; URLResolver wraps a group of patterns and handles namespace
+      traversal.
+      Bonus: notes URLPattern.resolve (line 461) does a direct pattern match and
+      returns a ResolverMatch, while URLResolver.resolve (line 660) iterates nested
+      patterns recursively.
+      Penalize: citing django/urls/__init__.py (the re-export) as the definition
+      site, or conflating URLPattern with URLResolver (they are distinct classes
+      in the same file).
+    expected:
+      citations:
+        - { file: "django/urls/resolvers.py", line_range: [412, 491], symbol: "URLPattern" }
+        - { file: "django/urls/resolvers.py", line_range: [493, 660], symbol: "URLResolver" }
+      files:
+        - "django/urls/resolvers.py"
+      facts:
+        - "URLPattern"
+        - "URLResolver"
+        - ["resolvers.py", "line 412", "line 493"]
+      forbidden:
+        - "django/urls/__init__.py"
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # concept (4)
+  # ---------------------------------------------------------------------------
+
+  - id: django-concept-01
+    task_type: concept
+    difficulty: medium
+    question: "Where does Django handle CSRF token verification? Which method is responsible and what checks does it perform?"
+    rubric: |
+      Must cite django/middleware/csrf.py and identify CsrfViewMiddleware (line 165)
+      as the class responsible. The key method is process_view (line 414): it checks
+      whether the view is CSRF-exempt, enforces HTTPS for secure origins (Referer
+      header), then compares the token from the cookie against the token submitted
+      in the POST data or the X-CSRFToken header using _does_token_match (line 143).
+      Bonus: notes the RejectRequest exception (line 160) and how _does_token_match
+      uses a constant-time comparison and handles both masked and unmasked tokens.
+      Penalize: attributing CSRF verification only to the get_token() helper
+      (line 96) without explaining process_view, or confusing the decorator-based
+      csrf_protect with the middleware class.
+    expected:
+      citations:
+        - { file: "django/middleware/csrf.py", line_range: [165, 250], symbol: "CsrfViewMiddleware" }
+        - { file: "django/middleware/csrf.py", line_range: [414, 483], symbol: "process_view" }
+        - { file: "django/middleware/csrf.py", line_range: [143, 159], symbol: "_does_token_match" }
+      files:
+        - "django/middleware/csrf.py"
+      facts:
+        - ["CsrfViewMiddleware", "csrf middleware"]
+        - ["process_view", "line 414"]
+        - ["_does_token_match", "token comparison"]
+      forbidden:
+        - "django/views/decorators/csrf.py"
+      forbidden_strict: false
+
+  - id: django-concept-02
+    task_type: concept
+    difficulty: medium
+    question: "How does Django load app configurations at startup? Walk through the three phases of `Apps.populate()`."
+    rubric: |
+      Must cite django/apps/registry.py and identify Apps.populate (line 61) as the
+      entry point. Must describe all three phases:
+        Phase 1 (line 87): iterates INSTALLED_APPS, creates AppConfig instances via
+          AppConfig.create, stores them in self.app_configs; sets apps_ready = True.
+        Phase 2 (line 114): calls app_config.import_models() for each app; sets
+          models_ready = True.
+        Phase 3 (line 122): calls app_config.ready() for each app; sets ready = True
+          and fires ready_event.
+      Must also cite django/apps/config.py for AppConfig.import_models (line 262)
+      and AppConfig.ready (line 271).
+      Bonus: notes the thread-safety lock and the guard against reentrant calls.
+      Penalize: omitting the three-phase structure, or conflating Apps.populate with
+      AppConfig.ready (the former orchestrates, the latter is a user hook).
+    expected:
+      citations:
+        - { file: "django/apps/registry.py", line_range: [61, 128], symbol: "populate" }
+        - { file: "django/apps/config.py", line_range: [262, 274], symbol: "import_models" }
+        - { file: "django/apps/config.py", line_range: [271, 274], symbol: "ready" }
+      files:
+        - "django/apps/registry.py"
+        - "django/apps/config.py"
+      facts:
+        - ["populate", "Apps.populate"]
+        - ["apps_ready", "models_ready"]
+        - ["app_config.ready", "AppConfig.ready"]
+      forbidden:
+        - "django/setup.py"
+      forbidden_strict: false
+
+  - id: django-concept-03
+    task_type: concept
+    difficulty: medium
+    question: "Where is the autoreloader implemented in Django? What are the two reloader strategies and how does Django pick between them?"
+    rubric: |
+      Must cite django/utils/autoreload.py. The two strategies are:
+        StatReloader (line 384): polls file mtimes at a fixed interval using
+        inotify-style stat checks. Always available.
+        WatchmanReloader (line 431): uses Facebook Watchman via pywatchman for
+        event-driven file watching. Preferred when available.
+      get_reloader (line 640) decides: tries WatchmanReloader first, falls back to
+      StatReloader if WatchmanUnavailable is raised. run_with_reloader (line 663)
+      calls get_reloader and runs start_django in a thread, with the reloader
+      looping in the main thread.
+      Bonus: notes that restarting is done by raising SystemExit (triggering
+      restart_with_reloader, line 270) which re-execs the process via
+      get_child_arguments.
+      Penalize: claiming only one reloader strategy exists, or attributing the
+      autoreload to the WSGI server itself.
+    expected:
+      citations:
+        - { file: "django/utils/autoreload.py", line_range: [384, 430], symbol: "StatReloader" }
+        - { file: "django/utils/autoreload.py", line_range: [431, 639], symbol: "WatchmanReloader" }
+        - { file: "django/utils/autoreload.py", line_range: [640, 647], symbol: "get_reloader" }
+      files:
+        - "django/utils/autoreload.py"
+      facts:
+        - ["StatReloader", "stat reloader"]
+        - ["WatchmanReloader", "Watchman"]
+        - ["get_reloader", "WatchmanUnavailable"]
+      forbidden: []
+      forbidden_strict: false
+
+  - id: django-concept-04
+    task_type: concept
+    difficulty: hard
+    question: "How does Django render a Template end-to-end? Trace from Template instantiation to the returned HTML string."
+    rubric: |
+      Must cite django/template/base.py. Template.__init__ (line 139) calls
+      compile_nodelist (line 175): creates a Lexer (or DebugLexer in debug mode)
+      to tokenize the source, then a Parser (line 435) to parse tokens into a
+      NodeList of Node instances.
+      Template.render (line 165) calls _render (line 162) which calls
+      self.nodelist.render(context) (NodeList.render, line 1002). Each Node in
+      the list renders itself and the results are concatenated into the final HTML.
+      Must note the context.render_context.push_state context manager used by
+      render (line 167).
+      Bonus: explains the difference between Lexer (returns Token objects) and
+      Parser (returns Node objects), and that TextNode simply returns its content
+      while tag nodes like IfNode have logic.
+      Penalize: omitting the NodeList intermediate representation, or claiming
+      template rendering happens in django/template/engine.py (which manages
+      template loading, not the render pass).
+    expected:
+      citations:
+        - { file: "django/template/base.py", line_range: [139, 200], symbol: "Template" }
+        - { file: "django/template/base.py", line_range: [175, 210], symbol: "compile_nodelist" }
+        - { file: "django/template/base.py", line_range: [165, 173], symbol: "render" }
+        - { file: "django/template/base.py", line_range: [1002, 1020], symbol: "NodeList" }
+      files:
+        - "django/template/base.py"
+      facts:
+        - ["compile_nodelist", "Lexer", "Parser"]
+        - ["NodeList", "Node"]
+        - ["nodelist.render", "context"]
+      forbidden:
+        - "django/template/engine.py"
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # multi_hop (4)
+  # ---------------------------------------------------------------------------
+
+  - id: django-multi-hop-01
+    task_type: multi_hop
+    difficulty: medium
+    question: "Trace how an incoming HTTP request becomes an HttpResponse in the WSGI path. Which files and methods are involved, in order?"
+    rubric: |
+      Must trace:
+        1. WSGIHandler.__call__ (django/core/handlers/wsgi.py, line 120): creates
+           WSGIRequest from environ, calls self.get_response(request).
+        2. BaseHandler.get_response (django/core/handlers/base.py, line 136):
+           sets up urlconf, calls self._middleware_chain(request).
+        3. _middleware_chain is built by load_middleware (line 26) from
+           settings.MIDDLEWARE reversed as a chain of callables.
+        4. BaseHandler._get_response (line 174): calls resolve_request (line 300)
+           to get the view via URLResolver.resolve, then calls the view with args/kwargs.
+        5. View's return value is the HttpResponse.
+      Must cite wsgi.py, base.py. load_middleware is required context.
+      Bonus: notes that exception handling is done by convert_exception_to_response
+      (from django/core/handlers/exception.py) wrapping each middleware.
+      Penalize: omitting the middleware chain, or claiming the URL resolver is
+      invoked before middleware runs (middleware wraps _get_response, not __call__).
+    expected:
+      citations:
+        - { file: "django/core/handlers/wsgi.py", line_range: [120, 144], symbol: "WSGIHandler" }
+        - { file: "django/core/handlers/base.py", line_range: [136, 150], symbol: "get_response" }
+        - { file: "django/core/handlers/base.py", line_range: [26, 102], symbol: "load_middleware" }
+        - { file: "django/core/handlers/base.py", line_range: [174, 228], symbol: "_get_response" }
+        - { file: "django/core/handlers/base.py", line_range: [300, 315], symbol: "resolve_request" }
+      files:
+        - "django/core/handlers/wsgi.py"
+        - "django/core/handlers/base.py"
+        - "django/urls/resolvers.py"
+      facts:
+        - ["WSGIHandler.__call__", "WSGIHandler"]
+        - ["_middleware_chain", "load_middleware"]
+        - ["resolve_request", "URLResolver"]
+      forbidden:
+        - "django/core/handlers/asgi.py"
+      forbidden_strict: false
+
+  - id: django-multi-hop-02
+    task_type: multi_hop
+    difficulty: hard
+    question: "Trace how `Model.save()` reaches the database. Walk from the public save() call through to cursor.execute()."
+    rubric: |
+      Must trace:
+        1. Model.save (django/db/models/base.py, line 821): validates args, calls
+           save_base.
+        2. Model.save_base (line 952): sends pre_save signal, calls _save_table.
+        3. Model._save_table (line 1071): determines INSERT vs UPDATE. Calls
+           _do_insert (line 1197) or _do_update (line 1169).
+        4. _do_insert calls manager._insert (line 1202) which delegates to
+           QuerySet._insert (django/db/models/query.py, line 1822).
+        5. QuerySet._insert builds a sql.InsertQuery and calls
+           query.get_compiler(using).execute_sql (django/db/models/sql/compiler.py,
+           SQLInsertCompiler.execute_sql, line 1825).
+        6. SQLInsertCompiler.execute_sql opens connection.cursor() and calls
+           cursor.execute(sql, params).
+      Must cite base.py (save, save_base, _save_table), query.py (_insert), and
+      compiler.py (execute_sql).
+      Bonus: notes the pre_save / post_save signals sent in save_base.
+      Penalize: skipping _save_table and jumping directly from save() to cursor.execute,
+      or claiming only UPDATE happens (Django decides INSERT vs UPDATE based on pk).
+    expected:
+      citations:
+        - { file: "django/db/models/base.py", line_range: [821, 951], symbol: "save" }
+        - { file: "django/db/models/base.py", line_range: [952, 1070], symbol: "save_base" }
+        - { file: "django/db/models/base.py", line_range: [1071, 1168], symbol: "_save_table" }
+        - { file: "django/db/models/base.py", line_range: [1197, 1208], symbol: "_do_insert" }
+        - { file: "django/db/models/query.py", line_range: [1822, 1850], symbol: "_insert" }
+        - { file: "django/db/models/sql/compiler.py", line_range: [1825, 1860], symbol: "execute_sql" }
+      files:
+        - "django/db/models/base.py"
+        - "django/db/models/query.py"
+        - "django/db/models/sql/compiler.py"
+      facts:
+        - ["save_base", "_save_table"]
+        - ["_do_insert", "QuerySet._insert"]
+        - ["SQLInsertCompiler", "cursor.execute"]
+      forbidden: []
+      forbidden_strict: false
+
+  - id: django-multi-hop-03
+    task_type: multi_hop
+    difficulty: medium
+    question: "Walk through how `manage.py runserver` boots the development server. What files are invoked and in what order?"
+    rubric: |
+      Must trace:
+        1. ManagementUtility.execute (django/core/management/__init__.py, line ~194)
+           discovers and executes the 'runserver' management command.
+        2. runserver Command (django/core/management/commands/runserver.py, line 26):
+           handle() parses address/port, calls self.run().
+        3. Command.run (line 114): if use_reloader, wraps inner_run with
+           autoreload.run_with_reloader; otherwise calls inner_run directly.
+        4. inner_run (line 123): calls self.get_handler() which returns
+           get_internal_wsgi_application() from django/core/servers/basehttp.py,
+           then calls run(addr, port, handler, ...) (line 256 in basehttp.py).
+        5. basehttp.run() creates a WSGIServer (line 68), sets the WSGI app, and
+           calls httpd.serve_forever().
+      Must cite runserver.py and basehttp.py.
+      Bonus: notes that ASGIHandler is NOT used by default runserver (WSGI only),
+      and that autoreload.run_with_reloader spawns a child process.
+      Penalize: claiming runserver directly creates a Django ASGI server, or
+      omitting the autoreload layer when use_reloader is True.
+    expected:
+      citations:
+        - { file: "django/core/management/commands/runserver.py", line_range: [114, 170], symbol: "Command" }
+        - { file: "django/core/management/commands/runserver.py", line_range: [123, 170], symbol: "inner_run" }
+        - { file: "django/core/servers/basehttp.py", line_range: [256, 282], symbol: "run" }
+        - { file: "django/core/servers/basehttp.py", line_range: [68, 100], symbol: "WSGIServer" }
+      files:
+        - "django/core/management/commands/runserver.py"
+        - "django/core/servers/basehttp.py"
+        - "django/utils/autoreload.py"
+      facts:
+        - ["inner_run", "get_handler"]
+        - ["WSGIServer", "serve_forever"]
+        - ["autoreload", "run_with_reloader"]
+      forbidden:
+        - "django/core/handlers/asgi.py"
+      forbidden_strict: false
+
+  - id: django-multi-hop-04
+    task_type: multi_hop
+    difficulty: hard
+    question: "Trace how a URL path is resolved to a view callable in Django. Walk from `resolve_request` through `URLResolver.resolve` to `ResolverMatch`."
+    rubric: |
+      Must trace:
+        1. BaseHandler.resolve_request (django/core/handlers/base.py, line 300):
+           gets the resolver via get_resolver (django/urls/resolvers.py, line 108),
+           calls resolver.resolve(request.path_info).
+        2. get_resolver (line 108) calls _get_cached_resolver which returns a
+           URLResolver wrapping ROOT_URLCONF. The resolver is cached via
+           functools.cache (line 114).
+        3. URLResolver.resolve (django/urls/resolvers.py, line 660): iterates
+           self.url_patterns, calls each pattern's resolve(). For URLPattern.resolve
+           (line 461), a regex or route match returns a ResolverMatch. For nested
+           URLResolver, recursion handles namespaces.
+        4. ResolverMatch is stored on request.resolver_match and returned.
+      Must cite base.py resolve_request, resolvers.py get_resolver, and
+      URLResolver.resolve / URLPattern.resolve.
+      Bonus: notes that _get_cached_resolver caches resolvers by urlconf string to
+      avoid re-parsing on every request.
+      Penalize: claiming URL resolution happens inside middleware, or omitting the
+      caching layer for get_resolver.
+    expected:
+      citations:
+        - { file: "django/core/handlers/base.py", line_range: [300, 315], symbol: "resolve_request" }
+        - { file: "django/urls/resolvers.py", line_range: [108, 117], symbol: "get_resolver" }
+        - { file: "django/urls/resolvers.py", line_range: [660, 720], symbol: "URLResolver" }
+        - { file: "django/urls/resolvers.py", line_range: [461, 490], symbol: "URLPattern" }
+      files:
+        - "django/core/handlers/base.py"
+        - "django/urls/resolvers.py"
+      facts:
+        - ["resolve_request", "get_resolver"]
+        - ["URLResolver.resolve", "URLPattern.resolve"]
+        - ["ResolverMatch", "request.resolver_match"]
+      forbidden: []
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # impact (3)
+  # ---------------------------------------------------------------------------
+
+  - id: django-impact-01
+    task_type: impact
+    difficulty: medium
+    question: "If `BaseCommand.execute()` in `django/core/management/base.py` were changed to add a required keyword argument, which subclasses or call sites would need updating?"
+    rubric: |
+      Call sites of BaseCommand.execute():
+        - django/core/management/__init__.py (line 194): calls command.execute()
+          in call_command().
+        - django/core/management/base.py (line 413): run_from_argv calls
+          self.execute() directly.
+        - django/core/management/commands/runserver.py (line 75): overrides execute
+          and calls super().execute().
+        - django/core/management/commands/sqlmigrate.py (line 39): overrides execute
+          and calls super().execute().
+      Subclasses that override execute() would need to accept and forward the new
+      argument; call sites in __init__.py and base.py must also pass it.
+      Bonus: notes that AppCommand and LabelCommand (base.py, lines 616 and 661)
+      do NOT override execute, so only their indirectly-affected call sites matter.
+      Penalize: listing only one or two call sites and claiming no other files are
+      affected, or missing the runserver and sqlmigrate overrides.
+    expected:
+      citations:
+        - { file: "django/core/management/base.py", line_range: [432, 469], symbol: "execute" }
+        - { file: "django/core/management/__init__.py", line_range: [194, 194], symbol: "call_command" }
+        - { file: "django/core/management/commands/runserver.py", line_range: [69, 75], symbol: "execute" }
+        - { file: "django/core/management/commands/sqlmigrate.py", line_range: [39, 40], symbol: "execute" }
+      files:
+        - "django/core/management/base.py"
+        - "django/core/management/__init__.py"
+        - "django/core/management/commands/runserver.py"
+        - "django/core/management/commands/sqlmigrate.py"
+      facts:
+        - ["call_command", "management/__init__.py"]
+        - ["runserver", "sqlmigrate"]
+        - ["run_from_argv", "super().execute"]
+      forbidden: []
+      forbidden_strict: false
+
+  - id: django-impact-02
+    task_type: impact
+    difficulty: medium
+    question: "If `get_resolver` in `django/urls/resolvers.py` were renamed to `build_resolver`, which files would need updating?"
+    rubric: |
+      get_resolver is imported and used in multiple Django modules:
+        - django/core/handlers/base.py (line 11 import, line 309/311 calls)
+        - django/core/handlers/exception.py (line 19 import, multiple calls)
+        - django/core/checks/urls.py (three import+call sites: lines 13, 41, 127)
+        - django/utils/autoreload.py (line 332 import, line 337 call)
+        - django/contrib/admindocs/views.py (line 20 import, line 146 call)
+        Also django/urls/__init__.py re-exports get_resolver; renaming requires
+        updating the __init__.py barrel export too.
+      Bonus: notes that _get_cached_resolver (the private cache wrapper at line 115)
+      would also be renamed for consistency, impacting only resolvers.py internals.
+      Penalize: listing only one or two import sites and claiming the impact is small,
+      or missing the django/urls/__init__.py re-export which is the public API.
+    expected:
+      citations:
+        - { file: "django/urls/resolvers.py", line_range: [108, 117], symbol: "get_resolver" }
+        - { file: "django/core/handlers/base.py", line_range: [11, 11], symbol: "get_resolver" }
+        - { file: "django/core/handlers/exception.py", line_range: [19, 19], symbol: "get_resolver" }
+        - { file: "django/core/checks/urls.py", line_range: [13, 15], symbol: "get_resolver" }
+      files:
+        - "django/urls/resolvers.py"
+        - "django/urls/__init__.py"
+        - "django/core/handlers/base.py"
+        - "django/core/handlers/exception.py"
+        - "django/core/checks/urls.py"
+        - "django/utils/autoreload.py"
+        - "django/contrib/admindocs/views.py"
+      facts:
+        - ["django/core/handlers/base.py", "django/core/handlers/exception.py"]
+        - ["django/core/checks/urls.py", "autoreload.py"]
+        - ["django/urls/__init__.py", "re-export"]
+      forbidden: []
+      forbidden_strict: false
+
+  - id: django-impact-03
+    task_type: impact
+    difficulty: hard
+    question: "If `Apps.populate()` in `django/apps/registry.py` were changed to skip Phase 3 (i.e., never call `app_config.ready()`), what would break?"
+    rubric: |
+      Phase 3 calls AppConfig.ready() for each installed app. This is where
+      apps register signal handlers, connect receivers, and run startup logic.
+      Concrete impacts:
+        - Signal receivers registered in ready() (e.g., django.contrib.auth's
+          post_migrate signal in apps.py) would never connect.
+        - Checks registered via django.core.checks.register inside ready() would
+          not be registered.
+        - Third-party apps and user apps that connect signals or perform one-time
+          setup in their AppConfig.ready() would silently break.
+        - self.ready and self.ready_event.set() (line 126-127) would never be set,
+          causing check_apps_ready() to consider the registry not ready, blocking
+          any code that awaits that event.
+      Must cite registry.py (populate, lines 122-127) and config.py (ready, line 271).
+      Bonus: notes that ready_event (line 127) would not be set, which could hang
+      multi-threaded startup scenarios.
+      Penalize: claiming only "signals won't work" without naming specific Django
+      internals that use ready(), or not citing the ready_event.set() consequence.
+    expected:
+      citations:
+        - { file: "django/apps/registry.py", line_range: [61, 128], symbol: "populate" }
+        - { file: "django/apps/config.py", line_range: [271, 274], symbol: "ready" }
+      files:
+        - "django/apps/registry.py"
+        - "django/apps/config.py"
+      facts:
+        - ["app_config.ready", "AppConfig.ready"]
+        - ["signal", "receiver", "post_migrate"]
+        - ["ready_event", "apps_ready"]
+      forbidden: []
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # architectural (3)
+  # ---------------------------------------------------------------------------
+
+  - id: django-arch-01
+    task_type: architectural
+    difficulty: medium
+    question: "What is the boundary between `django.db` and `django.db.backends`? Which layer knows about SQL and which layer is database-agnostic?"
+    rubric: |
+      django.db (the public API): Model, QuerySet, Field types, managers, and
+      signals live here. These classes are database-agnostic; they build abstract
+      query objects (django/db/models/sql/query.py) without knowing the target DB.
+      django.db.backends (the adapter layer): BaseDatabaseWrapper
+      (django/db/backends/base/base.py, line 30), BaseDatabaseOperations
+      (django/db/backends/base/operations.py, line 18), and BaseDatabaseSchemaEditor
+      (django/db/backends/base/schema.py, line 76) define the interface that
+      vendor-specific backends (postgresql/, sqlite3/, mysql/, oracle/) implement.
+      The compiler layer (django/db/models/sql/compiler.py, SQLCompiler, line 39)
+      is the bridge: it turns abstract Query objects into SQL strings using the
+      connection's backend-specific operations.
+      Must cite at least base/base.py and sql/compiler.py.
+      Bonus: notes that ConnectionHandler (django/db/__init__.py) dispatches to
+      the correct backend based on DATABASES settings.
+      Penalize: claiming django.db and django.db.backends are the same layer, or
+      saying all SQL generation happens inside the models layer without mentioning
+      the compiler.
+    expected:
+      citations:
+        - { file: "django/db/backends/base/base.py", line_range: [30, 60], symbol: "BaseDatabaseWrapper" }
+        - { file: "django/db/backends/base/operations.py", line_range: [18, 50], symbol: "BaseDatabaseOperations" }
+        - { file: "django/db/models/sql/compiler.py", line_range: [39, 100], symbol: "SQLCompiler" }
+      files:
+        - "django/db/backends/base/base.py"
+        - "django/db/backends/base/operations.py"
+        - "django/db/models/sql/compiler.py"
+        - "django/db/__init__.py"
+      facts:
+        - ["BaseDatabaseWrapper", "backends"]
+        - ["SQLCompiler", "compiler"]
+        - ["backend-agnostic", "abstract", "vendor"]
+      forbidden: []
+      forbidden_strict: false
+
+  - id: django-arch-02
+    task_type: architectural
+    difficulty: medium
+    question: "How is the Django test runner organized? What is `DiscoverRunner` and how does it relate to the app loader?"
+    rubric: |
+      DiscoverRunner is the default test runner (django/test/runner.py, line 637).
+      It orchestrates test execution in four stages:
+        1. setup_test_environment (line 844): patches settings (EMAIL_BACKEND,
+           ALLOWED_HOSTS, etc.) for test isolation.
+        2. build_suite: uses unittest's test discovery to find test cases.
+        3. setup_databases (line 963): creates test databases by calling
+           BaseDatabaseCreation for each connection.
+        4. run_tests (line 1049): runs the suite, tears down databases.
+      The app loader (django/apps/registry.py, Apps.populate) runs BEFORE
+      DiscoverRunner is even instantiated; the test runner assumes apps are already
+      fully loaded and ready. DiscoverRunner does NOT re-populate the app registry.
+      It does pass app labels to filter which test modules to discover.
+      Must cite runner.py (DiscoverRunner) and note it is separate from the app
+      loader.
+      Bonus: notes the parallel test support via ParallelTestSuite (line 463) and
+      that setup_databases is skipped when databases=() in the test class.
+      Penalize: saying DiscoverRunner calls apps.populate, or conflating test
+      discovery with app configuration.
+    expected:
+      citations:
+        - { file: "django/test/runner.py", line_range: [637, 700], symbol: "DiscoverRunner" }
+        - { file: "django/test/runner.py", line_range: [844, 963], symbol: "setup_test_environment" }
+        - { file: "django/test/runner.py", line_range: [963, 1048], symbol: "setup_databases" }
+        - { file: "django/test/runner.py", line_range: [1049, 1091], symbol: "run_tests" }
+      files:
+        - "django/test/runner.py"
+        - "django/apps/registry.py"
+      facts:
+        - ["DiscoverRunner", "test runner"]
+        - ["setup_databases", "setup_test_environment"]
+        - ["apps are already loaded", "does not populate", "assumes ready"]
+      forbidden: []
+      forbidden_strict: false
+
+  - id: django-arch-03
+    task_type: architectural
+    difficulty: hard
+    question: "How does Django's middleware system work architecturally? How is the middleware chain assembled at startup and how does it wrap the view layer?"
+    rubric: |
+      BaseHandler.load_middleware (django/core/handlers/base.py, line 26) assembles
+      the chain at startup (called from WSGIHandler.__init__ / ASGIHandler.__init__).
+      It iterates settings.MIDDLEWARE in reverse, instantiating each class with the
+      previous handler as get_response. This builds a nested callable stack so each
+      middleware wraps all middleware below it plus the view.
+      The innermost callable is convert_exception_to_response(_get_response), where
+      _get_response (line 174) does the actual URL resolution and view dispatch.
+      MiddlewareMixin (django/utils/deprecation.py, line 95) adapts old-style
+      process_request/process_response middleware to the new single-callable pattern.
+      Middleware that declares async_capable=True can run in async mode; adapt_method_mode
+      (line 104) handles sync/async interop.
+      Must cite base.py load_middleware, deprecation.py MiddlewareMixin.
+      Bonus: notes that process_view and process_exception hooks are collected
+      separately into _view_middleware and _exception_middleware lists (lines 77-93).
+      Penalize: claiming middleware is applied per-request at dispatch time rather
+      than being pre-assembled into a chain at startup.
+    expected:
+      citations:
+        - { file: "django/core/handlers/base.py", line_range: [26, 102], symbol: "load_middleware" }
+        - { file: "django/utils/deprecation.py", line_range: [95, 151], symbol: "MiddlewareMixin" }
+        - { file: "django/core/handlers/base.py", line_range: [174, 228], symbol: "_get_response" }
+      files:
+        - "django/core/handlers/base.py"
+        - "django/utils/deprecation.py"
+      facts:
+        - ["load_middleware", "reversed"]
+        - ["MiddlewareMixin", "process_request", "process_response"]
+        - ["_middleware_chain", "convert_exception_to_response"]
+      forbidden: []
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # negative (2)
+  # ---------------------------------------------------------------------------
+
+  - id: django-negative-01
+    task_type: negative
+    difficulty: medium
+    question: "Does Django ship a built-in WebSocket handler? Can `ASGIHandler` accept WebSocket connections out of the box?"
+    rubric: |
+      Must conclude that Django does NOT support WebSocket connections natively.
+      ASGIHandler.__call__ (django/core/handlers/asgi.py, line 150) explicitly
+      checks scope["type"] != "http" and raises ValueError with the message
+      "Django can only handle ASGI/HTTP connections, not %s." WebSocket requires
+      scope["type"] == "websocket" which is rejected. Django Channels (a separate
+      third-party package) is needed for WebSocket support.
+      Penalize: claiming ASGIHandler supports WebSocket, or citing any file in
+      django/core/handlers/ that handles WebSocket connections.
+    expected:
+      citations:
+        - { file: "django/core/handlers/asgi.py", line_range: [150, 163], symbol: "ASGIHandler" }
+      files:
+        - "django/core/handlers/asgi.py"
+      facts:
+        - ["does not support", "not supported", "raises ValueError", "Django can only handle"]
+        - ["Channels", "third-party", "websocket rejected"]
+      forbidden:
+        - "ASGIHandler handles websocket"
+        - "WebSocketHandler"
+        - "websocket support built-in"
+      forbidden_strict: true
+
+  - id: django-negative-02
+    task_type: negative
+    difficulty: easy
+    question: "Does Django include a built-in JWT authentication backend? Is there a `JWTAuthentication` class or any JWT token issuance in `django.contrib.auth`?"
+    rubric: |
+      Must conclude that Django does NOT include any JWT authentication support.
+      There is no JWTAuthentication class, no JWT token generation, and no
+      jwt import anywhere in django.contrib.auth or django.contrib. Django's
+      built-in auth uses session-based authentication (django.contrib.sessions)
+      and provides a token auth model in django.contrib.auth.models (Token is a
+      simple DB token, not JWT). JWT support requires a third-party package such
+      as djangorestframework-simplejwt or PyJWT.
+      Penalize: citing django/contrib/auth/tokens.py (which implements
+      password-reset tokens, not JWT), or claiming any built-in JWT class exists.
+    expected:
+      citations: []
+      files: []
+      facts:
+        - ["does not exist", "no JWT", "not built-in", "third-party"]
+        - ["session", "Token model", "password-reset"]
+      forbidden:
+        - "JWTAuthentication"
+        - "jwt.encode"
+        - "PyJWT"
+      forbidden_strict: true

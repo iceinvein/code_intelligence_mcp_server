@@ -1,0 +1,620 @@
+meta:
+  repo: wolfmax
+  upstream_url: "/Users/dikrana/Documents/workspace/wolfmax/wolfmax"
+  upstream_sha: "b56910e6939fe46e1e96a952cf03a95ad4ed7018"
+  authored_at: "2026-05-27"
+  authored_against_schema_version: 22
+
+questions:
+  # ---------------------------------------------------------------------------
+  # symbol_lookup (4)
+  # ---------------------------------------------------------------------------
+
+  - id: wolfmax-symbol-01
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "Where is `authPlugin` defined? Give the file path and line."
+    rubric: |
+      Cites packages/backend/src/auth/macro.ts at line 107. Correct answer
+      identifies authPlugin as an Elysia plugin that validates a session via
+      auth.api.getSession and injects { user, session } into route context.
+      Bonus: notes the companion adminPlugin defined in the same file at line 123.
+      Penalize: pointing at packages/backend/src/auth/index.ts (where betterAuth
+      is configured, not where authPlugin lives), or citing the wrong line.
+    expected:
+      citations:
+        - { file: "packages/backend/src/auth/macro.ts", line_range: [107, 117], symbol: "authPlugin" }
+      files:
+        - "packages/backend/src/auth/macro.ts"
+      facts:
+        - "authPlugin"
+        - ["Elysia", "elysia"]
+        - ["getSession", "auth.api.getSession"]
+      forbidden:
+        - "packages/backend/src/auth/index.ts"
+      forbidden_strict: false
+
+  - id: wolfmax-symbol-02
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "Where is the `CircuitBreaker` class defined? Give the file path and line."
+    rubric: |
+      Cites packages/backend/src/email/circuit-breaker.ts at line 43. Correct
+      answer identifies it as a class that tracks failure counts and implements
+      CLOSED/OPEN/HALF_OPEN states for SES email resilience.
+      Bonus: mentions the CircuitBreakerState enum defined earlier in the same file.
+      Penalize: citing packages/backend/src/email/index.ts (which uses CircuitBreaker
+      but does not define the class), or hallucinating a generic circuit-breaker
+      package import.
+    expected:
+      citations:
+        - { file: "packages/backend/src/email/circuit-breaker.ts", line_range: [43, 100], symbol: "CircuitBreaker" }
+      files:
+        - "packages/backend/src/email/circuit-breaker.ts"
+      facts:
+        - "CircuitBreaker"
+        - ["class", "Class"]
+        - ["CLOSED", "OPEN", "HALF_OPEN"]
+      forbidden:
+        - "packages/backend/src/email/index.ts"
+      forbidden_strict: false
+
+  - id: wolfmax-symbol-03
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "Where is `withTransaction` defined? Give the file path and line."
+    rubric: |
+      Cites packages/backend/src/db/transaction.ts at line 142. Correct answer
+      describes it as an async function wrapping Drizzle's db.transaction() with
+      structured error logging. It catches errors, logs them with operation name
+      and duration, then rethrows as TransactionError.
+      Bonus: notes the TransactionError class in the same file and the operation
+      parameter used for structured log context.
+      Penalize: citing any other file (there is no other withTransaction in the
+      codebase), or claiming it is in db/index.ts.
+    expected:
+      citations:
+        - { file: "packages/backend/src/db/transaction.ts", line_range: [142, 194], symbol: "withTransaction" }
+      files:
+        - "packages/backend/src/db/transaction.ts"
+      facts:
+        - "withTransaction"
+        - ["TransactionError", "transaction error"]
+        - ["db.transaction", "Drizzle"]
+      forbidden:
+        - "packages/backend/src/db/index.ts"
+      forbidden_strict: false
+
+  - id: wolfmax-symbol-04
+    task_type: symbol_lookup
+    difficulty: medium
+    question: "Where is the `userAccess` table schema defined? Give the file path and line."
+    rubric: |
+      Cites packages/backend/src/db/schema/access.ts at line 9. Correct answer
+      identifies it as a Drizzle pgTable definition storing individual (non-org)
+      access grants, with columns including userId, grantedAt, expiresAt, grantType,
+      and subscriptionId.
+      Bonus: notes the uniqueIndex on userId and the index on expiresAt.
+      Penalize: citing packages/backend/src/db/schema/index.ts (the barrel re-export)
+      as the definition site, or citing packages/backend/src/db/schema/auth.ts.
+    expected:
+      citations:
+        - { file: "packages/backend/src/db/schema/access.ts", line_range: [9, 35], symbol: "userAccess" }
+      files:
+        - "packages/backend/src/db/schema/access.ts"
+      facts:
+        - "userAccess"
+        - ["pgTable", "drizzle"]
+        - ["expiresAt", "expires_at"]
+      forbidden:
+        - "packages/backend/src/db/schema/index.ts"
+        - "packages/backend/src/db/schema/auth.ts"
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # concept (4)
+  # ---------------------------------------------------------------------------
+
+  - id: wolfmax-concept-01
+    task_type: concept
+    difficulty: medium
+    question: "Where does authentication happen for protected API routes? How does a route opt in to requiring a session?"
+    rubric: |
+      Must cite packages/backend/src/auth/macro.ts and explain authPlugin (line 107):
+      routes use .use(authPlugin) to require a valid session. authPlugin calls
+      auth.api.getSession with request headers; returns 401 if no session.
+      Bonus: explains that adminPlugin (line 123) additionally checks for the 'admin'
+      role in user.roles, returning 403 for non-admins.
+      Penalize: pointing only at packages/backend/src/auth/index.ts (which configures
+      better-auth but does not enforce per-route auth), or claiming authentication
+      is handled by middleware applied globally to all routes.
+    expected:
+      citations:
+        - { file: "packages/backend/src/auth/macro.ts", line_range: [107, 141], symbol: "authPlugin" }
+      files:
+        - "packages/backend/src/auth/macro.ts"
+        - "packages/backend/src/auth/index.ts"
+      facts:
+        - ["authPlugin", "auth-plugin"]
+        - ["getSession", "auth.api.getSession"]
+        - ["401", "status(401)"]
+      forbidden:
+        - "packages/backend/src/app.ts"
+      forbidden_strict: false
+
+  - id: wolfmax-concept-02
+    task_type: concept
+    difficulty: medium
+    question: "How are analytics events stored anonymously? Where does the anonymisation happen and what algorithm is used?"
+    rubric: |
+      Must cite packages/backend/src/lib/analytics-hash.ts and explain hashAnonymousId
+      (line 9): uses SHA-512 with BETTER_AUTH_SECRET as a salt to hash the userId,
+      producing an irreversible anonymous identifier stored in analytics_events.
+      Must also cite packages/backend/src/api/analytics/events.ts (line 43) as where
+      hashAnonymousId is called before inserting events.
+      Bonus: notes that Bun.CryptoHasher is used (not Node crypto), and that this
+      enables funnel analysis without PII in the analytics table.
+      Penalize: saying SHA-256 is used, or claiming the raw userId is hashed without
+      a salt.
+    expected:
+      citations:
+        - { file: "packages/backend/src/lib/analytics-hash.ts", line_range: [9, 13], symbol: "hashAnonymousId" }
+        - { file: "packages/backend/src/api/analytics/events.ts", line_range: [43, 43], symbol: "analyticsEventsRouter" }
+      files:
+        - "packages/backend/src/lib/analytics-hash.ts"
+        - "packages/backend/src/api/analytics/events.ts"
+      facts:
+        - "hashAnonymousId"
+        - ["SHA-512", "sha512"]
+        - ["BETTER_AUTH_SECRET", "salt"]
+      forbidden:
+        - "SHA-256"
+      forbidden_strict: false
+
+  - id: wolfmax-concept-03
+    task_type: concept
+    difficulty: hard
+    question: "Where is the OTS (OpenTimestamps) proof upgrade logic triggered on the read path? Trace from the /proof endpoint to the calendar poll."
+    rubric: |
+      Must cite packages/backend/src/api/crypto/epochs.ts (the GET /:id/proof handler,
+      around line 146) and packages/backend/src/api/crypto/upgrade-helper.ts
+      (upgradeAggregationTree, line 83). Must explain that on every /proof read,
+      upgradeAggregationTree is called, which internally calls pollAnyCalendar from
+      packages/backend/src/lib/ots-poll.ts. pollAnyCalendar races all configured
+      calendars in parallel with a 5s budget.
+      Bonus: notes that shouldAttemptUpgrade (upgrade-helper.ts line 11) applies a
+      rate-limit guard so upgrades are not attempted on every request.
+      Penalize: attributing upgrades only to the Rust backend-worker (which handles
+      batch upgrades, not on-demand), or omitting the rate-limit guard.
+    expected:
+      citations:
+        - { file: "packages/backend/src/api/crypto/epochs.ts", line_range: [146, 221], symbol: "cryptoEpochsRouter" }
+        - { file: "packages/backend/src/api/crypto/upgrade-helper.ts", line_range: [83, 115], symbol: "upgradeAggregationTree" }
+        - { file: "packages/backend/src/lib/ots-poll.ts", line_range: [91, 136], symbol: "pollAnyCalendar" }
+      files:
+        - "packages/backend/src/api/crypto/epochs.ts"
+        - "packages/backend/src/api/crypto/upgrade-helper.ts"
+        - "packages/backend/src/lib/ots-poll.ts"
+      facts:
+        - ["upgradeAggregationTree", "upgrade"]
+        - ["pollAnyCalendar", "calendar poll"]
+        - ["5s", "5000", "budget"]
+      forbidden:
+        - "packages/backend-worker/src/aggregation.rs"
+      forbidden_strict: false
+
+  - id: wolfmax-concept-04
+    task_type: concept
+    difficulty: medium
+    question: "Where are background jobs scheduled in the backend? What jobs run, and how often?"
+    rubric: |
+      Must cite packages/backend/src/jobs/scheduler.ts (startScheduler, line 21).
+      Must explain: release sync runs every 5 minutes (RELEASE_SYNC_INTERVAL_MS),
+      with an initial 10-second delay. Must cite packages/backend/src/jobs/release-sync.ts
+      (syncReleases, line 86) as the only job currently wired.
+      Must cite packages/backend/src/index.ts (line 59) as where startScheduler is
+      called during server startup.
+      Bonus: notes the syncReleases job fetches S3 update manifests for
+      darwin-aarch64 and windows-x86_64 targets.
+      Penalize: claiming there are multiple distinct jobs with different schedules, or
+      stating the scheduler uses cron expressions (it uses setInterval).
+    expected:
+      citations:
+        - { file: "packages/backend/src/jobs/scheduler.ts", line_range: [21, 56], symbol: "startScheduler" }
+        - { file: "packages/backend/src/jobs/release-sync.ts", line_range: [86, 174], symbol: "syncReleases" }
+      files:
+        - "packages/backend/src/jobs/scheduler.ts"
+        - "packages/backend/src/jobs/release-sync.ts"
+        - "packages/backend/src/index.ts"
+      facts:
+        - ["5 minutes", "5 * 60", "RELEASE_SYNC_INTERVAL_MS"]
+        - ["syncReleases", "release sync"]
+        - ["setInterval", "interval"]
+      forbidden:
+        - "cron"
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # multi_hop (4)
+  # ---------------------------------------------------------------------------
+
+  - id: wolfmax-multi-hop-01
+    task_type: multi_hop
+    difficulty: hard
+    question: "Trace the full path from a POST /api/invitations/:token/accept request to the database write that grants access. Which files are involved and in what order?"
+    rubric: |
+      Must trace: app.ts mounts invitationsRouter -> invitations.ts POST /:token/accept
+      handler -> validateInvitationForAcceptance (line 36) checks the invitation ->
+      betterAuthInstance.api.signUpEmail creates the user -> withTransaction
+      (db/transaction.ts) wraps the post-signup DB writes ->
+      inside the tx: accessInvitation is updated to 'accepted', then userAccess or member
+      is inserted depending on inviteType.
+      Must cite invitations.ts (core logic), db/transaction.ts (withTransaction),
+      and db/schema/access.ts (tables written).
+      Bonus: notes the checkOrganizationAndSeatLimit call (line 414) inside the
+      transaction for org invites.
+      Penalize: omitting the Better Auth signUpEmail step, or claiming the invitation
+      is claimed before user creation (it is claimed inside the post-signup tx).
+    expected:
+      citations:
+        - { file: "packages/backend/src/api/invitations.ts", line_range: [326, 515], symbol: "invitationsRouter" }
+        - { file: "packages/backend/src/db/transaction.ts", line_range: [142, 194], symbol: "withTransaction" }
+        - { file: "packages/backend/src/db/schema/access.ts", line_range: [9, 35], symbol: "userAccess" }
+      files:
+        - "packages/backend/src/api/invitations.ts"
+        - "packages/backend/src/db/transaction.ts"
+        - "packages/backend/src/app.ts"
+        - "packages/backend/src/db/schema/access.ts"
+      facts:
+        - ["signUpEmail", "Better Auth"]
+        - ["withTransaction", "transaction"]
+        - ["userAccess", "member"]
+      forbidden:
+        - "packages/backend/src/api/admin/invitations.ts"
+      forbidden_strict: false
+
+  - id: wolfmax-multi-hop-02
+    task_type: multi_hop
+    difficulty: hard
+    question: "Trace how a POST /api/crypto/epochs request reaches the database. Which files are involved and what is written?"
+    rubric: |
+      Must trace: app.ts uses cryptoEpochsRouter -> api/crypto/epochs.ts handles
+      the POST / endpoint -> checks idempotency via a SELECT on epochSeals ->
+      calls getReceiptSigner (lib/receipt-signer.ts) to sign the receipt ->
+      calls isLate (lib/late-flag.ts) to compute the late flag ->
+      then inserts a new row into epochSeals via db.insert with onConflictDoNothing.
+      Must cite: api/crypto/epochs.ts, lib/receipt-signer.ts, lib/late-flag.ts,
+      db/schema/crypto-anchoring.ts (epochSeals table).
+      Bonus: notes the race-loss branch (inserted.length === 0, line 99) that
+      re-reads the winning row.
+      Penalize: claiming the worker (aggregation.rs) handles this write, or omitting
+      the idempotency SELECT-then-INSERT pattern.
+    expected:
+      citations:
+        - { file: "packages/backend/src/api/crypto/epochs.ts", line_range: [24, 143], symbol: "cryptoEpochsRouter" }
+        - { file: "packages/backend/src/lib/receipt-signer.ts", line_range: [168, 199], symbol: "getReceiptSigner" }
+        - { file: "packages/backend/src/lib/late-flag.ts", line_range: [12, 16], symbol: "isLate" }
+      files:
+        - "packages/backend/src/api/crypto/epochs.ts"
+        - "packages/backend/src/lib/receipt-signer.ts"
+        - "packages/backend/src/lib/late-flag.ts"
+        - "packages/backend/src/db/schema/crypto-anchoring.ts"
+      facts:
+        - ["epochSeals", "epoch_seals"]
+        - ["getReceiptSigner", "receipt signer"]
+        - ["onConflictDoNothing", "idempotent"]
+      forbidden:
+        - "packages/backend-worker/src/aggregation.rs"
+      forbidden_strict: false
+
+  - id: wolfmax-multi-hop-03
+    task_type: multi_hop
+    difficulty: medium
+    question: "Trace how the desktop app receives a session token after completing the web-based login flow. What endpoints and files are involved?"
+    rubric: |
+      Must trace: authenticated user hits POST /api/desktop-auth/complete (desktop-auth.ts
+      line 37) with an encrypted user key payload and a state string -> a short-lived
+      exchange code is stored in desktopAuthExchangeCodes -> then the desktop app calls
+      POST /api/desktop-auth/exchange with the code and state -> the record is atomically
+      deleted inside withTransaction (db/transaction.ts) -> returns sessionToken and
+      encryptedUserKeyPayload.
+      Must cite: api/desktop-auth.ts, db/schema/user-keys.ts (desktopAuthExchangeCodes),
+      db/transaction.ts.
+      Bonus: notes the 2-minute CODE_TTL_MS and the nanoid(48) code generation.
+      Penalize: claiming session tokens are issued directly by the /complete endpoint
+      without the exchange step.
+    expected:
+      citations:
+        - { file: "packages/backend/src/api/desktop-auth.ts", line_range: [37, 103], symbol: "desktopAuthRouter" }
+        - { file: "packages/backend/src/db/schema/user-keys.ts", line_range: [51, 70], symbol: "desktopAuthExchangeCodes" }
+      files:
+        - "packages/backend/src/api/desktop-auth.ts"
+        - "packages/backend/src/db/schema/user-keys.ts"
+        - "packages/backend/src/db/transaction.ts"
+      facts:
+        - ["desktopAuthExchangeCodes", "exchange code"]
+        - ["sessionToken", "session token"]
+        - ["/exchange", "exchange endpoint"]
+      forbidden:
+        - "packages/backend/src/auth/index.ts"
+      forbidden_strict: false
+
+  - id: wolfmax-multi-hop-04
+    task_type: multi_hop
+    difficulty: hard
+    question: "Trace how the Rust backend-worker builds and submits an aggregation tree. Walk from the main function through to the OTS calendar submission."
+    rubric: |
+      Must trace: packages/backend-worker/src/main.rs calls aggregation::run ->
+      aggregation.rs aggregate_new_seals claims unaggregated epochSeals rows using
+      FOR UPDATE SKIP LOCKED -> builds MerkleTree (merkle.rs, MerkleTree::build) ->
+      inserts aggregation_trees row and updates epoch_seals with inclusion proofs ->
+      calls submit_tree which calls ots_submit::submit_to_any_calendar (ots_submit.rs).
+      Must cite: main.rs, aggregation.rs, merkle.rs, ots_submit.rs.
+      Bonus: notes SUBMIT_CONCURRENCY = 8 for parallel OTS submissions in retry_stuck_pending_trees.
+      Penalize: conflating the TypeScript pollAnyCalendar (read-path) with the Rust
+      submit_to_any_calendar (write-path), or omitting the Merkle tree step.
+    expected:
+      citations:
+        - { file: "packages/backend-worker/src/main.rs", line_range: [13, 41], symbol: "main" }
+        - { file: "packages/backend-worker/src/aggregation.rs", line_range: [17, 111], symbol: "run" }
+        - { file: "packages/backend-worker/src/merkle.rs", line_range: [46, 60], symbol: "MerkleTree" }
+      files:
+        - "packages/backend-worker/src/main.rs"
+        - "packages/backend-worker/src/aggregation.rs"
+        - "packages/backend-worker/src/merkle.rs"
+        - "packages/backend-worker/src/ots_submit.rs"
+      facts:
+        - ["MerkleTree", "merkle tree"]
+        - ["submit_to_any_calendar", "OTS submit"]
+        - ["FOR UPDATE SKIP LOCKED", "SKIP LOCKED"]
+      forbidden:
+        - "packages/backend/src/lib/ots-poll.ts"
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # impact (3)
+  # ---------------------------------------------------------------------------
+
+  - id: wolfmax-impact-01
+    task_type: impact
+    difficulty: medium
+    question: "If the signature of `withTransaction` in packages/backend/src/db/transaction.ts were changed to add a required third argument, which files would need updating?"
+    rubric: |
+      Must identify all call sites of withTransaction across the backend. Key files:
+      - packages/backend/src/api/invitations.ts (line 391 and implicitly via helper)
+      - packages/backend/src/api/desktop-auth.ts (line 74)
+      - packages/backend/src/api/crypto/severance.ts (line 44 and ~80)
+      - packages/backend/src/api/admin/organizations/details.ts (line 264)
+      - packages/backend/src/api/user-keys.ts (multiple calls)
+      Also packages/backend/src/db/transaction-helpers.ts if it wraps withTransaction.
+      Bonus: notes that withStep (same file) would not need changes unless its call
+      convention also changes.
+      Penalize: listing only one or two call sites and claiming the impact is small,
+      or including files that only import types from transaction.ts.
+    expected:
+      citations:
+        - { file: "packages/backend/src/db/transaction.ts", line_range: [142, 194], symbol: "withTransaction" }
+        - { file: "packages/backend/src/api/invitations.ts", line_range: [391, 391], symbol: "withTransaction" }
+        - { file: "packages/backend/src/api/desktop-auth.ts", line_range: [74, 74], symbol: "withTransaction" }
+      files:
+        - "packages/backend/src/db/transaction.ts"
+        - "packages/backend/src/api/invitations.ts"
+        - "packages/backend/src/api/desktop-auth.ts"
+        - "packages/backend/src/api/crypto/severance.ts"
+        - "packages/backend/src/api/admin/organizations/details.ts"
+        - "packages/backend/src/api/user-keys.ts"
+      facts:
+        - ["invitations.ts", "desktop-auth.ts", "severance.ts"]
+        - ["multiple call sites", "6", "5", "4"]
+      forbidden: []
+      forbidden_strict: false
+
+  - id: wolfmax-impact-02
+    task_type: impact
+    difficulty: medium
+    question: "If `hashAnonymousId` in packages/backend/src/lib/analytics-hash.ts were renamed to `anonymiseUserId`, which files would need updating?"
+    rubric: |
+      The only call site at authoring time is packages/backend/src/api/analytics/events.ts
+      (line 43 in the POST / handler). The test file
+      packages/backend/src/lib/analytics-hash.ts would need its own exports updated.
+      Bonus: notes the import in events.ts (line 8).
+      Penalize: claiming many files reference hashAnonymousId when at authoring time
+      only events.ts calls it, or omitting the analytics-hash.ts file itself.
+    expected:
+      citations:
+        - { file: "packages/backend/src/lib/analytics-hash.ts", line_range: [9, 13], symbol: "hashAnonymousId" }
+        - { file: "packages/backend/src/api/analytics/events.ts", line_range: [8, 8], symbol: "hashAnonymousId" }
+      files:
+        - "packages/backend/src/lib/analytics-hash.ts"
+        - "packages/backend/src/api/analytics/events.ts"
+      facts:
+        - ["analytics/events.ts"]
+        - ["import", "call site"]
+      forbidden:
+        - "packages/backend/src/api/analytics/query.ts"
+      forbidden_strict: false
+
+  - id: wolfmax-impact-03
+    task_type: impact
+    difficulty: hard
+    question: "If the `epochSeals` table schema in packages/backend/src/db/schema/crypto-anchoring.ts were changed to remove the `inclusionProof` column, which TypeScript files and Rust files would need updating?"
+    rubric: |
+      TypeScript files that reference inclusionProof on epochSeals rows:
+      - packages/backend/src/api/crypto/epochs.ts (lines ~174-196, parses inclusionProof JSON)
+      The Rust backend-worker files:
+      - packages/backend-worker/src/aggregation.rs (writes inclusion_proof via the UNNEST UPDATE)
+      Drizzle migration and the schema file itself are also affected.
+      Bonus: notes that the crypto-anchoring.ts schema definition would need the column
+      removed and a new Drizzle migration generated.
+      Penalize: missing aggregation.rs as a required change (it is the writer), or
+      claiming epochs.ts does not reference inclusionProof (it does, with error handling).
+    expected:
+      citations:
+        - { file: "packages/backend/src/db/schema/crypto-anchoring.ts", line_range: [19, 46], symbol: "epochSeals" }
+        - { file: "packages/backend/src/api/crypto/epochs.ts", line_range: [174, 196], symbol: "cryptoEpochsRouter" }
+        - { file: "packages/backend-worker/src/aggregation.rs", line_range: [84, 104], symbol: "aggregate_new_seals" }
+      files:
+        - "packages/backend/src/db/schema/crypto-anchoring.ts"
+        - "packages/backend/src/api/crypto/epochs.ts"
+        - "packages/backend-worker/src/aggregation.rs"
+      facts:
+        - ["aggregation.rs", "Rust worker"]
+        - ["inclusionProof", "inclusion_proof"]
+        - ["epochs.ts"]
+      forbidden: []
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # architectural (3)
+  # ---------------------------------------------------------------------------
+
+  - id: wolfmax-arch-01
+    task_type: architectural
+    difficulty: medium
+    question: "What is the boundary between the API layer and the database layer in the backend? How do routes access the database?"
+    rubric: |
+      Must identify: all API routes import `db` from packages/backend/src/db/index.ts
+      (a Drizzle PostgreSQL client). Routes use Drizzle's fluent query API directly
+      (no repository pattern). For multi-step writes the db/transaction.ts withTransaction
+      helper wraps them atomically.
+      Schema definitions live in packages/backend/src/db/schema/*.ts and are re-exported
+      via the barrel at packages/backend/src/db/schema/index.ts.
+      Must cite at least db/index.ts and db/transaction.ts.
+      Bonus: notes there is NO repository/service layer abstraction; routes import db
+      directly and compose Drizzle queries inline.
+      Penalize: claiming there is a repository layer or service classes mediating all
+      DB access.
+    expected:
+      citations:
+        - { file: "packages/backend/src/db/index.ts", line_range: [1, 10], symbol: "db" }
+        - { file: "packages/backend/src/db/transaction.ts", line_range: [142, 194], symbol: "withTransaction" }
+        - { file: "packages/backend/src/db/schema/index.ts", line_range: [1, 69], symbol: "schema" }
+      files:
+        - "packages/backend/src/db/index.ts"
+        - "packages/backend/src/db/transaction.ts"
+        - "packages/backend/src/db/schema/index.ts"
+      facts:
+        - ["Drizzle", "drizzle-orm"]
+        - ["no repository", "direct", "inline"]
+        - ["withTransaction", "transaction"]
+      forbidden:
+        - "repository"
+      forbidden_strict: false
+
+  - id: wolfmax-arch-02
+    task_type: architectural
+    difficulty: medium
+    question: "How is the Elysia application composed? What is the top-level app entry point and how are routers registered?"
+    rubric: |
+      Must cite packages/backend/src/app.ts (the `app` const at line 45) as the
+      top-level Elysia app, and packages/backend/src/index.ts as where app.listen()
+      is called. Must describe the composition pattern: app chains .use(router) calls
+      for each feature module (accessRouter, invitationsRouter, adminUsersRouter, etc.)
+      plus .mount(auth.handler) for Better Auth.
+      Bonus: notes the global middleware applied before routes: requestIdMiddleware,
+      CORS, public rateLimitPlugin, onBeforeHandle for checkAuthRateLimit, and the CSRF
+      custom-header check.
+      Penalize: claiming Express or Hono is the framework, or saying routes are
+      registered via decorators.
+    expected:
+      citations:
+        - { file: "packages/backend/src/app.ts", line_range: [45, 191], symbol: "app" }
+        - { file: "packages/backend/src/index.ts", line_range: [53, 53], symbol: "startServer" }
+      files:
+        - "packages/backend/src/app.ts"
+        - "packages/backend/src/index.ts"
+      facts:
+        - ["Elysia", "elysia"]
+        - [".use(", "use(router"]
+        - ["mount", "auth.handler"]
+      forbidden:
+        - "express"
+        - "hono"
+      forbidden_strict: false
+
+  - id: wolfmax-arch-03
+    task_type: architectural
+    difficulty: hard
+    question: "How is the crypto anchoring system split between the TypeScript backend and the Rust backend-worker? Which layer does what?"
+    rubric: |
+      TypeScript backend (packages/backend/src/api/crypto/):
+      - Accepts epoch seals (POST /api/crypto/epochs) and report locks (POST /api/crypto/reports/:uuid/lock)
+      - Signs receipts with Ed25519 via getReceiptSigner (receipt-signer.ts)
+      - On GET /proof, attempts on-demand OTS upgrade via upgradeAggregationTree / upgradeReportLock
+      Rust backend-worker (packages/backend-worker/src/):
+      - Batches unprocessed epoch seals into Merkle trees (aggregation.rs)
+      - Submits Merkle root / report root to OTS calendars (ots_submit.rs)
+      - Retries stuck submissions (retry_stuck_pending_trees)
+      Must cite at least aggregation.rs and api/crypto/epochs.ts.
+      Bonus: notes the worker is a one-shot Fargate task (not a daemon), inferred from
+      main.rs (runs aggregation::run + report_submit::run then exits).
+      Penalize: saying the TypeScript layer aggregates seals into Merkle trees (it does
+      not), or claiming the Rust worker handles on-demand proof upgrades.
+    expected:
+      citations:
+        - { file: "packages/backend/src/api/crypto/epochs.ts", line_range: [24, 143], symbol: "cryptoEpochsRouter" }
+        - { file: "packages/backend-worker/src/aggregation.rs", line_range: [17, 111], symbol: "run" }
+        - { file: "packages/backend-worker/src/main.rs", line_range: [13, 41], symbol: "main" }
+      files:
+        - "packages/backend/src/api/crypto/epochs.ts"
+        - "packages/backend/src/lib/receipt-signer.ts"
+        - "packages/backend-worker/src/aggregation.rs"
+        - "packages/backend-worker/src/main.rs"
+        - "packages/backend-worker/src/ots_submit.rs"
+      facts:
+        - ["Merkle", "merkle tree", "MerkleTree"]
+        - ["receipt", "Ed25519", "sign"]
+        - ["worker", "Fargate", "one-shot"]
+      forbidden: []
+      forbidden_strict: false
+
+  # ---------------------------------------------------------------------------
+  # negative (2)
+  # ---------------------------------------------------------------------------
+
+  - id: wolfmax-negative-01
+    task_type: negative
+    difficulty: easy
+    question: "Is there a `RedisCache` class or any Redis-based caching layer in the wolfmax codebase?"
+    rubric: |
+      Must conclude that no Redis cache class or Redis integration exists. Rate
+      limiting uses in-memory storage (a Map in api/rate-limit.ts); update manifest
+      caching uses an in-memory manifestCache object in api/updates.ts; receipt signer
+      uses in-memory module-level cachedSigner. There is no ioredis, Bun.redis, or
+      any redis client import anywhere in the TypeScript or Rust source.
+      Penalize: claiming RedisCache, ioredis, or Bun.redis is used, or citing any file
+      as containing Redis integration.
+    expected:
+      citations: []
+      files: []
+      facts:
+        - ["no Redis", "does not exist", "not found", "in-memory"]
+        - ["Map", "in-memory", "module-level"]
+      forbidden:
+        - "RedisCache"
+        - "ioredis"
+        - "Bun.redis"
+      forbidden_strict: true
+
+  - id: wolfmax-negative-02
+    task_type: negative
+    difficulty: medium
+    question: "Is there a `LegacyAuthMiddleware` or any legacy authentication middleware in the wolfmax backend?"
+    rubric: |
+      Must conclude that no LegacyAuthMiddleware exists. Authentication is handled
+      entirely via authPlugin and adminPlugin in packages/backend/src/auth/macro.ts,
+      using better-auth session validation. There is no legacy middleware, no JWT-based
+      middleware, and no express-style legacy auth handler in the codebase.
+      Penalize: citing packages/backend/src/auth/macro.ts as containing
+      LegacyAuthMiddleware (it does not), or hallucinating a legacy*.ts file.
+    expected:
+      citations: []
+      files: []
+      facts:
+        - ["does not exist", "no such", "not found"]
+        - ["authPlugin", "better-auth"]
+      forbidden:
+        - "LegacyAuthMiddleware"
+        - "legacy-auth"
+        - "legacy_auth"
+      forbidden_strict: true

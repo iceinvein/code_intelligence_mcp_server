@@ -20,7 +20,7 @@
 class CodeIntelligenceMcp < Formula
   desc "Local code intelligence MCP server with semantic search, graph navigation, on-device LLM"
   homepage "https://github.com/iceinvein/code_intelligence_mcp_server"
-  version "4.0.7"
+  version "4.1.0"
   license "MIT"
 
   on_macos do

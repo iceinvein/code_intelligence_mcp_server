@@ -1,0 +1,65 @@
+meta:
+  repo: smoke
+  upstream_url: "."
+  upstream_sha: "HEAD"
+  authored_at: "2026-05-27"
+  authored_against_schema_version: 22
+
+questions:
+  - id: smoke-symbol-01
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "Where is `IndexPipeline` defined in this repo?"
+    rubric: |
+      Cites src/indexer/pipeline/mod.rs and identifies the IndexPipeline struct.
+      Bonus: notes the Clone derive and that fields are Arc-wrapped.
+      Penalize: citing a renamed/older path or hallucinating a different filename.
+    expected:
+      citations:
+        - { file: "src/indexer/pipeline/mod.rs", line_range: [74, 94], symbol: "IndexPipeline" }
+      files:
+        - "src/indexer/pipeline/mod.rs"
+      facts:
+        - "IndexPipeline"
+        - ["struct", "Struct"]
+      forbidden:
+        - "src/indexer/extract"
+      forbidden_strict: false
+
+  - id: smoke-concept-01
+    task_type: concept
+    difficulty: medium
+    question: "Where does the daemon spawn the LLM description worker?"
+    rubric: |
+      Cites src/session.rs init_repo_state and the gated tokio::spawn block that
+      calls spawn_description_worker. Bonus: notes the BENCH_DISABLE_DESCRIPTIONS
+      env gate. Penalize: pointing only at IndexPipeline::spawn_description_worker
+      without showing where it's invoked.
+    expected:
+      citations:
+        - { file: "src/session.rs", line_range: [162, 294], symbol: "init_repo_state" }
+      files:
+        - "src/session.rs"
+      facts:
+        - ["spawn_description_worker", "description worker"]
+        - "BENCH_DISABLE_DESCRIPTIONS"
+      forbidden: []
+      forbidden_strict: false
+
+  - id: smoke-negative-01
+    task_type: negative
+    difficulty: easy
+    question: "Is there a `legacy_session_handler` function in this repo?"
+    rubric: |
+      Concludes no such function exists, citing absence of grep/search results.
+      Penalize: any answer that claims the function exists or cites a fabricated
+      file path.
+    expected:
+      citations: []
+      files: []
+      facts:
+        - ["does not exist", "no such function", "no matches", "not found"]
+      forbidden:
+        - "legacy_session_handler.rs"
+        - "fn legacy_session_handler"
+      forbidden_strict: true

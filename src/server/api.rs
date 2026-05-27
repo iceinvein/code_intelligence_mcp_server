@@ -341,6 +341,17 @@ fn read_repo_stats(db_path: &crate::path::Utf8Path) -> Option<Value> {
         }
     };
 
+    // Ensure the schema (in particular the repo_stats table) exists. Legacy
+    // repo dbs created before the cache table shipped won't have it, and
+    // the indexing pipeline is the only other code path that runs init();
+    // without this, the first dashboard click on a pre-existing repo logs
+    // "no such table: repo_stats" instead of triggering the backfill.
+    // init() is idempotent and microseconds on an already-initialised db.
+    if let Err(e) = sqlite.init() {
+        tracing::warn!(error = %e, path = %db_path, "failed to init repo db schema for stats");
+        return None;
+    }
+
     let cached = match sqlite.read_repo_stats_cached() {
         Ok(Some(snap)) => Some(snap),
         Ok(None) => {

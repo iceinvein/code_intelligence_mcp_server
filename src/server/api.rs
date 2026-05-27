@@ -296,16 +296,16 @@ async fn handle_repo_detail(
     // SessionManager::get_or_create_repo, which would warm a cold repo
     // just to render a dashboard tile. The db file may not exist yet on a
     // freshly registered repo that has never been indexed; surface that
-    // as `stats: null` rather than an error.
+    // as `stats: null` rather than an error. All SQLite work runs on a
+    // blocking thread because rusqlite is synchronous: doing it on the
+    // axum runtime thread starves every other dashboard request whenever
+    // a multi-million-row repo (e.g. wolfmax) is in play.
     let db_path = entry.data_dir.join("code-intelligence.db");
     let stats = if db_path.as_std_path().exists() {
-        match crate::storage::sqlite::SqliteStore::open(&db_path) {
-            Ok(sqlite) => Some(read_repo_stats(&sqlite)),
-            Err(e) => {
-                tracing::warn!(error = %e, path = %db_path, "failed to open repo db for stats");
-                None
-            }
-        }
+        tokio::task::spawn_blocking(move || read_repo_stats(&db_path))
+            .await
+            .ok()
+            .flatten()
     } else {
         None
     };
@@ -322,18 +322,61 @@ async fn handle_repo_detail(
     .into_response())
 }
 
-/// Best-effort stats read. Any individual query failure becomes `null` so
-/// the dashboard can render partial data instead of a 500.
-fn read_repo_stats(sqlite: &crate::storage::sqlite::SqliteStore) -> Value {
-    let symbols = sqlite.count_symbols().ok();
-    let edges = sqlite.count_edges().ok();
-    let descriptions = sqlite.count_descriptions().ok();
-    let undescribed = sqlite.count_undescribed_symbols().ok();
-    let last_updated = sqlite.most_recent_symbol_update().ok().flatten();
+/// Best-effort stats read. Runs on a blocking thread.
+///
+/// Heavy counts come from the `repo_stats` cache, refreshed at the end of
+/// every index run. On cache miss (repo indexed before the cache existed,
+/// or never indexed at all) we fall back to live counts AND backfill the
+/// cache so the next dashboard click is fast. The live fallback only runs
+/// once per repo, not on every page open.
+///
+/// Any individual query failure becomes `null` so the dashboard can render
+/// partial data instead of a 500.
+fn read_repo_stats(db_path: &crate::path::Utf8Path) -> Option<Value> {
+    let sqlite = match crate::storage::sqlite::SqliteStore::open(db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %db_path, "failed to open repo db for stats");
+            return None;
+        }
+    };
+
+    let cached = match sqlite.read_repo_stats_cached() {
+        Ok(Some(snap)) => Some(snap),
+        Ok(None) => {
+            // Backfill: this scans the heavy tables once, then future
+            // requests hit the cache. The fallback also covers fresh
+            // index dbs (table exists but cache row never written) and
+            // repos indexed before this cache table shipped.
+            match sqlite.recompute_repo_stats() {
+                Ok(snap) => Some(snap),
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %db_path, "failed to backfill repo_stats cache");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, path = %db_path, "failed to read repo_stats cache");
+            None
+        }
+    };
+
+    let (symbols, edges, descriptions, undescribed, last_updated) = match cached {
+        Some(s) => (
+            Some(s.symbols),
+            Some(s.edges),
+            Some(s.descriptions as usize),
+            Some(s.undescribed_symbols as usize),
+            s.last_updated_unix_s,
+        ),
+        None => (None, None, None, None, None),
+    };
+
     let latest_index_run = sqlite.latest_index_run().ok().flatten();
     let latest_search_run = sqlite.latest_search_run().ok().flatten();
 
-    json!({
+    Some(json!({
         "symbols": symbols,
         "edges": edges,
         "descriptions": descriptions,
@@ -341,7 +384,7 @@ fn read_repo_stats(sqlite: &crate::storage::sqlite::SqliteStore) -> Value {
         "last_updated_unix_s": last_updated,
         "latest_index_run": latest_index_run,
         "latest_search_run": latest_search_run,
-    })
+    }))
 }
 
 async fn handle_repo_reindex(

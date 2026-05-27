@@ -174,6 +174,22 @@ impl SqliteStore {
         queries::descriptions::count_undescribed_symbols(&conn)
     }
 
+    /// Read the cached dashboard stats row, if it exists. Returns `None`
+    /// when the repo has never finished an index run since the cache
+    /// table was introduced.
+    pub fn read_repo_stats_cached(&self) -> Result<Option<queries::repo_stats::CachedRepoStats>> {
+        let conn = self.read()?;
+        queries::repo_stats::read_cached(&conn)
+    }
+
+    /// Recompute and persist the cached dashboard stats. Called at the
+    /// end of every index run; also used for lazy backfill on the first
+    /// dashboard click against a repo indexed before the cache existed.
+    pub fn recompute_repo_stats(&self) -> Result<queries::repo_stats::CachedRepoStats> {
+        let conn = self.write()?;
+        queries::repo_stats::recompute(&conn)
+    }
+
     pub fn list_descriptions_with_symbol_data(
         &self,
         file_path: Option<&str>,

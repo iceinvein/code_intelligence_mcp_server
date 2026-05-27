@@ -628,6 +628,14 @@ impl IndexPipeline {
             symbols_indexed: stats.symbols_indexed as u64,
         };
         let _ = sqlite.insert_index_run(&run);
+
+        // Refresh the dashboard cache so /api/repos/:id can skip the
+        // COUNT(*) scans on symbols/edges/descriptions. Best-effort:
+        // a failed cache write should not fail the index run.
+        if let Err(e) = sqlite.recompute_repo_stats() {
+            tracing::warn!(error = %e, "Failed to refresh repo_stats cache after index run");
+        }
+
         Ok(())
     }
 

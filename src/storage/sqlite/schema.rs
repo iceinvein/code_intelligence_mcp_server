@@ -616,4 +616,17 @@ CREATE TABLE IF NOT EXISTS co_changes (
 CREATE INDEX IF NOT EXISTS idx_co_changes_file_a ON co_changes(file_a);
 CREATE INDEX IF NOT EXISTS idx_co_changes_file_b ON co_changes(file_b);
 CREATE INDEX IF NOT EXISTS idx_co_changes_confidence ON co_changes(confidence);
+
+-- Cached aggregate stats for dashboard. Single row (id = 1) refreshed
+-- after every index run so /api/repos/:id avoids COUNT(*) scans on
+-- multi-million-row tables (symbols / edges).
+CREATE TABLE IF NOT EXISTS repo_stats (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  symbols INTEGER NOT NULL,
+  edges INTEGER NOT NULL,
+  descriptions INTEGER NOT NULL,
+  undescribed_symbols INTEGER NOT NULL,
+  last_updated_unix_s INTEGER,
+  computed_at_unix_s INTEGER NOT NULL
+);
 "#;

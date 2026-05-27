@@ -11,6 +11,7 @@ pub mod framework;
 pub mod metrics;
 pub mod misc;
 pub mod packages;
+pub mod repo_stats;
 pub mod selections;
 pub mod stats;
 pub mod symbols;

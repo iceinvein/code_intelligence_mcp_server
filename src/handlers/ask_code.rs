@@ -331,6 +331,7 @@ fn build_unavailable_response(
     forward_test_coverage(investigate_response, &mut response);
     forward_callsites(investigate_response, &mut response);
     forward_supporting_modules(investigate_response, &mut response);
+    forward_boundary_files(investigate_response, &mut response);
     response
 }
 
@@ -441,6 +442,7 @@ fn build_evidence_only_response(
     forward_test_coverage(investigate_response, &mut response);
     forward_callsites(investigate_response, &mut response);
     forward_supporting_modules(investigate_response, &mut response);
+    forward_boundary_files(investigate_response, &mut response);
     response
 }
 
@@ -476,6 +478,18 @@ fn forward_callsites(investigate_response: &Value, response: &mut Value) {
 fn forward_supporting_modules(investigate_response: &Value, response: &mut Value) {
     if let Some(sm) = investigate_response.get("supporting_modules") {
         response["supporting_modules"] = sm.clone();
+    }
+}
+
+/// Copy investigate's `boundary_files` block through. Cross-process IPC
+/// flow questions ("trace how X flows from main to renderer; where does
+/// the renderer subscribe") were citing renderer hooks (`useIpcBridge`)
+/// instead of the preload contextBridge surface. Surfacing the boundary
+/// Property symbols lets the agent name the right citation in its first
+/// response.
+fn forward_boundary_files(investigate_response: &Value, response: &mut Value) {
+    if let Some(bf) = investigate_response.get("boundary_files") {
+        response["boundary_files"] = bf.clone();
     }
 }
 
@@ -529,6 +543,7 @@ fn build_synthesized_response(
     forward_test_coverage(investigate_response, &mut response);
     forward_callsites(investigate_response, &mut response);
     forward_supporting_modules(investigate_response, &mut response);
+    forward_boundary_files(investigate_response, &mut response);
     response
 }
 

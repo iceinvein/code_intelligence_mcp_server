@@ -75,6 +75,19 @@ impl SqliteStore {
         queries::symbols::list_symbols_by_file(&conn, file_path)
     }
 
+    /// Return (file_path, kind, name, start_line) for Property / Const
+    /// symbols whose `file_path` matches the SQL LIKE pattern. Used by
+    /// the IPC `boundary_files` block to surface contextBridge surfaces
+    /// and shared channel constants in a single query.
+    pub fn list_boundary_property_symbols(
+        &self,
+        path_pattern: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, u32)>> {
+        let conn = self.read()?;
+        queries::symbols::list_boundary_property_symbols(&conn, path_pattern, limit)
+    }
+
     pub fn list_repo_map_symbols(&self, limit: usize) -> Result<Vec<RepoMapSymbolRow>> {
         let conn = self.read()?;
         queries::symbols::list_repo_map_symbols(&conn, limit)

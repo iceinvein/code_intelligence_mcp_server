@@ -348,6 +348,40 @@ pub fn list_symbol_id_name_pairs(conn: &Connection) -> Result<Vec<(String, Strin
     Ok(out)
 }
 
+/// List Property + Const symbols whose `file_path` matches the SQL
+/// LIKE pattern. Returns (file_path, kind, name, start_line) tuples
+/// ordered by (file_path, start_line) so callers can group by file
+/// without a second pass. Used by the IPC boundary_files block.
+pub fn list_boundary_property_symbols(
+    conn: &Connection,
+    path_pattern: &str,
+    limit: usize,
+) -> Result<Vec<(String, String, String, u32)>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT file_path, kind, name, start_line
+FROM symbols
+WHERE kind IN ('property', 'const')
+  AND file_path LIKE ?1
+ORDER BY file_path ASC, start_line ASC
+LIMIT ?2
+"#,
+        )
+        .context("Failed to prepare list_boundary_property_symbols")?;
+    let mut rows = stmt.query(params![path_pattern, limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)? as u32,
+        ));
+    }
+    Ok(out)
+}
+
 pub fn list_symbols_by_file(conn: &Connection, file_path: &str) -> Result<Vec<SymbolRow>> {
     let mut stmt = conn
         .prepare(

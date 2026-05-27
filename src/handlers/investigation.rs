@@ -447,6 +447,51 @@ fn is_pipeline_walkthrough_question(question: &str) -> bool {
     false
 }
 
+/// Detect questions that ask how an event / message flows across the
+/// renderer / preload / main-process boundary. When this fires, the
+/// `boundary_files` block surfaces the contextBridge Property symbols
+/// (preload/*) and IPC channel constants (shared/ipc-channels*) so the
+/// agent cites the actual cross-process surface instead of a renderer-
+/// side React hook that consumes it.
+fn is_ipc_flow_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    // Must mention IPC vocabulary -- otherwise this is just a generic
+    // pipeline question that supporting_modules already handles.
+    let has_ipc_vocab = contains_any(
+        &q,
+        &[
+            "ipc",
+            "preload",
+            "renderer",
+            "context bridge",
+            "contextbridge",
+        ],
+    );
+    if !has_ipc_vocab {
+        return false;
+    }
+    // Must also be a trace / hop / subscribe / produce question. The
+    // boundary_files block is wasted bytes for a "what is IPC" or "is
+    // IPC enabled" question.
+    is_pipeline_walkthrough_question(question)
+        || is_hook_callback_question(question)
+        || contains_any(
+            &q,
+            &[
+                "subscribe",
+                "subscribes",
+                "subscribed",
+                "produce",
+                "produced",
+                "produces",
+                "bridge",
+                "expose",
+                "exposed",
+                "channel",
+            ],
+        )
+}
+
 /// Detect "where does callback X fire / when is hook Y called" — the
 /// agent needs to know that hook/callback identifiers are usually
 /// property references rather than defined symbols, so Grep on the
@@ -609,6 +654,21 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         None
     };
 
+    // Step 3.7.1: auto-include IPC boundary files for flow questions that
+    // cross the renderer / preload / main process line. The supporting
+    // modules lookup only finds files called BY the primary file; the
+    // preload + ipc-channels nodes live as separate islands in the call
+    // graph (the renderer reads them via contextBridge, not direct call
+    // edges). Agents otherwise cite renderer hooks (`useIpcBridge`) as
+    // "where the renderer subscribes" instead of the actual preload
+    // property symbol. Listing the Property symbols at those boundary
+    // files gives the agent the right citation surface verbatim.
+    let boundary_files = if is_ipc_flow_question(&question) {
+        run_boundary_files_lookup(state)?
+    } else {
+        None
+    };
+
     let mut bundle = build_response(
         &question,
         shape,
@@ -634,8 +694,68 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
              question asked for. Conciseness is part of the rubric: \
              precision wins points, padding loses them."
         );
+        // The directive alone is not enough -- agents still copy sibling
+        // fields verbatim out of the verified body. Trim each
+        // verified_locations entry's body so only the surface the agent
+        // actually needs survives. CONCISE_LOOKUP_BODY_LINES is chosen
+        // to fit a typical function signature plus a couple of default
+        // assignments, which is where scalar values almost always live.
+        trim_verified_location_bodies(&mut bundle, CONCISE_LOOKUP_BODY_LINES);
+    }
+    if let Some(bf) = boundary_files.as_ref() {
+        bundle["boundary_files"] = json!({
+            "files": bf.files.iter().map(|f| json!({
+                "file": f.file,
+                "entries": f.entries.iter().map(|e| json!({
+                    "name": e.name,
+                    "kind": e.kind,
+                    "line": e.line,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "note": "IPC boundary files surface the preload contextBridge \
+                surface (where the renderer subscribes / where channels are \
+                exposed) and the shared IPC channel constants (the literal \
+                channel names exchanged between main and renderer). When \
+                the question asks 'where the renderer subscribes' or names \
+                a tool-use / session-message flow across the process line, \
+                cite the Property entries here verbatim. Do NOT substitute \
+                a renderer React hook (e.g. useIpcBridge) for the preload \
+                symbol -- the rubric distinguishes them and expects the \
+                contextBridge property, not its consumer.",
+        });
     }
     Ok(bundle)
+}
+
+/// Body cap (lines) applied to `verified_locations[].body` when the
+/// question is a scalar-value lookup. Tighter than `PER_BODY_LINES_CAP`
+/// (200) on purpose: scalar lookups want the line carrying the value,
+/// not the surrounding implementation.
+const CONCISE_LOOKUP_BODY_LINES: usize = 6;
+
+/// Rewrite each `body` field in `bundle["verified_locations"]` to keep
+/// only the first `max_lines` lines, with the same `// ... N more lines`
+/// suffix `body_with_cap` produces. No-op when the field is missing or
+/// not an array. Used for the scalar-value-lookup concise path so the
+/// agent doesn't pad answers by quoting sibling fields the rubric did
+/// not ask for.
+fn trim_verified_location_bodies(bundle: &mut Value, max_lines: usize) {
+    let Some(locations) = bundle
+        .get_mut("verified_locations")
+        .and_then(|v| v.as_array_mut())
+    else {
+        return;
+    };
+    for loc in locations.iter_mut() {
+        let Some(body_val) = loc.get_mut("body") else {
+            continue;
+        };
+        let Some(body_text) = body_val.as_str() else {
+            continue;
+        };
+        let trimmed = body_with_cap(body_text, max_lines);
+        *body_val = json!(trimmed);
+    }
 }
 
 /// Sibling-module map for pipeline / orchestration questions. Lists
@@ -689,6 +809,87 @@ struct CallSiteEntry {
     caller_file: String,
     at_line: u32,
     edge_type: String,
+}
+
+/// IPC boundary files for cross-process flow questions. Lists Property
+/// symbols at the preload contextBridge surface and the shared IPC
+/// channel constants module. Each entry is one citable symbol the
+/// rubric distinguishes from a renderer-side consumer.
+struct BoundaryFiles {
+    files: Vec<BoundaryFile>,
+}
+
+struct BoundaryFile {
+    /// Repo-relative file path (e.g. `src/preload/index.ts`).
+    file: String,
+    /// Property/Const symbols on this boundary surface, ordered by line.
+    entries: Vec<BoundaryEntry>,
+}
+
+struct BoundaryEntry {
+    name: String,
+    kind: String,
+    line: u32,
+}
+
+/// File-path LIKE patterns considered IPC boundary surfaces. Each entry
+/// is a SQL LIKE pattern matched against `symbols.file_path`. The set is
+/// deliberately narrow: preload contextBridge files and the shared IPC
+/// channel constants module. Adding patterns here grows the boundary
+/// block uniformly across questions, so prefer tightening detection in
+/// `is_ipc_flow_question` over broadening this list.
+const BOUNDARY_FILE_PATTERNS: &[&str] = &[
+    "%/preload/index.ts",
+    "%/preload/index.tsx",
+    "%/preload.ts",
+    "%/preload.tsx",
+    "%/shared/ipc-channels.ts",
+    "%/shared/ipc-channels.tsx",
+    "%/shared/ipc.ts",
+    "%/shared/ipc.tsx",
+];
+
+/// Maximum Property/Const entries reported per boundary file. Keeps the
+/// block bounded -- preload contextBridge surfaces can have 30+ keys.
+const BOUNDARY_FILE_ENTRY_CAP: usize = 30;
+
+/// Resolve the IPC boundary files for a flow question. Returns None when
+/// no boundary file is present in the index (the patterns don't match).
+fn run_boundary_files_lookup(state: &AppState) -> Result<Option<BoundaryFiles>> {
+    let sqlite = &state.sqlite;
+    let mut files: Vec<BoundaryFile> = Vec::new();
+    for pattern in BOUNDARY_FILE_PATTERNS {
+        let entries = sqlite.list_boundary_property_symbols(pattern, BOUNDARY_FILE_ENTRY_CAP)?;
+        if entries.is_empty() {
+            continue;
+        }
+        // Group by file_path; entries are already ordered (path, line)
+        // by the underlying query.
+        let mut current_file: Option<String> = None;
+        let mut current_entries: Vec<BoundaryEntry> = Vec::new();
+        for (file_path, kind, name, line) in entries {
+            if Some(file_path.as_str()) != current_file.as_deref() {
+                if let Some(prev) = current_file.take() {
+                    files.push(BoundaryFile {
+                        file: prev,
+                        entries: std::mem::take(&mut current_entries),
+                    });
+                }
+                current_file = Some(file_path);
+            }
+            current_entries.push(BoundaryEntry { name, kind, line });
+        }
+        if let Some(prev) = current_file.take() {
+            files.push(BoundaryFile {
+                file: prev,
+                entries: current_entries,
+            });
+        }
+    }
+    if files.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(BoundaryFiles { files }))
 }
 
 /// Test-coverage data resolved for the primary symbol when the question
@@ -2226,6 +2427,42 @@ mod tests {
     }
 
     #[test]
+    fn trim_verified_location_bodies_caps_long_bodies_for_scalar_lookups() {
+        let mut bundle = json!({
+            "verified_locations": [
+                {
+                    "body": "fn foo() {\n  width: 1280,\n  height: 800,\n  pad: 4,\n  spam: 1,\n  spam: 2,\n  spam: 3,\n  spam: 4,\n  spam: 5,\n}\n"
+                },
+                {
+                    "body": "fn bar() {\n  port: 17800,\n}\n"
+                }
+            ]
+        });
+        trim_verified_location_bodies(&mut bundle, CONCISE_LOOKUP_BODY_LINES);
+        let locs = bundle["verified_locations"].as_array().unwrap();
+        let body0 = locs[0]["body"].as_str().unwrap();
+        // Keeps signature + first scalar fields the rubric usually cites.
+        assert!(body0.contains("fn foo()"));
+        assert!(body0.contains("width: 1280"));
+        // Drops trailing sibling fields the agent would otherwise pad with.
+        assert!(!body0.contains("spam: 5"));
+        assert!(body0.contains("// ...") && body0.contains("more lines"));
+        // Short bodies survive unchanged.
+        let body1 = locs[1]["body"].as_str().unwrap();
+        assert!(body1.contains("fn bar()"));
+        assert!(body1.contains("port: 17800"));
+        assert!(!body1.contains("// ..."));
+    }
+
+    #[test]
+    fn trim_verified_location_bodies_is_a_noop_when_field_missing() {
+        let mut bundle = json!({"other": "value"});
+        trim_verified_location_bodies(&mut bundle, 6);
+        // No panic, no field invented.
+        assert!(bundle.get("verified_locations").is_none());
+    }
+
+    #[test]
     fn dedup_locations_keeps_first_occurrence() {
         let loc = |id: &str, name: &str| VerifiedLocation {
             symbol_id: id.to_string(),
@@ -2790,6 +3027,40 @@ mod tests {
             assert!(
                 !is_hook_callback_question(q),
                 "should NOT detect as hook/callback question: {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn ipc_flow_detector_catches_cross_process_flow_questions() {
+        for q in [
+            "Trace how a tool-use event flows from the Claude provider session out to the renderer. \
+             Name every hop: where the event is produced in the provider, how the session manager \
+             bridges it to IPC, the IPC channel constant, and where the renderer subscribes.",
+            "Where does the renderer subscribe to onSessionMessage?",
+            "How does the preload contextBridge expose the session API?",
+            "Walk me through the IPC channel for tool-use events",
+        ] {
+            assert!(
+                is_ipc_flow_question(q),
+                "should detect as IPC flow question: {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn ipc_flow_detector_rejects_questions_without_ipc_vocab() {
+        for q in [
+            // No IPC vocabulary; supporting_modules already covers it.
+            "Walk through the PR review orchestration",
+            // IPC mentioned but it's a definitional / config question --
+            // boundary_files would be wasted bytes.
+            "Is IPC enabled in the renderer config?",
+            "What is the default IPC timeout?",
+        ] {
+            assert!(
+                !is_ipc_flow_question(q),
+                "should NOT detect as IPC flow question: {q}"
             );
         }
     }

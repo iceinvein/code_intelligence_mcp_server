@@ -892,6 +892,10 @@ mod tests {
     use crate::path::Utf8PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Serializes env-mutating tests within this module. If you add another
+    /// test that calls std::env::set_var, take this lock before mutating.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn enrich_name_injects_concept_tags() {
         // Normal symbol gets concept tags injected
@@ -1310,9 +1314,6 @@ mod tests {
 
     #[test]
     fn bench_disable_descriptions_env_forces_empty_description_field() {
-        use std::sync::Mutex;
-        // Serialize against other env-touching tests.
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
 
         let dir = tmp_index_dir();

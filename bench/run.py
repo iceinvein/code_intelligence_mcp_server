@@ -6,6 +6,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -45,28 +46,216 @@ def cmd_list(args) -> int:
 
 
 def cmd_prep(args) -> int:
-    from bench import arms as arms_mod
-    from bench import daemon as daemon_mod
+    import subprocess as _subprocess
+    from bench import arms as arms_mod, daemon as daemon_mod, fixtures_io, repos
 
     requested_arms = (args.arms.split(",") if args.arms
                       else list(arms_mod.ARMS.keys()))
     arms_to_prep = [arms_mod.ARMS[n] for n in requested_arms if n in arms_mod.ARMS]
 
-    print(f"prep: arms={','.join(a.name for a in arms_to_prep)}")
+    # Discover repos via fixture files (mirrors cmd_full).
+    if args.repos:
+        repo_names = [r.strip() for r in args.repos.split(",")]
+    else:
+        repo_names = sorted(
+            p.stem for p in config.FIXTURES_DIR.glob("*.yaml")
+            if p.stem != "smoke"
+        )
+
+    print(f"prep: arms={','.join(a.name for a in arms_to_prep)} repos={','.join(repo_names) or '(none)'}")
 
     if args.check:
         variants = arms_mod.distinct_index_variants(arms_to_prep)
-        print(f"(dry-run mode: would build index variants: {variants})")
+        print(f"dry-run: would build index variants {variants} for repos {repo_names}")
         return 0
 
+    # Ensure isolated HOME and the model symlink exist.
+    config.BENCH_HOME.mkdir(parents=True, exist_ok=True)
+    bench_ci_dir = config.BENCH_HOME / ".code-intelligence"
+    bench_ci_dir.mkdir(parents=True, exist_ok=True)
+    models_link = bench_ci_dir / "models"
+    real_models = Path.home() / ".code-intelligence" / "models"
+    if not models_link.exists():
+        if real_models.exists():
+            models_link.symlink_to(real_models)
+            print(f"symlinked models: {models_link} -> {real_models}")
+        else:
+            print(
+                f"warning: {real_models} does not exist; models will need to be downloaded "
+                f"on first daemon start (this is slow and uses bandwidth)",
+                file=sys.stderr,
+            )
+
+    # Codegraph install check.
     cg_version = daemon_mod.ensure_codegraph_installed()
     if cg_version:
         print(f"codegraph installed: {cg_version}")
     else:
         print("codegraph not installed; codegraph arm will be skipped during full run")
 
-    print("prep: complete (smoke-mode only; real wolfmax/django index variant builds added later)")
+    # Per-repo checkout.
+    config.BENCH_REPOS_DIR.mkdir(parents=True, exist_ok=True)
+    for name in repo_names:
+        fixture_path = config.FIXTURES_DIR / f"{name}.yaml"
+        if not fixture_path.exists():
+            print(f"warning: fixture not found: {fixture_path}; skipping {name}", file=sys.stderr)
+            continue
+        fixture = fixtures_io.load_fixture(fixture_path)
+        meta = fixture.meta
+        target = config.BENCH_REPOS_DIR / name
+
+        # Special case: local-path fixtures (upstream_url is an absolute path).
+        # Treat as already-checked-out; symlink rather than clone.
+        upstream_url = meta.upstream_url
+        if Path(upstream_url).is_absolute() and Path(upstream_url).exists():
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(upstream_url)
+                print(f"linked {name}: {target} -> {upstream_url}")
+            # Don't try to fetch / checkout SHA on a symlink; the user is responsible
+            # for the repo's local state matching meta.upstream_sha. Warn if it doesn't.
+            try:
+                head = _subprocess.run(
+                    ["git", "-C", str(target), "rev-parse", "HEAD"],
+                    check=True, capture_output=True,
+                ).stdout.decode().strip()
+                if head != meta.upstream_sha:
+                    print(
+                        f"warning: {name} HEAD is {head} but fixture pins {meta.upstream_sha}; "
+                        f"citations may not line up",
+                        file=sys.stderr,
+                    )
+            except _subprocess.CalledProcessError:
+                pass
+            continue
+
+        # Standard remote clone.
+        try:
+            repos.ensure_repo_checkout(
+                name=name,
+                upstream_url=meta.upstream_url,
+                upstream_sha=meta.upstream_sha,
+                target_dir=target,
+            )
+            print(f"checked out {name} at {meta.upstream_sha[:12]}")
+        except _subprocess.CalledProcessError as e:
+            print(
+                f"error: failed to check out {name}: {e.stderr.decode() if e.stderr else e}",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Build index variants per repo per variant.
+    variants = arms_mod.distinct_index_variants(arms_to_prep)
+    if not variants:
+        print("no daemon arms requested; skipping index variant builds")
+    else:
+        print(f"building index variants {variants} (this may take a while)")
+        for name in repo_names:
+            repo_path = config.BENCH_REPOS_DIR / name
+            if not repo_path.exists():
+                continue
+            repo_hash_str = repos.repo_hash(str(repo_path.resolve()))
+            for variant in variants:
+                data_dir = repos.variant_data_dir(repo_hash_str, variant)
+                meta_dict = {
+                    "daemon_sha": repos.current_daemon_sha(),
+                    "repo_upstream_sha": _read_pinned_sha(name),
+                    "variant": variant,
+                    "schema_version": 22,
+                }
+                if repos.index_is_fresh(data_dir, meta_dict):
+                    print(f"  {name}/{variant}: cached, skipping rebuild")
+                    continue
+                print(f"  {name}/{variant}: building")
+                _build_variant(name, repo_path, variant)
+                repos.write_cache(data_dir, meta_dict)
+                print(f"  {name}/{variant}: done")
+
+    print("prep: complete")
     return 0
+
+
+def _read_pinned_sha(name: str) -> str:
+    """Read upstream_sha from the fixture meta block."""
+    fixture = fixtures_io.load_fixture(config.FIXTURES_DIR / f"{name}.yaml")
+    return fixture.meta.upstream_sha
+
+
+def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
+    """Spawn the daemon with BENCH_HOME and the right BENCH_DISABLE_* env, then
+    POST /api/repos/<hash>/reindex, wait for it to complete (poll the JSON API),
+    then stop the daemon."""
+    import os
+    import subprocess as _subprocess
+    import time as _time
+    import urllib.error
+    import urllib.request
+    from bench import daemon as daemon_mod, repos
+
+    env_extra: dict[str, str] = {}
+    if variant == "no_desc":
+        env_extra["BENCH_DISABLE_DESCRIPTIONS"] = "1"
+
+    port = daemon_mod.pick_free_port()
+    config.BENCH_HOME.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["HOME"] = str(config.BENCH_HOME)
+    env.update(env_extra)
+
+    proc = _subprocess.Popen(
+        [str(config.DAEMON_BINARY), "--port", str(port)],
+        env=env,
+        stdout=_subprocess.DEVNULL,
+        stderr=_subprocess.DEVNULL,
+    )
+    try:
+        daemon_mod._wait_for_port(port, timeout_s=config.DAEMON_HEALTH_TIMEOUT_S)
+
+        # The API port is mcp_port + 2 per the server architecture.
+        api_port = port + 2
+        repo_hash_str = repos.repo_hash(str(repo_path.resolve()))
+
+        # POST /api/repos/<hash>/reindex
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{api_port}/api/repos/{repo_hash_str}/reindex",
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+        except urllib.error.URLError as e:
+            print(
+                f"  WARN: reindex POST failed: {e}; continuing (daemon may auto-index on bind)",
+                file=sys.stderr,
+            )
+
+        # Wait for indexing + description backfill to settle.
+        # Poll /api/jobs and exit when no running jobs remain for this repo.
+        deadline = _time.monotonic() + 1800  # 30 min cap
+        while _time.monotonic() < deadline:
+            _time.sleep(15)
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{api_port}/api/jobs", timeout=5
+                ) as r:
+                    body = json.loads(r.read().decode())
+                running = [
+                    j for j in body.get("running", [])
+                    if j.get("repo_id", "").startswith(repo_hash_str[:8])
+                ]
+                if not running:
+                    print(f"  no running jobs for {repo_hash_str[:8]}; build settled")
+                    break
+                print(f"  {repo_name}/{variant}: still running ({len(running)} jobs)")
+            except (urllib.error.URLError, json.JSONDecodeError) as e:
+                print(f"  WARN: poll failed: {e}", file=sys.stderr)
+                break
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except _subprocess.TimeoutExpired:
+            proc.kill()
 
 
 def cmd_full(args) -> int:
@@ -76,12 +265,47 @@ def cmd_full(args) -> int:
                       else list(arms_mod.ARMS.keys()))
     arms_to_run = [arms_mod.ARMS[n] for n in requested_arms if n in arms_mod.ARMS]
 
-    fixture_path = config.FIXTURES_DIR / "smoke.yaml"
-    if not fixture_path.exists():
-        print("error: no fixtures available (smoke fixture missing)", file=sys.stderr)
-        return 2
-    fixture = fixtures_io.load_fixture(fixture_path)
+    # Discover fixtures.
+    if args.repos:
+        repo_names = [r.strip() for r in args.repos.split(",")]
+    else:
+        # Default: every *.yaml in fixtures/, EXCEPT smoke.yaml (which is dev-only).
+        repo_names = sorted(
+            p.stem for p in config.FIXTURES_DIR.glob("*.yaml")
+            if p.stem != "smoke"
+        )
+        if not repo_names:
+            print(
+                "error: no fixtures found in bench/fixtures/. Author at least one with "
+                "`python3 -m bench.run authoring init <name>` then fill it in. "
+                "Or pass --repos smoke for a dev cycle.",
+                file=sys.stderr,
+            )
+            return 2
 
+    # Load each fixture and verify the repo is checked out.
+    repos_to_run: list[tuple] = []
+    for name in repo_names:
+        fixture_path = config.FIXTURES_DIR / f"{name}.yaml"
+        if not fixture_path.exists():
+            print(f"error: fixture not found: {fixture_path}", file=sys.stderr)
+            return 2
+        fixture = fixtures_io.load_fixture(fixture_path)
+        # For smoke, use config.REPO_ROOT (this repo). For real fixtures, use the
+        # bench-managed checkout.
+        if name == "smoke":
+            repo_path = config.REPO_ROOT
+        else:
+            repo_path = config.BENCH_REPOS_DIR / name
+            if not repo_path.exists():
+                print(
+                    f"error: {repo_path} not found. Run `python3 -m bench.run prep` first.",
+                    file=sys.stderr,
+                )
+                return 2
+        repos_to_run.append((fixture, repo_path))
+
+    # Pick round id.
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     existing = sorted([p.name for p in config.RESULTS_DIR.iterdir()
                        if p.is_dir() and p.name.startswith("R")])
@@ -98,7 +322,10 @@ def cmd_full(args) -> int:
         print(f"error: {results_dir} exists; pass --round explicitly", file=sys.stderr)
         return 2
 
-    print(f"running {round_id} for arms: {','.join(a.name for a in arms_to_run)}")
+    print(
+        f"running {round_id}: arms=[{','.join(a.name for a in arms_to_run)}] "
+        f"repos=[{','.join(name for name in repo_names)}]"
+    )
 
     # Judging uses `claude --print` (same path as agent runs). No API key needed
     # when running under a Claude Code subscription.
@@ -106,7 +333,7 @@ def cmd_full(args) -> int:
 
     summary = orchestrator.run_cycle(
         arms_to_run=arms_to_run,
-        repos=[(fixture, config.REPO_ROOT)],
+        repos=repos_to_run,
         results_dir=results_dir,
         judge_enabled=judge_enabled,
     )
@@ -125,7 +352,6 @@ def cmd_question(args) -> int:
 
 
 def cmd_report(args) -> int:
-    import json
     from collections import defaultdict
     from bench import report as report_mod
 

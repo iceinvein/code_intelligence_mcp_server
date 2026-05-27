@@ -278,14 +278,7 @@ impl LanceVectorTable {
         // Select only metadata columns — skip the large vector column (896 floats × 4 bytes)
         // to reduce I/O. LanceDB reads entire column groups; excluding vectors avoids
         // reading ~10MB of vector data for a 2700-symbol table.
-        let result_columns = Select::Columns(vec![
-            "id".into(),
-            "name".into(),
-            "kind".into(),
-            "file_path".into(),
-            "exported".into(),
-            "language".into(),
-        ]);
+        let result_columns = vector_search_result_columns();
 
         let stream = self
             .table
@@ -548,14 +541,7 @@ impl LanceVectorTable {
             ));
         }
 
-        let result_columns = Select::Columns(vec![
-            "id".into(),
-            "name".into(),
-            "kind".into(),
-            "file_path".into(),
-            "exported".into(),
-            "language".into(),
-        ]);
+        let result_columns = vector_search_result_columns();
 
         let stream = self
             .table
@@ -681,6 +667,18 @@ fn escape_lancedb_string(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+fn vector_search_result_columns() -> Select {
+    Select::Columns(vec![
+        "id".into(),
+        "name".into(),
+        "kind".into(),
+        "file_path".into(),
+        "exported".into(),
+        "language".into(),
+        "_distance".into(),
+    ])
+}
+
 fn build_schema(vector_dim: usize) -> Schema {
     Schema::new(vec![
         Field::new("id", DataType::Utf8, true),
@@ -803,5 +801,17 @@ mod tests {
         let reopened = store.open_or_create_table("symbols", 3).await.unwrap();
         let hits2 = reopened.search(&[0.0, 1.0, 0.0], 2).await.unwrap();
         assert!(hits2.iter().any(|h| h.id == "id2"));
+    }
+
+    #[test]
+    fn vector_search_projection_explicitly_requests_distance() {
+        let Select::Columns(columns) = vector_search_result_columns() else {
+            panic!("vector search should use an explicit column projection");
+        };
+
+        assert!(
+            columns.iter().any(|column| column == "_distance"),
+            "vector search projection must request _distance explicitly"
+        );
     }
 }

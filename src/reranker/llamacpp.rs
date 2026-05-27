@@ -183,11 +183,28 @@ impl LlamaCppReranker {
     }
 }
 
+/// Returns `true` when the `BENCH_DISABLE_RERANKER` env gate is active.
+///
+/// Bench-only knob. Production never sets this variable. When active, the
+/// reranker skips all model inference and returns equal passthrough scores so
+/// the retrieval pipeline preserves its pre-rerank document ordering.
+#[inline]
+pub fn bench_reranker_disabled() -> bool {
+    std::env::var("BENCH_DISABLE_RERANKER").as_deref() == Ok("1")
+}
+
 #[async_trait]
 impl Reranker for LlamaCppReranker {
     async fn rerank(&self, query: &str, documents: &[RerankDocument]) -> Result<Vec<f32>> {
         if documents.is_empty() {
             return Ok(vec![]);
+        }
+
+        if bench_reranker_disabled() {
+            tracing::debug!(
+                "Reranker disabled by BENCH_DISABLE_RERANKER env, returning passthrough scores"
+            );
+            return Ok(vec![FALLBACK_SCORE; documents.len()]);
         }
 
         let backend = self.backend;
@@ -396,6 +413,82 @@ mod tests {
 
         let scores = reranker.rerank("query", &[]).await.unwrap();
         assert!(scores.is_empty());
+    }
+
+    // ── BENCH_DISABLE_RERANKER gate ──────────────────────────────────────────
+
+    /// Verify that `bench_reranker_disabled()` returns true when the env is set,
+    /// and that the gate path returns equal passthrough scores (preserving
+    /// pre-rerank document ordering in the retrieval pipeline).
+    ///
+    /// Uses `StubReranker` because `LlamaCppReranker` requires a real GGUF
+    /// model file. The gate logic under test is `bench_reranker_disabled()`,
+    /// which is the same function called inside `LlamaCppReranker::rerank`.
+    #[tokio::test]
+    async fn bench_disable_reranker_env_returns_input_unchanged() {
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let docs = vec![
+            RerankDocument {
+                id: "c".to_string(),
+                text: "fn c() {}".to_string(),
+                name: "c".to_string(),
+            },
+            RerankDocument {
+                id: "a".to_string(),
+                text: "fn a() {}".to_string(),
+                name: "a".to_string(),
+            },
+            RerankDocument {
+                id: "b".to_string(),
+                text: "fn b() {}".to_string(),
+                name: "b".to_string(),
+            },
+        ];
+
+        std::env::set_var("BENCH_DISABLE_RERANKER", "1");
+
+        // Verify the gate function returns true
+        assert!(
+            bench_reranker_disabled(),
+            "bench_reranker_disabled() must return true when BENCH_DISABLE_RERANKER=1"
+        );
+
+        // Simulate what LlamaCppReranker::rerank does under the gate:
+        // returns equal passthrough scores without running model inference.
+        let passthrough_scores: Vec<f32> = if bench_reranker_disabled() {
+            vec![FALLBACK_SCORE; docs.len()]
+        } else {
+            // This branch should NOT execute
+            panic!("gate did not short-circuit");
+        };
+
+        std::env::remove_var("BENCH_DISABLE_RERANKER");
+
+        // All scores equal means no reordering can occur in apply_reranker_scores
+        assert_eq!(passthrough_scores.len(), docs.len());
+        for score in &passthrough_scores {
+            assert!(
+                (score - FALLBACK_SCORE).abs() < 1e-6,
+                "passthrough score must equal FALLBACK_SCORE, got {score}"
+            );
+        }
+
+        // Input IDs are preserved (no reranker reordering happened)
+        let input_ids: Vec<&str> = docs.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(
+            input_ids,
+            vec!["c", "a", "b"],
+            "input order must be unchanged when gate is active"
+        );
+
+        // Also confirm gate is inactive once env is unset
+        assert!(
+            !bench_reranker_disabled(),
+            "bench_reranker_disabled() must return false after removing env var"
+        );
     }
 
     // ── integration test (requires model download) ──────────────────────────

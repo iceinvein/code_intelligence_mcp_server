@@ -1,0 +1,1686 @@
+{
+  "runs": [
+    {
+      "question_id": "pylon-q1",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "There are four production callsites. Here they are:\n\n---\n\n**1. `src/main/ipc-handlers.ts:180` \u2014 Renderer-initiated session creation**\n\n```ts\nipcMain.handle(IPC.SESSION_CREATE, async (_e, args) =>\n  sessionManager.createSession(args.cwd, args.model, args.useWorktree)\n)\n```\nThis is the primary public entry point. The renderer calls `window.api.createSession(...)` when the user opens a folder or starts a new chat. It passes `cwd`, an optional model, and whether to use a git worktree.\n\n---\n\n**2. `src/main/pr-review-manager.ts:1421` \u2014 `runRevalidationSession`**\n\nCreates a session tagged `'pr-review'` to run a revalidation agent: it wires up a message listener to accumulate streamed text, then uses `sendMessage` to send a revalidation prompt. This is used after the critic pass to re-confirm surviving findings. Permission mode is forced to `auto-approve`.\n\n---\n\n**3. `src/main/pr-review-manager.ts:1472` \u2014 `runCriticPass` (primary agent)**\n\nCreates a session tagged `'pr-review'` for the critic/noise-reduction pass. It calls `sendGitAiQuery` (a one-shot, no-UI query) to get the critic's verdict on candidate findings, then immediately stops the session. If this fails, it falls back to a peer-provider session (see #4 below).\n\n---\n\n**4. `src/main/pr-review-manager.ts:1577` \u2014 `runCriticPass` / peer-review pass**\n\nCreates a session using the peer provider's model (also tagged `'pr-review'`) to run the cross-provider peer review pass: it calls `sendGitAiQuery` with the peer-review prompt to get severity adjustments/dismissals, then stops the session immediately. This is the fallback when the primary critic fails or the peer review is triggered.\n\n---\n\n**5. `src/main/pr-review-manager.ts:1679` \u2014 `runAgentSession`**\n\nCreates the main per-focus review agent session (one per `ReviewFocus` specialist: logic, security, tests, etc.). Optionally injects the `code-intelligence` MCP server config. This is the core review workhorse; permission mode is `auto-approve` and the session streams findings back via the agent tool protocol.",
+      "input_tokens": 7,
+      "output_tokens": 1384,
+      "wall_ms": 39008,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 4581,
+      "cache_read_input_tokens": 165994,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "createSession",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts",
+            "offset": 173,
+            "limit": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1410,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1455,
+            "limit": 35
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1560,
+            "limit": 35
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1665,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 170582,
+      "mech_score": 1.0,
+      "judge_scores_by_pair": {
+        "code_intel": 7,
+        "code_graph": 6
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Correctly identifies all four required callsites and bonus 1679. Mentions 'pr-review' tags throughout but does not explicitly highlight this as the rubric's bonus criterion \u2014 merely states tags incidentally rather than emphasizing the pattern. Less detailed explanations of what each callsite does compared to A (e.g., line 1472 and 1577 lack code snippets). Cleaner, more concise writing but sacrifices the bonus-signaling that the rubric asks for. No confusion with provider.createSession. Hits core requirements without earning the bonus point.",
+        "code_graph": "Identifies all required callsites with decent detail, but confuses credibility by opening with 'four production callsites' while listing five\u2014either a counting error or misleading phrasing. More importantly, fails to explicitly note the 'pr-review' session-kind tag for the 1679 callsite; since the bonus requires tagging ALL PR-review callsites, this is a material miss. Also slightly verbose compared to A."
+      },
+      "judge_score": 7,
+      "judge_justification": "Correctly identifies all four required callsites and bonus 1679. Mentions 'pr-review' tags throughout but does not explicitly highlight this as the rubric's bonus criterion \u2014 merely states tags incidentally rather than emphasizing the pattern. Less detailed explanations of what each callsite does compared to A (e.g., line 1472 and 1577 lack code snippets). Cleaner, more concise writing but sacrifices the bonus-signaling that the rubric asks for. No confusion with provider.createSession. Hits core requirements without earning the bonus point."
+    },
+    {
+      "question_id": "pylon-q1",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here are all the verified callsites, with what each one is doing:\n\n---\n\n### 1. `src/main/ipc-handlers.ts:180` \u2014 `registerIpcHandlers`\n\n```ts\nipcMain.handle(IPC.SESSION_CREATE, async (_e, args: { cwd: string; model?: string; useWorktree?: boolean }) => {\n  return sessionManager.createSession(args.cwd, args.model, args.useWorktree)\n})\n```\n\nThe user-facing IPC handler for `session:create`. Called when the renderer asks to open a new session. Passes the working directory, optional model, and optional worktree flag straight through. The `source` parameter defaults to `'user'`.\n\n---\n\n### 2. `src/main/pr-review-manager.ts:1421` \u2014 `runRevalidationSession`\n\n```ts\nconst sessionId = await sessionManager.createSession(cwd, reviewAgent.model, undefined, 'pr-review')\nsessionManager.setPermissionMode(sessionId, 'auto-approve')\nsessionManager.setEffort(sessionId, reviewAgent.effort)\n```\n\nCreates a disposable session to run a revalidation pass over PR findings. No worktree (`undefined`), `source: 'pr-review'`. Immediately flips to `auto-approve` permission mode and sets the configured effort level, then uses it for text streaming before tearing the session down.\n\n---\n\n### 3. `src/main/pr-review-manager.ts:1472` \u2014 `runCriticPass` (inside `runWithAgent` closure)\n\n```ts\nconst sessionId = await sessionManager.createSession(cwd, agent.model, undefined, 'pr-review')\nsessionManager.setPermissionMode(sessionId, 'auto-approve')\nsessionManager.setEffort(sessionId, agent.effort)\n// ...\nreturn await sessionManager.sendGitAiQuery(sessionId, userPrompt, systemPrompt)\n```\n\nCreates a temporary session to run the critic/filter pass that culls low-signal findings. Same pattern: no worktree, `source: 'pr-review'`, `auto-approve`. Calls `sendGitAiQuery` (a one-shot silent LLM call) then stops the session in a `finally` block. Also has a fallback that creates an equivalent session on the peer provider if the primary fails.\n\n---\n\n### 4. `src/main/pr-review-manager.ts:1577` \u2014 `runPeerReviewPass`\n\nThe call graph confirms `runPeerReviewPass` as a verified caller at line 1577. The function (starting at 1565) creates a second-opinion session using the peer provider's model, again `source: 'pr-review'`, no worktree, `auto-approve`, to cross-check the primary agent's findings.\n\n---\n\n### 5. `src/main/pr-review-manager.ts:1679` \u2014 `runAgentSession`\n\n```ts\nconst sessionId = await sessionManager.createSession(\n  cwd,\n  reviewAgent.model,\n  undefined,\n  'pr-review',\n  mcpConfig ? { mcpServers: { 'code-intelligence': mcpConfig } } : undefined,\n)\nsessionManager.setPermissionMode(sessionId, 'auto-approve')\nsessionManager.setEffort(sessionId, reviewAgent.effort)\n```\n\nThe primary PR review agent session. This is the most feature-rich callsite: it optionally passes an `mcpServers` config to wire up the `code-intelligence` MCP server for context-aware review. Still no worktree, `source: 'pr-review'`, `auto-approve`.\n\n---\n\n**Summary:** There are two distinct call patterns. The IPC handler (`ipc-handlers.ts:180`) is the only user-facing one and may create a worktree session with `source: 'user'`. All four `pr-review-manager.ts` callsites create ephemeral, headless review sessions with `source: 'pr-review'`, no worktree, and `auto-approve` permissions. `runAgentSession` is unique in conditionally injecting MCP server config.",
+      "input_tokens": 13,
+      "output_tokens": 4284,
+      "wall_ms": 116833,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 35976,
+      "cache_read_input_tokens": 226109,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Who calls SessionManager.createSession across the main process? List all callsites and what each one is doing.",
+            "target": "createSession",
+            "mode": "trace",
+            "max_evidence": 12
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__investigate",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__investigate",
+          "args": {
+            "question": "Show the bodies of runAgentSession, runCriticPass, runPeerReviewPass, runRevalidationSession in pr-review-manager.ts, and the session:create IPC handler in ipc-handlers.ts - specifically what arguments they pass to createSession",
+            "target": "createSession",
+            "file_path": "src/main/pr-review-manager.ts",
+            "mode": "trace",
+            "max_hops": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:Read",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Agent",
+          "args": {
+            "description": "Read specific line ranges from pr-review-manager.ts and ipc-handlers.ts",
+            "prompt": "Read these two files and return the content of the specified line ranges only. Do not analyze, just return the raw text with line numbers.\n\n1. File: src/main/pr-review-manager.ts\n   - Lines 1410-1440 (around line 1421, the \"runRevalidationSession\" / PrReviewManager callsite)\n   - Lines 1460-1490 (around line 1472, \"runCriticPass\")\n   - Lines 1565-1595 (around line 1577, \"runPeerReviewPass\")\n   - Lines 1665-1695 (around line 1679, \"runAgentSession\")\n\n2. File: src/main/ipc-handlers.ts\n   - Lines 165-200 (around line 180, \"registerIpcHandlers\" / session:create handler)\n\nReturn each block clearly labeled.",
+            "subagent_type": "Explore"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__read",
+          "args": {
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "line_start": "1410",
+            "line_end": "1440"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__read",
+          "args": {
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "line_start": "1460",
+            "line_end": "1490"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__read",
+          "args": {
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "line_start": "1565",
+            "line_end": "1595"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__read",
+          "args": {
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "line_start": "1665",
+            "line_end": "1695"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__read",
+          "args": {
+            "filePath": "/Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts",
+            "line_start": "165",
+            "line_end": "200"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash",
+          "args": {
+            "command": "sed -n '1410,1440p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash",
+          "args": {
+            "command": "sed -n '1460,1490p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash",
+          "args": {
+            "command": "sed -n '1565,1595p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash",
+          "args": {
+            "command": "sed -n '1665,1695p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash",
+          "args": {
+            "command": "sed -n '165,200p' /Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash__execute",
+          "args": {
+            "command": "sed -n '1410,1440p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash__execute",
+          "args": {
+            "command": "sed -n '1460,1490p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash__execute",
+          "args": {
+            "command": "sed -n '1565,1595p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash__execute",
+          "args": {
+            "command": "sed -n '1665,1695p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__bash__execute",
+          "args": {
+            "command": "sed -n '165,200p' /Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '1410,1440p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '1460,1490p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '1565,1595p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '1665,1695p' /Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Bash",
+          "args": {
+            "command": "sed -n '165,200p' /Users/dikrana/Documents/workspace/pylon/src/main/ipc-handlers.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__hydrate_symbols",
+          "args": {
+            "ids": [
+              "pr-review-manager.ts:1410-1440",
+              "pr-review-manager.ts:1460-1490",
+              "pr-review-manager.ts:1565-1595",
+              "pr-review-manager.ts:1665-1695",
+              "ipc-handlers.ts:165-200"
+            ],
+            "verbose": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Show me lines 1410-1440 of src/main/pr-review-manager.ts (the runRevalidationSession callsite)",
+            "file_path": "src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Show me lines 1460-1490 of src/main/pr-review-manager.ts (the runCriticPass callsite)",
+            "file_path": "src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Show me lines 1565-1595 of src/main/pr-review-manager.ts (the runPeerReviewPass callsite)",
+            "file_path": "src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Show me lines 1665-1695 of src/main/pr-review-manager.ts (the runAgentSession callsite)",
+            "file_path": "src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Show me lines 165-200 of src/main/ipc-handlers.ts (the session:create handler in registerIpcHandlers)",
+            "file_path": "src/main/ipc-handlers.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 262098,
+      "mech_score": 1.0,
+      "judge_baseline_score": 7,
+      "judge_baseline_justification": "Correctly identifies all four required callsites and bonus 1679. Mentions 'pr-review' tags throughout but does not explicitly highlight this as the rubric's bonus criterion \u2014 merely states tags incidentally rather than emphasizing the pattern. Less detailed explanations of what each callsite does compared to A (e.g., line 1472 and 1577 lack code snippets). Cleaner, more concise writing but sacrifices the bonus-signaling that the rubric asks for. No confusion with provider.createSession. Hits core requirements without earning the bonus point.",
+      "judge_justification": "Correctly identifies all four required callsites (ipc-handlers.ts:180, pr-review-manager.ts:1421, 1472, 1577) plus bonus 1679. Explicitly highlights the rubric's bonus criterion: 'all four pr-review-manager.ts callsites create ephemeral, headless review sessions with source: pr-review' \u2014 this directly addresses the rubric's ask to note the 'pr-review' tag pattern. Provides detailed code snippets and clear context for each callsite. Well-organized summary section. No confusion with provider.createSession. Line 1577 treatment is slightly vague ('call graph confirms') but still accurate. Comprehensive and bonus-aware.",
+      "judge_score": 9
+    },
+    {
+      "question_id": "pylon-q1",
+      "toolset": "code_graph",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is a complete picture of every `sessionManager.createSession` callsite in the main process:\n\n---\n\n**1. `ipc-handlers.ts:180` \u2014 `IPC.SESSION_CREATE` handler**\nThe IPC entry point triggered by the renderer (via `window.api.createSession`). Passes through `cwd`, optional `model`, and `useWorktree` from the renderer. This is the path for user-initiated sessions from the UI.\n\n---\n\n**2. `pr-review-manager.ts:1421` \u2014 `runRevalidationSession`**\nCreates a throwaway `pr-review` session to re-run a single revalidation prompt against a specific model. Sets `auto-approve` permission mode and subscribes to raw message events to collect the streamed response text. Used at the end of a PR review cycle to validate findings.\n\n---\n\n**3. `pr-review-manager.ts:1472` \u2014 `runWithAgent` inside a critic-review function (around line 1460)**\nCreates a `pr-review` session for the critic pass -- a second-opinion agent that scores candidate findings. Uses `sendGitAiQuery` to collect the response, then cleans up with `stopSession`. Can also fall back to a peer agent if the primary fails.\n\n---\n\n**4. `pr-review-manager.ts:1577` \u2014 peer-review session (around line 1565)**\nCreates a `pr-review` session for a cross-provider peer review, using a different model (`peerAgent.model`) to challenge the primary reviewer's findings. Sends a structured peer-review prompt via `sendGitAiQuery`.\n\n---\n\n**5. `pr-review-manager.ts:1679` \u2014 `runAgentSession`**\nThe main per-chunk review session. Creates a `pr-review` session for each diff chunk with an optional MCP `code-intelligence` server injected as `mcpServers`. This is the primary review worker: it streams findings from the agent and collects `ReviewFinding[]`.\n\n---\n\n**Summary:** Outside of the IPC handler (the only path from the renderer), all four remaining callsites are inside `pr-review-manager.ts`. They all create short-lived `'pr-review'`-tagged sessions with `auto-approve` permissions and no worktree, each serving a distinct stage of the review pipeline: chunk analysis, critic pass, peer review, and finding revalidation.",
+      "input_tokens": 11,
+      "output_tokens": 3242,
+      "wall_ms": 57975,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 8868,
+      "cache_read_input_tokens": 242839,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_search,mcp__codegraph__codegraph_callers",
+            "max_results": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_callers",
+          "args": {
+            "symbol": "createSession"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/provider-text-query.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "offset": 310,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "offset": 718,
+            "limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "offset": 68,
+            "limit": 25
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "offset": 421,
+            "limit": 25
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/worktree-recipe-service.ts",
+            "offset": 258,
+            "limit": 25
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "createSession\\(",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main/test-manager.ts",
+            "output_mode": "content",
+            "context": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "sessionManager\\.createSession|this\\.createSession",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main",
+            "output_mode": "content",
+            "context": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1410,
+            "limit": 25
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1460,
+            "limit": 25
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1565,
+            "limit": 25
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1668,
+            "limit": 25
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 251718,
+      "mech_score": 0.6000000000000001,
+      "judge_baseline_score": 6,
+      "judge_baseline_justification": "Identifies all required callsites with decent detail, but confuses credibility by opening with 'four production callsites' while listing five\u2014either a counting error or misleading phrasing. More importantly, fails to explicitly note the 'pr-review' session-kind tag for the 1679 callsite; since the bonus requires tagging ALL PR-review callsites, this is a material miss. Also slightly verbose compared to A.",
+      "judge_justification": "Correctly identifies all required callsites (ipc-handlers.ts:180 plus four in pr-review-manager: 1421, 1472, 1577, 1679) with clear, actionable descriptions. Critically, explicitly notes the 'pr-review' session-kind tag for all PR-review callsites, fully earning bonus points. Excellent summary tying everything together. No confusion with provider.createSession.",
+      "judge_score": 9
+    },
+    {
+      "question_id": "pylon-q7",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The test file is **`src/main/__tests__/pr-review-dedupe.test.ts`**, and it imports from and exercises the production module **`src/main/pr-review-dedupe.ts`**.\n\nThe three exported functions under test are:\n\n1. **`tokenize`** (2 tests) -- lowercases input, strips punctuation, drops stop-words and short tokens, returning a `Set<string>`.\n2. **`diceCoefficient`** (5 tests) -- computes the S\u00f8rensen-Dice similarity between two token sets; covers identical, disjoint, partial-overlap, and empty-set edge cases.\n3. **`deduplicateFindings`** (11 tests) -- the main entry point; clusters `ReviewFinding` objects by file + line anchor (with a \u00b13-line radius for near-duplicates), merges clusters via title similarity scored by `diceCoefficient`, promotes the highest-severity finding as the primary, inherits any `suggestion` from merged members, and annotates cross-domain merges via `mergedFrom`.",
+      "input_tokens": 5,
+      "output_tokens": 477,
+      "wall_ms": 14717,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 4213,
+      "cache_read_input_tokens": 94484,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "dedupe|dedup",
+            "glob": "**/*.test.ts",
+            "output_mode": "files_with_matches"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/__tests__/pr-review-dedupe.test.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 98702,
+      "mech_score": 0.9,
+      "judge_scores_by_pair": {
+        "code_intel": 10,
+        "code_graph": 8
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Perfect answer. Correctly identifies test file (src/main/__tests__/pr-review-dedupe.test.ts), production module (src/main/pr-review-dedupe.ts), and all three exported functions (tokenize, diceCoefficient, deduplicateFindings). Earns bonus points by explicitly noting that tokenize and diceCoefficient are lower-level building blocks composed by deduplicateFindings. Includes concrete test counts, accurate function descriptions, and explains data flow and composition relationships. Passes all rubric requirements.",
+        "code_graph": "Correctly identifies test file (src/main/__tests__/pr-review-dedupe.test.ts), all three functions (tokenize, diceCoefficient, deduplicateFindings), and production module (src/main/pr-review-dedupe.ts) without conflation. Provides substantial technical depth including test counts (2/5/11). However, doesn't explicitly note the compositional relationship (bonus); the building-block aspect is implied by ordering and descriptions but not stated outright. Verbosity penalty applies: three dense paragraphs of detail exceed what the straightforward question requires."
+      },
+      "judge_score": 10,
+      "judge_justification": "Perfect answer. Correctly identifies test file (src/main/__tests__/pr-review-dedupe.test.ts), production module (src/main/pr-review-dedupe.ts), and all three exported functions (tokenize, diceCoefficient, deduplicateFindings). Earns bonus points by explicitly noting that tokenize and diceCoefficient are lower-level building blocks composed by deduplicateFindings. Includes concrete test counts, accurate function descriptions, and explains data flow and composition relationships. Passes all rubric requirements."
+    },
+    {
+      "question_id": "pylon-q7",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The test file is **`src/main/__tests__/pr-review-critic.test.ts`**, and the production module under test is **`src/main/pr-review-critic.ts`**.\n\nThe module exports four functions (plus three type aliases), all of which the test file exercises:\n\n| Exported symbol | Kind | Line |\n|---|---|---|\n| `partitionForCritic` | function | 23 |\n| `buildCriticPrompt` | function | 64 |\n| `parseCriticVerdicts` | function | 109 |\n| `applyCriticVerdicts` | function | 157 |\n\n(`CriticVerdict`, `CriticPartition`, and `CriticPromptParts` are also exported, but as type aliases.)\n\nThe dedupe logic flows through this module in two stages: `partitionForCritic` splits findings into auto-kept vs. candidates that need a second look; `buildCriticPrompt` assembles the critic prompt; `parseCriticVerdicts` extracts the critic's keep/drop decisions; and `applyCriticVerdicts` applies them to produce the final deduplicated `ReviewFinding[]` list (see `pr-review-critic.ts:157-168`).",
+      "input_tokens": 7,
+      "output_tokens": 849,
+      "wall_ms": 19201,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 9152,
+      "cache_read_input_tokens": 82988,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "What test file covers the PR review dedupe logic, which exported functions does it exercise, and what module owns the production code under test?"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 92147,
+      "mech_score": 0.0,
+      "judge_baseline_score": 10,
+      "judge_baseline_justification": "Perfect answer. Correctly identifies test file (src/main/__tests__/pr-review-dedupe.test.ts), production module (src/main/pr-review-dedupe.ts), and all three exported functions (tokenize, diceCoefficient, deduplicateFindings). Earns bonus points by explicitly noting that tokenize and diceCoefficient are lower-level building blocks composed by deduplicateFindings. Includes concrete test counts, accurate function descriptions, and explains data flow and composition relationships. Passes all rubric requirements.",
+      "judge_justification": "Completely incorrect. Names wrong test file (pr-review-critic.test.ts instead of pr-review-dedupe.test.ts), wrong production module (pr-review-critic.ts instead of pr-review-dedupe.ts), and lists four wrong functions (partitionForCritic, buildCriticPrompt, parseCriticVerdicts, applyCriticVerdicts instead of tokenize, diceCoefficient, deduplicateFindings). The rubric explicitly warns that conflating dedupe with other orchestrators (including pr-review-critic) fails grading. This answer demonstrates fundamental misidentification of the module under test.",
+      "judge_score": 0
+    },
+    {
+      "question_id": "pylon-q7",
+      "toolset": "code_graph",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The test file is **`src/main/__tests__/pr-review-dedupe.test.ts`**. It imports and exercises three exported functions from the production module **`src/main/pr-review-dedupe.ts`**:\n\n- `deduplicateFindings` \u2014 the main dedup entry point (also the only function imported by `pr-review-manager.ts`)\n- `diceCoefficient` \u2014 the similarity metric used under the hood for fuzzy string comparison\n- `tokenize` \u2014 the tokenizer that feeds into the Dice coefficient calculation\n\nThe production code under test lives entirely in `src/main/pr-review-dedupe.ts`, and it is consumed by `src/main/pr-review-manager.ts` (line 47).",
+      "input_tokens": 7,
+      "output_tokens": 406,
+      "wall_ms": 12380,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 756,
+      "cache_read_input_tokens": 97130,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_search",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "dedupe",
+            "limit": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 97893,
+      "mech_score": 1.0,
+      "judge_baseline_score": 8,
+      "judge_baseline_justification": "Correctly identifies test file (src/main/__tests__/pr-review-dedupe.test.ts), all three functions (tokenize, diceCoefficient, deduplicateFindings), and production module (src/main/pr-review-dedupe.ts) without conflation. Provides substantial technical depth including test counts (2/5/11). However, doesn't explicitly note the compositional relationship (bonus); the building-block aspect is implied by ordering and descriptions but not stated outright. Verbosity penalty applies: three dense paragraphs of detail exceed what the straightforward question requires.",
+      "judge_justification": "Correctly identifies test file, all three functions, and production module without conflation. Explicitly hits the compositional bonus: 'similarity metric used under the hood' and 'tokenizer that feeds into the Dice coefficient calculation' clearly establish building-block composition. Appropriately concise without sacrificing substance; bullet format is easier to scan. Mention of pr-review-manager.ts is contextual (showing which function is imported), not conflation. Rewarded for balance of correctness, completeness, and conciseness per rubric guidance.",
+      "judge_score": 9
+    },
+    {
+      "question_id": "pylon-q9",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is the complete hop-by-hop trace:\n\n---\n\n## Tool-use event flow: Claude provider \u2192 renderer\n\n### Hop 1: SDK emits the message (`claude-provider.ts`)\n\n`ClaudeSession.consumeStream()` (line 264) iterates the raw `query()` async iterable. For **every** SDK message it first yields a `raw_passthrough` event (line 271-275), then yields structured events from `mapMessage()`. A tool-use appears inside an `assistant`-type message: `extractContentBlocks()` (line 420-455) recognises `block.type === 'tool_use'` and packages it as `{ type: 'tool_use', toolId, toolName, input }` inside a `message_complete` event. Both the `raw_passthrough` wrapper and the `message_complete` are yielded to the caller.\n\n### Hop 2: SessionManager handles the event (`session-manager.ts`)\n\n`sendMessage()` (line 317) drives the `for await` loop over `agentSession.send(...)` and calls `handleProviderEvent()` (line 405) for each event.\n\nFor `raw_passthrough` events (line 413-419):\n- If `event.persist` is true, the raw SDK message is saved to SQLite via `persistMessage()`.\n- `this.send(IPC.SESSION_MESSAGE, { sessionId, message: event.message })` is called (line 417), which resolves to `this.window.webContents.send(channel, data)` (line 1013-1020).\n\nThe assistant `message_complete` with tool-use content goes out as part of the same raw SDK message (since `raw_passthrough` carries the whole SDK object unchanged).\n\n### Hop 3: IPC channel\n\nThe channel constant is **`IPC.SESSION_MESSAGE`** = `'session:message'` (`src/shared/ipc-channels.ts`, line 21).\n\n### Hop 4: Preload bridge (`src/preload/index.ts`, line 282-286)\n\n```ts\nonSessionMessage: (callback) => {\n  const handler = (_event, data) => callback(data)\n  ipcRenderer.on(IPC.SESSION_MESSAGE, handler)   // 'session:message'\n  return () => ipcRenderer.removeListener(IPC.SESSION_MESSAGE, handler)\n}\n```\nThis is exposed on `window.api` via `contextBridge.exposeInMainWorld`.\n\n### Hop 5: Renderer subscription (`src/renderer/src/hooks/use-ipc-bridge.ts`, line 71-onwards)\n\n`useIpcBridge()` (line 65) calls `window.api.onSessionMessage(raw => { ... })` inside a `useEffect`. The handler casts the payload to `SdkMessage` and dispatches into Zustand. For a tool-use the message type will be `'assistant'`; `use-ipc-bridge` passes it through to `useSessionStore.getState().addMessage(sessionId, msg)`, where it is stored and rendered by the `AssistantMessage` / `ToolUseBlock` component tree.\n\n---\n\n**Summary of every named hop:**\n\n| # | Location | What happens |\n|---|---|---|\n| 1 | `claude-provider.ts` `ClaudeSession.consumeStream()` (line 264) | SDK message wrapped as `raw_passthrough` NormalizedEvent |\n| 2 | `session-manager.ts` `handleProviderEvent()` case `raw_passthrough` (line 413) | Message persisted + pushed via `window.webContents.send` |\n| 3 | Channel constant | `IPC.SESSION_MESSAGE` = `'session:message'` (`ipc-channels.ts` line 21) |\n| 4 | `src/preload/index.ts` `onSessionMessage` (line 282) | `ipcRenderer.on('session:message', ...)` exposed as `window.api.onSessionMessage` |\n| 5 | `src/renderer/src/hooks/use-ipc-bridge.ts` `useIpcBridge()` (line 71) | `window.api.onSessionMessage(cb)` feeds Zustand session store |",
+      "input_tokens": 8,
+      "output_tokens": 1878,
+      "wall_ms": 41197,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 26157,
+      "cache_read_input_tokens": 273098,
+      "tool_calls": [
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/providers/claude-provider.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/shared/ipc-channels.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/preload/index.ts",
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/renderer/src/hooks/use-ipc-bridge.ts",
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "onSessionMessage",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/preload/index.ts",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/preload/index.ts",
+            "offset": 280,
+            "limit": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 299263,
+      "mech_score": 0.6666666666666667,
+      "judge_scores_by_pair": {
+        "code_intel": 8,
+        "code_graph": 6
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Correctly identifies all 4 hops with accurate line numbers; preload precisely cited at lines 282-286 (matches rubric exactly); shows actual constant value 'session:message' as required; clear table summary. Session-manager citations include line 417 and 1013-1020; ipc-channels line 21. Producer lines (264, 271-275, 420-455) differ from rubric's ~464 but still provide specific context. Structured presentation with hop-by-hop breakdown. Missing Codex bonus. More precise and factually correct than A on the critical preload location.",
+        "code_graph": "Answer B also correctly identifies 3 of 4 hops (session-manager, channel constant, preload) but commits the same critical error: missing config.onBeforeToolUse at line 464, describing consumeStream at line 264 instead. Hop 1 explanation is more convoluted with mentions of extractContentBlocks (lines 420\u2013455) that don't clarify the producer hook. More concise than Answer A, which the rubric favors for correctness, but conciseness cannot offset the unclear first hop. Hop 5 usefully adds renderer subscription context. No Codex example. Three of four specified hops correct earns partial credit; slightly lower score due to less clear producer explanation."
+      },
+      "judge_score": 8,
+      "judge_justification": "Correctly identifies all 4 hops with accurate line numbers; preload precisely cited at lines 282-286 (matches rubric exactly); shows actual constant value 'session:message' as required; clear table summary. Session-manager citations include line 417 and 1013-1020; ipc-channels line 21. Producer lines (264, 271-275, 420-455) differ from rubric's ~464 but still provide specific context. Structured presentation with hop-by-hop breakdown. Missing Codex bonus. More precise and factually correct than A on the critical preload location."
+    },
+    {
+      "question_id": "pylon-q9",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is the complete hop-by-hop trace, sourced directly from the verified evidence:\n\n---\n\n## 1. Producer: Claude provider emits a `NormalizedEvent`\n\n**`src/main/providers/claude-provider.ts`** wraps the `@anthropic-ai/claude-agent-sdk`. As the SDK streams the agent's turn, SDK messages (including `assistant` blocks containing `tool_use` content) are mapped into `NormalizedEvent` objects. Tool-use assistant messages are wrapped as type `raw_passthrough` with `persist: true`.\n\n---\n\n## 2. Session manager receives and routes: `handleProviderEvent`\n\n**`src/main/session-manager.ts`, lines 405-510** \u2014 `handleProviderEvent(sessionId, session, userText, event: NormalizedEvent)`\n\nThe session manager's run loop (`sendMessage`) iterates over provider events and calls this method for each one. The `raw_passthrough` branch is the path for tool-use assistant messages:\n\n```typescript\ncase 'raw_passthrough':\n  if (event.persist) {\n    this.persistMessage(sessionId, event.message)   // SQLite INSERT\n  }\n  this.send(IPC.SESSION_MESSAGE, { sessionId, message: event.message })\n  this.notifyMessageListeners(sessionId, event.message)\n  break\n```\n\n---\n\n## 3. IPC dispatch: `SessionManager.send` \u2192 `webContents.send`\n\n**`src/main/session-manager.ts`, lines 1013-1021**\n\n```typescript\nprivate send(channel: string, data: unknown): void {\n  if (!this.window) { ... }\n  if (!this.window.isDestroyed()) {\n    this.window.webContents.send(channel, data)   // Electron main \u2192 renderer push\n  }\n}\n```\n\n---\n\n## 4. IPC channel constant: `IPC.SESSION_MESSAGE`\n\n**`src/shared/ipc-channels.ts`, line 21**\n\n```typescript\nSESSION_MESSAGE   // the channel string used in webContents.send and ipcRenderer.on\n```\n\n---\n\n## 5. Preload bridge: `contextBridge.exposeInMainWorld`\n\n**`src/preload/index.ts`, `onSessionMessage` property (line 22 area)**\n\nThe preload script exposes `window.api.onSessionMessage(cb)` via `contextBridge`, internally registering `ipcRenderer.on(IPC.SESSION_MESSAGE, ...)` and forwarding the payload to the callback. This is the boundary the renderer crosses.\n\n---\n\n## 6. Renderer subscription: `useIpcBridge`\n\n**`src/renderer/src/hooks/use-ipc-bridge.ts`, lines 65-298** \u2014 `useIpcBridge()`\n\nCalled once in `App.tsx`. It registers:\n\n```typescript\nconst unsubMessage = window.api.onSessionMessage((raw) => {\n  const { sessionId, message } = raw as SessionMessageEvent\n  const msg = message as SdkMessage\n\n  if (msg.type === 'stream_event') {\n    // streaming delta path (text_delta / thinking_delta)\n    ...\n    return\n  }\n\n  if (msg.type === 'assistant' || msg.type === 'user') {\n    flushPendingDeltas()\n    store().clearStreamingText(sessionId)\n    ...\n  }\n\n  store().appendMessage(sessionId, msg)    // \u2192 Zustand session-store\n\n  if (msg.type === 'assistant') {\n    // inspect content[] for type === 'tool_use' blocks\n    // if name includes 'edit' or 'write', call store().addChangedFile(sessionId, filePath)\n    // if isPlanPath(filePath), call store().addDetectedPlan(...)\n    extractTasks(message) \u2192 store().upsertTask(...)\n  }\n})\n```\n\nThe `StreamEventMessage` type alias at line 28 of the same file handles the in-flight streaming case, where individual `tool_use` delta events are accumulated via `accumulateDelta` / `rafFlush` in **`src/renderer/src/lib/delta-batcher.ts`** before being flushed to Zustand at ~60fps.\n\n---\n\n## Summary pipeline\n\n```\nclaude-provider.ts        NormalizedEvent { type: 'raw_passthrough', message: <SDK assistant msg> }\n       \u2193\nsession-manager.ts        handleProviderEvent (line 405)\n  raw_passthrough case \u2192  this.send(IPC.SESSION_MESSAGE, { sessionId, message })\n       \u2193\nsession-manager.ts        send() (line 1013) \u2192 this.window.webContents.send(IPC.SESSION_MESSAGE, ...)\n       \u2193\nsrc/shared/ipc-channels.ts   IPC.SESSION_MESSAGE  (channel constant, line 21)\n       \u2193\nsrc/preload/index.ts      contextBridge: window.api.onSessionMessage(cb) \u2192 ipcRenderer.on(...)\n       \u2193\nuse-ipc-bridge.ts         useIpcBridge() (line 65): window.api.onSessionMessage handler\n                          \u2192 store().appendMessage  (tool_use block lands in Zustand)\n                          \u2192 store().addChangedFile  (if edit/write tool)\n                          \u2192 store().upsertTask      (if TodoWrite tool)\n```",
+      "input_tokens": 11,
+      "output_tokens": 3428,
+      "wall_ms": 61919,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 21304,
+      "cache_read_input_tokens": 158984,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Trace how a tool-use event flows from the Claude provider session out to the renderer. Where is the event produced in the provider, how does session manager bridge it to IPC, what is the IPC channel constant used, and where does the renderer subscribe?",
+            "mode": "trace",
+            "max_evidence": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__investigate"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__investigate",
+          "args": {
+            "question": "How does handleProviderEvent in session-manager.ts receive events from the Claude provider, and how does it emit them over IPC to the renderer using webContents.send?",
+            "target": "handleProviderEvent",
+            "file_path": "src/main/session-manager.ts",
+            "mode": "trace"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 180299,
+      "mech_score": 0.8666666666666667,
+      "judge_baseline_score": 8,
+      "judge_baseline_justification": "Correctly identifies all 4 hops with accurate line numbers; preload precisely cited at lines 282-286 (matches rubric exactly); shows actual constant value 'session:message' as required; clear table summary. Session-manager citations include line 417 and 1013-1020; ipc-channels line 21. Producer lines (264, 271-275, 420-455) differ from rubric's ~464 but still provide specific context. Structured presentation with hop-by-hop breakdown. Missing Codex bonus. More precise and factually correct than A on the critical preload location.",
+      "judge_justification": "Identifies all 4 hops but with critical factual error on preload location; states 'line 22 area' when rubric specifies ~line 282 (off by ~260 lines). Correctly cites session-manager lines 405-510 and 417; correctly cites ipc-channels line 21; but does not show the actual constant value 'session:message'. Producer hop described conceptually but lacks specific line reference (~464). Comprehensive pipeline summary and Zustand integration details go beyond required hops but lack precision on the 4 core locations. Verbose without structural clarity.",
+      "judge_score": 6
+    },
+    {
+      "question_id": "pylon-q9",
+      "toolset": "code_graph",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is the complete hop-by-hop trace:\n\n---\n\n## Hop 1 \u2013 Claude SDK \u2192 `ClaudeProviderSession.consumeStream()`\n\n**File:** `src/main/providers/claude-provider.ts`, line 264\n\nThe Claude Agent SDK's `query()` call yields raw message objects. `consumeStream()` iterates them and, for every message, immediately wraps the raw SDK object into a `NormalizedEvent` of type `raw_passthrough` (with `persist: msg.type !== 'stream_event'`) before yielding any typed events:\n\n```ts\n// claude-provider.ts:271-275\nyield {\n  type: 'raw_passthrough' as const,\n  message,\n  persist: msg.type !== 'stream_event',\n}\nyield* this.mapMessage(message)  // typed events (text_delta, message_complete, etc.)\n```\n\nA tool-use call arrives as an SDK `assistant` message containing a content block with `type: 'tool_use'`. It passes through here as a `raw_passthrough` with `persist: true`.\n\n---\n\n## Hop 2 \u2013 `SessionManager` event loop \u2192 `handleProviderEvent()`\n\n**File:** `src/main/session-manager.ts`, line 377 and 405\n\n`SessionManager.sendMessage()` drives a `for await` loop over the provider's `AsyncIterable<NormalizedEvent>`. Each event is handed to `handleProviderEvent()`. For the `raw_passthrough` case (which is what all assistant/tool-use messages are):\n\n```ts\n// session-manager.ts:413-418\ncase 'raw_passthrough':\n  if (event.persist) {\n    this.persistMessage(sessionId, event.message)   // writes to SQLite\n  }\n  this.send(IPC.SESSION_MESSAGE, { sessionId, message: event.message })\n  this.notifyMessageListeners(sessionId, event.message)\n  break\n```\n\nThe raw SDK tool-use message is persisted to SQLite and then pushed to the renderer.\n\n---\n\n## Hop 3 \u2013 `SessionManager.send()` \u2192 `webContents.send()`\n\n**File:** `src/main/session-manager.ts`, line 1013\n\n`this.send()` is a thin private helper that calls Electron's IPC push API:\n\n```ts\nprivate send(channel: string, data: unknown): void {\n  this.window.webContents.send(channel, data)\n}\n```\n\n**IPC channel constant:** `IPC.SESSION_MESSAGE` = `'session:message'`  \n(`src/shared/ipc-channels.ts:21`)\n\n---\n\n## Hop 4 \u2013 Preload bridge: `ipcRenderer.on` \u2192 `window.api.onSessionMessage`\n\n**File:** `src/preload/index.ts`, line 282\n\nThe preload script exposes a listener factory via `contextBridge`:\n\n```ts\nonSessionMessage: (callback: (data: unknown) => void) => {\n  const handler = (_event: unknown, data: unknown) => callback(data)\n  ipcRenderer.on(IPC.SESSION_MESSAGE, handler)        // 'session:message'\n  return () => ipcRenderer.removeListener(IPC.SESSION_MESSAGE, handler)\n},\n```\n\nThis is `window.api.onSessionMessage()` in the renderer.\n\n---\n\n## Hop 5 \u2013 `useIpcBridge()` subscribes and writes to Zustand\n\n**File:** `src/renderer/src/hooks/use-ipc-bridge.ts`, line 65\n\n`useIpcBridge()` is called once in `App.tsx` (line 9). Inside its `useEffect` it calls:\n\n```ts\nconst unsubMessage = window.api.onSessionMessage((raw) => {\n  const { sessionId, message } = raw as SessionMessageEvent\n  const msg = message as SdkMessage\n  // ...stream_event fast-path (text/thinking deltas via delta-batcher)\n  // For assistant messages (tool-use arrives here):\n  store().appendMessage(sessionId, msg)   // line 199\n  // ... also extracts tasks, tracks changed files\n})\n```\n\nThe `assistant` message (carrying the `tool_use` content block) is appended to the `messages` Map in the `session-store` via `appendMessage`.\n\n---\n\n## Hop 6 \u2013 Renderer: `ToolUseBlock` reads from store and renders\n\n**File:** `src/renderer/src/components/tools/ToolUseBlock.tsx`\n\nComponents reading the `messages` Map see the assistant message. The message dispatcher (in `components/messages/AssistantMessage`) iterates the content array; blocks with `type === 'tool_use'` are routed to `ToolUseBlock`, which calls `getToolInfo(toolName, input)` (line 168) to look up the registered tool renderer, and displays the appropriate icon/summary/collapsible output.\n\n---\n\n## Summary\n\n| Hop | Location | What happens |\n|-----|----------|--------------|\n| 1 | `claude-provider.ts:264` `consumeStream()` | SDK message wrapped as `raw_passthrough` NormalizedEvent |\n| 2 | `session-manager.ts:405` `handleProviderEvent()` | Persists to SQLite; calls `this.send(IPC.SESSION_MESSAGE, ...)` |\n| 3 | `session-manager.ts:1013` `send()` | `window.webContents.send('session:message', data)` |\n| 4 | `preload/index.ts:282` `onSessionMessage` | `ipcRenderer.on('session:message', handler)` via `contextBridge` |\n| 5 | `use-ipc-bridge.ts:71` `useIpcBridge()` | `window.api.onSessionMessage` callback; `store().appendMessage()` |\n| 6 | `components/tools/ToolUseBlock.tsx` | Renders the tool-use block from the messages store |",
+      "input_tokens": 21,
+      "output_tokens": 4878,
+      "wall_ms": 102233,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 20309,
+      "cache_read_input_tokens": 615684,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_trace,mcp__codegraph__codegraph_context,mcp__codegraph__codegraph_search",
+            "max_results": 3
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_trace",
+          "args": {
+            "from": "ClaudeProvider",
+            "to": "onSessionEvent"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_context",
+          "args": {
+            "task": "tool-use event flow from Claude provider through session manager IPC to renderer",
+            "maxNodes": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "NormalizedEvent"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "onSessionEvent"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "handleProviderEvent"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "SESSION_EVENT"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "useIpcBridge"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_node",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_node",
+          "args": {
+            "symbol": "handleProviderEvent",
+            "includeCode": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_node",
+          "args": {
+            "symbol": "mapStreamEvent",
+            "includeCode": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/providers/claude-provider.ts",
+            "offset": 340,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "offset": 395,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/shared/ipc-channels.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/renderer/src/hooks/use-ipc-bridge.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/providers/claude-provider.ts",
+            "offset": 190,
+            "limit": 160
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/providers/types.ts",
+            "offset": 90,
+            "limit": 60
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "private send\\|webContents\\.send\\|this\\.send\\(",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "onSessionMessage\\|api\\.on",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/preload/index.ts",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "webContents|\\.send\\(",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "output_mode": "content",
+            "-n": true,
+            "head_limit": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/session-manager.ts",
+            "offset": 1012,
+            "limit": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/preload/index.ts",
+            "offset": 1,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "onSessionMessage",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/preload/index.ts",
+            "output_mode": "content",
+            "-n": true
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/preload/index.ts",
+            "offset": 280,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 636014,
+      "mech_score": 0.8666666666666667,
+      "judge_baseline_score": 6,
+      "judge_baseline_justification": "Answer B also correctly identifies 3 of 4 hops (session-manager, channel constant, preload) but commits the same critical error: missing config.onBeforeToolUse at line 464, describing consumeStream at line 264 instead. Hop 1 explanation is more convoluted with mentions of extractContentBlocks (lines 420\u2013455) that don't clarify the producer hook. More concise than Answer A, which the rubric favors for correctness, but conciseness cannot offset the unclear first hop. Hop 5 usefully adds renderer subscription context. No Codex example. Three of four specified hops correct earns partial credit; slightly lower score due to less clear producer explanation.",
+      "judge_justification": "Both answers correctly identify 3 of 4 specified hops: session-manager.ts emitting IPC.SESSION_MESSAGE via this.send (line 417), the channel constant 'session:message' in ipc-channels.ts, and preload/index.ts exposing onSessionMessage with ipcRenderer.on. However, both critically misidentify the producer: the rubric specifies claude-provider.ts invokes config.onBeforeToolUse around line 464, but Answer A describes consumeStream wrapping at line 264\u2014a different mechanism entirely. Answer A scores higher for superior clarity, well-organized hop-by-hop breakdown with code quotes, and helpful summary table. Hops 5\u20136 extend beyond the four specified but add relevant context. Neither mentions the Codex bonus. Missing producer mechanism is a significant gap for both.",
+      "judge_score": 7
+    },
+    {
+      "question_id": "pylon-q10",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is the full orchestration flow through `startReview` (line 903) and the private `runParallelReview` it fires (line 1017):\n\n---\n\n**1. Entry: `startReview` (line 903)**\n\n- Calls `getPrDetail` (`gh-cli.ts`) via `gh` CLI to fetch base/head SHAs, diff URL, and branch names.\n- Calls `ensureReviewSeries` and `getLatestSuccessfulReviewBaseline` (both private, using `getDb()` from `db.ts`) to decide whether this is a `full` or `incremental` review: incremental only when the base SHA matches the previous baseline.\n- Writes a `pr_reviews` row to SQLite, sets status `running`, registers an `ActiveReviewSession` in-memory, and immediately sends `IPC.GH_REVIEW_UPDATE` to the renderer.\n- Fires `runParallelReview(...)` without `await` (line 999), catching any top-level error and sending an error IPC event.\n\n---\n\n**2. Diff fetching and scope resolution (`runParallelReview`, lines 1017-1070)**\n\n- Creates a temporary git worktree at `~/.pylon/worktrees/<repo>/pr-<number>-<reviewId>` by `fetch origin pull/<n>/head` + `git worktree add` (private `createPrWorktree`, line 1813).\n- Calls `resolveReviewScope` (`review-scope.ts`, line 1049) with the detail and previous baseline. This returns the scoped diff, files list, `reviewMode`, and SHAs.\n- Calls `chunkDiff` (`diff-chunker.ts`, line 1070) with a token budget derived from `getTokenBudget` and `sessionManager.getModelContextWindow` to split the diff into chunks that fit the model's context window, recording any skipped files (lock files, generated code).\n\n---\n\n**3. Context building (`runParallelReview`, lines 1125-1203)**\n\n- Resolves an MCP config via `resolveCodeIntelligenceMcpConfig` (`pr-review-mcp-config.ts`, line 1127); if present, instantiates a `McpContextBackend` (`pr-context/mcp-context-backend.ts`) backed by a `CodeIntelligenceMcpClient` (`pr-context/mcp-client.ts`); otherwise falls back to `HeuristicContextBackend` (`pr-context/heuristic-context-backend.ts`).\n- Creates a `PrContextBuilder` (`pr-context/pr-context-builder.ts`, line 1141) with both backends and calls `builder.build(...)` with a 20-second total timeout. The result drives a `IPC.GH_REVIEW_CONTEXT_UPDATE` event to the renderer.\n\n---\n\n**4. Parallel specialist agents (`runParallelReview`, lines 1205-1225)**\n\n- Maps each `ReviewFocus` (security, bugs, performance, code-smells, style, architecture, ux) to a `runAgentSession` call and fans them all out with `Promise.allSettled`.\n- `runAgentSession` (line 1668): creates a provider session via `sessionManager.createSession` with the resolved model (Claude or Codex), injects the MCP config as `mcpServers.code-intelligence`, sets `auto-approve` permissions and effort level. For each chunk it calls `buildPrReviewFirstChunkPrompt` / `buildPrReviewContinuationPrompt` (`pr-review-prompts.ts`), sends via `sessionManager.sendMessage`, and accumulates streamed text using `extractReviewOutputText` / `appendReviewOutputText` (`pr-review-output.ts`). After all chunks, calls `parseFindings` to parse the structured output into `ReviewFinding[]`.\n- On completion, worktree is removed (`removePrWorktree`).\n\n---\n\n**5. Deduplication (`runParallelReview`, line 1249)**\n\n- `deduplicateFindings` (`pr-review-dedupe.ts`) merges the combined findings list from all agents, collapsing near-duplicates across focus areas.\n\n---\n\n**6. Critic pass (`runCriticPass`, line 1253)**\n\n- `partitionForCritic` (`pr-review-critic.ts`) splits findings into \"auto-kept\" (blocker/high severity, must-fix/should-fix, anchored) and \"candidates\" that need vetting.\n- `buildCriticPrompt` builds a prompt for just the candidates; a new throwaway session runs it via `sessionManager.sendGitAiQuery`.\n- `parseCriticVerdicts` + `applyCriticVerdicts` (`pr-review-critic.ts`) apply keep/drop verdicts. If the primary provider session fails, `resolvePeerReviewAgent` picks the opposite provider (Claude if Codex, vice versa) and retries once.\n\n---\n\n**7. Peer review pass (`runPeerReviewPass`, line 1254)**\n\n- `buildPeerReviewPrompt` (`pr-review-peer-review.ts`) constructs a prompt that gives the opposite provider (the \"second opinion\") all current findings plus the diff context.\n- A new throwaway session runs `sessionManager.sendGitAiQuery` on the peer provider.\n- `parsePeerReviewChanges` + `applyPeerReviewChanges` (`pr-review-peer-review.ts`) apply the peer's suggested additions/updates/removals, then `deduplicateFindings` runs again on the merged result.\n\n---\n\n**8. Revalidation pass (incremental only, lines 1270-1318)**\n\n- When the review is `incremental` and `includeRevalidation` is set, dynamically imports `runRevalidationPass` from `revalidation-worker.ts`. This walks threads from prior reviews that touch files in scope, runs targeted sessions via the private `runRevalidationSession` (which calls `sessionManager.sendMessage` and collects output), and returns per-thread verdicts (persisting, resolved, needs_revalidation).\n\n---\n\n**9. Thread lifecycle and persistence (lines 1320-1378)**\n\n- `assignFindingThreads` (private, line 744) fingerprints each finding (`domain|file|lineBucket|title`) and upserts rows in `pr_review_threads` via `getDb()`, tagging findings as `new` or `persisting`.\n- `applyThreadLifecycle` (private, line 838) synthesizes lifecycle-only assignments for threads not matched by any finding, marking them `resolved`, `needs_revalidation`, or `persisting` depending on whether files were touched.\n- A batch `INSERT INTO pr_review_findings` saves all threaded findings to SQLite.\n\n---\n\n**10. Finalisation**\n\n- `sumAgentCosts` queries `sessions.total_cost_usd` for each agent's session to compute total cost.\n- Updates `pr_reviews` status to `done`, updates `pr_review_series.latest_review_id`, computes a `ReviewRunSummary` (new/persisting/resolved/stale counts).\n- Sends a final `IPC.GH_REVIEW_UPDATE` with the full findings list and metadata to the renderer, then removes the `ActiveReviewSession` from the in-memory map.\n\n**Supporting modules at a glance:**\n\n| Step | Module |\n|------|--------|\n| PR metadata | `gh-cli.ts` |\n| Scope/diff resolution | `review-scope.ts` |\n| Diff chunking | `diff-chunker.ts` |\n| Context building | `pr-context/pr-context-builder.ts`, `mcp-context-backend.ts`, `heuristic-context-backend.ts`, `mcp-client.ts` |\n| Prompt construction | `pr-review-prompts.ts` |\n| Streaming output | `pr-review-output.ts` |\n| Deduplication | `pr-review-dedupe.ts` |\n| Critic | `pr-review-critic.ts` |\n| Peer review | `pr-review-peer-review.ts` |\n| Revalidation | `revalidation-worker.ts` |\n| Provider sessions | `session-manager.ts`, `providers/registry.ts` |\n| DB persistence | `db.ts` (via `getDb()`) |",
+      "input_tokens": 5,
+      "output_tokens": 2378,
+      "wall_ms": 56227,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 26707,
+      "cache_read_input_tokens": 94545,
+      "tool_calls": [
+        {
+          "name": "Glob",
+          "args": {
+            "pattern": "**/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 121257,
+      "mech_score": 0.6000000000000001,
+      "judge_scores_by_pair": {
+        "code_intel": 8,
+        "code_graph": 9
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "A correctly identifies startReview at 903, walks the full pipeline with proper ordering, names all required modules accurately (gh-cli.ts, review-scope.ts, diff-chunker.ts, pr-context builders, sessionManager, pr-review-dedupe.ts, pr-review-critic.ts, pr-review-peer-review.ts, db.ts), and correctly separates dedupe from peer-review/critic. However, the response is verbose with implementation details (line numbers, internal function names, worktree mechanics) that obscure rather than clarify the orchestration flow. The dense formatting and excessive detail (10 numbered steps with substeps, inline code references) prioritize showing knowledge over communicating the core flow clearly. Per rubric: 'Reward concise correct answers over verbose padded ones.'",
+        "code_graph": "Fully correct pipeline ordering and module naming. Identifies startReview at 903, walks all stages in proper sequence with better structure (numbered steps, sub-bullets). Distinguishes dedupe from peer-review correctly. Names all required modules and additionally mentions providers/registry.ts (peer provider resolution logic), showing slightly deeper architectural understanding. Supporting modules table is complete and formatted consistently with .ts extensions. More concise presentation without sacrificing completeness or explanation quality. Better formatted for readability while meeting all rubric requirements. Only slight deduction is that some explanatory detail is condensed, though the answer remains well-explained."
+      },
+      "judge_score": 8,
+      "judge_justification": "A correctly identifies startReview at 903, walks the full pipeline with proper ordering, names all required modules accurately (gh-cli.ts, review-scope.ts, diff-chunker.ts, pr-context builders, sessionManager, pr-review-dedupe.ts, pr-review-critic.ts, pr-review-peer-review.ts, db.ts), and correctly separates dedupe from peer-review/critic. However, the response is verbose with implementation details (line numbers, internal function names, worktree mechanics) that obscure rather than clarify the orchestration flow. The dense formatting and excessive detail (10 numbered steps with substeps, inline code references) prioritize showing knowledge over communicating the core flow clearly. Per rubric: 'Reward concise correct answers over verbose padded ones.'"
+    },
+    {
+      "question_id": "pylon-q10",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "Here is the full orchestration walkthrough, synthesized from the evidence.\n\n---\n\n## `startReview` orchestration in `pr-review-manager.ts`\n\n### 1. Setup and mode decision (lines 903-939)\n\n`startReview` is synchronous-ish: it does light setup, fires the heavy work asynchronously, and returns an optimistic `PrReview` object immediately.\n\n- **Agent resolution:** `resolveReviewAgent()` (internal) calls `src/main/providers/registry.ts` (`getProviderForModel`) to resolve the model/provider/effort triple for the review.\n- **PR detail fetch:** `getPrDetail(repo.fullName, prNumber)` from **`src/main/gh-cli.ts`** runs `gh pr view` to get `baseSha`, `headSha`, etc.\n- **Mode selection:** Compares `baseSha`/`headSha` against the last successful review (via `getLatestSuccessfulReviewBaseline`) to decide `'full'` vs `'incremental'`. The series is created or found by `ensureReviewSeries`.\n\n### 2. Persistence (lines 940-976) \u2014 `src/main/db.ts`\n\nImmediately inserts a row into `pr_reviews` with `status = 'running'`, recording `series_id`, `parent_review_id`, SHAs, `review_mode`, `review_scope`, and focus areas. All DB access goes through **`src/main/db.ts`** (`getDb()`).\n\n### 3. IPC notification (lines 977-985) \u2014 `src/shared/ipc-channels.ts`\n\nSends `IPC.GH_REVIEW_UPDATE` to the renderer with `status: 'running'` and per-focus-area `agentProgress` entries so the UI can show pending states immediately.\n\n### 4. Async orchestration \u2014 `runParallelReview`\n\n`startReview` fires `this.runParallelReview(...)` without `await`, with a `.catch` that calls `updateReviewStatus('error')` and notifies the renderer. Everything below happens inside `runParallelReview`.\n\n#### 4a. Review scope and diff chunking\n- **`src/main/review-scope.ts`** (`resolveReviewScope`) determines which files/SHAs are in scope (full PR diff vs incremental head range).\n- **`src/main/diff-chunker.ts`** (`getTokenBudget`, `chunkDiff`) slices the raw diff into token-sized chunks that fit each agent's context window. `getModelContextWindow` from **`src/main/session-manager.ts`** supplies the context limit.\n\n#### 4b. Context building\nA `PrContextBuilder` is assembled from three pieces in `src/main/pr-context/`:\n- **`pr-context-builder.ts`** \u2014 orchestrates context collection.\n- **`mcp-context-backend.ts`** + **`mcp-client.ts`** \u2014 MCP-backed context (symbol refs, related tests, changed-file details via code-intelligence MCP).\n- **`heuristic-context-backend.ts`** \u2014 fallback heuristic context when MCP is unavailable.\n\nMCP config for the review agents comes from **`src/main/pr-review-mcp-config.ts`** (`normalizeMcpConfig`, `resolveCodeIntelligenceMcpConfig`).\n\n#### 4c. Parallel agent sessions\nOne agent session is launched per `ReviewFocus` area (e.g., security, logic, performance). Each session:\n- Builds a prompt with **`src/main/pr-review-prompts.ts`** (`buildPrReviewFirstChunkPrompt` for the first diff chunk, `buildPrReviewContinuationPrompt` for subsequent chunks).\n- Sends messages via **`src/main/session-manager.ts`** (`sendMessage`, `setPermissionMode`, `stopSession`).\n- Streams output collected by **`src/main/pr-review-output.ts`** (`appendReviewOutputText`, `extractReviewOutputText`).\n\nEach agent's raw finding output is parsed and sent back to the renderer incrementally via `IPC.GH_REVIEW_UPDATE`.\n\n### 5. Deduplication \u2014 `src/main/pr-review-dedupe.ts`\n\nAfter all parallel agents complete, `deduplicateFindings()` merges near-duplicate findings across agents (same file/line/title clusters).\n\n### 6. Peer review pass \u2014 `src/main/pr-review-peer-review.ts`\n\nA second agent pass runs over the deduplicated findings:\n- `buildPeerReviewPrompt` constructs the critique prompt.\n- `parsePeerReviewChanges` parses the peer reviewer's output.\n- `applyPeerReviewChanges` applies upgrades/downgrades/dismissals to the finding list.\n- `deduplicateFindings` (from `pr-review-dedupe.ts`) runs again on the post-peer-review set.\n\n### 7. Critic pass \u2014 `src/main/pr-review-critic.ts`\n\nA third pass filters findings for noise:\n- `partitionForCritic` splits findings into batches.\n- `buildCriticPrompt` builds the critic's system prompt.\n- `parseCriticVerdicts` and `applyCriticVerdicts` apply keep/reject verdicts, dropping low-signal findings.\n\n### 8. Revalidation (incremental mode) \u2014 `src/main/revalidation-worker.ts`\n\nIf `includeRevalidation` is true, `selectThreadsToRevalidate(reviewId, seriesId, touchedFiles)` queries `pr_review_threads` for prior open findings whose files were touched by this review, then reruns those through an agent session to check if they are still present or resolved.\n\n### 9. Thread lifecycle and final persistence \u2014 `src/main/db.ts`\n\n- `assignFindingThreads` clusters new findings into `pr_review_threads` (creating or reusing thread IDs).\n- `applyThreadLifecycle` updates thread statuses (`new`, `persisting`, `resolved`, `needs_revalidation`).\n- All findings are written to `pr_review_findings`, and the review row is updated to `status = 'completed'` with the final `summary_json`.\n\n### 10. Final IPC push\n\n`IPC.GH_REVIEW_UPDATE` is sent one final time with `status: 'completed'`, the full findings list, and summary, so the renderer can display the completed review.\n\n---\n\n**Module map summary:**\n\n| Step | Module |\n|---|---|\n| PR detail / GitHub CLI | `src/main/gh-cli.ts` |\n| Provider resolution | `src/main/providers/registry.ts` |\n| Mode + scope | `src/main/review-scope.ts` |\n| Diff chunking | `src/main/diff-chunker.ts` |\n| Context building | `src/main/pr-context/pr-context-builder.ts`, `mcp-context-backend.ts`, `mcp-client.ts`, `heuristic-context-backend.ts` |\n| MCP config | `src/main/pr-review-mcp-config.ts` |\n| Agent prompts | `src/main/pr-review-prompts.ts` |\n| Agent sessions | `src/main/session-manager.ts` |\n| Output parsing | `src/main/pr-review-output.ts` |\n| Deduplication | `src/main/pr-review-dedupe.ts` |\n| Peer review | `src/main/pr-review-peer-review.ts` |\n| Critic pass | `src/main/pr-review-critic.ts` |\n| Revalidation | `src/main/revalidation-worker.ts` |\n| All persistence | `src/main/db.ts` |\n| IPC channels | `src/shared/ipc-channels.ts` |",
+      "input_tokens": 7,
+      "output_tokens": 3243,
+      "wall_ms": 57047,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 10624,
+      "cache_read_input_tokens": 83061,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "What happens when startReview is called in pr-review-manager.ts? Walk through the orchestration: diff fetching, context building, parallel agents, dedupe, peer review, and persistence. Name the supporting modules each step uses.",
+            "target": "startReview",
+            "file_path": "src/main/pr-review-manager.ts",
+            "max_evidence": 15
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 93692,
+      "mech_score": 0.9200000000000002,
+      "judge_baseline_score": 8,
+      "judge_baseline_justification": "A correctly identifies startReview at 903, walks the full pipeline with proper ordering, names all required modules accurately (gh-cli.ts, review-scope.ts, diff-chunker.ts, pr-context builders, sessionManager, pr-review-dedupe.ts, pr-review-critic.ts, pr-review-peer-review.ts, db.ts), and correctly separates dedupe from peer-review/critic. However, the response is verbose with implementation details (line numbers, internal function names, worktree mechanics) that obscure rather than clarify the orchestration flow. The dense formatting and excessive detail (10 numbered steps with substeps, inline code references) prioritize showing knowledge over communicating the core flow clearly. Per rubric: 'Reward concise correct answers over verbose padded ones.'",
+      "judge_justification": "B correctly identifies startReview at 903, walks the pipeline in proper order with clear hierarchical structure (10 main steps, 4 substeps for async work), names all required modules consistently with src/main/ prefixes, and includes pr-review-mcp-config.ts which A omits from its table. Correctly separates dedupe (step 5) from peer-review (step 6) and critic (step 7). The numbered/lettered hierarchy and concise explanations make the flow easy to follow. Provides the same substantive correctness as A but with better organization and conciseness. No hallucinated paths or symbols. Meets all rubric requirements: correct entry point, correct ordering, correct module names, proper stage separation.",
+      "judge_score": 9
+    },
+    {
+      "question_id": "pylon-q10",
+      "toolset": "code_graph",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "I now have everything needed for a complete answer.\n\n---\n\nHere is the full orchestration of `startReview` (line 903) and its private continuation `runParallelReview` (line 1017):\n\n---\n\n## 1. Intake and DB row creation (`startReview`, lines 903\u20131015)\n\n`startReview` accepts a `GhRepo`, PR number, focus areas, and options. It immediately:\n\n- Calls **`getPrDetail`** (`./gh-cli`) to get head/base SHAs via the GitHub CLI.\n- Calls **`ensureReviewSeries`** and **`getLatestSuccessfulReviewBaseline`** (both on `PrReviewManager`) to decide whether to do a `full` or `incremental` review. Incremental is chosen when the base SHA is unchanged from the last successful review.\n- Inserts a row into `pr_reviews` via **`getDb()`** (`./db`) with status `running`.\n- Fires an IPC event (`IPC.GH_REVIEW_UPDATE`) to tell the renderer it's underway.\n- Kicks off **`runParallelReview`** in a detached promise (`.catch` handles errors) and returns the `PrReview` record immediately so the UI isn't blocked.\n\n---\n\n## 2. Diff scoping and chunking (`runParallelReview`, lines 1049\u20131079)\n\n- Creates a git worktree via **`createPrWorktree`** (on the manager, wrapping `git-worktree-service`).\n- Calls **`resolveReviewScope`** (`./review-scope`) to compute the actual diff: full PR diff or an incremental SHA range depending on the mode.\n- Calls **`chunkDiff`** (`./diff-chunker`) with a token budget from **`getTokenBudget`** (same module). The budget is informed by `sessionManager.getModelContextWindow(reviewAgent.model)`. Oversized diffs are split into chunks; lock files and generated files are silently skipped.\n\n---\n\n## 3. Context building (lines 1125\u20131203)\n\nRuns concurrently (as a promise that is immediately `await`-ed before agents start):\n\n- Instantiates **`HeuristicContextBackend`** (`./pr-context/heuristic-context-backend`) and optionally **`McpContextBackend`** (`./pr-context/mcp-context-backend`) using **`CodeIntelligenceMcpClient`** (`./pr-context/mcp-client`). The MCP path requires a local code-intelligence server; if unavailable it falls back to heuristic.\n- Wraps both in **`PrContextBuilder`** (`./pr-context/pr-context-builder`), which calls `builder.build(...)`. The builder writes a `.pylon/pr-context.json` bundle into the worktree for the agents to read.\n- Sends `IPC.GH_REVIEW_CONTEXT_UPDATE` to update the UI on `building` / `done` / `fallback` / `error`.\n\n---\n\n## 4. Parallel specialist agents (lines 1205\u20131225)\n\nFor each focus area (`security`, `correctness`, `performance`, etc.), **`runAgentSession`** is called. All of them run in parallel via `Promise.allSettled`. Each agent:\n\n- Creates a provider session through **`sessionManager`** (`./session-manager`).\n- Uses **`buildPrReviewFirstChunkPrompt`** / **`buildPrReviewContinuationPrompt`** (`./pr-review-prompts`) to generate the system + user prompt, incorporating the context bundle and diff chunk(s).\n- Streams results back via IPC as findings accumulate; output text is managed by **`appendReviewOutputText`** / **`extractReviewOutputText`** (`./pr-review-output`).\n- Parses findings from the model's output.\n\nAfter `allSettled`, all findings are merged; if every agent failed the review is marked `error`.\n\n---\n\n## 5. Deduplification (line 1249)\n\n**`deduplicateFindings`** (`./pr-review-dedupe`) merges near-duplicate findings from different agents using a fuzzy/deterministic clustering algorithm (file + line \u00b1 3 + title similarity).\n\n---\n\n## 6. Critic pass (line 1253)\n\n**`runCriticPass`** (private, lines 1458\u20131513) applies a generator+critic pattern:\n\n- **`partitionForCritic`** (`./pr-review-critic`) splits findings into auto-kept (high-severity/must-fix) and candidates needing review.\n- **`buildCriticPrompt`** constructs a prompt for a second session (no diff re-feed, so ~1.2x cost not 3x).\n- Runs a short `sessionManager` session; if the primary provider fails it retries with **`resolvePeerReviewAgent`**.\n- **`parseCriticVerdicts`** + **`applyCriticVerdicts`** (`./pr-review-critic`) apply the model's keep/drop decisions.\n\n---\n\n## 7. Peer review / second opinion (line 1254)\n\n**`runPeerReviewPass`** (lines 1515\u20131619):\n\n- Uses **`resolvePeerReviewAgent`** to pick the *other* provider (Claude \u2194 Codex).\n- **`buildPeerReviewPrompt`** (`./pr-review-peer-review`) generates a prompt asking the peer to audit the surviving findings.\n- Runs via `sessionManager.sendGitAiQuery` (no diff in context, just findings + metadata).\n- **`parsePeerReviewChanges`** + **`applyPeerReviewChanges`** (`./pr-review-peer-review`) update severities, drop false positives, then **`deduplicateFindings`** is called again on the result.\n\n---\n\n## 8. Revalidation (incremental only, lines 1270\u20131318)\n\nIf the review is incremental and touched files exist, **`runRevalidationPass`** is dynamically imported from **`./revalidation-worker`**. It compares open threads from prior reviews against newly touched files and calls **`runRevalidationSession`** (which creates short `sessionManager` sessions) to verdict each thread as `persisting`, `resolved`, or `stale`.\n\n---\n\n## 9. Thread lifecycle and persistence (lines 1320\u20131378)\n\n- **`applyThreadLifecycle`** (on the manager) maps findings to `pr_review_threads` rows, computing `statusInRun` (`new`, `persisting`, `resolved`, `stale`) and fingerprints.\n- All findings are bulk-inserted into `pr_review_findings` via **`getDb()`**.\n- `pr_reviews` is updated to `done` with cost and summary via **`updateReviewStatus`** / **`updateReviewSummary`**.\n- `pr_review_series.latest_review_id` is updated.\n- A final `IPC.GH_REVIEW_UPDATE` with full findings, costs, snapshot SHAs, and per-agent progress is sent to the renderer.\n\n---\n\n**Supporting modules summary:**\n\n| Step | Module |\n|---|---|\n| PR metadata | `./gh-cli` (`getPrDetail`) |\n| Diff scoping | `./review-scope` (`resolveReviewScope`) |\n| Chunking | `./diff-chunker` (`chunkDiff`, `getTokenBudget`) |\n| Context building | `./pr-context/pr-context-builder`, `./pr-context/heuristic-context-backend`, `./pr-context/mcp-context-backend`, `./pr-context/mcp-client` |\n| Agent prompts | `./pr-review-prompts` |\n| Agent output parsing | `./pr-review-output` |\n| Deduplication | `./pr-review-dedupe` |\n| Critic pass | `./pr-review-critic` |\n| Peer review | `./pr-review-peer-review` |\n| Revalidation | `./revalidation-worker` |\n| Session execution | `./session-manager` |\n| Persistence | `./db` (`getDb`) |\n| IPC | `../shared/ipc-channels` |",
+      "input_tokens": 13,
+      "output_tokens": 3089,
+      "wall_ms": 73505,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 14569,
+      "cache_read_input_tokens": 332940,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_search,mcp__codegraph__codegraph_context,mcp__codegraph__codegraph_callees,mcp__codegraph__codegraph_trace",
+            "max_results": 4
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_context",
+          "args": {
+            "task": "startReview orchestration in pr-review-manager.ts: diff fetching, context building, parallel agents, dedupe, peer review, persistence",
+            "maxNodes": 30
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_callees",
+          "args": {
+            "symbol": "startReview",
+            "limit": 40
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "startReview",
+            "kind": "method"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 903,
+            "limit": 300
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1202,
+            "limit": 300
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1500,
+            "limit": 120
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/pr-review-manager.ts",
+            "offset": 1,
+            "limit": 80
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 347522,
+      "mech_score": 0.6000000000000001,
+      "judge_baseline_score": 9,
+      "judge_baseline_justification": "Fully correct pipeline ordering and module naming. Identifies startReview at 903, walks all stages in proper sequence with better structure (numbered steps, sub-bullets). Distinguishes dedupe from peer-review correctly. Names all required modules and additionally mentions providers/registry.ts (peer provider resolution logic), showing slightly deeper architectural understanding. Supporting modules table is complete and formatted consistently with .ts extensions. More concise presentation without sacrificing completeness or explanation quality. Better formatted for readability while meeting all rubric requirements. Only slight deduction is that some explanatory detail is condensed, though the answer remains well-explained.",
+      "judge_justification": "Fully correct pipeline ordering and module naming. Identifies startReview at 903, walks all stages (GitHub CLI, diff scoping, context building, parallel agents via sessionManager.createSession, dedupe via pr-review-dedupe, critic via pr-review-critic, peer-review via pr-review-peer-review, persistence via db.ts). Clearly distinguishes dedupe (lexical) from peer-review (LLM-driven). Supporting modules table is comprehensive. However, the answer is unnecessarily verbose with long narrative paragraphs for each step, violating the explicit instruction to reward conciseness. Much of the explanatory prose (IPC event details, budget logic) adds context but is not required by the rubric.",
+      "judge_score": 8
+    },
+    {
+      "question_id": "pylon-q12",
+      "toolset": "default",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The BrowserWindow size is configured in `src/main/index.ts` at line 19 inside the `createWindow()` function:\n\n- **Default size:** 1280 x 800 px\n- **Minimum size:** 900 x 600 px\n\nOther notable window settings: `titleBarStyle: 'hiddenInset'` (macOS traffic lights inset at 15,15), `backgroundColor: '#1a1714'` (dark warm neutral matching the brand palette), and `show: false` until the `ready-to-show` event fires.",
+      "input_tokens": 5,
+      "output_tokens": 348,
+      "wall_ms": 10647,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 525,
+      "cache_read_input_tokens": 94398,
+      "tool_calls": [
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "BrowserWindow",
+            "path": "/Users/dikrana/Documents/workspace/pylon/src/main/index.ts",
+            "output_mode": "content"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Read",
+          "args": {
+            "file_path": "/Users/dikrana/Documents/workspace/pylon/src/main/index.ts",
+            "offset": 18,
+            "limit": 20
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 94928,
+      "mech_score": 1.0,
+      "judge_scores_by_pair": {
+        "code_intel": 9,
+        "code_graph": 8
+      },
+      "judge_justifications_by_pair": {
+        "code_intel": "Correctly identifies src/main/index.ts at line 19 (precise match with rubric), properly names the createWindow() function, and accurately states dimensions 1280\u00d7800. Extra details (minimum size, titleBarStyle, backgroundColor, show behavior) are factual and useful, though the rubric rewards conciseness. No hallucinations detected.",
+        "code_graph": "Correctly identifies location, dimensions, and minimum size. Adds accurate but unsolicited details (titleBarStyle, backgroundColor, show behavior) that exceed question scope. Well-explained but penalized for verbosity where rubric explicitly rewards conciseness over padding."
+      },
+      "judge_score": 9,
+      "judge_justification": "Correctly identifies src/main/index.ts at line 19 (precise match with rubric), properly names the createWindow() function, and accurately states dimensions 1280\u00d7800. Extra details (minimum size, titleBarStyle, backgroundColor, show behavior) are factual and useful, though the rubric rewards conciseness. No hallucinations detected."
+    },
+    {
+      "question_id": "pylon-q12",
+      "toolset": "code_intel",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The BrowserWindow size is configured in `src/main/index.ts` inside the `createWindow()` function (around line 18). The dimensions are:\n\n- **Default size:** 1280 x 800 px\n- **Minimum size:** 900 x 600 px\n\nAdditional window options set there: `titleBarStyle: 'hiddenInset'`, macOS traffic-light position at `{ x: 15, y: 15 }`, and a dark background color `#1a1714`.",
+      "input_tokens": 9,
+      "output_tokens": 717,
+      "wall_ms": 33377,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 15635,
+      "cache_read_input_tokens": 142307,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__code-intelligence__ask_code",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Where is the default Electron BrowserWindow size configured for the Pylon main window, and what width/height dimensions does it use?",
+            "target": "BrowserWindow"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:Grep",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Agent",
+          "args": {
+            "description": "Find BrowserWindow size in index.ts",
+            "prompt": "Read the file src/main/index.ts in the current working directory and find where `new BrowserWindow(` is called. Report the width, height, and any minWidth/minHeight values from its options object, with exact line numbers. Return only the relevant code block.",
+            "subagent_type": "Explore"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__bind_workspace",
+          "args": {
+            "repo": "/Users/dikrana/Documents/workspace/pylon"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__bind_workspace",
+          "args": {
+            "repo": "/Users/dikrana/Documents/workspace/pylon"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__search_code",
+          "args": {
+            "query": "new BrowserWindow",
+            "context": "snippets",
+            "limit": 5
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__code-intelligence__ask_code",
+          "args": {
+            "question": "Where is new BrowserWindow called and what are its width, height, minWidth, and minHeight options?",
+            "file_path": "src/main/index.ts"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 157951,
+      "mech_score": 1.0,
+      "judge_baseline_score": 9,
+      "judge_baseline_justification": "Correctly identifies src/main/index.ts at line 19 (precise match with rubric), properly names the createWindow() function, and accurately states dimensions 1280\u00d7800. Extra details (minimum size, titleBarStyle, backgroundColor, show behavior) are factual and useful, though the rubric rewards conciseness. No hallucinations detected.",
+      "judge_justification": "Correctly identifies src/main/index.ts and createWindow() function with accurate dimensions 1280\u00d7800, but line number is off (\"around line 18\" vs rubric's ~line 19). Extra details match Answer A and are factual, but answer is similarly verbose. Loses 1 point for imprecise line number on a baseline filesystem-lookup task.",
+      "judge_score": 8
+    },
+    {
+      "question_id": "pylon-q12",
+      "toolset": "code_graph",
+      "model": "claude-sonnet-4-6",
+      "repo": "custom",
+      "final_answer": "The main window is configured in `src/main/index.ts` inside the `createWindow` function (line 19). The dimensions are:\n\n- **Default size:** 1280 \u00d7 800 px\n- **Minimum size:** 900 \u00d7 600 px",
+      "input_tokens": 8,
+      "output_tokens": 394,
+      "wall_ms": 13898,
+      "stop_reason": "end_turn",
+      "cache_creation_input_tokens": 646,
+      "cache_read_input_tokens": 130547,
+      "tool_calls": [
+        {
+          "name": "ToolSearch",
+          "args": {
+            "query": "select:mcp__codegraph__codegraph_search",
+            "max_results": 1
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "mcp__codegraph__codegraph_search",
+          "args": {
+            "query": "BrowserWindow"
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        },
+        {
+          "name": "Grep",
+          "args": {
+            "pattern": "width|height|minWidth|minHeight",
+            "path": "src/main/index.ts",
+            "output_mode": "content",
+            "context": 2
+          },
+          "result_text": "",
+          "result_bytes": 0,
+          "duration_ms": 0,
+          "is_error": false
+        }
+      ],
+      "total_input_tokens": 131201,
+      "mech_score": 0.5,
+      "judge_baseline_score": 8,
+      "judge_baseline_justification": "Correctly identifies location, dimensions, and minimum size. Adds accurate but unsolicited details (titleBarStyle, backgroundColor, show behavior) that exceed question scope. Well-explained but penalized for verbosity where rubric explicitly rewards conciseness over padding.",
+      "judge_justification": "Correctly identifies src/main/index.ts at line 19, createWindow function, with accurate dimensions 1280\u00d7800 and relevant minimum size context. Concise, directly answers what was asked without padding.",
+      "judge_score": 9
+    }
+  ],
+  "round": 31,
+  "repo": "custom",
+  "agent_model": "claude-sonnet-4-6",
+  "judge_model": "claude-haiku-4-5-20251001"
+}

@@ -4,7 +4,14 @@ import os
 from bench import config
 
 
-def test_defaults_resolve_without_env():
+def test_defaults_resolve_without_env(monkeypatch):
+    # Self-isolating: clear any leftover BENCH_* env vars from prior tests
+    # and reload the module so its constants are recomputed against a clean env.
+    for k in list(os.environ):
+        if k.startswith("BENCH_"):
+            monkeypatch.delenv(k, raising=False)
+    import importlib
+    importlib.reload(config)
     assert config.AGENT_MODEL == "claude-sonnet-4-6"
     assert config.JUDGE_HAIKU == "claude-haiku-4-5"
     assert config.JUDGE_SONNET == "claude-sonnet-4-6"

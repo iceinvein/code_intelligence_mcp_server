@@ -35,7 +35,7 @@ DAEMON_BINARY = REPO_ROOT / "target" / "release" / "code-intelligence-mcp-server
 
 # Timeouts
 PER_QUESTION_TIMEOUT_S = _env_int("BENCH_TIMEOUT_S", 180)
-DAEMON_HEALTH_TIMEOUT_S = 30
+DAEMON_HEALTH_TIMEOUT_S = _env_int("BENCH_DAEMON_HEALTH_TIMEOUT_S", 30)
 
 # Paths
 BENCH_DIR = REPO_ROOT / "bench"

@@ -249,6 +249,47 @@ impl SessionManager {
             state.indexer.spawn_watch_loop(watch_cancel.clone());
         }
 
+        // Spawn the LLM description worker (gated by BENCH_DISABLE_DESCRIPTIONS env).
+        // The worker pulls undescribed symbols from SQLite, runs Qwen to generate
+        // descriptions, and re-upserts symbols into Tantivy with the description
+        // field populated. Pre-v4 stdio mode wired this in run_embedded(); the v4
+        // refactor (4736a0d) dropped the call site. Re-adding here so the daemon
+        // exercises descriptions by default; bench arms set the env to ablate.
+        let descriptions_disabled =
+            std::env::var("BENCH_DISABLE_DESCRIPTIONS").as_deref() == Ok("1");
+        if state.config.llm_enabled && !descriptions_disabled {
+            let llm_config = state.config.clone();
+            let llm_indexer = state.indexer.clone();
+            let desc_cancel = watch_cancel.clone();
+            tokio::spawn(async move {
+                let generator = match tokio::task::spawn_blocking(move || {
+                    crate::llm::create_llm_generator(&llm_config)
+                })
+                .await
+                {
+                    Ok(Ok(Some(llm))) => llm,
+                    Ok(Ok(None)) => {
+                        tracing::debug!(
+                            "LLM descriptions unavailable, skipping description worker"
+                        );
+                        return;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("Failed to create LLM generator: {}", e);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!("LLM generator task panicked: {}", e);
+                        return;
+                    }
+                };
+                let _desc_handle = llm_indexer.spawn_description_worker(generator, desc_cancel);
+                tracing::info!("LLM description worker spawned");
+            });
+        } else if descriptions_disabled {
+            tracing::info!("LLM descriptions disabled by BENCH_DISABLE_DESCRIPTIONS env");
+        }
+
         Ok((state, watch_cancel))
     }
 
@@ -635,6 +676,34 @@ mod tests {
         assert!(removed.is_some());
         assert!(!entry.data_dir.as_std_path().exists());
         assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn description_worker_skipped_when_bench_disable_descriptions_set() {
+        // This test confirms init_repo_state does not panic when the env is set
+        // and the worker-spawn branch is the disabled path. It's a weak test by
+        // design - tokio::spawn is fire-and-forget. The strong assertion that
+        // descriptions are not written lives in storage::tantivy tests.
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("BENCH_DISABLE_DESCRIPTIONS", "1");
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let repo_path = Utf8PathBuf::from(data_dir.as_str()).join("fake-repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+        std::fs::write(
+            repo_path.join("Cargo.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.0.0\"\n",
+        )
+        .unwrap();
+
+        let _state = manager.get_or_create_repo(&repo_path).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        std::env::remove_var("BENCH_DISABLE_DESCRIPTIONS");
     }
 
     #[tokio::test]

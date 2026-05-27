@@ -23,15 +23,17 @@ def aggregate_arm(arm_name: str, rows: list[dict], skipped: bool = False) -> dic
             "wall_seconds_mean": None,
         }
     n = len(rows)
-    judge_medians = [r["judge_median"] for r in rows]
-    judge_ranges = [r["judge_range"] for r in rows]
+    judge_medians_raw = [r.get("judge_median") for r in rows]
+    judge_ranges_raw = [r.get("judge_range") for r in rows]
+    judge_medians = [v for v in judge_medians_raw if v is not None]
+    judge_ranges = [v for v in judge_ranges_raw if v is not None]
     mechs = [r["mech"] for r in rows]
     return {
         "arm": arm_name,
         "skipped": False,
         "n": n,
-        "judge_median": sum(judge_medians) / n,
-        "judge_range_mean": sum(judge_ranges) / n,
+        "judge_median": sum(judge_medians) / len(judge_medians) if judge_medians else None,
+        "judge_range_mean": sum(judge_ranges) / len(judge_ranges) if judge_ranges else None,
         "mech": sum(mechs) / n,
         "mech_p25": statistics.quantiles(mechs, n=4)[0] if n >= 4 else min(mechs),
         "citation_hit_rate": sum(1 for r in rows if r["citation_hit"]) / n,

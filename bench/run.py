@@ -101,11 +101,24 @@ def cmd_full(args) -> int:
 
     print(f"running {round_id} for arms: {','.join(a.name for a in arms_to_run)}")
 
+    try:
+        import anthropic
+        import os
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        judge_client = anthropic.Anthropic()
+    except ImportError:
+        print("warning: anthropic SDK not installed; judging skipped", file=sys.stderr)
+        judge_client = None
+    except Exception as e:
+        print(f"warning: anthropic client init failed: {e}; judging skipped", file=sys.stderr)
+        judge_client = None
+
     summary = orchestrator.run_cycle(
         arms_to_run=arms_to_run,
         repos=[(fixture, config.REPO_ROOT)],
         results_dir=results_dir,
-        judge_client=None,
+        judge_client=judge_client,
     )
     print(f"completed {summary['n_runs']} runs; results in {results_dir}")
     return 0
@@ -122,7 +135,50 @@ def cmd_question(args) -> int:
 
 
 def cmd_report(args) -> int:
-    print("report: not yet implemented")
+    import json
+    from collections import defaultdict
+    from bench import report as report_mod
+
+    round_dir = config.RESULTS_DIR / args.round
+    if not round_dir.exists():
+        print(f"error: {round_dir} not found", file=sys.stderr)
+        return 2
+
+    scores_path = round_dir / "scores.json"
+    if not scores_path.exists():
+        print(f"error: {scores_path} not found", file=sys.stderr)
+        return 2
+    scores = [json.loads(line) for line in scores_path.read_text().splitlines() if line.strip()]
+
+    by_arm = defaultdict(list)
+    for s in scores:
+        by_arm[s["arm"]].append(s)
+
+    arms_data = {
+        arm_name: report_mod.aggregate_arm(arm_name, rows)
+        for arm_name, rows in by_arm.items()
+    }
+
+    md = report_mod.render_markdown(
+        round_id=args.round,
+        repos=sorted({s["repo"] for s in scores}),
+        arms_data=arms_data,
+        outliers={
+            "high_judge_disagreement": [],
+            "hallucinated_citations": [],
+            "forbidden_hits": [],
+            "regressed_vs_full": [],
+        },
+        meta={
+            "daemon_sha": "?",
+            "codegraph_version": None,
+            "agent_model": config.AGENT_MODEL,
+        },
+    )
+
+    out_path = Path(args.out) if args.out else round_dir / "report.md"
+    out_path.write_text(md)
+    print(f"wrote {out_path}")
     return 0
 
 

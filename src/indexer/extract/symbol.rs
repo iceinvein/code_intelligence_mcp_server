@@ -13,6 +13,12 @@ pub enum SymbolKind {
     Trait,
     Impl,
     Module,
+    /// Object-literal property identifier carrying a hook-shaped name
+    /// (onX/beforeX/afterX/willX/didX/handleX), a function-valued slot,
+    /// or a literal in an exported const-object. Lets queries like
+    /// "where is onBeforeToolUse defined" land on the precise file:line
+    /// of the property, not just the enclosing object's const symbol.
+    Property,
 }
 
 // TodoKind, TodoEntry, JSDocEntry, JSDocParam moved to crate::storage::sqlite::schema

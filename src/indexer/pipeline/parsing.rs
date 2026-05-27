@@ -13,6 +13,7 @@ pub fn symbol_kind_to_string(kind: SymbolKind) -> String {
         SymbolKind::Trait => "trait",
         SymbolKind::Impl => "impl",
         SymbolKind::Module => "module",
+        SymbolKind::Property => "property",
     }
     .to_string()
 }

@@ -146,6 +146,13 @@ fn extract_symbols_with_parser(
                     extract_imports(node, source, &mut imports);
                 }
             }
+            "object" => {
+                // Object literal: emit Property symbols for hook-shaped or
+                // function-valued or exported-const-literal properties. The
+                // walk visits every object literal, but property emission is
+                // gated to keep symbol count bounded.
+                extract_object_literal_properties(node, source, &mut symbols);
+            }
             _ => {}
         }
     });
@@ -373,6 +380,140 @@ fn extract_const_declarators(
             }
         }
     }
+}
+
+/// Detect hook-shaped property identifiers (onX/beforeX/afterX/willX/didX/handleX).
+/// Used to gate `extract_object_literal_properties` so we only emit
+/// Property symbols for callback-style keys and don't explode the
+/// symbol count with every config option that happens to be in an
+/// object literal.
+fn is_hook_shaped_property_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    for prefix in ["on", "before", "after", "will", "did", "handle"] {
+        if name.starts_with(prefix) && bytes.len() > prefix.len() {
+            let next_byte = bytes[prefix.len()];
+            if next_byte.is_ascii_uppercase() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Walk a single `object` (object literal) node and emit `Property`
+/// symbols for its pair children. Three independent acceptance gates --
+/// any one passing is enough -- keep the symbol count bounded:
+///
+///   1. The key is hook-shaped (`onX/beforeX/afterX/willX/didX/handleX`).
+///   2. The value is a function expression (`arrow_function`,
+///      `function_expression`, `function`, or method shorthand).
+///   3. The enclosing const declaration is `export`ed AND the value is
+///      a primitive literal (string/number/true/false/null) -- this is
+///      the "channel constant" pattern (`export const IPC = { SESSION_MESSAGE: 'session:message' }`).
+///
+/// Properties whose key is not a `property_identifier` (computed keys,
+/// string keys, etc.) are skipped to avoid name collisions.
+fn extract_object_literal_properties(
+    object_node: Node<'_>,
+    source: &str,
+    out: &mut Vec<ExtractedSymbol>,
+) {
+    let in_exported_const = is_inside_exported_const(object_node);
+
+    let mut cursor = object_node.walk();
+    for child in object_node.children(&mut cursor) {
+        if child.kind() != "pair" {
+            continue;
+        }
+        let Some(key_node) = child.child_by_field_name("key") else {
+            continue;
+        };
+        if key_node.kind() != "property_identifier" {
+            continue;
+        }
+        let name = text_for_node(key_node, source);
+        let value_node = child.child_by_field_name("value");
+        let value_kind = value_node.map(|v| v.kind());
+
+        let is_function_value = matches!(
+            value_kind,
+            Some("arrow_function") | Some("function_expression") | Some("function")
+        );
+        let is_literal_value = matches!(
+            value_kind,
+            Some("string")
+                | Some("number")
+                | Some("true")
+                | Some("false")
+                | Some("null")
+                | Some("template_string")
+        );
+
+        let accept = is_hook_shaped_property_name(&name)
+            || is_function_value
+            || (in_exported_const && is_literal_value);
+        if !accept {
+            continue;
+        }
+
+        // Span: from the key through the value (or just the key if no value).
+        let span_node = value_node
+            .map(|v| {
+                if v.start_byte() < key_node.start_byte() {
+                    key_node
+                } else {
+                    child
+                }
+            })
+            .unwrap_or(key_node);
+        // Properties on object literals are not directly "exported" --
+        // export status flows from the enclosing const. We surface this
+        // through the in_exported_const flag at gating time only.
+        out.push(symbol_from_node(
+            name,
+            SymbolKind::Property,
+            in_exported_const,
+            span_node,
+        ));
+    }
+}
+
+/// Walk up the AST from an `object` node to determine whether the
+/// nearest enclosing const declaration is exported. Returns false if
+/// the object is not the right-hand-side of a const declarator.
+fn is_inside_exported_const(node: Node<'_>) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "variable_declarator" => {
+                // Walk further up to find the lexical_declaration and
+                // its export wrapper.
+                let mut up = parent.parent();
+                while let Some(p) = up {
+                    match p.kind() {
+                        "lexical_declaration" => {
+                            return is_const_lexical_declaration(p) && export_ancestor(p).is_some();
+                        }
+                        "export_statement" => return true,
+                        _ => up = p.parent(),
+                    }
+                }
+                return false;
+            }
+            "lexical_declaration" => {
+                return is_const_lexical_declaration(parent) && export_ancestor(parent).is_some();
+            }
+            // Stop ascending once we leave the declaration context.
+            "function_declaration"
+            | "method_definition"
+            | "arrow_function"
+            | "function_expression"
+            | "class_body"
+            | "program" => return false,
+            _ => current = parent.parent(),
+        }
+    }
+    false
 }
 
 fn extract_interface_types(
@@ -1829,6 +1970,127 @@ async function fetchData() {
                 .iter()
                 .any(|e| e.from_symbol == "spawn:Promise.all"),
             "Expected spawn:Promise.all edge"
+        );
+    }
+
+    #[test]
+    fn extracts_property_for_hook_shaped_callback() {
+        let source = r#"
+import { query } from "@anthropic/sdk";
+
+export async function consumeStream() {
+  for await (const event of query({
+    onBeforeToolUse: async (toolEvent) => {
+      console.log(toolEvent);
+    },
+    prompt: "hi",
+  })) {
+    // ...
+  }
+}
+"#;
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let props: Vec<_> = extracted
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Property)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            props.contains(&"onBeforeToolUse"),
+            "should extract onBeforeToolUse property, got {props:?}"
+        );
+        // 'prompt' is neither hook-shaped, function-valued, nor inside an
+        // exported const, so it must NOT be extracted (keeps the symbol
+        // count bounded).
+        assert!(
+            !props.contains(&"prompt"),
+            "should NOT extract non-hook prompt property, got {props:?}"
+        );
+    }
+
+    #[test]
+    fn extracts_property_for_exported_const_string_literal() {
+        let source = r#"
+export const IPC = {
+  SESSION_MESSAGE: 'session:message',
+  SESSION_TOOL_USE: 'session:tool-use',
+};
+"#;
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let props: Vec<_> = extracted
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Property)
+            .map(|s| (s.name.as_str(), s.exported))
+            .collect();
+        assert!(
+            props.iter().any(|(n, exp)| *n == "SESSION_MESSAGE" && *exp),
+            "should extract exported SESSION_MESSAGE property, got {props:?}"
+        );
+        assert!(
+            props
+                .iter()
+                .any(|(n, exp)| *n == "SESSION_TOOL_USE" && *exp),
+            "should extract exported SESSION_TOOL_USE property, got {props:?}"
+        );
+    }
+
+    #[test]
+    fn extracts_property_for_preload_renderer_api_hook() {
+        let source = r#"
+import { contextBridge, ipcRenderer } from 'electron';
+
+contextBridge.exposeInMainWorld('api', {
+  onSessionMessage: (handler: (msg: unknown) => void) => {
+    ipcRenderer.on('session:message', (_e, msg) => handler(msg));
+  },
+  send: (channel: string, payload: unknown) => ipcRenderer.send(channel, payload),
+});
+"#;
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let props: Vec<_> = extracted
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Property)
+            .map(|s| s.name.as_str())
+            .collect();
+        // onSessionMessage matches both gate 1 (hook-shaped) and gate 2
+        // (function-valued).
+        assert!(
+            props.contains(&"onSessionMessage"),
+            "should extract onSessionMessage, got {props:?}"
+        );
+        // `send` is function-valued but not hook-shaped; gate 2 accepts
+        // it because callback-style call-arg objects ARE the pattern we
+        // care about.
+        assert!(
+            props.contains(&"send"),
+            "should extract send (function-valued), got {props:?}"
+        );
+    }
+
+    #[test]
+    fn skips_plain_non_hook_property_in_local_object() {
+        let source = r#"
+function doStuff() {
+  const cfg = {
+    timeout: 1000,
+    label: "x",
+  };
+  return cfg;
+}
+"#;
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+        let props: Vec<_> = extracted
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Property)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            props.is_empty(),
+            "non-hook properties in local object should be skipped, got {props:?}"
         );
     }
 

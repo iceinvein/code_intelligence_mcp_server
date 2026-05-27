@@ -759,10 +759,39 @@ impl IndexPipeline {
             }
         }
 
-        // Phase 2: Write (single thread, batched)
+        // Phase 2: Write (single thread, batched) — symbols, fingerprints,
+        // usage examples, todos, etc. Edges are intentionally empty in the
+        // parsed_files at this point; they get extracted next, after the
+        // freshly-written symbols are visible to cross-file lookups.
         if !parsed_files.is_empty() {
             let conn = pool.get()?;
             write::write_batch(&parsed_files, &conn, &self.tantivy)?;
+            drop(conn);
+        }
+
+        // Phase 2.5: Extract edges in parallel using the populated DB.
+        // Receiver-based resolution (e.g. `sessionManager.createSession`)
+        // queries SQLite for non-exported class methods. Running this AFTER
+        // Phase 2 is what makes a fresh full re-index produce the same
+        // cross-file call edges as an incremental one.
+        let edge_bundles = if !parsed_files.is_empty() {
+            let config_clone = self.config.clone();
+            let pool_clone = pool.clone();
+            let parsed_arc = std::sync::Arc::new(std::mem::take(&mut parsed_files));
+            let parsed_for_task = parsed_arc.clone();
+            tokio::task::spawn_blocking(move || {
+                parse::extract_edges_for_files(&parsed_for_task, &config_clone, &pool_clone)
+            })
+            .await
+            .context("Join error in edge extraction phase")??
+        } else {
+            Vec::new()
+        };
+
+        // Phase 2.75: Write the edges that the deferred extraction produced.
+        if !edge_bundles.is_empty() {
+            let conn = pool.get()?;
+            write::write_edges_batch(&edge_bundles, &conn)?;
             drop(conn);
         }
 

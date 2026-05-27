@@ -3,6 +3,7 @@ use rusqlite::Connection;
 
 use crate::indexer::pipeline::parse::ParsedFile;
 use crate::storage::sqlite::queries;
+use crate::storage::sqlite::schema::{EdgeEvidenceRow, EdgeRow};
 use crate::storage::tantivy::TantivyIndex;
 
 /// Statistics returned by write_batch
@@ -192,6 +193,52 @@ pub fn write_batch(
     Ok(stats)
 }
 
+/// Write the per-file edge bundles produced by the deferred edge-extraction
+/// phase. The deferred phase runs `extract_edges_for_parsed_file` AFTER
+/// `write_batch` has persisted symbols, so receiver-based cross-file
+/// resolution can find class methods that were indexed in the same run.
+///
+/// `edge_bundles` is aligned with the original `ParsedFile` slice: index `i`
+/// holds the edges for the i-th parsed file. The slice may contain empty
+/// inner vecs (no edges for that file); they are skipped cheaply.
+pub fn write_edges_batch(
+    edge_bundles: &[Vec<(EdgeRow, Vec<EdgeEvidenceRow>)>],
+    conn: &Connection,
+) -> Result<usize> {
+    if edge_bundles.iter().all(|b| b.is_empty()) {
+        return Ok(0);
+    }
+
+    const CHUNK_SIZE: usize = 50;
+    let mut edges_written = 0usize;
+
+    // write_batch ran with foreign_keys=OFF and re-enabled it. We need the
+    // same loosening here because edge targets may reference symbols in
+    // later chunks of the same write pass.
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+
+    for chunk in edge_bundles.chunks(CHUNK_SIZE) {
+        let tx = conn
+            .unchecked_transaction()
+            .context("Failed to begin transaction for write_edges_batch chunk")?;
+
+        for bundle in chunk {
+            if bundle.is_empty() {
+                continue;
+            }
+            queries::edges::batch_upsert_edges(&tx, bundle)
+                .context("Failed to batch upsert edges in write_edges_batch")?;
+            edges_written += bundle.len();
+        }
+
+        tx.commit()
+            .context("Failed to commit transaction for write_edges_batch chunk")?;
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys=ON")?;
+    Ok(edges_written)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +321,9 @@ mod tests {
             decorators: vec![],
             framework_patterns: vec![],
             is_test_file: false,
+            imports: vec![],
+            type_edges: vec![],
+            dataflow_edges: vec![],
         };
 
         // Call write_batch
@@ -358,6 +408,9 @@ mod tests {
                 decorators: vec![],
                 framework_patterns: vec![],
                 is_test_file: false,
+                imports: vec![],
+                type_edges: vec![],
+                dataflow_edges: vec![],
             });
         }
 
@@ -464,6 +517,9 @@ mod tests {
             decorators: vec![],
             framework_patterns: vec![],
             is_test_file: false,
+            imports: vec![],
+            type_edges: vec![],
+            dataflow_edges: vec![],
         };
 
         write_batch(&[parsed_file_v1], &conn, &tantivy).unwrap();
@@ -519,6 +575,9 @@ mod tests {
             decorators: vec![],
             framework_patterns: vec![],
             is_test_file: false,
+            imports: vec![],
+            type_edges: vec![],
+            dataflow_edges: vec![],
         };
 
         write_batch(&[parsed_file_v2], &conn, &tantivy).unwrap();

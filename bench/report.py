@@ -53,6 +53,10 @@ def _fmt(v: Any, decimals: int = 2) -> str:
     return str(v)
 
 
+def _has_judge(agg: dict | None) -> bool:
+    return bool(agg and not agg["skipped"] and agg.get("judge_median") is not None)
+
+
 def _build_headline(arms_data: dict[str, dict]) -> str:
     full = arms_data.get("code_intel_full")
     default = arms_data.get("default")
@@ -61,19 +65,24 @@ def _build_headline(arms_data: dict[str, dict]) -> str:
     codegraph = arms_data.get("codegraph")
 
     lines = []
-    if full and default and not full["skipped"] and not default["skipped"]:
+    if _has_judge(full) and _has_judge(default):
         dj = full["judge_median"] - default["judge_median"]
         dm = full["mech"] - default["mech"]
         lines.append(f"code_intel_full vs default: {dj:+.1f} judge / {dm:+.2f} mech.")
-    if no_desc and full and not no_desc["skipped"] and not full["skipped"]:
+    if _has_judge(no_desc) and _has_judge(full):
         dj = no_desc["judge_median"] - full["judge_median"]
         lines.append(f"code_intel_no_descriptions vs code_intel_full: {dj:+.1f} judge.")
-    if no_rerank and full and not no_rerank["skipped"] and not full["skipped"]:
+    if _has_judge(no_rerank) and _has_judge(full):
         dj = no_rerank["judge_median"] - full["judge_median"]
         lines.append(f"code_intel_no_reranker vs code_intel_full: {dj:+.1f} judge.")
-    if codegraph and default and not codegraph["skipped"] and not default["skipped"]:
+    if _has_judge(codegraph) and _has_judge(default):
         dj = codegraph["judge_median"] - default["judge_median"]
         lines.append(f"codegraph vs default: {dj:+.1f} judge.")
+    if not lines:
+        # No judges available; fall back to mech deltas when both arms ran.
+        if full and default and not full["skipped"] and not default["skipped"]:
+            dm = full["mech"] - default["mech"]
+            lines.append(f"code_intel_full vs default (no judge): {dm:+.2f} mech.")
     return "\n".join(lines) or "(insufficient data for headline)"
 
 

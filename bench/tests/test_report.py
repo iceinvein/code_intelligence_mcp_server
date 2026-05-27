@@ -60,3 +60,47 @@ def test_render_markdown_includes_headline():
     assert "Headline" in md
     assert "skipped" in md
     assert "code_intel_full" in md
+
+
+def test_render_markdown_handles_unjudged_multi_arm():
+    # Both arms ran (n>0) but judge was skipped (judge_median is None).
+    def _unjudged_scores(values):
+        return [
+            {
+                "question_id": f"q{i}",
+                "task_type": "symbol_lookup",
+                "mech": v,
+                # No judge_median / judge_range: aggregate_arm should produce judge_median=None.
+                "tool_calls": 2,
+                "input_tokens": 50000,
+                "wall_ms": 30000,
+                "citation_hit": v > 0.6,
+                "hallucinated": False,
+                "forbidden_hit": False,
+            }
+            for i, v in enumerate(values, start=1)
+        ]
+
+    arms_data = {
+        "default": report.aggregate_arm("default", _unjudged_scores([0.5, 0.5])),
+        "code_intel_full": report.aggregate_arm("code_intel_full", _unjudged_scores([0.9, 0.9])),
+    }
+    # Verify aggregate_arm correctly produces judge_median=None when no judge fields are present.
+    assert arms_data["default"]["judge_median"] is None
+    assert arms_data["code_intel_full"]["judge_median"] is None
+    # Should not raise even with un-judged arms.
+    md = report.render_markdown(
+        round_id="R999",
+        repos=["smoke"],
+        arms_data=arms_data,
+        outliers={
+            "high_judge_disagreement": [],
+            "hallucinated_citations": [],
+            "forbidden_hits": [],
+            "regressed_vs_full": [],
+        },
+        meta={"daemon_sha": "?", "codegraph_version": None, "agent_model": "x"},
+    )
+    assert "R999" in md
+    # Headline should fall back to mech-only line rather than raising or returning empty.
+    assert "no judge" in md

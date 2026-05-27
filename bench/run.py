@@ -192,6 +192,46 @@ def cmd_clean(args) -> int:
     return 0
 
 
+def cmd_authoring_init(args) -> int:
+    repo = args.repo
+    out_path = Path(args.out) if args.out else config.FIXTURES_DIR / f"{repo}.yaml"
+    if out_path.exists():
+        print(f"error: {out_path} already exists", file=sys.stderr)
+        return 2
+
+    import datetime as _datetime
+    today = _datetime.date.today().isoformat()
+    template = f"""meta:
+  repo: {repo}
+  upstream_url: "TODO_url_or_path"
+  upstream_sha: "TODO_sha"
+  authored_at: "{today}"
+  authored_against_schema_version: 22
+
+questions:
+  # 4 symbol_lookup questions
+  - id: {repo}-symbol-01
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "TODO"
+    rubric: |
+      TODO: explicit penalty triggers.
+    expected:
+      citations:
+        - {{ file: "TODO", line_range: [1, 1], symbol: "TODO" }}
+      files: ["TODO"]
+      facts: ["TODO"]
+      forbidden: []
+      forbidden_strict: false
+  # ... add 3 more symbol_lookup, 4 concept, 4 multi_hop, 3 impact, 3 architectural, 2 negative
+"""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(template)
+    print(f"wrote scaffold: {out_path}")
+    print("Edit the file to fill in 20 questions per the AUTHORING.md distribution.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bench")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -240,6 +280,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_clean.add_argument("--variant", default=None)
     p_clean.add_argument("--rounds-before", default=None)
     p_clean.set_defaults(func=cmd_clean)
+
+    p_auth = sub.add_parser("authoring")
+    auth_sub = p_auth.add_subparsers(dest="authoring_cmd", required=True)
+    p_auth_init = auth_sub.add_parser("init")
+    p_auth_init.add_argument("repo")
+    p_auth_init.add_argument("--out", default=None)
+    p_auth_init.set_defaults(func=cmd_authoring_init)
 
     p_validate = sub.add_parser("validate")
     p_validate.add_argument("fixture")

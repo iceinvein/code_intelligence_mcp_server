@@ -57,3 +57,7 @@ docs/plans
 RELEASE_NOTES.md
 
 docs/superpowers
+
+# Bench harness local state (indexes, cloned repos, codegraph workspaces)
+bench/state/
+bench/results/*/transcripts/

@@ -41,7 +41,7 @@ def test_orchestrator_runs_all_arms_in_order(monkeypatch, tmp_path):
         arms_to_run=[arms.ARMS[n] for n in arms_ordered],
         repos=[(fixture, repo_path)],
         results_dir=results_dir,
-        judge_client=None,
+        judge_enabled=False,
     )
 
     expected_pairs = [(a, q.id) for a in arms_ordered for q in fixture.questions]

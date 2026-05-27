@@ -70,7 +70,6 @@ def cmd_prep(args) -> int:
 
 
 def cmd_full(args) -> int:
-    import json
     from bench import arms as arms_mod, fixtures_io, orchestrator
 
     requested_arms = (args.arms.split(",") if args.arms
@@ -101,24 +100,15 @@ def cmd_full(args) -> int:
 
     print(f"running {round_id} for arms: {','.join(a.name for a in arms_to_run)}")
 
-    try:
-        import anthropic
-        import os
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
-        judge_client = anthropic.Anthropic()
-    except ImportError:
-        print("warning: anthropic SDK not installed; judging skipped", file=sys.stderr)
-        judge_client = None
-    except Exception as e:
-        print(f"warning: anthropic client init failed: {e}; judging skipped", file=sys.stderr)
-        judge_client = None
+    # Judging uses `claude --print` (same path as agent runs). No API key needed
+    # when running under a Claude Code subscription.
+    judge_enabled = True
 
     summary = orchestrator.run_cycle(
         arms_to_run=arms_to_run,
         repos=[(fixture, config.REPO_ROOT)],
         results_dir=results_dir,
-        judge_client=judge_client,
+        judge_enabled=judge_enabled,
     )
     print(f"completed {summary['n_runs']} runs; results in {results_dir}")
     return 0

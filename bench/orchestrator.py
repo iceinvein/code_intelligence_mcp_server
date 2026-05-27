@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 from bench import arms as arms_mod
 from bench import daemon as daemon_mod
@@ -24,7 +23,7 @@ def run_cycle(
     arms_to_run: list[arms_mod.Arm],
     repos: list[tuple[Fixture, Path]],
     results_dir: Path,
-    judge_client: Any | None,
+    judge_enabled: bool = False,
 ) -> dict:
     """Run one bench cycle. Returns a summary dict; writes results to results_dir."""
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -86,9 +85,9 @@ def run_cycle(
             if daemon is not None:
                 daemon.stop()
 
-    # Judging (skipped if no client provided).
+    # Judging (skipped if judge_enabled is False).
     judge_records: list[dict] = []
-    if judge_client is not None:
+    if judge_enabled:
         for run in all_runs:
             for fixture, repo_path in repos:
                 q = next((qq for qq in fixture.questions if qq.id == run["question_id"]), None)
@@ -104,7 +103,6 @@ def run_cycle(
                     "forbidden_hit": score_rec["forbidden_hit"],
                 }
                 agg = judge_mod.judge_all(
-                    client=judge_client,
                     question_id=q.id,
                     question=q.question,
                     rubric=q.rubric,

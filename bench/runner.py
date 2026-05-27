@@ -69,7 +69,11 @@ def _summarize_input(input_obj: Any) -> str:
 
 
 def _parse_transcript(transcript_bytes: bytes) -> dict:
-    """Parse claude --print JSONL output.
+    """Parse claude --print output.
+
+    Handles two formats:
+    - Single JSON object (--output-format json): has 'result', 'stop_reason', 'usage' keys.
+    - JSONL stream (legacy / --output-format stream-json): one JSON object per line.
 
     Returns a dict with: final_answer, tool_calls (list[ToolCall]), usage (dict), stop_reason.
     """
@@ -83,7 +87,33 @@ def _parse_transcript(transcript_bytes: bytes) -> dict:
     }
     stop_reason = "unknown"
 
-    for raw_line in transcript_bytes.decode("utf-8", errors="replace").splitlines():
+    text = transcript_bytes.decode("utf-8", errors="replace").strip()
+    if not text:
+        return {"final_answer": final_answer, "tool_calls": tool_calls,
+                "usage": usage, "stop_reason": stop_reason}
+
+    # Try single-JSON format first (--output-format json).
+    try:
+        obj = json.loads(text)
+        if obj.get("type") == "result":
+            final_answer = obj.get("result", "") or ""
+            stop_reason = obj.get("stop_reason", "unknown") or "unknown"
+            u = obj.get("usage", {}) or {}
+            usage["input_tokens"] = u.get("input_tokens", 0) or 0
+            usage["output_tokens"] = u.get("output_tokens", 0) or 0
+            usage["cache_read_input_tokens"] = u.get("cache_read_input_tokens", 0) or 0
+            usage["cache_creation_input_tokens"] = u.get("cache_creation_input_tokens", 0) or 0
+            # Derive a synthetic ToolCall list from num_turns (no per-tool detail in this format).
+            num_turns = obj.get("num_turns", 1) or 1
+            for _ in range(max(0, num_turns - 1)):
+                tool_calls.append(ToolCall(name="<unknown>", input_summary=""))
+            return {"final_answer": final_answer, "tool_calls": tool_calls,
+                    "usage": usage, "stop_reason": stop_reason}
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # Fall back to JSONL stream format (stream-json --verbose or legacy format).
+    for raw_line in text.splitlines():
         if not raw_line.strip():
             continue
         try:
@@ -104,14 +134,24 @@ def _parse_transcript(transcript_bytes: bytes) -> dict:
             msg = obj.get("message", {})
             content = msg.get("content", [])
             for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    final_answer = block.get("text", "")
-            u = msg.get("usage", {})
+                if isinstance(block, dict):
+                    btype = block.get("type")
+                    if btype == "text":
+                        final_answer = block.get("text", "")
+                    elif btype == "tool_use":
+                        tc = ToolCall(
+                            name=block.get("name", ""),
+                            input_summary=_summarize_input(block.get("input", {})),
+                        )
+                        tool_calls.append(tc)
+            u = msg.get("usage", {}) or {}
             for k in usage:
                 if k in u:
                     usage[k] = u[k]
         elif msg_type == "result":
             stop_reason = obj.get("stop_reason", "unknown")
+            if not final_answer:
+                final_answer = obj.get("result", "") or ""
 
     return {
         "final_answer": final_answer,
@@ -130,8 +170,12 @@ def run_question(
 ) -> Run:
     """Invoke claude --print for one (arm, question) pair and return a Run record."""
     system_prompt = build_system_prompt(arm)
+    # claude --print requires the prompt via stdin (positional arg form fails in --print mode).
+    # --output-format json gives us a single JSON result object with 'result', 'stop_reason',
+    # and 'usage' -- much easier to parse than the verbose stream-json hook flood.
     cmd = [
         config.CLAUDE_BINARY, "--print",
+        "--output-format", "json",
         "--model", config.AGENT_MODEL,
         "--system-prompt", system_prompt,
         "--allowed-tools", ",".join(arm.allowed_tools),
@@ -140,7 +184,6 @@ def run_question(
         mcp_config = daemon.build_mcp_config()
         if mcp_config:
             cmd.extend(["--mcp-config", json.dumps(mcp_config)])
-    cmd.append(q.question)
 
     transcript_path = transcripts_dir / arm.name / f"{q.id}.jsonl"
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,6 +192,7 @@ def run_question(
     try:
         result = subprocess.run(
             cmd,
+            input=q.question.encode("utf-8"),
             capture_output=True,
             timeout=config.PER_QUESTION_TIMEOUT_S,
             cwd=str(repo_path),

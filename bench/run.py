@@ -45,12 +45,69 @@ def cmd_list(args) -> int:
 
 
 def cmd_prep(args) -> int:
-    print("prep: not yet implemented (Task 14 wires this to bench/repos.py + bench/daemon.py)")
+    from bench import arms as arms_mod
+    from bench import daemon as daemon_mod
+
+    requested_arms = (args.arms.split(",") if args.arms
+                      else list(arms_mod.ARMS.keys()))
+    arms_to_prep = [arms_mod.ARMS[n] for n in requested_arms if n in arms_mod.ARMS]
+
+    print(f"prep: arms={','.join(a.name for a in arms_to_prep)}")
+
+    if args.check:
+        variants = arms_mod.distinct_index_variants(arms_to_prep)
+        print(f"(dry-run mode: would build index variants: {variants})")
+        return 0
+
+    cg_version = daemon_mod.ensure_codegraph_installed()
+    if cg_version:
+        print(f"codegraph installed: {cg_version}")
+    else:
+        print("codegraph not installed; codegraph arm will be skipped during full run")
+
+    print("prep: complete (smoke-mode only; real wolfmax/django index variant builds added later)")
     return 0
 
 
 def cmd_full(args) -> int:
-    print("full: not yet implemented (Task 14 wires this to runner + judge + report)")
+    import json
+    from bench import arms as arms_mod, fixtures_io, orchestrator
+
+    requested_arms = (args.arms.split(",") if args.arms
+                      else list(arms_mod.ARMS.keys()))
+    arms_to_run = [arms_mod.ARMS[n] for n in requested_arms if n in arms_mod.ARMS]
+
+    fixture_path = config.FIXTURES_DIR / "smoke.yaml"
+    if not fixture_path.exists():
+        print("error: no fixtures available (smoke fixture missing)", file=sys.stderr)
+        return 2
+    fixture = fixtures_io.load_fixture(fixture_path)
+
+    config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    existing = sorted([p.name for p in config.RESULTS_DIR.iterdir()
+                       if p.is_dir() and p.name.startswith("R")])
+    if args.round is not None:
+        round_id = f"R{args.round:03d}"
+    elif existing:
+        last = int(existing[-1][1:])
+        round_id = f"R{last+1:03d}"
+    else:
+        round_id = "R001"
+
+    results_dir = config.RESULTS_DIR / round_id
+    if results_dir.exists():
+        print(f"error: {results_dir} exists; pass --round explicitly", file=sys.stderr)
+        return 2
+
+    print(f"running {round_id} for arms: {','.join(a.name for a in arms_to_run)}")
+
+    summary = orchestrator.run_cycle(
+        arms_to_run=arms_to_run,
+        repos=[(fixture, config.REPO_ROOT)],
+        results_dir=results_dir,
+        judge_client=None,
+    )
+    print(f"completed {summary['n_runs']} runs; results in {results_dir}")
     return 0
 
 

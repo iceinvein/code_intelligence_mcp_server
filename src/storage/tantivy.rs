@@ -412,7 +412,14 @@ impl TantivyIndex {
             enrich_name_with_concepts(&symbol.name, &symbol.file_path, &concept_tags);
 
         // LLM description goes into a separate field to prevent IDF dilution.
-        let description_text = llm_description.unwrap_or("");
+        // BENCH_DISABLE_DESCRIPTIONS=1 forces the description field empty for ablation runs.
+        // Only the literal "1" activates this; anything else (including "true", "0", "") is off.
+        let description_text = if std::env::var("BENCH_DISABLE_DESCRIPTIONS").as_deref() == Ok("1")
+        {
+            ""
+        } else {
+            llm_description.unwrap_or("")
+        };
 
         writer.add_document(doc!(
             self.fields.id => symbol.id.as_str(),
@@ -1299,6 +1306,38 @@ mod tests {
         // But search should work
         let hits = readonly.search("alpha", 10).unwrap();
         assert!(hits.iter().any(|h| h.id == "id1"));
+    }
+
+    #[test]
+    fn bench_disable_descriptions_env_forces_empty_description_field() {
+        use std::sync::Mutex;
+        // Serialize against other env-touching tests.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let dir = tmp_index_dir();
+        let index = TantivyIndex::open_or_create(&dir).unwrap();
+
+        // With env set, description should be empty regardless of llm_description arg.
+        std::env::set_var("BENCH_DISABLE_DESCRIPTIONS", "1");
+        index
+            .upsert_symbol(
+                &sample_symbol("test::sym1", "foo", "fn foo() {}"),
+                "",
+                "",
+                Some("a juicy description"),
+            )
+            .unwrap();
+        std::env::remove_var("BENCH_DISABLE_DESCRIPTIONS");
+        index.commit().unwrap();
+
+        // Searching for the description text should yield nothing in the description field.
+        let hits = index.search("juicy", 10).unwrap();
+        assert!(
+            hits.is_empty(),
+            "expected no hits for description text when env is set, got: {:?}",
+            hits.iter().map(|h| &h.id).collect::<Vec<_>>()
+        );
     }
 
     #[test]

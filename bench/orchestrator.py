@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from bench import arms as arms_mod
+from bench import config as config_mod
 from bench import daemon as daemon_mod
 from bench import judge as judge_mod
 from bench import runner, score
@@ -34,7 +35,11 @@ def run_cycle(
 
     for arm in arms_to_run:
         port = daemon_mod.pick_free_port() if arm.needs_daemon else 0
-        daemon = daemon_mod.maybe_start_daemon(arm, port=port) if arm.needs_daemon else None
+        if arm.needs_daemon:
+            home = config_mod.bench_home_for_variant(arm.index_variant) if arm.index_variant else None
+            daemon = daemon_mod.maybe_start_daemon(arm, port=port, home=home)
+        else:
+            daemon = None
 
         try:
             for fixture, repo_path in repos:

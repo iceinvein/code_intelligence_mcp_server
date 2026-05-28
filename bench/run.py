@@ -69,22 +69,15 @@ def cmd_prep(args) -> int:
         print(f"dry-run: would build index variants {variants} for repos {repo_names}")
         return 0
 
-    # Ensure isolated HOME and the model symlink exist.
-    config.BENCH_HOME.mkdir(parents=True, exist_ok=True)
-    bench_ci_dir = config.BENCH_HOME / ".code-intelligence"
-    bench_ci_dir.mkdir(parents=True, exist_ok=True)
-    models_link = bench_ci_dir / "models"
+    # Check that the real models directory exists; per-variant symlinks are created
+    # lazily inside _build_variant when the variant home is set up.
     real_models = Path.home() / ".code-intelligence" / "models"
-    if not models_link.exists():
-        if real_models.exists():
-            models_link.symlink_to(real_models)
-            print(f"symlinked models: {models_link} -> {real_models}")
-        else:
-            print(
-                f"warning: {real_models} does not exist; models will need to be downloaded "
-                f"on first daemon start (this is slow and uses bandwidth)",
-                file=sys.stderr,
-            )
+    if not real_models.exists():
+        print(
+            f"warning: {real_models} does not exist; models will need to be downloaded "
+            f"on first daemon start (this is slow and uses bandwidth)",
+            file=sys.stderr,
+        )
 
     # Codegraph install check.
     cg_version = daemon_mod.ensure_codegraph_installed()
@@ -157,7 +150,10 @@ def cmd_prep(args) -> int:
                 continue
             repo_hash_str = repos.repo_hash(str(repo_path.resolve()))
             for variant in variants:
-                data_dir = repos.variant_data_dir(repo_hash_str, variant)
+                # Each variant has its own HOME, so the data dir and cache file live
+                # under bench/state/home/<variant>/.code-intelligence/repos/<hash>/.
+                variant_home = config.bench_home_for_variant(variant)
+                data_dir = variant_home / ".code-intelligence" / "repos" / repo_hash_str
                 meta_dict = {
                     "daemon_sha": repos.current_daemon_sha(),
                     "repo_upstream_sha": _read_pinned_sha(name),
@@ -182,25 +178,114 @@ def _read_pinned_sha(name: str) -> str:
     return fixture.meta.upstream_sha
 
 
+def _ensure_repo_registered(home: Path, repo_name: str, repo_path: Path) -> str:
+    """Pre-register the repo in registry.json so /api/repos/<hash>/reindex works.
+
+    Returns the 16-char repo hash.
+    """
+    import datetime as _dt
+    from bench import repos as repos_mod
+
+    canonical = str(repo_path.resolve())
+    repo_hash_str = repos_mod.repo_hash(canonical)
+
+    repos_dir = home / ".code-intelligence" / "repos"
+    repos_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = repos_dir / repo_hash_str
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    registry_path = repos_dir / "registry.json"
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    if registry_path.exists():
+        registry = json.loads(registry_path.read_text())
+    else:
+        registry = {"repos": {}}
+
+    existing = registry["repos"].get(repo_hash_str, {})
+    registry["repos"][repo_hash_str] = {
+        "path": canonical,
+        "name": repo_name,
+        "data_dir": str(data_dir),
+        "created_at": existing.get("created_at", now),
+        "last_accessed": now,
+    }
+
+    registry_path.write_text(json.dumps(registry, indent=2))
+    return repo_hash_str
+
+
+def _wait_for_descriptions(db_path: Path, repo_name: str) -> None:
+    """Poll the descriptions table until it stops growing or matches the symbol count.
+
+    Caps at 30 minutes per repo. Exits early if count stagnates for 2 minutes.
+    """
+    import sqlite3 as _sqlite3
+    import time as _time
+
+    deadline = _time.monotonic() + 1800
+    last_count = -1
+    stagnant_polls = 0
+    while _time.monotonic() < deadline:
+        _time.sleep(30)
+        try:
+            with _sqlite3.connect(str(db_path)) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM descriptions")
+                desc_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM symbols")
+                sym_count = cur.fetchone()[0]
+            print(f"  {repo_name}/full: descriptions {desc_count}/{sym_count}")
+            if desc_count >= sym_count > 0:
+                print(f"  {repo_name}/full: descriptions complete")
+                return
+            if desc_count == last_count:
+                stagnant_polls += 1
+                if stagnant_polls >= 4:
+                    print(
+                        f"  {repo_name}/full: descriptions stagnant at {desc_count} for 2 min, continuing"
+                    )
+                    return
+            else:
+                stagnant_polls = 0
+                last_count = desc_count
+        except _sqlite3.Error as e:
+            print(f"  WARN: descriptions poll failed: {e}", file=sys.stderr)
+            return
+
+
 def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
-    """Spawn the daemon with BENCH_HOME and the right BENCH_DISABLE_* env, then
-    POST /api/repos/<hash>/reindex, wait for it to complete (poll the JSON API),
-    then stop the daemon."""
-    import os
+    """Spawn the daemon with a per-variant HOME, register the repo, trigger reindex,
+    wait for jobs to settle, then stop the daemon."""
+    import os as _os
     import subprocess as _subprocess
     import time as _time
     import urllib.error
     import urllib.request
     from bench import daemon as daemon_mod, repos
 
+    home = config.bench_home_for_variant(variant)
+    home.mkdir(parents=True, exist_ok=True)
+
+    # Ensure models symlink exists in this variant's home so the daemon does not
+    # re-download the GGUF files.
+    ci_dir = home / ".code-intelligence"
+    ci_dir.mkdir(parents=True, exist_ok=True)
+    models_link = ci_dir / "models"
+    real_models = Path.home() / ".code-intelligence" / "models"
+    if not models_link.exists() and real_models.exists():
+        models_link.symlink_to(real_models)
+
+    # Pre-register the repo so /api/repos/<hash>/reindex does not 404.
+    repo_hash_str = _ensure_repo_registered(home, repo_name, repo_path)
+
     env_extra: dict[str, str] = {}
     if variant == "no_desc":
         env_extra["BENCH_DISABLE_DESCRIPTIONS"] = "1"
 
     port = daemon_mod.pick_free_port()
-    config.BENCH_HOME.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env["HOME"] = str(config.BENCH_HOME)
+    env = _os.environ.copy()
+    env["HOME"] = str(home)
     env.update(env_extra)
 
     proc = _subprocess.Popen(
@@ -214,7 +299,6 @@ def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
 
         # The API port is mcp_port + 2 per the server architecture.
         api_port = port + 2
-        repo_hash_str = repos.repo_hash(str(repo_path.resolve()))
 
         # POST /api/repos/<hash>/reindex
         req = urllib.request.Request(
@@ -222,16 +306,18 @@ def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
             method="POST",
         )
         try:
-            urllib.request.urlopen(req, timeout=10)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                resp = r.read().decode()
+                print(f"  {repo_name}/{variant}: reindex started: {resp[:200]}")
         except urllib.error.URLError as e:
-            print(
-                f"  WARN: reindex POST failed: {e}; continuing (daemon may auto-index on bind)",
-                file=sys.stderr,
-            )
+            print(f"  ERROR: reindex POST failed: {e}", file=sys.stderr)
+            return
 
         # Wait for indexing + description backfill to settle.
-        # Poll /api/jobs and exit when no running jobs remain for this repo.
+        # Shape: {"count": <total>, "jobs": [...], "running": <count of in-progress>}
+        # "running" is an integer, not a list.
         deadline = _time.monotonic() + 1800  # 30 min cap
+        ever_ran = False
         while _time.monotonic() < deadline:
             _time.sleep(15)
             try:
@@ -239,21 +325,33 @@ def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
                     f"http://127.0.0.1:{api_port}/api/jobs", timeout=5
                 ) as r:
                     body = json.loads(r.read().decode())
-                running = [
-                    j for j in body.get("running", [])
-                    if j.get("repo_id", "").startswith(repo_hash_str[:8])
-                ]
-                if not running:
-                    print(f"  no running jobs for {repo_hash_str[:8]}; build settled")
+                running = int(body.get("running", 0))
+                total = int(body.get("count", 0))
+                if running > 0:
+                    ever_ran = True
+                    print(f"  {repo_name}/{variant}: {running}/{total} jobs running")
+                    continue
+                if total > 0 and running == 0:
+                    print(f"  {repo_name}/{variant}: {total} jobs settled")
                     break
-                print(f"  {repo_name}/{variant}: still running ({len(running)} jobs)")
+                # total == 0: no jobs observed yet; either indexing has not started or
+                # finished before the first poll. After 60s of nothing, give up waiting.
+                if not ever_ran:
+                    deadline = min(deadline, _time.monotonic() + 60)
             except (urllib.error.URLError, json.JSONDecodeError) as e:
                 print(f"  WARN: poll failed: {e}", file=sys.stderr)
                 break
+
+        # For the full variant, also wait for the description worker to populate symbols.
+        if variant == "full":
+            data_dir = home / ".code-intelligence" / "repos" / repo_hash_str
+            db_path = data_dir / "code-intelligence.db"
+            if db_path.exists():
+                _wait_for_descriptions(db_path, repo_name)
     finally:
         proc.terminate()
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=10)
         except _subprocess.TimeoutExpired:
             proc.kill()
 

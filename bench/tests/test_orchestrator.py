@@ -30,7 +30,7 @@ def test_orchestrator_runs_all_arms_in_order(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         "bench.daemon.maybe_start_daemon",
-        lambda arm, port: None if not arm.needs_daemon else MagicMock(stop=lambda: None, build_mcp_config=lambda: {}),
+        lambda arm, port, home=None: None if not arm.needs_daemon else MagicMock(stop=lambda: None, build_mcp_config=lambda: {}),
     )
 
     fixture = _smoke_fixture()

@@ -61,14 +61,20 @@ def pick_free_port() -> int:
         return s.getsockname()[1]
 
 
-def maybe_start_daemon(arm: Arm, port: int) -> Daemon | None:
-    """Start the daemon for this arm if it needs one. Returns None for arms that don't."""
+def maybe_start_daemon(arm: Arm, port: int, home: Path | None = None) -> Daemon | None:
+    """Start the daemon for this arm if it needs one. Returns None for arms that don't.
+
+    If home is provided it overrides BENCH_HOME as the HOME directory for the daemon
+    process. This enables per-variant isolation: each index variant lives under its
+    own HOME so full and no_desc indexes can coexist side-by-side.
+    """
     if not arm.needs_daemon:
         return None
 
-    BENCH_HOME.mkdir(parents=True, exist_ok=True)
+    effective_home = home if home is not None else BENCH_HOME
+    effective_home.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env["HOME"] = str(BENCH_HOME)
+    env["HOME"] = str(effective_home)
     env.update(arm.daemon_env)
 
     cmd = [str(config.DAEMON_BINARY), "--port", str(port)]

@@ -276,6 +276,17 @@ def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
     if not models_link.exists() and real_models.exists():
         models_link.symlink_to(real_models)
 
+    # Disable session TTL eviction. The description worker takes longer than the
+    # default 300s warm_ttl, so without this override the worker gets cancelled
+    # mid-backfill (observed: stops at ~5% of symbols when prep dies).
+    server_toml = ci_dir / "server.toml"
+    if not server_toml.exists():
+        server_toml.write_text(
+            "[lifecycle]\n"
+            "# Bench prep keeps the daemon alive for the full description backfill.\n"
+            "warm_ttl_seconds = 0\n"
+        )
+
     # Pre-register the repo so /api/repos/<hash>/reindex does not 404.
     repo_hash_str = _ensure_repo_registered(home, repo_name, repo_path)
 

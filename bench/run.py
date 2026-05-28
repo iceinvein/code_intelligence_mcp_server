@@ -218,12 +218,15 @@ def _ensure_repo_registered(home: Path, repo_name: str, repo_path: Path) -> str:
 def _wait_for_descriptions(db_path: Path, repo_name: str) -> None:
     """Poll the descriptions table until it stops growing or matches the symbol count.
 
-    Caps at 30 minutes per repo. Exits early if count stagnates for 2 minutes.
+    The previous 30-min cap fired before large repos could complete the backfill
+    (wolfmax at 39 percent, django at roughly 50 percent). Caps at 6 hours now,
+    which is more than enough for any reasonable repo at the observed ~2/sec rate.
+    The 2-minute stagnant detection is the real "give up" signal.
     """
     import sqlite3 as _sqlite3
     import time as _time
 
-    deadline = _time.monotonic() + 1800
+    deadline = _time.monotonic() + 21600
     last_count = -1
     stagnant_polls = 0
     while _time.monotonic() < deadline:

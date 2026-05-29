@@ -51,13 +51,24 @@ jobs:
 
           echo "All versions match tag v$TAG_VERSION"
 
-  ci:
-    name: CI
-    uses: ./.github/workflows/ci.yml
+  wait-for-ci:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Wait for CI to pass on this commit
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc  # v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-name: 'Test (macOS)'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 20
 
   build:
     name: Build (macOS Silicon)
-    needs: [version-check, ci]
+    needs: [version-check, wait-for-ci]
     runs-on: macos-latest
 
     steps:

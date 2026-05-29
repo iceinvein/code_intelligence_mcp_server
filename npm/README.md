@@ -117,7 +117,7 @@ code-intelligence-mcp-server uninstall-agent --repo . --target all
 
 Project-scope targets write only a marked block that can be safely replaced or removed later: `AGENTS.md` for Codex/generic/OpenCode, `CLAUDE.md` for Claude, and `.cursor/rules/code-intelligence.mdc` for Cursor. User-scope config is intentionally conservative; `--scope user --target claude --no-instructions` patches `~/.claude.json` through the same HTTP MCP entry used by the daemon installer. See [Agent Installer](docs/agent-installer.md).
 
-> First-time `install` downloads three models (~3.2 GB total): the embedding model (Jina Code 1.5b, ~1.5 GB), the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB), and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB). Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
+> First-time `install` downloads one model by default: the embedding model (Jina Code 1.5b, ~1.5 GB). Two more are off by default and download only when opted into: the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB) when `DESCRIPTIONS_ENABLED=1`, and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB) when `RERANKER_ENABLED=1`. Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
 
 ### Dashboard
 
@@ -163,8 +163,8 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 | Capability | How It Works |
 |---|---|
 | **Hybrid search** | BM25 keyword search (Tantivy) + semantic vector search (LanceDB, jina-code-embeddings-1.5b, 1536-dim Matryoshka) merged via Reciprocal Rank Fusion |
-| **Cross-encoder reranking** | bge-reranker-v2-m3 re-scores top candidates (llama.cpp + Metal) for precision tuning |
-| **On-device LLM descriptions** | Qwen2.5-Coder-1.5B generates natural-language summaries for every symbol, bridging the gap between how you search ("auth handler") and how code is named (`authenticate_request`) |
+| **Cross-encoder reranking** _(opt-in)_ | bge-reranker-v2-m3 re-scores top candidates (llama.cpp + Metal). Off by default (`RERANKER_ENABLED=1` to enable) — benchmarks showed it net-negative on answer quality |
+| **On-device LLM descriptions** _(opt-in)_ | Qwen2.5-Coder-1.5B generates natural-language summaries per symbol, bridging the gap between how you search ("auth handler") and how code is named (`authenticate_request`). Off by default (`DESCRIPTIONS_ENABLED=1`) — a multi-hour index-time backfill with no measured judge benefit |
 | **Graph intelligence** | Call hierarchies, type graphs, dependency trees, and PageRank-based importance scoring |
 | **Impact analysis** | Find all code affected by a change, with optional git co-change history for confidence scoring |
 | **Smart ranking** | Test detection, export boosting, directory semantics, intent detection, edge expansion, framework-pattern injection, score-gap filtering, sub-query coverage |
@@ -371,8 +371,8 @@ The search pipeline runs keyword search (BM25) and semantic vector search in par
 
 - **Intent detection** — "struct User" boosts definitions, "who calls login" triggers graph lookup, "User schema" boosts models 50-75x
 - **Query decomposition** — "authentication and authorization" automatically splits into sub-queries; sub-query coverage ensures each term has at least one matching result
-- **LLM-enriched index** — on-device Qwen2.5-Coder generates descriptions bridging vocabulary gaps between how you search and how code is named
-- **Cross-encoder reranker** — bge-reranker-v2-m3 re-scores top candidates for precision (always-on by default, disable with `RERANKER_ENABLED=false`)
+- **LLM-enriched index** _(opt-in)_ — on-device Qwen2.5-Coder generates descriptions bridging vocabulary gaps between how you search and how code is named. Off by default (`DESCRIPTIONS_ENABLED=1`); no measured judge benefit and a multi-hour index-time backfill
+- **Cross-encoder reranker** _(opt-in)_ — bge-reranker-v2-m3 re-scores top candidates for precision. Off by default (`RERANKER_ENABLED=1`); benchmarks (R006) showed it net-negative on answer quality
 - **PageRank** — graph-based importance scoring identifies central, heavily-used symbols
 - **Morphological expansion** — `watch` matches `watcher`, `index` matches `reindex`
 - **Framework-pattern injection** — route, middleware, and handler patterns surface alongside symbol matches
@@ -392,10 +392,10 @@ All data lives in `~/.code-intelligence/`:
 
 ```
 ~/.code-intelligence/
-├── models/                     # Shared across repos (~3.2 GB total)
-│   ├── jina-code-embeddings-1.5b-gguf/   # ~1.5 GB, 1536-dim Matryoshka, Q8_0
-│   ├── qwen2.5-coder-1.5b-gguf/          # ~1.0 GB, Q4_K_M, description LLM
-│   └── bge-reranker-v2-m3-gguf/          # ~600 MB, Q8_0, cross-encoder reranker
+├── models/                     # Shared across repos (~1.5 GB default; ~3.2 GB if both opt-ins enabled)
+│   ├── jina-code-embeddings-1.5b-gguf/   # ~1.5 GB, 1536-dim Matryoshka, Q8_0 (default)
+│   ├── qwen2.5-coder-1.5b-gguf/          # ~1.0 GB, Q4_K_M, description LLM (only if DESCRIPTIONS_ENABLED=1)
+│   └── bge-reranker-v2-m3-gguf/          # ~600 MB, Q8_0, cross-encoder reranker (only if RERANKER_ENABLED=1)
 ├── repos/
 │   ├── registry.json           # Tracks all known repos
 │   └── <hash>/                 # Per-repo (SHA256 of repo path)

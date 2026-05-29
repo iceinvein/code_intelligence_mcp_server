@@ -71,7 +71,11 @@ ARMS: dict[str, Arm] = {
         needs_daemon=True,
         is_codegraph=False,
         index_variant="full",
-        daemon_env={},
+        # Reranker ships off by default (RERANKER_ENABLED defaults false); the
+        # full arm opts in so the cross-encoder actually reorders results. This
+        # is the only arm with the reranker live, making full vs no_reranker a
+        # real A/B on the reranker effect.
+        daemon_env={"RERANKER_ENABLED": "1"},
         allowed_tools=list(DEFAULT_TOOLS) + list(CODE_INTEL_MCP_TOOLS),
         tool_guidance=(
             "Start with `mcp__code-intelligence__ask_code` for codebase questions. "
@@ -95,7 +99,11 @@ ARMS: dict[str, Arm] = {
         needs_daemon=True,
         is_codegraph=False,
         index_variant="full",
-        daemon_env={"BENCH_DISABLE_RERANKER": "1"},
+        # No RERANKER_ENABLED → the reranker is never constructed, so the query
+        # path runs BM25+vector without cross-encoder reordering. Same "full"
+        # index as code_intel_full; the only difference between the two arms is
+        # whether the reranker reorders.
+        daemon_env={},
         allowed_tools=list(DEFAULT_TOOLS) + list(CODE_INTEL_MCP_TOOLS),
         tool_guidance=(
             "Start with `mcp__code-intelligence__ask_code` for codebase questions. "

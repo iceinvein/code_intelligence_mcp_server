@@ -8,6 +8,7 @@ use crate::{
     metrics::MetricsRegistry,
     path::Utf8PathBuf,
     registry::{RepoEntry, RepoRegistry},
+    reranker::Reranker,
     retrieval::Retriever,
     server::jobs::JobRegistry,
     storage::{sqlite::SqliteStore, tantivy::TantivyIndex, vector::LanceDbStore},
@@ -21,10 +22,28 @@ use std::{
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+/// Decide whether to spawn the index-time LLM description worker.
+///
+/// Descriptions are off by default (`descriptions_enabled` false): the backfill
+/// is a multi-hour index-time cost with no proven retrieval benefit (R005/R006).
+/// They run only when explicitly enabled, an LLM backend is available, and the
+/// bench ablation knob is not set.
+fn should_spawn_description_worker(
+    descriptions_enabled: bool,
+    llm_enabled: bool,
+    bench_disabled: bool,
+) -> bool {
+    descriptions_enabled && llm_enabled && !bench_disabled
+}
+
 pub struct SessionManager {
     pub standalone_config: Arc<StandaloneConfig>,
     pub registry: Arc<RepoRegistry>,
     embedder: Arc<SharedEmbedder>,
+    /// Cross-encoder reranker shared across all repos (loads the ~600MB model
+    /// once). `None` when `reranker_enabled` is false. Each repo's `Retriever`
+    /// receives a clone of this handle.
+    reranker: Option<Arc<dyn Reranker>>,
     /// Keyed by canonical repo path string. Value is (AppState, watcher cancel token).
     repos: DashMap<String, (Arc<AppState>, CancellationToken)>,
     /// Per-key init locks to prevent TOCTOU races when two sessions init the same repo
@@ -43,6 +62,7 @@ impl SessionManager {
         registry: RepoRegistry,
         embedder: Arc<SharedEmbedder>,
         job_registry: Option<JobRegistry>,
+        reranker: Option<Arc<dyn Reranker>>,
     ) -> Result<Self> {
         let metrics = Arc::new(MetricsRegistry::new().context("Failed to create MetricsRegistry")?);
 
@@ -50,6 +70,7 @@ impl SessionManager {
             standalone_config: Arc::new(standalone_config),
             registry: Arc::new(registry),
             embedder,
+            reranker,
             repos: DashMap::new(),
             init_locks: DashMap::new(),
             last_accessed: DashMap::new(),
@@ -221,13 +242,14 @@ impl SessionManager {
             self.job_registry.clone(),
         );
 
-        // Create Retriever (no reranker, no hyde for now)
+        // Create Retriever. The reranker (if enabled) is shared across all
+        // repos; hyde is still unwired.
         let retriever = Retriever::new(
             config_arc.clone(),
             tantivy_arc,
             vectors_arc,
             self.embedder.clone(),
-            None, // reranker
+            self.reranker.clone(),
             None, // hyde_generator
             self.metrics.clone(),
         );
@@ -257,7 +279,11 @@ impl SessionManager {
         // exercises descriptions by default; bench arms set the env to ablate.
         let descriptions_disabled =
             std::env::var("BENCH_DISABLE_DESCRIPTIONS").as_deref() == Ok("1");
-        if state.config.llm_enabled && !descriptions_disabled {
+        if should_spawn_description_worker(
+            state.config.descriptions_enabled,
+            state.config.llm_enabled,
+            descriptions_disabled,
+        ) {
             let llm_config = state.config.clone();
             let llm_indexer = state.indexer.clone();
             let desc_cancel = watch_cancel.clone();
@@ -286,8 +312,13 @@ impl SessionManager {
                 let _desc_handle = llm_indexer.spawn_description_worker(generator, desc_cancel);
                 tracing::info!("LLM description worker spawned");
             });
-        } else if descriptions_disabled {
-            tracing::info!("LLM descriptions disabled by BENCH_DISABLE_DESCRIPTIONS env");
+        } else {
+            tracing::info!(
+                descriptions_enabled = state.config.descriptions_enabled,
+                bench_disabled = descriptions_disabled,
+                "LLM description worker not spawned (descriptions off by default; \
+                 set DESCRIPTIONS_ENABLED=1 to generate them)"
+            );
         }
 
         Ok((state, watch_cancel))
@@ -414,7 +445,7 @@ impl SessionManager {
 
         let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
 
-        Self::new(standalone_config, registry, embedder, None)
+        Self::new(standalone_config, registry, embedder, None, None)
             .await
             .expect("Failed to create test SessionManager")
     }
@@ -436,7 +467,7 @@ impl SessionManager {
 
         let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
 
-        Self::new(standalone_config, registry, embedder, None)
+        Self::new(standalone_config, registry, embedder, None, None)
             .await
             .expect("Failed to create test SessionManager")
     }
@@ -704,6 +735,19 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         std::env::remove_var("BENCH_DISABLE_DESCRIPTIONS");
+    }
+
+    #[test]
+    fn description_worker_gate() {
+        // Off by default: descriptions_enabled=false means no worker, even with
+        // the LLM available.
+        assert!(!should_spawn_description_worker(false, true, false));
+        // Opted in, LLM available, not bench-disabled → spawn.
+        assert!(should_spawn_description_worker(true, true, false));
+        // Bench ablation overrides the opt-in.
+        assert!(!should_spawn_description_worker(true, true, true));
+        // No LLM backend → nothing to spawn.
+        assert!(!should_spawn_description_worker(true, false, false));
     }
 
     #[tokio::test]

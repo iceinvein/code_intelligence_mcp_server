@@ -1,6 +1,7 @@
 //! Cross-encoder reranking for improved search result precision
 
 pub mod cache;
+pub mod deferred;
 pub mod llamacpp;
 
 use crate::path::{Utf8Path, Utf8PathBuf};

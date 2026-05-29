@@ -46,9 +46,9 @@ bench/
 | arm | daemon | index variant | what it tests |
 |---|---|---|---|
 | `default` | none | none | agent with only Read/Grep/Glob/Bash |
-| `code_intel_full` | yes | full | shipped code-intelligence (descriptions on, reranker on) |
+| `code_intel_full` | yes, RERANKER_ENABLED=1 | full | shipped code-intelligence with the cross-encoder reranker live (descriptions on) |
 | `code_intel_no_descriptions` | yes, BENCH_DISABLE_DESCRIPTIONS=1 | no_desc | descriptions ablated at write AND query time |
-| `code_intel_no_reranker` | yes, BENCH_DISABLE_RERANKER=1 | full (reused) | reranker ablated at query time |
+| `code_intel_no_reranker` | yes, reranker off (default) | full (reused) | reranker never constructed; same index as `code_intel_full` |
 | `codegraph` | none (codegraph spawns its own) | n/a | the competitor MCP, on the same questions |
 
 Each arm uses the same system-prompt skeleton with one paragraph of arm-specific tool guidance, so we measure tool capability and not prompt engineering.
@@ -72,7 +72,7 @@ Mech and judge are independent. Both are reported per question; neither is compo
 
 ### Findings
 
-1. **Reranker is net-negative.** `code_intel_no_reranker` is the best arm overall (judge 7.12, +0.20 over `code_intel_full`). The reranker actively hurts judge scores while consuming GPU memory.
+1. **~~Reranker is net-negative.~~ RETRACTED (2026-05-29).** This finding was invalid. At R005 the reranker was never wired into the v4 daemon: `src/session.rs::init_repo_state` constructed the `Retriever` with `reranker = None` (and had since 2026-02-10), so both `code_intel_full` and `code_intel_no_reranker` ran the identical retrieval path. The `BENCH_DISABLE_RERANKER=1` gate on the no_reranker arm never fired because the reranker object did not exist. The +0.20 judge delta (7.12 vs 6.92) is agent run-to-run variance, not a reranker effect: only 3 of 40 final answers were byte-identical between the two arms, and the metrics disagree on direction (judge favours no_reranker, mech 0.46 vs 0.43 and citation% 60 vs 50 favour full). The reranker has since been wired in (off by default, `RERANKER_ENABLED=1` for the full arm); a future round will measure its real effect.
 2. **Descriptions help retrieval precision but do not move the judge.** Descriptions take `code_intel_full` from mech 0.43 to 0.46 and citation-hit from 50% to 60%, but the judges score the two arms the same on prose quality.
 3. **Codegraph ties code_intel arms on judge but loses on precision and cost.** Judge 6.92 (same as code_intel), but mech 0.33 (worst), citation% 33% (worst), tools 7.0 (40% more than code_intel), tokens 219k (25% more). Polished prose, sloppy citations.
 4. **Default trails MCP arms by -0.84 judge** but is competitive on mech (-0.05 to -0.02). The MCP path is real but the gap is not enormous on this question set.
@@ -84,14 +84,35 @@ Mech and judge are independent. Both are reported per question; neither is compo
 - `code_intel_no_descriptions` actually had 92% description coverage in `wolfmax/full` and 93% in `django/full` from prep (the description LLM stagnates on some symbols and the bench prep moves on after 2 minutes of no progress). The ablation comparison is therefore approximate at the edges.
 - Codegraph version recorded in the round metadata is wrong (says "not installed"); it was actually 0.9.4. Cosmetic bug in `cmd_report`.
 
+## R006 result (2026-05-29) — first real reranker measurement
+
+After wiring the reranker into the daemon (it was `None` in `session.rs` through R005), R006 ran only `code_intel_full` with `RERANKER_ENABLED=1` against wolfmax + Django (40 questions), comparing against the R005 reranker-off rows. The daemon log confirms the cross-encoder loaded and was active per query.
+
+| arm | judge (non-zero mean) | mech | citation% |
+|---|---:|---:|---:|
+| R006 `code_intel_full` (reranker **ON**) | 6.55 | 0.418 | 45% |
+| R005 `code_intel_full` (off) | 6.92 | 0.462 | 60% |
+| R005 `code_intel_no_reranker` (off) | 7.12 | 0.429 | 50% |
+
+The reranker measured **net-negative**: judge -0.4 to -0.6 below both off baselines (after excluding 2 rate-limit judge zeros). The per-question judge split vs R005 no_reranker was 6 better / 20 worse / 12 tie — directional, unlike the symmetric 11/16/13 scatter of the (invalid) R005 full-vs-no_reranker noise. Mech was dead even (11/11 per question), so the reranker isn't changing citation correctness; it's reordering top hits in a way the judges score lower.
+
+Caveat: cross-round, single-run (R006 today vs R005 yesterday, different daemon builds), so agent stochasticity is a confound and the -0.5 judge delta alone sits inside the ±2.2 band — but the 6/20 split is hard to dismiss. A same-round repeated A/B would settle it.
+
+**Decision:** descriptions and the reranker both ship off by default (`DESCRIPTIONS_ENABLED` / `RERANKER_ENABLED`, both `false`). Neither moved the judge; each adds setup cost. Re-enable + re-bench if that changes.
+
 ## Daemon env contract
 
-The bench adds two production-code env vars, both bench-only knobs (the literal value `"1"` activates; anything else is treated as off):
+Both descriptions and the reranker ship **off by default** in production (neither moved the judge in R005/R006). Each is a real `StandaloneConfig` toggle (default `false`), opted into per arm/variant:
 
-- **`BENCH_DISABLE_DESCRIPTIONS=1`** — `src/storage/tantivy.rs::upsert_symbol` forces the Tantivy `description` field to empty; `src/session.rs::init_repo_state` skips spawning the description worker.
-- **`BENCH_DISABLE_RERANKER=1`** — `src/reranker/llamacpp.rs::LlamaCppReranker::rerank` returns uniform `FALLBACK_SCORE` for every document; the upstream blend formula `hit.score * 0.8 + reranker_score * 0.2 * 10` is order-preserving under constant reranker scores, so the agent observes the pre-rerank ordering.
+- **`RERANKER_ENABLED=1`** — `StandaloneConfig` loads it and the daemon builds a shared `DeferredReranker` that loads the bge-reranker-v2-m3 model in the background, then `src/session.rs::init_repo_state` passes it to every repo's `Retriever`. The `code_intel_full` arm sets it; `code_intel_no_reranker` leaves it unset so the reranker is never constructed.
+- **`DESCRIPTIONS_ENABLED=1`** — gates the index-time description worker (`src/session.rs::init_repo_state`, via `should_spawn_description_worker`). Prep sets it when building the **full** index variant so that variant actually contains LLM descriptions; the **no_desc** variant build leaves it off.
 
-`session.rs` also re-introduces the description worker spawn that the v4 stdio refactor (`4736a0d`) deleted; the worker runs by default in production and is gated only by the bench env.
+The two bench-only ablation knobs (the literal `"1"` activates) still exist for forcing a clean ablation:
+
+- **`BENCH_DISABLE_DESCRIPTIONS=1`** — `src/storage/tantivy.rs::upsert_symbol` forces the Tantivy `description` field empty AND skips the worker. Prep uses it for the `no_desc` variant so descriptions are absent at both write and query time.
+- **`BENCH_DISABLE_RERANKER=1`** — `src/reranker/llamacpp.rs::LlamaCppReranker::rerank` returns a uniform passthrough score. Now redundant for the bench (the no_reranker arm just leaves `RERANKER_ENABLED` unset), but retained in production code.
+
+`session.rs` re-introduces the description worker spawn that the v4 stdio refactor (`4736a0d`) deleted; the worker is now gated off by default and runs only when `DESCRIPTIONS_ENABLED=1`.
 
 ## Authoring fixtures
 

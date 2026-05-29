@@ -22,10 +22,12 @@ def test_default_arm_has_no_daemon_and_no_mcp_tools():
     assert a.index_variant is None
 
 
-def test_code_intel_full_uses_full_variant_no_env():
+def test_code_intel_full_enables_reranker_and_uses_full_variant():
     a = arms.ARMS["code_intel_full"]
     assert a.needs_daemon is True
-    assert a.daemon_env == {}
+    # Reranker ships off by default; the full arm opts in so it is the only
+    # arm with the cross-encoder live.
+    assert a.daemon_env == {"RERANKER_ENABLED": "1"}
     assert a.index_variant == "full"
     assert "mcp__code-intelligence__ask_code" in a.allowed_tools
 
@@ -36,9 +38,11 @@ def test_code_intel_no_descriptions_sets_env_and_uses_no_desc_variant():
     assert a.index_variant == "no_desc"
 
 
-def test_code_intel_no_reranker_sets_env_and_reuses_full_variant():
+def test_code_intel_no_reranker_leaves_reranker_off_and_reuses_full_variant():
     a = arms.ARMS["code_intel_no_reranker"]
-    assert a.daemon_env == {"BENCH_DISABLE_RERANKER": "1"}
+    # No RERANKER_ENABLED → reranker never constructed. Same "full" index as
+    # code_intel_full; the only difference is whether the reranker reorders.
+    assert a.daemon_env == {}
     assert a.index_variant == "full"
 
 

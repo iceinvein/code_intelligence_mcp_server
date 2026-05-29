@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -23,7 +23,7 @@ Key acronyms and concepts used throughout the codebase:
 | **GGUF** | GGML Unified Format | Binary format for quantized LLM model weights. Used by llama.cpp for the embedding model (jina-code-embeddings-1.5b, Q8_0), the description LLM (Qwen2.5-Coder-1.5B-Instruct, Q4_K_M), and the cross-encoder reranker (bge-reranker-v2-m3, Q8_0). |
 | **LLM** | Large Language Model | Used on-device (Qwen2.5-Coder-1.5B via llama.cpp) to generate natural-language descriptions for each indexed symbol, enriching BM25 search with human-readable terms. |
 
-## Usage in Claude Code
+## Usage in Codex
 
 Since v4.0 the server runs as a single HTTP daemon managed by launchd. Embedded stdio mode and leader election are gone.
 
@@ -31,13 +31,13 @@ Since v4.0 the server runs as a single HTTP daemon managed by launchd. Embedded 
 
 ```bash
 npx -y @iceinvein/code-intelligence-mcp install   # writes plist + bootstraps daemon
-npx -y @iceinvein/code-intelligence-mcp migrate   # rewrites v3 stdio entries in ~/.claude.json
+npx -y @iceinvein/code-intelligence-mcp migrate   # rewrites v3 stdio entries in ~/.Codex.json
 ```
 
 The `install` subcommand:
 - Writes the launchd plist to `~/Library/LaunchAgents/com.iceinvein.code-intelligence.plist`.
 - Bootstraps the service via `launchctl bootstrap gui/<uid>` (macOS 13+).
-- Prompts before patching `~/.claude.json`; pass `--patch-claude-json` or `--no-patch-claude-json` to skip the prompt.
+- Prompts before patching `~/.Codex.json`; pass `--patch-Codex-json` or `--no-patch-Codex-json` to skip the prompt.
 - Default port: 17800 (configurable via `--port`).
 
 After install, MCP clients connect to `http://127.0.0.1:17800/mcp`. The first launch downloads one GGUF model by default (~1.5 GB embedding model). The other two are off by default and download only when opted into: the description LLM (~1.0 GB) when `DESCRIPTIONS_ENABLED=1` (or `ASK_CODE_LLM_SYNTHESIS`), and the cross-encoder reranker (~600 MB) when `RERANKER_ENABLED=1`.
@@ -47,15 +47,15 @@ After install, MCP clients connect to `http://127.0.0.1:17800/mcp`. The first la
 v4 tries four binding sources in order; first match wins.
 
 1. **`?repo=/abs/path` URL query** — primary, works on every MCP client. The proxy in front of the SDK captures the query, pairs it with the `mcp-session-id` assigned by the upstream response, and stashes the pair in `PendingRepos` so `StandaloneHandler::resolve_state` can promote it on the first tool call.
-2. **MCP `roots/list`** — Claude Code negotiates this automatically. Opportunistic if no URL was provided.
+2. **MCP `roots/list`** — Codex negotiates this automatically. Opportunistic if no URL was provided.
 3. **`bind_workspace(repo="/abs/path")` tool** — manual escape hatch for clients that can't set query strings.
 4. **Single-repo registry fallback** — auto-binds when the registry has exactly one repo. Disables itself the moment a second repo is added.
 
 Unbound tool calls return an actionable JSON-RPC error pointing at all four options.
 
-### What Claude Code Gets
+### What Codex Gets
 
-Once connected, Claude Code gains access to 32 MCP tools including:
+Once connected, Codex gains access to 32 MCP tools including:
 
 - **`ask_code`** — Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
 - **`investigate`** — Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
@@ -120,7 +120,7 @@ Configure MCP clients to connect:
 }
 ```
 
-Drop `?repo=...` only when running Claude Code (which negotiates roots) or when the registry has exactly one repo.
+Drop `?repo=...` only when running Codex (which negotiates roots) or when the registry has exactly one repo.
 
 Data stored in `~/.code-intelligence/` (repos, models, config).
 Optional config: `~/.code-intelligence/server.toml`.
@@ -174,7 +174,7 @@ The server reads configuration from environment variables. Key ones:
 | `INDEX_PATTERNS` | `**/*.ts,**/*.tsx,**/*.rs` | Glob patterns to index |
 | `HYBRID_ALPHA` | `0.7` | Vector vs keyword weight (0-1) |
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |
-| `RERANKER_ENABLED` | `false` | Load the bge-reranker-v2-m3 cross-encoder (~600 MB) and apply a query-time reorder on top of RRF results. Off by default (unproven quality benefit, GPU-resident). Loads in the background when enabled. |
+| `RERANKER_ENABLED` | `false` | Load the bge-reranker-v2-m3 cross-encoder (~600 MB) and apply a query-time reorder on top of RRF results. Off by default (R006 measured it net-negative, GPU-resident). Loads in the background when enabled. |
 | `DESCRIPTIONS_ENABLED` | `false` | Spawn the index-time LLM description worker (Qwen2.5-Coder-1.5B) that backfills natural-language descriptions into the Tantivy index. Off by default: a multi-hour index-time backfill with no proven judge benefit (R005/R006). |
 | `LEARNING_ENABLED` | `true` | Enable selection/affinity learning |
 | `LEARNING_SELECTION_BOOST` | `0.1` | Max boost from user selection history |

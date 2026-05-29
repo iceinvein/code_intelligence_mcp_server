@@ -187,6 +187,7 @@ mod tests {
             index_node_modules: false,
             repo_roots: vec!["/tmp/test".into()],
             reranker_enabled: false,
+            descriptions_enabled: false,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: None,

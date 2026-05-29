@@ -355,6 +355,7 @@ mod tests {
             repo_roots: vec![],
             // Reranker config (FNDN-03)
             reranker_enabled: false,
+            descriptions_enabled: false,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: None,

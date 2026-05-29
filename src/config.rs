@@ -69,6 +69,18 @@ struct ServerToml {
     embeddings: Option<ServerTomlEmbeddings>,
     repos: Option<ServerTomlRepos>,
     lifecycle: Option<ServerTomlLifecycle>,
+    reranker: Option<ServerTomlReranker>,
+    descriptions: Option<ServerTomlDescriptions>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlReranker {
+    enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlDescriptions {
+    enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,6 +131,16 @@ pub struct StandaloneConfig {
     /// Port for the .well-known/mcp discovery endpoint.
     /// Defaults to `port + 1` when not set.
     pub discovery_port: Option<u16>,
+    /// Whether to load the cross-encoder reranker and wire it into the query
+    /// path. Off by default: the model is ~600MB GPU-resident and its search
+    /// quality benefit is unproven. Enable via `RERANKER_ENABLED=1` or a
+    /// `[reranker] enabled = true` block in server.toml.
+    pub reranker_enabled: bool,
+    /// Whether to spawn the LLM description worker at index time. Off by
+    /// default: the backfill is a multi-hour index-time cost with no proven
+    /// judge benefit (R005/R006). Enable via `DESCRIPTIONS_ENABLED=1` or a
+    /// `[descriptions] enabled = true` block in server.toml.
+    pub descriptions_enabled: bool,
 }
 
 impl Default for StandaloneConfig {
@@ -159,6 +181,8 @@ impl Default for StandaloneConfig {
             default_watch_mode: true,
             embedding_truncate_dim: None,
             discovery_port: None,
+            reranker_enabled: false,
+            descriptions_enabled: false,
         }
     }
 }
@@ -205,6 +229,18 @@ impl StandaloneConfig {
         if let Some(lifecycle) = parsed.lifecycle {
             if let Some(warm_ttl) = lifecycle.warm_ttl_seconds {
                 config.warm_ttl_seconds = warm_ttl;
+            }
+        }
+
+        if let Some(reranker) = parsed.reranker {
+            if let Some(enabled) = reranker.enabled {
+                config.reranker_enabled = enabled;
+            }
+        }
+
+        if let Some(descriptions) = parsed.descriptions {
+            if let Some(enabled) = descriptions.enabled {
+                config.descriptions_enabled = enabled;
             }
         }
 
@@ -268,6 +304,24 @@ impl StandaloneConfig {
             }
         }
 
+        // Reranker toggle (off by default; bench opts in with RERANKER_ENABLED=1).
+        if let Some(enabled) = optional_env("RERANKER_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+        {
+            config.reranker_enabled = enabled;
+        }
+
+        // Descriptions toggle (off by default; bench opts in with DESCRIPTIONS_ENABLED=1).
+        if let Some(enabled) = optional_env("DESCRIPTIONS_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+        {
+            config.descriptions_enabled = enabled;
+        }
+
         // Apply CLI overrides (highest priority)
         if let Some(host) = cli_host {
             config.host = host.to_string();
@@ -319,7 +373,8 @@ impl StandaloneConfig {
             max_context_bytes: 200_000,
             index_node_modules: false,
             repo_roots: vec![repo_path],
-            reranker_enabled: true,
+            reranker_enabled: self.reranker_enabled,
+            descriptions_enabled: self.descriptions_enabled,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: Some(global_dir.join("reranker-cache")),
@@ -445,6 +500,11 @@ pub struct Config {
 
     // LLM description generation config
     pub llm_enabled: bool,
+    /// Whether to spawn the index-time description worker. Distinct from
+    /// `llm_enabled` (which gates LLM availability generally): descriptions are
+    /// off by default because the backfill is a multi-hour index-time cost with
+    /// no proven retrieval benefit. Set from `StandaloneConfig::descriptions_enabled`.
+    pub descriptions_enabled: bool,
     pub llm_device: EmbeddingsDevice, // Reuse existing enum (Cpu/Metal)
     pub llm_model_dir: Option<Utf8PathBuf>,
     pub llm_max_tokens: u32,
@@ -835,6 +895,13 @@ impl Config {
             .map(parse_bool)
             .transpose()?
             .unwrap_or(true);
+        // Descriptions off by default (no proven judge benefit, multi-hour
+        // index-time backfill). Opt in with DESCRIPTIONS_ENABLED=1.
+        let descriptions_enabled = optional_env("DESCRIPTIONS_ENABLED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(false);
         let llm_device = optional_env("LLM_DEVICE")
             .as_deref()
             .map(parse_embeddings_device)
@@ -982,6 +1049,7 @@ impl Config {
 
             // LLM description generation
             llm_enabled,
+            descriptions_enabled,
             llm_device,
             llm_model_dir,
             llm_max_tokens,
@@ -1215,6 +1283,7 @@ mod tests {
             "REPO_ROOTS",
             // Reranker config (FNDN-03)
             "RERANKER_ENABLED",
+            "DESCRIPTIONS_ENABLED",
             "RERANKER_MODEL_PATH",
             "RERANKER_TOP_K",
             "RERANKER_CACHE_DIR",
@@ -1525,6 +1594,74 @@ warm_ttl_seconds = 600
         assert_eq!(cfg.exclude_patterns, standalone.default_exclude_patterns);
         assert_eq!(cfg.watch_mode, standalone.default_watch_mode);
         assert_eq!(cfg.hash_embedding_dim, standalone.hash_embedding_dim);
+        // repo_config carries the daemon-level reranker toggle through to the
+        // per-repo Config so the two never disagree.
+        assert_eq!(cfg.reranker_enabled, standalone.reranker_enabled);
+        // Same for the descriptions toggle.
+        assert_eq!(cfg.descriptions_enabled, standalone.descriptions_enabled);
+    }
+
+    #[test]
+    fn standalone_config_reranker_disabled_by_default() {
+        // The reranker is unproven and loads a ~600MB GPU model, so production
+        // ships with it off. The bench opts in via RERANKER_ENABLED=1.
+        let cfg = StandaloneConfig::default();
+        assert!(!cfg.reranker_enabled);
+    }
+
+    #[test]
+    fn standalone_config_descriptions_disabled_by_default() {
+        // LLM descriptions cost a multi-hour index-time backfill for no proven
+        // judge benefit, so production ships with the worker off. The bench
+        // opts in for the full index variant via DESCRIPTIONS_ENABLED=1.
+        let cfg = StandaloneConfig::default();
+        assert!(!cfg.descriptions_enabled);
+    }
+
+    #[test]
+    fn standalone_config_descriptions_from_toml() {
+        let toml_str = r#"
+[descriptions]
+enabled = true
+"#;
+        let cfg = StandaloneConfig::from_toml_str(toml_str).unwrap();
+        assert!(cfg.descriptions_enabled);
+    }
+
+    #[test]
+    fn standalone_config_load_descriptions_from_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        std::env::set_var("DESCRIPTIONS_ENABLED", "1");
+        let cfg = StandaloneConfig::load(None, None, None).unwrap();
+        std::env::remove_var("DESCRIPTIONS_ENABLED");
+        assert!(
+            cfg.descriptions_enabled,
+            "DESCRIPTIONS_ENABLED=1 should enable descriptions in standalone load()"
+        );
+    }
+
+    #[test]
+    fn standalone_config_reranker_from_toml() {
+        let toml_str = r#"
+[reranker]
+enabled = true
+"#;
+        let cfg = StandaloneConfig::from_toml_str(toml_str).unwrap();
+        assert!(cfg.reranker_enabled);
+    }
+
+    #[test]
+    fn standalone_config_load_reranker_from_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        std::env::set_var("RERANKER_ENABLED", "1");
+        let cfg = StandaloneConfig::load(None, None, None).unwrap();
+        std::env::remove_var("RERANKER_ENABLED");
+        assert!(
+            cfg.reranker_enabled,
+            "RERANKER_ENABLED=1 should enable the reranker in standalone load()"
+        );
     }
 
     /// Verify that the default INDEX_PATTERNS cover every extension that

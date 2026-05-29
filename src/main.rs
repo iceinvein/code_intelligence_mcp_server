@@ -18,6 +18,16 @@ use code_intelligence_mcp_server::embeddings::{
     create_embedder, default_embedding_dim, DeferredEmbedder, Embedder, SharedEmbedder,
     TruncatingEmbedder,
 };
+use code_intelligence_mcp_server::reranker::{
+    create_reranker, deferred::DeferredReranker, Reranker,
+};
+
+/// top-k passed to both the deferred wrapper and the real reranker. Matches the
+/// per-repo `Config::reranker_top_k` default in `StandaloneConfig::repo_config`.
+const RERANKER_TOP_K: usize = 20;
+
+/// Slot a background task fills once the real reranker model is loaded.
+type RerankerSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Reranker>>>>;
 
 /// Type alias for the (embedder, optional-deferred-slot) pair returned by embedder creation.
 type EmbedderWithSlot = (
@@ -730,11 +740,28 @@ async fn run_standalone(
     let job_registry = code_intelligence_mcp_server::server::jobs::new_job_registry();
     code_intelligence_mcp_server::server::jobs::spawn_job_eviction_loop(job_registry.clone());
 
+    // Build the shared cross-encoder reranker. Off by default (the model is
+    // ~600MB GPU-resident and its quality benefit is unproven). When enabled we
+    // hand the SessionManager a DeferredReranker immediately and load the real
+    // model in a background task (mirrors the deferred embedder), so the HTTP
+    // server is up before the download/load finishes. Searches run BM25+vector
+    // (no reordering) until the slot is filled.
+    let (reranker, reranker_slot): (Option<Arc<dyn Reranker>>, Option<RerankerSlot>) =
+        if standalone_config.reranker_enabled {
+            let deferred = DeferredReranker::new(RERANKER_TOP_K);
+            let slot = deferred.inner_slot();
+            info!("Reranker enabled — model will load in background");
+            (Some(Arc::new(deferred)), Some(slot))
+        } else {
+            (None, None)
+        };
+
     let session_manager = code_intelligence_mcp_server::session::SessionManager::new(
         standalone_config.clone(),
         registry,
         embedder,
         Some(job_registry.clone()),
+        reranker,
     )
     .await
     .map_err(|e| McpSdkError::Internal {
@@ -832,6 +859,38 @@ async fn run_standalone(
                 }
                 Err(e) => {
                     error!("Embedding model loading task panicked: {}. Vector search will remain unavailable.", e);
+                }
+            }
+        });
+    }
+
+    // Spawn background reranker model download/load when enabled. Fills the
+    // DeferredReranker slot handed to the SessionManager above.
+    if let Some(slot) = reranker_slot {
+        let cache_dir = standalone_config.data_dir.join("reranker-cache");
+        tokio::spawn(async move {
+            info!("Starting background reranker model download/load...");
+            let result = tokio::task::spawn_blocking(move || {
+                create_reranker(true, None, Some(cache_dir.as_path()), RERANKER_TOP_K)
+            })
+            .await;
+            match result {
+                Ok(Ok(Some(real_reranker))) => {
+                    let mut guard = slot.lock().expect("DeferredReranker mutex poisoned");
+                    *guard = Some(real_reranker);
+                    info!("Reranker model loaded — cross-encoder reranking is now active");
+                }
+                Ok(Ok(None)) => {
+                    error!("Reranker enabled but model could not be created. Reranking stays off.");
+                }
+                Ok(Err(e)) => {
+                    error!("Failed to load reranker model: {}. Reranking stays off.", e);
+                }
+                Err(e) => {
+                    error!(
+                        "Reranker loading task panicked: {}. Reranking stays off.",
+                        e
+                    );
                 }
             }
         });

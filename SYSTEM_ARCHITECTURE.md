@@ -6,9 +6,9 @@ The long-term product boundary is the local code intelligence engine, not MCP it
 
 ## High-Level Overview
 
-The daemon scans a repo's source files, extracts semantic symbols with Tree-Sitter, generates 1536-dim Matryoshka vector embeddings (jina-code-embeddings-1.5b, GGUF via llama.cpp + Metal GPU), enriches BM25 keyword search with natural-language descriptions generated on-device by Qwen2.5-Coder-1.5B, builds a knowledge graph with PageRank scoring, and serves intelligent queries with cross-encoder reranking (bge-reranker-v2-m3, also via llama.cpp + Metal GPU) plus query-aware context assembly.
+The daemon scans a repo's source files, extracts semantic symbols with Tree-Sitter, generates 1536-dim Matryoshka vector embeddings (jina-code-embeddings-1.5b, GGUF via llama.cpp + Metal GPU), builds a knowledge graph with PageRank scoring, and serves intelligent queries with query-aware context assembly. Two optional enrichment models run only when opted into: on-device natural-language descriptions (Qwen2.5-Coder-1.5B, `DESCRIPTIONS_ENABLED=1`) and cross-encoder reranking (bge-reranker-v2-m3, `RERANKER_ENABLED=1`), both via llama.cpp + Metal GPU.
 
-All three ML models run on-device. There are no cloud dependencies. Models load once at daemon start and are shared across every MCP session; the description LLM is freed after each indexing pass while the embedding model and reranker stay resident for queries.
+All models run on-device; there are no cloud dependencies. By default only the embedding model loads at daemon start (shared across every MCP session, resident for queries). The description LLM and reranker are off by default — benchmarks (R005/R006) showed neither moved the judge score, and each adds setup cost (a multi-hour index-time backfill; GPU residency). When enabled: the description LLM is freed after each indexing pass; the reranker stays resident for queries.
 
 ## Runtime Topology
 
@@ -142,9 +142,9 @@ Graph-based importance scoring over `call` and `reads` edges (default: 20 iterat
 - Persists across daemon restarts; only changed files re-embedded on refresh
 - Toggle with `EMBEDDING_CACHE_ENABLED`
 
-### 3. Description LLM (`src/llm`)
+### 3. Description LLM (`src/llm`) — off by default
 
-The description LLM enriches BM25 search by generating natural-language summaries for every indexed symbol, bridging the vocabulary gap between how users search ("auth handler") and how code is named (`authenticate_request`).
+The description LLM enriches BM25 search by generating natural-language summaries for every indexed symbol, bridging the vocabulary gap between how users search ("auth handler") and how code is named (`authenticate_request`). It is **off by default** (`DESCRIPTIONS_ENABLED=1` to enable): the index-time backfill takes hours on a large repo and benchmarks (R005/R006) showed no judge benefit. The worker spawn is gated by `should_spawn_description_worker` in `src/session.rs`.
 
 #### Backend (`src/llm/llamacpp.rs`)
 
@@ -160,7 +160,7 @@ The description LLM enriches BM25 search by generating natural-language summarie
 2. The daemon loads the description LLM, generates a description per symbol, and writes:
    - **SQLite** `symbol_descriptions` keyed by `symbol_id` + `content_hash`
    - **Tantivy** text field via `expand_index_text` (BM25 enrichment)
-3. After the batch the LLM is **freed** to release ~1.0 GB of RAM. The embedding model and reranker stay resident for queries.
+3. After the batch the LLM is **freed** to release ~1.0 GB of RAM. The embedding model stays resident for queries.
 4. Stale descriptions (content-hash mismatch after a code edit) are surfaced by `find_stale_descriptions` and regenerated on the next refresh.
 5. On daemon start a background recovery task regenerates descriptions for symbols that lost their LLM enrichment (e.g. after a schema bump or LanceDB data loss).
 
@@ -212,13 +212,13 @@ Relational metadata storage with pooled connections:
 - Reciprocal Rank Fusion: `1 / (k + rank)`, configurable `RRF_K` (default 60)
 - Per-source weights: `RRF_KEYWORD_WEIGHT`, `RRF_VECTOR_WEIGHT`, `RRF_GRAPH_WEIGHT`
 
-#### Cross-Encoder Reranking (`src/reranker/`)
+#### Cross-Encoder Reranking (`src/reranker/`) — off by default
 
 - Default: `gpustack/bge-reranker-v2-m3-GGUF` (Q8_0, ~600 MB)
 - BERT cross-encoder via llama.cpp + Metal GPU
-- Enabled by default (`RERANKER_ENABLED=true`); top-K reranking (default 20)
+- **Off by default** (`RERANKER_ENABLED=1` to enable); top-K reranking (default 20). Benchmarks (R006) measured it net-negative on judge score, so it does not ship on
+- When enabled, loads in the background via `DeferredReranker` (HTTP server starts immediately; queries run BM25+vector until the model is ready), then stays resident alongside the embedding model
 - `CachedReranker` memoises (query, doc) scores to avoid re-scoring duplicates
-- Stays resident in memory alongside the embedding model
 
 #### Ranking Signals (`src/retrieval/ranking/score.rs`)
 
@@ -313,7 +313,7 @@ Port `mcp_port + 1` (default **17801**) hosts `/.well-known/mcp` advertising the
 2. **Expansion + decomposition**: `auth → authentication`; split into `[authentication, authorization]`
 3. **Hybrid search per sub-query**: Tantivy BM25, LanceDB vector, graph link traversal in parallel
 4. **Rank fusion**: per-source RRF, then sub-query merge
-5. **Cross-encoder reranking**: bge-reranker-v2-m3 on top-20
+5. **Cross-encoder reranking** _(only if `RERANKER_ENABLED=1`)_: bge-reranker-v2-m3 on top-20
 6. **Signal application**: PageRank, test penalty, intent multipliers, edge expansion, score-gap, etc.
 7. **Context assembly**: token-budgeted, query-aware line selection, JSDoc + metadata
 8. **Response**: ranked hits + optional context bundle + query explanation
@@ -322,8 +322,8 @@ Port `mcp_port + 1` (default **17801**) hosts `/.well-known/mcp` advertising the
 
 ### Indexing
 
-- **First-launch model download**: ~3.2 GB (embedding 1.5 GB + LLM 1.0 GB + reranker 600 MB)
-- **Initial index**: ~2-3 min for 10k files (parsing + embedding); description generation adds ~0.32 s / symbol on top
+- **First-launch model download**: ~1.5 GB by default (embedding only). +1.0 GB if `DESCRIPTIONS_ENABLED=1`, +600 MB if `RERANKER_ENABLED=1` (~3.2 GB with both)
+- **Initial index**: ~2-3 min for 10k files (parsing + embedding); when descriptions are enabled, generation adds ~0.32 s / symbol on top (the multi-hour backfill on large repos that motivated the off-by-default)
 - **Re-index**: ~30-60 s with the embedding cache; only changed files re-embedded and re-described
 - **Incremental (watch mode)**: ~100-500 ms per changed file
 
@@ -344,10 +344,10 @@ Port `mcp_port + 1` (default **17801**) hosts `/.well-known/mcp` advertising the
 
 ```
 ~/.code-intelligence/
-├── models/                                  # Shared across all repos (~3.2 GB total)
-│   ├── jina-code-embeddings-1.5b-gguf/      # Embedding model, ~1.5 GB Q8_0
-│   ├── qwen2.5-coder-1.5b-gguf/             # Description LLM, ~1.0 GB Q4_K_M
-│   └── bge-reranker-v2-m3-gguf/             # Cross-encoder reranker, ~600 MB Q8_0
+├── models/                                  # Shared across all repos (~1.5 GB default; ~3.2 GB with both opt-ins)
+│   ├── jina-code-embeddings-1.5b-gguf/      # Embedding model, ~1.5 GB Q8_0 (default)
+│   ├── qwen2.5-coder-1.5b-gguf/             # Description LLM, ~1.0 GB Q4_K_M (only if DESCRIPTIONS_ENABLED=1)
+│   └── bge-reranker-v2-m3-gguf/             # Cross-encoder reranker, ~600 MB Q8_0 (only if RERANKER_ENABLED=1)
 ├── logs/
 │   └── server.log
 ├── server.toml                              # Standalone config (optional)

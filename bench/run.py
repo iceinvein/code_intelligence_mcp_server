@@ -296,6 +296,10 @@ def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
     env_extra: dict[str, str] = {}
     if variant == "no_desc":
         env_extra["BENCH_DISABLE_DESCRIPTIONS"] = "1"
+    elif variant == "full":
+        # Descriptions ship off by default; the full variant opts in so the
+        # index actually contains LLM descriptions to measure against no_desc.
+        env_extra["DESCRIPTIONS_ENABLED"] = "1"
 
     port = daemon_mod.pick_free_port()
     env = _os.environ.copy()

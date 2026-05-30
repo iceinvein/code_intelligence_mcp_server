@@ -21,7 +21,7 @@ flowchart TB
     OC[OpenCode / Codex / Trae / Windsurf]
   end
 
-  subgraph Daemon[code-intelligence-mcp-server (launchd)]
+  subgraph Daemon["code-intelligence-mcp-server (launchd)"]
     direction TB
     Proxy["Public MCP proxy<br/>port 17800<br/>(axum, ?repo= capture,<br/>session recovery)"]
     Disco["Discovery<br/>port 17801<br/>/.well-known/mcp"]
@@ -33,14 +33,14 @@ flowchart TB
     SDK --> Handler
   end
 
-  subgraph Storage[Per-repo data under ~/.code-intelligence/repos/<hash>/]
+  subgraph Storage["Per-repo data under ~/.code-intelligence/repos/&lt;hash&gt;/"]
     direction LR
     SQLite[(SQLite metadata)]
     Tantivy[(Tantivy BM25)]
     Lance[(LanceDB vectors)]
   end
 
-  subgraph Models[Shared models under ~/.code-intelligence/models/]
+  subgraph Models["Shared models under ~/.code-intelligence/models/"]
     direction LR
     Embed[jina-code-embeddings-1.5b<br/>Q8_0, 1536-dim]
     LLM[Qwen2.5-Coder-1.5B<br/>Q4_K_M description LLM]

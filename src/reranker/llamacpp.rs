@@ -351,7 +351,7 @@ mod tests {
             top_k: 10,
         };
 
-        let docs = vec![
+        let docs = [
             RerankDocument {
                 id: "a".to_string(),
                 text: "fn foo() {}".to_string(),
@@ -384,7 +384,7 @@ mod tests {
             top_k: 10,
         };
 
-        let docs = vec![
+        let docs = [
             RerankDocument {
                 id: "a".to_string(),
                 text: "text".to_string(),
@@ -430,7 +430,7 @@ mod tests {
         static ENV_LOCK: Mutex<()> = Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
 
-        let docs = vec![
+        let docs = [
             RerankDocument {
                 id: "c".to_string(),
                 text: "fn c() {}".to_string(),

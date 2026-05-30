@@ -370,7 +370,7 @@ fn extract_import(node: Node<'_>, source: &str, imports: &mut Vec<Import>) {
     let name = qname.split('.').next_back().unwrap_or(&qname).to_string();
 
     imports.push(Import {
-        name: alias.clone().unwrap_or_else(|| name),
+        name: alias.clone().unwrap_or(name),
         source: qname,
         alias,
     });
@@ -466,12 +466,10 @@ fn symbol_name(node: Node<'_>, source: &str) -> Option<String> {
 /// Find the first direct child of `node` with the given node kind.
 fn find_child_by_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(child);
-        }
-    }
-    None
+    let child = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == kind);
+    child
 }
 
 fn node_is_inside_class_body(node: Node<'_>) -> bool {

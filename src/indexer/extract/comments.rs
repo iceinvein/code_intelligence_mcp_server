@@ -85,7 +85,7 @@ fn extract_todo_text(line: &str, keyword_start: usize, keyword: &str) -> String 
     let keyword_end = keyword_start + keyword.len();
     let rest = if keyword_end < line.len() {
         line[keyword_end..]
-            .trim_start_matches(|c: char| c == ':' || c == ' ' || c == '-' || c == '(')
+            .trim_start_matches([':', ' ', '-', '('])
             .trim_end_matches(')')
             .trim()
             .to_string()

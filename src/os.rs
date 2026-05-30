@@ -23,8 +23,8 @@ pub fn raise_fd_limit_to_hard() -> io::Result<(u64, u64, u64)> {
         return Err(io::Error::last_os_error());
     }
 
-    let old_soft = u64::from(current.rlim_cur);
-    let hard = u64::from(current.rlim_max);
+    let old_soft = current.rlim_cur;
+    let hard = current.rlim_max;
     if old_soft >= hard {
         return Ok((old_soft, old_soft, hard));
     }

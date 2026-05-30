@@ -1939,7 +1939,7 @@ async function fetchData() {
             .filter(|e| e.from_symbol.starts_with("await:"))
             .collect();
         assert!(
-            await_edges.len() >= 1,
+            !await_edges.is_empty(),
             "Should detect await expressions, got edges: {:?}",
             file.dataflow_edges
                 .iter()

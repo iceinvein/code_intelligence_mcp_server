@@ -1,3 +1,10 @@
+#![allow(
+    clippy::collapsible_match,
+    clippy::items_after_test_module,
+    clippy::should_implement_trait,
+    clippy::too_many_arguments
+)]
+
 pub mod agent_install;
 pub mod classify;
 pub mod cli;

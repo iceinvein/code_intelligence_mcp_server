@@ -173,6 +173,11 @@ impl Default for StandaloneConfig {
             ],
             default_exclude_patterns: vec![
                 "**/node_modules/**".to_string(),
+                "**/.venv/**".to_string(),
+                "**/venv/**".to_string(),
+                "**/.tox/**".to_string(),
+                "**/vendor/**".to_string(),
+                "**/bench/state/repos/**".to_string(),
                 "**/dist/**".to_string(),
                 "**/build/**".to_string(),
                 "**/out/**".to_string(),
@@ -685,8 +690,14 @@ impl Config {
             optional_env("EXCLUDE_PATTERNS").as_deref(),
             &[
                 "**/node_modules/**",
+                "**/.venv/**",
+                "**/venv/**",
+                "**/.tox/**",
+                "**/vendor/**",
+                "**/bench/state/repos/**",
                 "**/dist/**",
                 "**/build/**",
+                "**/out/**",
                 "**/.git/**",
                 // Minified files: single-line mangled source has no useful symbols.
                 // Generated source (`*.gen.*`, `*.generated.*`) and tests (`*.test.*`,
@@ -742,7 +753,7 @@ impl Config {
             .as_deref()
             .map(parse_bool)
             .transpose()?
-            .unwrap_or(true);
+            .unwrap_or(false);
         let reranker_model_path = optional_env("RERANKER_MODEL_PATH")
             .map(|p| to_utf8_pathbuf(Path::new(&p)))
             .transpose()?;
@@ -1349,8 +1360,8 @@ mod tests {
         clear_env();
         let base = tmp_dir();
         let home = tmp_home_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
-        std::env::set_var("HOME", home.to_string());
+        std::env::set_var("BASE_DIR", &base);
+        std::env::set_var("HOME", &home);
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::LlamaCpp);
@@ -1377,8 +1388,8 @@ mod tests {
         clear_env();
         let base = tmp_dir();
         let home = tmp_home_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
-        std::env::set_var("HOME", home.to_string());
+        std::env::set_var("BASE_DIR", &base);
+        std::env::set_var("HOME", &home);
 
         // Default should be LlamaCpp
         let cfg = Config::from_env().unwrap();
@@ -1395,10 +1406,10 @@ mod tests {
         clear_env();
         let base = tmp_dir();
         let custom = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
         // Old "fastembed" name should now map to LlamaCpp
         std::env::set_var("EMBEDDINGS_BACKEND", "fastembed");
-        std::env::set_var("EMBEDDINGS_MODEL_DIR", custom.to_string());
+        std::env::set_var("EMBEDDINGS_MODEL_DIR", &custom);
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.embeddings_backend, EmbeddingsBackend::LlamaCpp);
@@ -1410,7 +1421,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
         // No backend set, should default to LlamaCpp
 
         let cfg = Config::from_env().unwrap();
@@ -1426,7 +1437,7 @@ mod tests {
         let extra = tmp_dir();
         // Canonicalize the extra path for comparison since repo_roots contains canonicalized paths
         let extra_canonical = to_utf8_pathbuf(&std::fs::canonicalize(&extra).unwrap()).unwrap();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
         std::env::set_var(
             "REPO_ROOTS",
             format!(
@@ -1448,7 +1459,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
         std::env::set_var("HYBRID_ALPHA", "2");
         assert!(Config::from_env().is_err());
 
@@ -1464,7 +1475,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
         let cfg = Config::from_env().unwrap();
         assert!(cfg.watch_mode);
     }
@@ -1474,7 +1485,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
         std::env::set_var("WATCH_MODE", "yes");
         std::env::set_var("INDEX_NODE_MODULES", "1");
         let cfg = Config::from_env().unwrap();
@@ -1487,12 +1498,12 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
 
         let cfg = Config::from_env().unwrap();
 
         // Reranker defaults
-        assert!(cfg.reranker_enabled);
+        assert!(!cfg.reranker_enabled);
         assert!(cfg.reranker_model_path.is_none());
         assert_eq!(cfg.reranker_top_k, 20);
         assert!(cfg.reranker_cache_dir.is_some());
@@ -1532,7 +1543,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_env();
         let base = tmp_dir();
-        std::env::set_var("BASE_DIR", base.to_string());
+        std::env::set_var("BASE_DIR", &base);
         std::env::set_var("LEARNING_ENABLED", "true");
         std::env::set_var("MAX_CONTEXT_TOKENS", "16384");
         std::env::set_var("PAGERANK_DAMPING", "0.9");
@@ -1735,6 +1746,25 @@ enabled = true
             standalone_excludes.iter().any(|p| p == "**/out/**"),
             "StandaloneConfig defaults must exclude **/out/** (electron build output); got {standalone_excludes:?}"
         );
+    }
+
+    #[test]
+    fn default_exclude_patterns_drop_virtualenvs_and_vendored_repos() {
+        let expected = [
+            "**/.venv/**",
+            "**/venv/**",
+            "**/.tox/**",
+            "**/vendor/**",
+            "**/bench/state/repos/**",
+        ];
+        let standalone_excludes = StandaloneConfig::default().default_exclude_patterns;
+
+        for pat in expected {
+            assert!(
+                standalone_excludes.iter().any(|p| p == pat),
+                "StandaloneConfig defaults must exclude '{pat}'; got {standalone_excludes:?}"
+            );
+        }
     }
 
     #[test]

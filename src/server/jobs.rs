@@ -253,7 +253,7 @@ pub fn mark_failed_if_running(registry: &JobRegistry, job_id: &str, error: Strin
 /// Snapshot the registry sorted newest-first.
 pub fn snapshot(registry: &JobRegistry) -> Vec<Job> {
     let mut items: Vec<Job> = registry.iter().map(|e| e.value().clone()).collect();
-    items.sort_by(|a, b| b.started_at_unix_s.cmp(&a.started_at_unix_s));
+    items.sort_by_key(|job| std::cmp::Reverse(job.started_at_unix_s));
     items
 }
 

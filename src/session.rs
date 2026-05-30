@@ -360,14 +360,9 @@ impl SessionManager {
         self.last_accessed.remove(&canonical);
         self.init_locks.remove(&canonical);
 
-        // 2. Remove from registry.json.
-        let removed = self
-            .registry
-            .remove_by_hash(hash)
-            .context("Failed to remove repo from registry")?;
-
-        // 3. Remove on-disk data directory. Best-effort: missing dirs are
-        //    treated as success; permission errors propagate.
+        // 2. Remove on-disk data directory. Missing dirs are treated as
+        //    success; permission errors propagate and leave the registry entry
+        //    intact so the user can retry from the API/UI.
         let data_dir = entry.data_dir.as_std_path();
         match std::fs::remove_dir_all(data_dir) {
             Ok(_) => {}
@@ -378,6 +373,14 @@ impl SessionManager {
                 });
             }
         }
+
+        // 3. Remove from registry.json after the destructive filesystem step
+        //    succeeds. This avoids orphaning a registered repo when deletion
+        //    fails.
+        let removed = self
+            .registry
+            .remove_by_hash(hash)
+            .context("Failed to remove repo from registry")?;
 
         tracing::info!(
             repo = %canonical,
@@ -691,6 +694,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_repo_by_hash_keeps_registry_when_data_dir_delete_fails() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        std::fs::remove_dir_all(entry.data_dir.as_std_path()).unwrap();
+        std::fs::write(entry.data_dir.as_std_path(), b"not a directory").unwrap();
+
+        let err = manager.delete_repo_by_hash(&hash).await.unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("Failed to remove repo data directory"),
+            "unexpected delete error: {err}"
+        );
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "registry entry must remain so a failed data-dir deletion can be retried"
+        );
+    }
+
+    #[tokio::test]
     async fn delete_repo_by_hash_works_when_not_loaded() {
         // Repo is registered but NOT currently in the session cache
         let (_data, data_dir) = temp_data_dir();
@@ -715,9 +742,8 @@ mod tests {
         // and the worker-spawn branch is the disabled path. It's a weak test by
         // design - tokio::spawn is fire-and-forget. The strong assertion that
         // descriptions are not written lives in storage::tantivy tests.
-        use std::sync::Mutex;
-        static ENV_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap();
+        static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = ENV_LOCK.lock().await;
 
         std::env::set_var("BENCH_DISABLE_DESCRIPTIONS", "1");
 

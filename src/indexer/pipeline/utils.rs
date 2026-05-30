@@ -549,7 +549,7 @@ mod utils_proptest {
             start_byte in start_byte_strategy(),
         ) {
             // Single-bit change in name should produce different ID
-            if name.len() > 0 {
+            if !name.is_empty() {
                 let mut modified_name = name.clone();
                 modified_name.pop();
                 if let Some(c) = modified_name.chars().last() {
@@ -632,7 +632,7 @@ mod utils_proptest {
                 let seeded_idx = (seed.wrapping_add(i as u64)) as usize;
 
                 // Generate file path from seed
-                let depth = (seeded_idx % 4) as usize;
+                let depth = seeded_idx % 4;
                 let dirs: Vec<_> = (0..depth).map(|d| format!("dir{}", (seeded_idx + d) % 100)).collect();
                 let file_path = if dirs.is_empty() {
                     format!("file{}.rs", (seeded_idx % 50))

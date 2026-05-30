@@ -21,9 +21,9 @@
 //! still be `https://example.com`.
 
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Path, State},
     http::StatusCode,
-    middleware::{self, Next},
+    middleware,
     response::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Json, Response,
@@ -97,7 +97,7 @@ pub async fn spawn_api_server(
         .route("/api/jobs", get(handle_jobs))
         .route("/api/sessions", get(handle_sessions))
         .route("/api/logs/stream", get(handle_logs_stream))
-        .layer(middleware::from_fn(check_origin))
+        .layer(middleware::from_fn(crate::server::origin::check_origin))
         .with_state(state);
 
     let addr: SocketAddr = format!("{host}:{api_port}")
@@ -116,40 +116,6 @@ pub async fn spawn_api_server(
         }
     });
     Ok(())
-}
-
-/// DNS-rebinding guard. Allow only:
-/// - requests with no `Origin` header (server-to-server, curl, CLI clients)
-/// - requests whose Origin host is `localhost` or `127.0.0.1`
-async fn check_origin(req: Request, next: Next) -> Result<Response, StatusCode> {
-    if let Some(origin) = req.headers().get("origin") {
-        let Ok(s) = origin.to_str() else {
-            return Err(StatusCode::FORBIDDEN);
-        };
-        if !is_local_origin(s) {
-            return Err(StatusCode::FORBIDDEN);
-        }
-    }
-    Ok(next.run(req).await)
-}
-
-fn is_local_origin(origin: &str) -> bool {
-    // Strip scheme.
-    let after_scheme = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-        .unwrap_or(origin);
-    // Strip any trailing path (Origin should not have one, defensive).
-    let host_port = after_scheme.split('/').next().unwrap_or("");
-    // Handle bracketed IPv6 literals like `[::1]:17800`.
-    if let Some(rest) = host_port.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return &rest[..end] == "::1";
-        }
-        return false;
-    }
-    let host = host_port.split(':').next().unwrap_or("");
-    host == "localhost" || host == "127.0.0.1"
 }
 
 async fn handle_dashboard() -> Html<&'static str> {
@@ -779,21 +745,15 @@ async fn handle_logs_stream(
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     let rx = state.log_broadcaster.subscribe();
     let stream = futures::stream::unfold(rx, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(line) => {
-                    return Some((Ok(Event::default().data(line)), rx));
-                }
-                Err(RecvError::Lagged(n)) => {
-                    return Some((
-                        Ok(Event::default()
-                            .event("lagged")
-                            .data(format!("{n} log messages dropped"))),
-                        rx,
-                    ));
-                }
-                Err(RecvError::Closed) => return None,
-            }
+        match rx.recv().await {
+            Ok(line) => Some((Ok(Event::default().data(line)), rx)),
+            Err(RecvError::Lagged(n)) => Some((
+                Ok(Event::default()
+                    .event("lagged")
+                    .data(format!("{n} log messages dropped"))),
+                rx,
+            )),
+            Err(RecvError::Closed) => None,
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
@@ -854,30 +814,6 @@ mod tests {
     use crate::registry::RepoEntry;
     use crate::storage::sqlite::SqliteStore;
     use tempfile::tempdir;
-
-    #[test]
-    fn is_local_origin_accepts_localhost_variants() {
-        assert!(is_local_origin("http://localhost:17800"));
-        assert!(is_local_origin("http://localhost"));
-        assert!(is_local_origin("http://127.0.0.1:17802"));
-        assert!(is_local_origin("https://127.0.0.1"));
-        assert!(is_local_origin("http://[::1]:17802"));
-    }
-
-    #[test]
-    fn is_local_origin_rejects_remote() {
-        assert!(!is_local_origin("https://example.com"));
-        assert!(!is_local_origin("http://example.com:17800"));
-        assert!(!is_local_origin("http://192.168.1.42:17800"));
-        assert!(!is_local_origin("http://attacker.localhost.evil:17800"));
-    }
-
-    #[test]
-    fn is_local_origin_handles_missing_scheme() {
-        // `Origin` should always have a scheme, but be defensive.
-        assert!(is_local_origin("127.0.0.1"));
-        assert!(!is_local_origin("example.com"));
-    }
 
     #[test]
     fn query_envelope_has_stable_agent_contract_fields() {

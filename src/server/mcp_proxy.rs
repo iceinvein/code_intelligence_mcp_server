@@ -23,6 +23,7 @@ use axum::{
     body::{to_bytes, Body},
     extract::{Query, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode},
+    middleware,
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Router,
@@ -132,6 +133,7 @@ pub async fn spawn_mcp_proxy(
         .route(backend_path, get(handle_get))
         .route(backend_path, post(handle_post))
         .route(backend_path, delete(handle_delete))
+        .layer(middleware::from_fn(crate::server::origin::check_origin))
         .with_state(state);
 
     let addr: SocketAddr = format!("{host}:{public_port}")
@@ -885,6 +887,41 @@ mod tests {
             resp.text().await.unwrap(),
             r#"{"code":-32600,"message":"Invalid Request"}"#
         );
+    }
+
+    #[tokio::test]
+    async fn forward_rejects_remote_browser_origin_before_upstream() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = spawn_test_upstream(move |_h, _b| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (StatusCode::OK, "ok").into_response()
+        })
+        .await;
+
+        let proxy_port = portpicker::pick_unused_port().expect("free port");
+        spawn_mcp_proxy(
+            "127.0.0.1",
+            proxy_port,
+            upstream.port(),
+            "/mcp",
+            new_pending_repos(),
+            new_bound_repos(),
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{proxy_port}/mcp"))
+            .header("origin", "https://example.com")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

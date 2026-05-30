@@ -927,9 +927,10 @@ struct TestCoverage {
 /// 3. Resolve each edge's `from_symbol_id` to a (name, file, line) row,
 ///    skipping generated-output files and the target's own file. Cap at
 ///    `CALLSITES_LOOKUP_LIMIT` rows.
-/// Aggregate cross-file callees of every symbol in the primary hit's
-/// file, grouped by callee file. Returns at most `SUPPORTING_MODULES_CAP`
-/// modules ordered by descending callee_count, each with at most
+///
+/// Aggregate cross-file callees of every symbol in the primary hit's file,
+/// grouped by callee file. Returns at most `SUPPORTING_MODULES_CAP` modules
+/// ordered by descending callee_count, each with at most
 /// `SUPPORTING_MODULES_CALLEES_PER_MODULE` representative callees.
 fn run_supporting_modules_lookup(
     state: &AppState,
@@ -3373,11 +3374,10 @@ mod tests {
         // bodies are citation material; context_chain is debug.
         let first = &response["verified_locations"][0];
         assert!(
-            first
+            !first
                 .get("body_dropped")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-                == false,
+                .unwrap_or(false),
             "primary body must survive while context_chain still has slack; got {first}"
         );
         assert!(

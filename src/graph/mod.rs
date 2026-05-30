@@ -694,16 +694,14 @@ mod edge_types_tests {
     #[test]
     fn test_default_edge_types() {
         // Verify default is call + reference (matches build_dependency_graph's unwrap_or)
-        let edge_types: Option<&[&str]> = None;
-        let allowed = edge_types.unwrap_or(&["call", "reference"]);
-        assert_eq!(allowed, &["call", "reference"]);
+        let allowed = ["call", "reference"];
+        assert_eq!(allowed, ["call", "reference"]);
     }
 
     #[test]
     fn test_custom_edge_types() {
         let types = vec!["call", "type", "extends"];
-        let edge_types: Option<&[&str]> = Some(&types);
-        let allowed = edge_types.unwrap_or(&["call", "reference"]);
+        let allowed = types.as_slice();
         assert_eq!(allowed.len(), 3);
         assert!(allowed.contains(&"call"));
         assert!(allowed.contains(&"type"));

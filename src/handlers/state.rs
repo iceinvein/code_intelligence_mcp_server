@@ -25,11 +25,10 @@ pub struct AppState {
     /// LLM used for query-time answer synthesis by the `ask_code` handler.
     ///
     /// Inner value is `Option<Arc<dyn LlmGenerator>>`:
-    ///   - `OnceCell` empty  -> not yet initialised; handler will try to load.
-    ///   - `Some(Some(gen))` -> resident LLM ready to generate answers.
-    ///   - `Some(None)`      -> tried to load and failed (or disabled);
-    ///                          handler returns `stop_reason="llm_unavailable"`
-    ///                          with raw evidence so callers can fall back.
+    /// - `OnceCell` empty: not yet initialised; handler will try to load.
+    /// - `Some(Some(gen))`: resident LLM ready to generate answers.
+    /// - `Some(None)`: tried to load and failed (or disabled); handler returns
+    ///   `stop_reason="llm_unavailable"` with raw evidence so callers can fall back.
     ///
     /// Kept separate from the description-pipeline LLM, which is freed after
     /// indexing. `ask_code` needs a resident generator for low-latency

@@ -468,10 +468,8 @@ impl Retriever {
             &self.config,
         )?;
 
-        let rerank_t = Instant::now();
         // Reranker is applied later (after final intent enforcement) so that
         // test penalties and meta-match suppression can't be overridden.
-        let reranker_ms; // measured below
 
         let scoring_t = Instant::now();
         // R30v2: Gentle diversity — truncate to a larger pool so that
@@ -587,6 +585,7 @@ impl Retriever {
         // into scores before the reranker sees them. The reranker acts as a tiebreaker
         // (weight=0.2) that can reorder similarly-scored results but can't override
         // large score differences from structural signals.
+        let rerank_t = Instant::now();
         hits = if let Some(reranker) = &self.reranker {
             if should_rerank(hits.len(), 3) {
                 let mut texts = HashMap::new();
@@ -608,7 +607,7 @@ impl Retriever {
         } else {
             hits
         };
-        reranker_ms = rerank_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let reranker_ms = rerank_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         // Post-pipeline gap fill: if fewer than `limit` results survived
         // enforcement + min-score filtering, backfill from the pre-expansion pool.

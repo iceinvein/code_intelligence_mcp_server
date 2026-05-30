@@ -104,7 +104,7 @@ pub fn should_index_file(config: &Config, path: &Path) -> bool {
     if is_excluded(config, path) {
         return false;
     }
-    matches!(
+    if !matches!(
         language_id_for_path(path),
         Some(
             LanguageId::Typescript
@@ -121,7 +121,15 @@ pub fn should_index_file(config: &Config, path: &Path) -> bool {
                 | LanguageId::CSharp
                 | LanguageId::Swift
         )
-    )
+    ) {
+        return false;
+    }
+
+    let s = path.to_string_lossy().replace('\\', "/");
+    config
+        .index_patterns
+        .iter()
+        .any(|pat| pattern_matches_file(&s, pat))
 }
 
 fn is_excluded(config: &Config, path: &Path) -> bool {
@@ -181,4 +189,33 @@ fn pattern_matches_file(path: &str, pattern: &str) -> bool {
 
     // Substring path match as fallback
     path.contains(core)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::StandaloneConfig;
+    use crate::path::Utf8PathBuf;
+
+    fn test_config() -> Config {
+        StandaloneConfig::default().repo_config(
+            Utf8PathBuf::from("/tmp/repo"),
+            &Utf8PathBuf::from("/tmp/data"),
+        )
+    }
+
+    #[test]
+    fn should_index_file_respects_index_patterns() {
+        let mut config = test_config();
+        config.index_patterns = vec!["**/*.rs".to_string()];
+
+        assert!(should_index_file(
+            &config,
+            Path::new("/tmp/repo/src/lib.rs")
+        ));
+        assert!(!should_index_file(
+            &config,
+            Path::new("/tmp/repo/src/app.py")
+        ));
+    }
 }

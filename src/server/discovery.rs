@@ -4,7 +4,7 @@
 //! allowing clients to auto-discover the standalone server's transport URL
 //! and capabilities.
 
-use axum::{routing::get, Json, Router};
+use axum::{middleware, routing::get, Json, Router};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 
@@ -19,13 +19,15 @@ pub async fn spawn_discovery_server(
 ) -> anyhow::Result<()> {
     let response_body = build_discovery_response(mcp_host, mcp_port);
 
-    let app = Router::new().route(
-        "/.well-known/mcp",
-        get(move || {
-            let body = response_body.clone();
-            async move { Json(body) }
-        }),
-    );
+    let app = Router::new()
+        .route(
+            "/.well-known/mcp",
+            get(move || {
+                let body = response_body.clone();
+                async move { Json(body) }
+            }),
+        )
+        .layer(middleware::from_fn(crate::server::origin::check_origin));
 
     let addr: SocketAddr = format!("{}:{}", mcp_host, discovery_port)
         .parse()

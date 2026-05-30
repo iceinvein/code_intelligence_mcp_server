@@ -327,7 +327,7 @@ fn extract_using_directive(node: Node<'_>, source: &str, imports: &mut Vec<Impor
     let name = qname.split('.').next_back().unwrap_or(&qname).to_string();
 
     imports.push(Import {
-        name: alias.clone().unwrap_or_else(|| name),
+        name: alias.clone().unwrap_or(name),
         source: qname,
         alias,
     });

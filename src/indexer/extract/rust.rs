@@ -1294,7 +1294,7 @@ async fn process() {
             .filter(|e| e.from_symbol.starts_with("await:") || e.from_symbol.starts_with("spawn:"))
             .collect();
         assert!(
-            async_edges.len() >= 1,
+            !async_edges.is_empty(),
             "Should detect await/spawn expressions, got edges: {:?}",
             file.dataflow_edges
                 .iter()

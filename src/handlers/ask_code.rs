@@ -383,10 +383,6 @@ fn build_evidence_only_response(
         .unwrap_or(false);
     let confidence = if evidence_count >= 3 {
         Confidence::Medium
-    } else if evidence_count > 0 {
-        Confidence::Low
-    } else if has_pack_rows {
-        Confidence::Low
     } else {
         Confidence::Low
     };

@@ -138,15 +138,12 @@ impl LlmGenerator for LlamaCppGenerator {
         }
 
         let mut output_tokens = vec![new_token];
-        let mut pos = n_prompt as i32;
-
         // Generate remaining tokens
-        for _ in 1..max_tokens {
+        for pos in n_prompt as i32..(n_prompt as i32 + max_tokens as i32 - 1) {
             batch.clear();
             batch
                 .add(new_token, pos, &[0], true)
                 .map_err(|e| anyhow!("Failed to add token to batch: {:?}", e))?;
-            pos += 1;
 
             ctx.decode(&mut batch)
                 .map_err(|e| anyhow!("Token decode failed: {:?}", e))?;

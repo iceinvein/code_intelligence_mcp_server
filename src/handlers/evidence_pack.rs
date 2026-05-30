@@ -238,8 +238,7 @@ fn select_evidence_line(body: Option<&str>, target: &str) -> SelectedEvidenceLin
     };
     let final_segment = target
         .split(['.', ':', '#'])
-        .filter(|segment| !segment.is_empty())
-        .next_back()
+        .rfind(|segment| !segment.is_empty())
         .unwrap_or(target);
 
     let selected = body

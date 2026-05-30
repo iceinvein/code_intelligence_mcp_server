@@ -472,7 +472,7 @@ mod tests {
         let db_path = base_dir.join("test.db");
 
         // Create test database
-        let conn = Connection::open(&db_path.as_str()).unwrap();
+        let conn = Connection::open(db_path.as_str()).unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS file_fingerprints (
                 file_path TEXT PRIMARY KEY,
@@ -613,7 +613,7 @@ mod tests {
         let db_path = base_dir.join("test.db");
 
         // Create test database
-        let conn = Connection::open(&db_path.as_str()).unwrap();
+        let conn = Connection::open(db_path.as_str()).unwrap();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS file_fingerprints (
                 file_path TEXT PRIMARY KEY,
@@ -732,7 +732,7 @@ mod tests {
         let db_path = base_dir.join("test.db");
 
         // Create test database
-        let conn = Connection::open(&db_path.as_str()).unwrap();
+        let conn = Connection::open(db_path.as_str()).unwrap();
 
         // Create test file with unsupported extension
         let test_file = tmp_dir.join("test.txt");

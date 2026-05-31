@@ -5,11 +5,14 @@ use crate::handlers::{
     tool_internal_error, AppState,
 };
 use crate::path::Utf8PathBuf;
+use crate::registry::{IndexConsent, RepoRegistry};
 use crate::server::mcp_proxy::{BoundRepos, PendingRepos};
 use crate::server::project_check::{ProjectGate, SkipReason};
 use crate::server::{all_tools, dispatch_tool_call, tool_json_content};
 use crate::session::SessionManager;
-use crate::tools::{BindWorkspaceTool, ExploreCrossRepoDependenciesTool, SearchAcrossReposTool};
+use crate::tools::{
+    ApproveIndexingTool, BindWorkspaceTool, ExploreCrossRepoDependenciesTool, SearchAcrossReposTool,
+};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rust_mcp_sdk::{
@@ -114,6 +117,41 @@ pub struct StandaloneHandler {
     /// after an SDK eviction. Written by every successful binding path here;
     /// dropped in lockstep with `session_repos` by the eviction loop.
     bound_repos: BoundRepos,
+}
+
+/// Outcome of resolving a session to its repo.
+pub(crate) enum Resolved {
+    /// Repo is loaded; proceed with tool dispatch.
+    Ready(Arc<AppState>),
+    /// Return this structured JSON payload to the agent instead of dispatching
+    /// (status `consent_required` or `declined`).
+    Consent(serde_json::Value),
+}
+
+/// What the consent gate decides for a resolved (path, source) pair.
+#[derive(Debug, PartialEq, Eq)]
+enum GateDecision {
+    Proceed,
+    NeedConsent,
+    Declined,
+}
+
+/// Pure consent-gate decision. Explicit binds and a disabled gate always
+/// proceed; otherwise an implicit bind proceeds only if the repo is already
+/// approved, is declined (-> Declined), or has never been seen (-> NeedConsent).
+fn consent_decision(
+    consent_required: bool,
+    explicit: bool,
+    status: Option<IndexConsent>,
+) -> GateDecision {
+    if explicit || !consent_required {
+        return GateDecision::Proceed;
+    }
+    match status {
+        Some(IndexConsent::Approved) => GateDecision::Proceed,
+        Some(IndexConsent::Declined) => GateDecision::Declined,
+        None => GateDecision::NeedConsent,
+    }
 }
 
 impl StandaloneHandler {
@@ -263,6 +301,27 @@ impl StandaloneHandler {
             .and_then(|info| info.repo.clone())
     }
 
+    /// Whether an implicitly-bound repo may be auto-indexed (pre-warmed) without
+    /// asking. True when the consent gate is disabled or the repo is already
+    /// recorded as approved; false for never-seen or declined repos. A registry
+    /// read error is treated as non-approved (returns false), matching the safe
+    /// default of deferring indexing until the user consents.
+    fn may_auto_index(&self, repo_path: &crate::path::Utf8Path) -> bool {
+        if !self
+            .session_manager
+            .standalone_config
+            .index_consent_required
+        {
+            return true;
+        }
+        matches!(
+            self.session_manager
+                .registry
+                .consent_status(repo_path.as_str()),
+            Ok(Some(IndexConsent::Approved))
+        )
+    }
+
     /// Parse a workspace-root URI into a UTF-8 path.
     ///
     /// Handles `file://` URIs (including Windows `file:///C:/...`) and falls
@@ -345,18 +404,26 @@ impl StandaloneHandler {
                 "Session bound to repo"
             );
 
-            // Pre-warm: trigger repo initialization in background so the
-            // first tool call does not pay the indexer-startup cost.
-            let sm = self.session_manager.clone();
-            let rp = repo_path.clone();
-            tokio::spawn(async move {
-                match sm.get_or_create_repo(&rp).await {
-                    Ok(_) => tracing::info!(repo = %rp, "Repo initialized successfully"),
-                    Err(e) => {
-                        tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo")
+            if self.may_auto_index(&repo_path) {
+                // Pre-warm: trigger repo initialization in background so the
+                // first tool call does not pay the indexer-startup cost.
+                let sm = self.session_manager.clone();
+                let rp = repo_path.clone();
+                tokio::spawn(async move {
+                    match sm.get_or_create_repo(&rp).await {
+                        Ok(_) => tracing::info!(repo = %rp, "Repo initialized successfully"),
+                        Err(e) => {
+                            tracing::error!(repo = %rp, error = %e, "Failed to pre-warm repo")
+                        }
                     }
-                }
-            });
+                });
+            } else {
+                tracing::info!(
+                    session = %session_id,
+                    repo = %repo_path,
+                    "New repo bound via roots/list; deferring index until user consents"
+                );
+            }
         }
 
         Some(repo_path)
@@ -418,6 +485,109 @@ impl StandaloneHandler {
         }))
     }
 
+    /// Apply an approve/decline decision for a concrete repo path. Returns the
+    /// JSON result. `approve` registers + initializes the repo (which starts
+    /// indexing); `decline` records the decision without initializing.
+    async fn approve_indexing_decision(
+        &self,
+        repo: &str,
+        decision: &str,
+    ) -> Result<serde_json::Value, CallToolError> {
+        let repo_id = RepoRegistry::path_hash(repo);
+        match decision {
+            "approve" => {
+                let repo_path = Utf8PathBuf::from(repo);
+                self.session_manager
+                    .get_or_create_repo(&repo_path)
+                    .await
+                    .map_err(|e| {
+                        CallToolError::from_message(format!("Failed to start indexing: {e}"))
+                    })?;
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "status": "indexing_started",
+                    "repo": repo,
+                    "repo_id": repo_id,
+                }))
+            }
+            "decline" => {
+                self.session_manager
+                    .registry
+                    .set_consent(repo, IndexConsent::Declined)
+                    .map_err(|e| {
+                        CallToolError::from_message(format!("Failed to record decline: {e}"))
+                    })?;
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "status": "declined",
+                    "repo": repo,
+                    "repo_id": repo_id,
+                }))
+            }
+            other => Err(CallToolError::from_message(format!(
+                "approve_indexing.decision must be \"approve\" or \"decline\", got: {other}"
+            ))),
+        }
+    }
+
+    /// Resolve the target repo (explicit arg or session binding), update session
+    /// bookkeeping, and apply the decision.
+    async fn handle_approve_indexing(
+        &self,
+        runtime: &Arc<dyn McpServer>,
+        tool: ApproveIndexingTool,
+    ) -> Result<serde_json::Value, CallToolError> {
+        let session_id = runtime.session_id().ok_or_else(|| {
+            CallToolError::from_message(
+                "No session ID; standalone mode requires Streamable HTTP transport".to_string(),
+            )
+        })?;
+
+        let repo_path = match tool.repo.as_deref() {
+            Some(p) => {
+                let path = Utf8PathBuf::from(p);
+                if !path.is_absolute() {
+                    return Err(CallToolError::from_message(format!(
+                        "approve_indexing.repo must be an absolute path, got: {p}"
+                    )));
+                }
+                if !path.is_dir() {
+                    return Err(CallToolError::from_message(format!(
+                        "approve_indexing.repo does not exist or is not a directory: {path}"
+                    )));
+                }
+                path
+            }
+            None => self.bound_repo(&session_id).ok_or_else(|| {
+                CallToolError::from_message(
+                    "No repo bound to this session and no `repo` provided. Pass an absolute `repo` path."
+                        .to_string(),
+                )
+            })?,
+        };
+
+        // On approve, bind the session to this repo so subsequent calls resolve
+        // to it and clear any prior auto-bind skip.
+        if tool.decision == "approve" {
+            self.upsert_session(&session_id, Some(repo_path.clone()));
+            self.bound_repos
+                .insert(session_id.clone(), repo_path.clone());
+            self.clear_bind_skip(&session_id);
+        }
+
+        let result = self
+            .approve_indexing_decision(repo_path.as_str(), &tool.decision)
+            .await?;
+
+        tracing::info!(
+            session = %session_id,
+            repo = %repo_path,
+            decision = %tool.decision,
+            "approve_indexing handled"
+        );
+        Ok(result)
+    }
+
     /// Fall back to the single repo registered with the SessionManager when
     /// the registry has exactly one entry. Returns `None` if zero or more
     /// than one repos are registered. This rule disables itself the moment
@@ -454,10 +624,7 @@ impl StandaloneHandler {
 
     /// Resolve the AppState for the current session's repo, binding lazily
     /// if `on_initialized` did not manage to during the race window.
-    async fn resolve_state(
-        &self,
-        runtime: &Arc<dyn McpServer>,
-    ) -> Result<Arc<AppState>, CallToolError> {
+    async fn resolve_state(&self, runtime: &Arc<dyn McpServer>) -> Result<Resolved, CallToolError> {
         let session_id = runtime.session_id().ok_or_else(|| {
             CallToolError::from_message(
                 "No session ID — standalone mode requires Streamable HTTP transport".to_string(),
@@ -468,17 +635,19 @@ impl StandaloneHandler {
         // never gets evicted by `spawn_session_eviction_loop`.
         self.touch_session(&session_id);
 
-        // Binding hierarchy (first match wins):
+        // Binding hierarchy (first match wins). The URL query is the only
+        // *explicit* source among these; roots/list and the single-repo
+        // fallback are *implicit* and subject to the consent gate.
         //   1. `?repo=` URL query — captured by the proxy, universal client support
         //   2. MCP `roots/list` — opportunistic, Claude Code only in practice
         //   3. Single-repo fallback — only when exactly one repo is registered
         //   4. Hard error with actionable guidance
-        let repo_path = if let Some(path) = self.try_url_query_binding(&session_id) {
-            path
+        let (repo_path, explicit) = if let Some(path) = self.try_url_query_binding(&session_id) {
+            (path, true)
         } else if let Some(path) = self.try_bind_session(runtime, &session_id).await {
-            path
+            (path, false)
         } else if let Some(path) = self.try_single_repo_fallback(&session_id).await {
-            path
+            (path, false)
         } else {
             return Err(CallToolError::from_message(
                 "Session not bound to a repo. Configure your MCP client URL as \
@@ -490,10 +659,53 @@ impl StandaloneHandler {
             ));
         };
 
-        self.session_manager
-            .get_or_create_repo(&repo_path)
-            .await
-            .map_err(|e| CallToolError::from_message(format!("Failed to load repo: {}", e)))
+        let consent_required = self
+            .session_manager
+            .standalone_config
+            .index_consent_required;
+        let status = self
+            .session_manager
+            .registry
+            .consent_status(repo_path.as_str())
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    repo = %repo_path,
+                    error = %e,
+                    "Failed to read indexing-consent status; treating repo as pending"
+                );
+                None
+            });
+
+        match consent_decision(consent_required, explicit, status) {
+            GateDecision::Proceed => {
+                let state = self
+                    .session_manager
+                    .get_or_create_repo(&repo_path)
+                    .await
+                    .map_err(|e| {
+                        CallToolError::from_message(format!("Failed to load repo: {}", e))
+                    })?;
+                Ok(Resolved::Ready(state))
+            }
+            GateDecision::NeedConsent => {
+                let repo_id = RepoRegistry::path_hash(repo_path.as_str());
+                tracing::info!(
+                    session = %session_id,
+                    repo = %repo_path,
+                    "Implicit bind of a new repo; awaiting user consent before indexing"
+                );
+                Ok(Resolved::Consent(
+                    crate::server::consent::consent_required_payload(repo_path.as_str(), &repo_id),
+                ))
+            }
+            GateDecision::Declined => {
+                let repo_id = RepoRegistry::path_hash(repo_path.as_str());
+                Ok(Resolved::Consent(crate::server::consent::declined_payload(
+                    repo_path.as_str(),
+                    &repo_id,
+                )))
+            }
+        }
     }
 }
 
@@ -549,7 +761,12 @@ impl ServerHandler for StandaloneHandler {
         // Resolve per-session state before creating the task so that
         // failures (e.g., no repo bound) return immediately without
         // creating an orphaned task.
-        let state = self.resolve_state(&runtime).await?;
+        let state = match self.resolve_state(&runtime).await? {
+            Resolved::Ready(s) => s,
+            Resolved::Consent(payload) => {
+                return Err(CallToolError::from_message(payload.to_string()))
+            }
+        };
         crate::server::dispatch_task_augmented_call(state, params, task_creator, runtime).await
     }
 
@@ -566,6 +783,14 @@ impl ServerHandler for StandaloneHandler {
             return Ok(tool_json_content(&result));
         }
 
+        // Consent resolution runs before resolve_state because the target repo
+        // may not be initialized yet (and it needs the SessionManager).
+        if params.name == "approve_indexing" {
+            let tool: ApproveIndexingTool = parse_tool_args(&params)?;
+            let result = self.handle_approve_indexing(&runtime, tool).await?;
+            return Ok(tool_json_content(&result));
+        }
+
         // Cross-repo search bypasses single-repo resolution — handle before resolve_state()
         if params.name == "search_across_repos" {
             let tool: SearchAcrossReposTool = parse_tool_args(&params)?;
@@ -577,7 +802,10 @@ impl ServerHandler for StandaloneHandler {
 
         // Cross-repo dependency exploration needs both per-repo state AND SessionManager
         if params.name == "explore_cross_repo_dependencies" {
-            let state = self.resolve_state(&runtime).await?;
+            let state = match self.resolve_state(&runtime).await? {
+                Resolved::Ready(s) => s,
+                Resolved::Consent(payload) => return Ok(tool_json_content(&payload)),
+            };
             let tool: ExploreCrossRepoDependenciesTool = parse_tool_args(&params)?;
             let result =
                 handle_explore_cross_repo_dependencies(&state, self.session_manager.as_ref(), tool)
@@ -585,7 +813,10 @@ impl ServerHandler for StandaloneHandler {
             return Ok(tool_json_content(&result));
         }
 
-        let state = self.resolve_state(&runtime).await?;
+        let state = match self.resolve_state(&runtime).await? {
+            Resolved::Ready(s) => s,
+            Resolved::Consent(payload) => return Ok(tool_json_content(&payload)),
+        };
         // Store the MCP runtime on first tool call so the description worker
         // can use it for sampling-based description generation.
         // NOTE: Currently forward-looking plumbing — standalone mode does not
@@ -832,5 +1063,92 @@ mod tests {
         assert!(h.bind_skip_reason(&sid).is_some());
         h.clear_bind_skip(&sid);
         assert!(h.bind_skip_reason(&sid).is_none());
+    }
+
+    #[tokio::test]
+    async fn approve_indexing_decline_records_declined_without_indexing() {
+        let h = test_handler();
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap().to_string();
+
+        let res = h
+            .approve_indexing_decision(&repo, "decline")
+            .await
+            .expect("decline ok");
+        assert_eq!(res["status"], "declined");
+        assert_eq!(
+            h.session_manager.registry.consent_status(&repo).unwrap(),
+            Some(crate::registry::IndexConsent::Declined)
+        );
+        // No data dir created for a decline.
+        let hash = crate::registry::RepoRegistry::path_hash(&repo);
+        let entry = h.session_manager.registry.get(&repo).unwrap().unwrap();
+        assert_eq!(entry.data_dir.file_name(), Some(hash.as_str()));
+        assert!(!entry.data_dir.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn approve_indexing_rejects_unknown_decision() {
+        let h = test_handler();
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap().to_string();
+        let err = h
+            .approve_indexing_decision(&repo, "maybe")
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("approve") || format!("{err}").contains("decline"));
+    }
+
+    #[test]
+    fn consent_decision_matrix() {
+        use crate::registry::IndexConsent::*;
+
+        // Explicit binds always proceed, regardless of status.
+        assert_eq!(consent_decision(true, true, None), GateDecision::Proceed);
+        assert_eq!(
+            consent_decision(true, true, Some(Declined)),
+            GateDecision::Proceed
+        );
+
+        // Gate disabled => always proceed.
+        assert_eq!(consent_decision(false, false, None), GateDecision::Proceed);
+
+        // Implicit + gate on:
+        assert_eq!(
+            consent_decision(true, false, Some(Approved)),
+            GateDecision::Proceed
+        );
+        assert_eq!(
+            consent_decision(true, false, Some(Declined)),
+            GateDecision::Declined
+        );
+        assert_eq!(
+            consent_decision(true, false, None),
+            GateDecision::NeedConsent
+        );
+    }
+
+    #[test]
+    fn may_auto_index_only_for_approved_or_disabled_gate() {
+        let h = test_handler();
+        let repo = Utf8PathBuf::from("/Users/me/new-implicit-repo");
+
+        // Gate on (default), repo never seen -> must NOT auto-index.
+        assert!(!h.may_auto_index(&repo));
+
+        // Once approved in the registry -> may auto-index.
+        h.session_manager
+            .registry
+            .set_consent(repo.as_str(), crate::registry::IndexConsent::Approved)
+            .unwrap();
+        assert!(h.may_auto_index(&repo));
+
+        // Declined -> must NOT auto-index.
+        let declined = Utf8PathBuf::from("/Users/me/declined-repo");
+        h.session_manager
+            .registry
+            .set_consent(declined.as_str(), crate::registry::IndexConsent::Declined)
+            .unwrap();
+        assert!(!h.may_auto_index(&declined));
     }
 }

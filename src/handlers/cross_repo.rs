@@ -26,8 +26,15 @@ pub async fn handle_search_across_repos(
     let limit = tool.limit.unwrap_or(10).clamp(1, 100) as usize;
     let include_display = tool.include_display.unwrap_or(false);
 
-    // Gather all repos currently registered
-    let entries = session_manager.registry.list_all()?;
+    // Gather all registered repos, excluding any the user declined to index.
+    // Cross-repo search must never silently re-index (and thereby re-approve)
+    // a declined repo via get_or_create_repo.
+    let entries: Vec<_> = session_manager
+        .registry
+        .list_all()?
+        .into_iter()
+        .filter(|e| e.consent != crate::registry::IndexConsent::Declined)
+        .collect();
     let total_repos = entries.len();
 
     if total_repos == 0 {

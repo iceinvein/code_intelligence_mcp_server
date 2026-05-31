@@ -55,7 +55,7 @@ Unbound tool calls return an actionable JSON-RPC error pointing at all four opti
 
 ### What Claude Code Gets
 
-Once connected, Claude Code gains access to 32 MCP tools including:
+Once connected, Claude Code gains access to 33 MCP tools including:
 
 - **`ask_code`** — Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
 - **`investigate`** — Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
@@ -66,6 +66,7 @@ Once connected, Claude Code gains access to 32 MCP tools including:
 - **`find_affected_code`** — Impact analysis before refactoring
 - **`trace_data_flow`** — Follow variable reads/writes through the code
 - **`get_index_stats`** / **`refresh_index`** — Monitor and trigger re-indexing
+- **`approve_indexing`**: Approve or decline indexing for a newly-detected implicitly-bound repo. The server returns a `consent_required` result for never-indexed repos (for example git worktrees / temp copies); relay it to the user and call `approve_indexing` with their decision.
 
 ### Dashboard and JSON API
 
@@ -176,6 +177,7 @@ The server reads configuration from environment variables. Key ones:
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |
 | `RERANKER_ENABLED` | `false` | Load the bge-reranker-v2-m3 cross-encoder (~600 MB) and apply a query-time reorder on top of RRF results. Off by default (unproven quality benefit, GPU-resident). Loads in the background when enabled. |
 | `DESCRIPTIONS_ENABLED` | `false` | Spawn the index-time LLM description worker (Qwen2.5-Coder-1.5B) that backfills natural-language descriptions into the Tantivy index. Off by default: a multi-hour index-time backfill with no proven judge benefit (R005/R006). |
+| `INDEX_CONSENT_REQUIRED` | `true` | When on, a never-indexed repo bound implicitly (via `roots/list` or the single-repo fallback) is not auto-indexed. The first tool call returns a `consent_required` result; the agent asks the user, then calls `approve_indexing`. Explicit `?repo=` URL and `bind_workspace` binds are unaffected. Set `false` to restore unconditional auto-indexing (CI/bench). |
 | `LEARNING_ENABLED` | `true` | Enable selection/affinity learning |
 | `LEARNING_SELECTION_BOOST` | `0.1` | Max boost from user selection history |
 | `LEARNING_FILE_AFFINITY_BOOST` | `0.05` | Max boost from file access frequency |

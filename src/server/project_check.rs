@@ -195,6 +195,127 @@ fn path_eq_or_inside(candidate: &str, prefix: &str) -> bool {
     false
 }
 
+/// Coarse classification of a candidate repo path, used to add context to the
+/// indexing-consent prompt. Cheap, synchronous filesystem checks only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoClass {
+    /// A git worktree. `main` is the main repo path when it could be parsed
+    /// from the `.git` file's `gitdir:` pointer.
+    GitWorktree { main: Option<String> },
+    /// Path lives under a temporary directory.
+    TempDir,
+    /// Path name/segments look ephemeral (e.g. a `worktrees/` directory).
+    Ephemeral,
+    /// A normal new project.
+    Standard,
+}
+
+impl RepoClass {
+    /// Stable machine-readable tag for the `detected` field of the consent payload.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RepoClass::GitWorktree { .. } => "git_worktree",
+            RepoClass::TempDir => "temp_dir",
+            RepoClass::Ephemeral => "ephemeral",
+            RepoClass::Standard => "standard",
+        }
+    }
+
+    /// Human-readable recommendation shown to the agent (relayed to the user).
+    pub fn recommendation(&self) -> String {
+        match self {
+            RepoClass::GitWorktree { main } => {
+                let of = main
+                    .as_deref()
+                    .map(|m| format!(" of {m}"))
+                    .unwrap_or_default();
+                format!(
+                    "Looks like a git worktree{of} (usually ephemeral). Indexing runs a full GPU embedding pass and starts a file watcher. Most worktrees should be skipped."
+                )
+            }
+            RepoClass::TempDir => {
+                "Path is under a temporary directory; it is probably not a repo you want to index."
+                    .to_string()
+            }
+            RepoClass::Ephemeral => {
+                "Path looks ephemeral (e.g. a worktrees directory). Indexing runs a full GPU embedding pass; skip unless you will work here repeatedly."
+                    .to_string()
+            }
+            RepoClass::Standard => {
+                "Indexing runs a full GPU embedding pass and starts a file watcher. Approve if this is a project you will work in repeatedly."
+                    .to_string()
+            }
+        }
+    }
+
+    /// Optional structured detail (currently only the worktree's main repo).
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            RepoClass::GitWorktree { main: Some(m) } => Some(format!("git worktree of {m}")),
+            _ => None,
+        }
+    }
+}
+
+/// Classify a repo path using the process `$TMPDIR`.
+pub fn classify_repo(path: &Utf8Path) -> RepoClass {
+    classify_repo_with_env(path, std::env::var("TMPDIR").ok().as_deref())
+}
+
+/// Classify a repo path with an explicit `$TMPDIR` value (for tests).
+pub fn classify_repo_with_env(path: &Utf8Path, tmpdir: Option<&str>) -> RepoClass {
+    // A git worktree has `.git` as a FILE beginning with `gitdir:`.
+    let dot_git = path.join(".git");
+    if dot_git.as_std_path().is_file() {
+        let main = std::fs::read_to_string(dot_git.as_std_path())
+            .ok()
+            .and_then(|contents| {
+                contents
+                    .trim()
+                    .strip_prefix("gitdir:")
+                    .map(|rest| rest.trim().to_string())
+            })
+            .and_then(|gitdir| {
+                gitdir
+                    .split_once("/.git/worktrees/")
+                    .map(|(main, _)| main.to_string())
+            });
+        return RepoClass::GitWorktree { main };
+    }
+
+    let p = path.as_str();
+    let under = |prefix: &str| {
+        let prefix = prefix.trim_end_matches('/');
+        p == prefix || p.starts_with(&format!("{prefix}/"))
+    };
+    if [
+        "/tmp",
+        "/private/tmp",
+        "/var/tmp",
+        "/private/var/tmp",
+        "/var/folders",
+        "/private/var/folders",
+    ]
+    .iter()
+    .any(|pre| under(pre))
+        || tmpdir.map(under).unwrap_or(false)
+    {
+        return RepoClass::TempDir;
+    }
+
+    if p.contains("/worktrees/")
+        || p.contains("/.worktrees/")
+        || path
+            .file_name()
+            .map(|n| n.ends_with("-worktree"))
+            .unwrap_or(false)
+    {
+        return RepoClass::Ephemeral;
+    }
+
+    RepoClass::Standard
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +445,91 @@ mod tests {
         assert_eq!(
             permissive_gate().check(&dir),
             Err(SkipReason::NoProjectMarkers)
+        );
+    }
+
+    #[test]
+    fn classify_detects_git_worktree_and_main_repo() {
+        let tmp = project_local_tempdir();
+        let dir = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        // A worktree has `.git` as a FILE pointing at the main repo.
+        fs::write(
+            dir.join(".git"),
+            b"gitdir: /Users/me/main-repo/.git/worktrees/feature\n",
+        )
+        .unwrap();
+        let class = classify_repo_with_env(&dir, Some("/nonexistent-tmp"));
+        assert_eq!(
+            class,
+            RepoClass::GitWorktree {
+                main: Some("/Users/me/main-repo".to_string())
+            }
+        );
+        assert_eq!(class.kind(), "git_worktree");
+        assert_eq!(
+            class.detail().as_deref(),
+            Some("git worktree of /Users/me/main-repo")
+        );
+    }
+
+    #[test]
+    fn classify_treats_git_directory_as_standard() {
+        let tmp = project_local_tempdir();
+        let dir = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        // A normal repo has `.git` as a DIRECTORY.
+        fs::create_dir(dir.join(".git")).unwrap();
+        assert_eq!(
+            classify_repo_with_env(&dir, Some("/nonexistent-tmp")),
+            RepoClass::Standard
+        );
+    }
+
+    #[test]
+    fn classify_detects_tmpdir() {
+        assert_eq!(
+            classify_repo_with_env(Utf8Path::new("/tmp/scratch"), Some("/nonexistent-tmp")),
+            RepoClass::TempDir
+        );
+        assert_eq!(
+            classify_repo_with_env(
+                Utf8Path::new("/Users/me/scratch-tmp/foo"),
+                Some("/Users/me/scratch-tmp")
+            ),
+            RepoClass::TempDir
+        );
+    }
+
+    #[test]
+    fn classify_detects_ephemeral_worktrees_dir() {
+        assert_eq!(
+            classify_repo_with_env(
+                Utf8Path::new("/Users/me/project/.worktrees/feature"),
+                Some("/nonexistent-tmp")
+            ),
+            RepoClass::Ephemeral
+        );
+    }
+
+    #[test]
+    fn classify_worktree_without_parseable_gitdir_yields_none_main() {
+        let tmp = project_local_tempdir();
+        let dir = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        // `.git` is a file but its content is not a `gitdir:` pointer.
+        fs::write(dir.join(".git"), b"ref: refs/heads/main\n").unwrap();
+        assert_eq!(
+            classify_repo_with_env(&dir, Some("/nonexistent-tmp")),
+            RepoClass::GitWorktree { main: None }
+        );
+    }
+
+    #[test]
+    fn classify_detects_worktree_suffixed_dir_as_ephemeral() {
+        assert_eq!(
+            classify_repo_with_env(
+                Utf8Path::new("/Users/me/projects/feature-worktree"),
+                Some("/nonexistent-tmp")
+            ),
+            RepoClass::Ephemeral
         );
     }
 }

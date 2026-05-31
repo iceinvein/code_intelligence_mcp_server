@@ -207,6 +207,18 @@ pub struct BindWorkspaceTool {
 }
 
 #[macros::mcp_tool(
+    name = "approve_indexing",
+    description = "Approve or decline indexing for the repo bound to this session (or an explicit `repo` path). The server returns a `consent_required` result for a newly-detected repo bound implicitly via the editor workspace root (for example a git worktree or temp copy); relay that to the user and call this tool with their decision. `approve` starts indexing and remembers the choice; `decline` records the choice and skips indexing. Already-indexed repos do not need approval."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct ApproveIndexingTool {
+    /// Optional absolute path to the repo. Defaults to the session's bound repo.
+    pub repo: Option<String>,
+    /// "approve" to index and remember the choice; "decline" to skip and remember.
+    pub decision: String,
+}
+
+#[macros::mcp_tool(
     name = "report_selection",
     description = "Record selected search result feedback."
 )]

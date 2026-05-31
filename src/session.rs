@@ -127,6 +127,12 @@ impl SessionManager {
     ///
     /// A TTL of `0` is treated as "never evict" (infinite lifetime).
     pub async fn evict_idle_repos(&self) {
+        // Opportunistically drop decline records for ephemeral repos (worktrees,
+        // temp copies) whose paths have since been deleted.
+        if let Err(e) = self.registry.prune_declined_missing() {
+            tracing::debug!(error = %e, "prune_declined_missing failed");
+        }
+
         let ttl_secs = self.standalone_config.warm_ttl_seconds;
         if ttl_secs == 0 {
             return;
@@ -774,6 +780,29 @@ mod tests {
         assert!(!should_spawn_description_worker(true, true, true));
         // No LLM backend → nothing to spawn.
         assert!(!should_spawn_description_worker(true, false, false));
+    }
+
+    #[tokio::test]
+    async fn evict_idle_repos_prunes_declined_missing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let manager = SessionManager::new_for_test(data_dir).await;
+
+        // A declined repo whose path does not exist.
+        manager
+            .registry
+            .set_consent("/no/such/declined", crate::registry::IndexConsent::Declined)
+            .unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert_eq!(
+            manager
+                .registry
+                .consent_status("/no/such/declined")
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]

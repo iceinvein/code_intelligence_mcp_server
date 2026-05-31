@@ -1,6 +1,7 @@
 //! MCP server setup and handler implementation
 
 pub mod api;
+pub mod consent;
 pub mod discovery;
 pub mod jobs;
 pub mod mcp_proxy;
@@ -167,6 +168,7 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
         InvestigateTool::tool(),
         AskCodeTool::tool(),
         BindWorkspaceTool::tool(),
+        ApproveIndexingTool::tool(),
         ReportSelectionTool::tool(),
         ReportFileAccessTool::tool(),
         ExplainSearchTool::tool(),
@@ -652,6 +654,16 @@ mod tests {
         assert!(
             names.contains(&"get_context_bundle"),
             "all_tools() must include 'get_context_bundle', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_approve_indexing() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"approve_indexing"),
+            "approve_indexing must be advertised in all_tools()"
         );
     }
 

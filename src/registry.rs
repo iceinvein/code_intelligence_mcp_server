@@ -6,6 +6,34 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+/// Per-repo indexing-consent decision, persisted in `registry.json`.
+///
+/// Only `Approved` and `Declined` are ever written: a brand-new repo with no
+/// entry is treated as pending by callers (`consent_status` returns `None`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexConsent {
+    Approved,
+    Declined,
+}
+
+/// Default for the `consent` field when an on-disk entry predates it. Such
+/// entries were written for repos that were already being indexed, so they are
+/// grandfathered as approved.
+fn default_consent() -> IndexConsent {
+    IndexConsent::Approved
+}
+
+/// Extract the repo name (last path component) for logging/display.
+fn repo_name_from_path(repo_path: &str) -> String {
+    repo_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 /// Information about a registered repository
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoEntry {
@@ -14,6 +42,8 @@ pub struct RepoEntry {
     pub data_dir: Utf8PathBuf, // where this repo's indexes live
     pub created_at: String,    // RFC3339 timestamp
     pub last_accessed: String, // RFC3339 timestamp
+    #[serde(default = "default_consent")]
+    pub consent: IndexConsent,
 }
 
 /// Internal structure for JSON serialization
@@ -56,6 +86,9 @@ impl RepoRegistry {
 
         // Check if already exists
         if let Some(existing) = registry.repos.get_mut(&hash) {
+            // register() is only reached when we are about to index this repo,
+            // so registering implies approval (and flips a prior decline).
+            existing.consent = IndexConsent::Approved;
             // Touch last_accessed
             existing.last_accessed = now;
             let entry = existing.clone();
@@ -64,12 +97,7 @@ impl RepoRegistry {
         }
 
         // Extract repo name from path
-        let name = repo_path
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+        let name = repo_name_from_path(repo_path);
 
         // Create data directory path
         let data_dir = self.repos_dir.join(&hash);
@@ -84,6 +112,7 @@ impl RepoRegistry {
             data_dir,
             created_at: now.clone(),
             last_accessed: now,
+            consent: IndexConsent::Approved,
         };
 
         registry.repos.insert(hash, entry.clone());
@@ -149,6 +178,60 @@ impl RepoRegistry {
         }
 
         Ok(())
+    }
+
+    /// Record a consent decision for a repo WITHOUT creating its on-disk data
+    /// directory, and without touching `last_accessed`. Intended for persisting
+    /// a `Declined` choice for a repo we will not index; the `data_dir` path is
+    /// computed but not created. (Approved repos get their entry and data dir
+    /// from `register()` at index time.)
+    pub fn set_consent(&self, repo_path: &str, consent: IndexConsent) -> Result<RepoEntry> {
+        let hash = Self::path_hash(repo_path);
+        let mut registry = self.load()?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        if let Some(existing) = registry.repos.get_mut(&hash) {
+            existing.consent = consent;
+            let entry = existing.clone();
+            self.save(&registry)?;
+            return Ok(entry);
+        }
+
+        let name = repo_name_from_path(repo_path);
+        let entry = RepoEntry {
+            path: repo_path.to_string(),
+            name,
+            data_dir: self.repos_dir.join(&hash), // path only; not created
+            created_at: now.clone(),
+            last_accessed: now,
+            consent,
+        };
+        registry.repos.insert(hash, entry.clone());
+        self.save(&registry)?;
+        Ok(entry)
+    }
+
+    /// Return the recorded consent decision for a repo, or `None` if the repo
+    /// has never been registered (a brand-new repo, treated as pending).
+    pub fn consent_status(&self, repo_path: &str) -> Result<Option<IndexConsent>> {
+        Ok(self.get(repo_path)?.map(|e| e.consent))
+    }
+
+    /// Drop `Declined` entries whose path no longer exists on disk. Ephemeral
+    /// folders (git worktrees, temp copies) get unique paths and are deleted
+    /// after use; this keeps `registry.json` from accumulating dead declines.
+    /// Returns the number of entries pruned.
+    pub fn prune_declined_missing(&self) -> Result<usize> {
+        let mut registry = self.load()?;
+        let before = registry.repos.len();
+        registry.repos.retain(|_hash, e| {
+            e.consent != IndexConsent::Declined || std::path::Path::new(&e.path).exists()
+        });
+        let pruned = before - registry.repos.len();
+        if pruned > 0 {
+            self.save(&registry)?;
+        }
+        Ok(pruned)
     }
 
     /// Load registry from disk, or return empty registry if file doesn't exist
@@ -336,5 +419,101 @@ mod tests {
         let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
         let all = reg.list_all().unwrap();
         assert!(all.is_empty());
+    }
+
+    #[test]
+    fn new_entry_defaults_to_approved() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+        let entry = reg.register("/Users/dev/proj").unwrap();
+        assert_eq!(entry.consent, IndexConsent::Approved);
+    }
+
+    #[test]
+    fn missing_consent_field_deserializes_as_approved() {
+        // A registry.json written before the consent field existed must
+        // grandfather its repos as Approved (they were already being indexed).
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let registry_path = dir_path.join("registry.json");
+        // Use the real sha256-based hash for "/x/y" so get() can find the entry.
+        let hash = RepoRegistry::path_hash("/x/y");
+        let json = format!(
+            r#"{{"repos":{{"{hash}":{{"path":"/x/y","name":"y","data_dir":"/d","created_at":"t","last_accessed":"t"}}}}}}"#
+        );
+        std::fs::write(&registry_path, json).unwrap();
+        let reg = RepoRegistry::new(registry_path, dir_path.join("repos"));
+        let entry = reg.get("/x/y").unwrap().unwrap();
+        assert_eq!(entry.consent, IndexConsent::Approved);
+    }
+
+    #[test]
+    fn set_consent_records_decline_without_creating_data_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let repos_dir = dir_path.join("repos");
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), repos_dir.clone());
+
+        let entry = reg
+            .set_consent("/Users/dev/declined", IndexConsent::Declined)
+            .unwrap();
+        assert_eq!(entry.consent, IndexConsent::Declined);
+        // No data directory was created on disk.
+        assert!(!entry.data_dir.as_std_path().exists());
+        // Persisted and readable.
+        assert_eq!(
+            reg.consent_status("/Users/dev/declined").unwrap(),
+            Some(IndexConsent::Declined)
+        );
+    }
+
+    #[test]
+    fn consent_status_is_none_for_unregistered_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+        assert_eq!(reg.consent_status("/never/seen").unwrap(), None);
+    }
+
+    #[test]
+    fn register_flips_declined_entry_back_to_approved() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+        reg.set_consent("/Users/dev/p", IndexConsent::Declined)
+            .unwrap();
+        // register() is only called when we are about to index, so it asserts approval.
+        let entry = reg.register("/Users/dev/p").unwrap();
+        assert_eq!(entry.consent, IndexConsent::Approved);
+    }
+
+    #[test]
+    fn prune_declined_missing_drops_only_absent_declines() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+
+        // A declined repo whose path no longer exists.
+        reg.set_consent("/no/such/worktree", IndexConsent::Declined)
+            .unwrap();
+        // A declined repo whose path DOES exist (the tempdir itself).
+        let alive = dir_path.as_str().to_string();
+        reg.set_consent(&alive, IndexConsent::Declined).unwrap();
+        // An approved repo whose path is missing must NOT be pruned.
+        reg.set_consent("/no/such/approved", IndexConsent::Approved)
+            .unwrap();
+
+        let pruned = reg.prune_declined_missing().unwrap();
+        assert_eq!(pruned, 1);
+        assert_eq!(reg.consent_status("/no/such/worktree").unwrap(), None);
+        assert_eq!(
+            reg.consent_status(&alive).unwrap(),
+            Some(IndexConsent::Declined)
+        );
+        assert_eq!(
+            reg.consent_status("/no/such/approved").unwrap(),
+            Some(IndexConsent::Approved)
+        );
     }
 }

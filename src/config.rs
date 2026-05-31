@@ -141,6 +141,11 @@ pub struct StandaloneConfig {
     /// judge benefit (R005/R006). Enable via `DESCRIPTIONS_ENABLED=1` or a
     /// `[descriptions] enabled = true` block in server.toml.
     pub descriptions_enabled: bool,
+    /// Whether implicitly-bound, never-indexed repos must be approved by the
+    /// user (via the `approve_indexing` tool) before the first index runs. On
+    /// by default; set `INDEX_CONSENT_REQUIRED=false` to restore unconditional
+    /// auto-indexing (CI, bench, power users).
+    pub index_consent_required: bool,
 }
 
 impl Default for StandaloneConfig {
@@ -188,6 +193,7 @@ impl Default for StandaloneConfig {
             discovery_port: None,
             reranker_enabled: false,
             descriptions_enabled: false,
+            index_consent_required: true,
         }
     }
 }
@@ -325,6 +331,15 @@ impl StandaloneConfig {
             .transpose()?
         {
             config.descriptions_enabled = enabled;
+        }
+
+        // Consent gate (on by default; opt out with INDEX_CONSENT_REQUIRED=false).
+        if let Some(enabled) = optional_env("INDEX_CONSENT_REQUIRED")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+        {
+            config.index_consent_required = enabled;
         }
 
         // Apply CLI overrides (highest priority)
@@ -1295,6 +1310,7 @@ mod tests {
             // Reranker config (FNDN-03)
             "RERANKER_ENABLED",
             "DESCRIPTIONS_ENABLED",
+            "INDEX_CONSENT_REQUIRED",
             "RERANKER_MODEL_PATH",
             "RERANKER_TOP_K",
             "RERANKER_CACHE_DIR",
@@ -1765,6 +1781,25 @@ enabled = true
                 "StandaloneConfig defaults must exclude '{pat}'; got {standalone_excludes:?}"
             );
         }
+    }
+
+    #[test]
+    fn index_consent_required_defaults_true() {
+        let config = StandaloneConfig::default();
+        assert!(config.index_consent_required);
+    }
+
+    #[test]
+    fn standalone_config_load_index_consent_required_from_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        std::env::set_var("INDEX_CONSENT_REQUIRED", "false");
+        let cfg = StandaloneConfig::load(None, None, None).unwrap();
+        std::env::remove_var("INDEX_CONSENT_REQUIRED");
+        assert!(
+            !cfg.index_consent_required,
+            "INDEX_CONSENT_REQUIRED=false should disable the consent gate in standalone load()"
+        );
     }
 
     #[test]

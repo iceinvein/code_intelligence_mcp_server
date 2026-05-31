@@ -61,3 +61,8 @@ docs/superpowers
 # Bench harness local state (indexes, cloned repos, codegraph workspaces)
 bench/state/
 bench/results/*/transcripts/
+
+# Web portal build artifacts (dist built in release CI; .gitkeep kept so rust-embed compiles)
+ui/node_modules/
+ui/dist/*
+!ui/dist/.gitkeep

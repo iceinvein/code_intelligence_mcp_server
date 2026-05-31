@@ -174,9 +174,11 @@ is safe.
   (including the `/api/logs/stream` SSE endpoint) to the daemon. The API client
   uses **relative** `/api` URLs so the same code is same-origin in production.
   The origin guard requires the `Origin` port to match the `Host` port, so the
-  Vite proxy must **strip the `Origin` header** on proxied requests
-  (`configure: (proxy) => proxy.on('proxyReq', (r) => r.removeHeader('origin'))`);
-  the daemon then takes its "no `Origin` = allow" path. In debug builds
+  Vite proxy **rewrites the `Origin` header to the daemon's own origin** on
+  proxied requests (`proxyReq.setHeader('origin', DAEMON_API)`); combined with
+  `changeOrigin` (which rewrites `Host` to the target) the daemon sees matching
+  origin and host ports and admits the request via its legitimate same-origin
+  path, without relying on the "no `Origin` = allow" bypass. In debug builds
   `rust-embed` (`debug-embed` off) serves `ui/dist/` live from disk, so a debug
   `cargo run` also serves whatever was last `bun run build`.
 - **Release CI:** `.github/workflows/release.yml`, "Build (macOS Silicon)" job
@@ -229,9 +231,11 @@ implementation plan.
 - **Origin check on the dev port (resolved).** The origin guard rejects
   mismatched localhost ports, so a direct browser->daemon fetch from the Vite
   port would 403. Resolved by routing all dev traffic through Vite's `/api`
-  proxy with the `Origin` header stripped (see Dev above). Production is
-  same-origin and unaffected. A `cargo test` in Phase 1 asserts a proxied-style
-  request (no `Origin`) is allowed and a cross-port `Origin` is rejected.
+  proxy, which rewrites the `Origin` header to the daemon's own origin (see Dev
+  above) so the request is admitted via the daemon's legitimate same-origin path
+  rather than the Origin-less bypass. Production is same-origin and unaffected.
+  The daemon's existing `origin.rs` tests already cover matching-port-allow and
+  cross-port-reject; the proxy rewrite is verified by the Task 8 manual curl.
 - **`server.toml` round-trip fidelity.** The writer must not clobber unrelated or
   comment content; decide between a structured re-serialise and a
   format-preserving edit in the settings phase.

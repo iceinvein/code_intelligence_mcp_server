@@ -81,7 +81,7 @@ pub async fn spawn_api_server(
     let app = Router::new()
         .route("/api/version", get(handle_version))
         .route("/api/status", get(handle_status))
-        .route("/api/repos", get(handle_repos))
+        .route("/api/repos", get(handle_repos).post(handle_repo_add))
         .route("/api/repos/{id}/reindex", post(handle_repo_reindex))
         .route(
             "/api/repos/{id}",
@@ -520,6 +520,58 @@ struct QueryRepoMapRequest {
     max_symbols_per_file: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AddRepoRequest {
+    path: String,
+}
+
+/// Validate and canonicalize a user-supplied repo path for explicit
+/// registration via `POST /api/repos`. Returns a message suitable for a 400.
+fn validate_repo_path(input: &str) -> Result<crate::path::Utf8PathBuf, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("path is required".to_string());
+    }
+    let canonical = dunce::canonicalize(std::path::Path::new(trimmed))
+        .map_err(|e| format!("path not found or not accessible: {e}"))?;
+    if !canonical.is_dir() {
+        return Err("path is not a directory".to_string());
+    }
+    crate::path::Utf8PathBuf::from_path_buf(canonical)
+        .map_err(|_| "path is not valid UTF-8".to_string())
+}
+
+/// `POST /api/repos` -> register a repo explicitly (consent = Approved).
+async fn handle_repo_add(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<AddRepoRequest>,
+) -> Result<Response, ApiError> {
+    let repo_path = match validate_repo_path(&req.path) {
+        Ok(p) => p,
+        Err(msg) => {
+            return Ok((StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response())
+        }
+    };
+    let entry = state
+        .session_manager
+        .registry
+        .register(repo_path.as_str())
+        .map_err(|e| ApiError(format!("register failed: {e}")))?;
+    let id = crate::registry::RepoRegistry::path_hash(&entry.path);
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "id": id,
+            "name": entry.name,
+            "path": entry.path,
+            "data_dir": entry.data_dir,
+            "created_at": entry.created_at,
+            "last_accessed": entry.last_accessed,
+        })),
+    )
+        .into_response())
+}
+
 async fn handle_query_search(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<QuerySearchRequest>,
@@ -864,6 +916,23 @@ mod tests {
         let activity = read_repo_persisted_activity(&entry);
 
         assert_eq!(activity.latest_index_run.unwrap().started_at_unix_s, 123);
+    }
+
+    #[test]
+    fn validate_repo_path_accepts_existing_dir_and_rejects_bad_input() {
+        let tmp = tempdir().expect("tempdir");
+        let dir = tmp.path().to_str().expect("utf8 tmp path");
+
+        // Existing directory canonicalizes to an Ok UTF-8 path.
+        assert!(validate_repo_path(dir).is_ok());
+        // Blank input is rejected.
+        assert!(validate_repo_path("   ").is_err());
+        // Nonexistent path is rejected.
+        assert!(validate_repo_path("/no/such/path/xyzzy-1b").is_err());
+        // A file (not a directory) is rejected.
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, b"x").expect("write file");
+        assert!(validate_repo_path(file.to_str().unwrap()).is_err());
     }
 
     #[test]

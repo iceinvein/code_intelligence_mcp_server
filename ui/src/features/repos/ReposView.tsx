@@ -56,7 +56,10 @@ function AddRepoForm() {
     <div className="mb-4 flex items-center gap-2">
       <input
         value={path}
-        onChange={(e) => setPath(e.target.value)}
+        onChange={(e) => {
+          setPath(e.target.value);
+          if (add.isError) add.reset();
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") submit();
         }}

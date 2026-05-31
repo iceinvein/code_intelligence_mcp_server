@@ -39,7 +39,7 @@ pub async fn spawn_discovery_server(
                 e
             )
         })?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = crate::server::net::bind_reusable_listener(addr)?;
 
     tracing::info!(
         discovery_port = discovery_port,

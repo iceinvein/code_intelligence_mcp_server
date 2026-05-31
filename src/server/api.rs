@@ -103,7 +103,7 @@ pub async fn spawn_api_server(
     let addr: SocketAddr = format!("{host}:{api_port}")
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid API address {host}:{api_port}: {e}"))?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = crate::server::net::bind_reusable_listener(addr)?;
 
     tracing::info!(
         api_port,

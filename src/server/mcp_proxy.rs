@@ -139,7 +139,7 @@ pub async fn spawn_mcp_proxy(
     let addr: SocketAddr = format!("{host}:{public_port}")
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid proxy address {host}:{public_port}: {e}"))?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = crate::server::net::bind_reusable_listener(addr)?;
 
     tracing::info!(
         public_port,

@@ -49,6 +49,7 @@ not relitigate them.
 |----------|--------|-----------|
 | Portal role | Full local code-intel app | Control plane + first-class search + exploration. |
 | Asset delivery (prod) | Embed in binary via `rust-embed` | Keeps the single self-contained binary; matches today's `include_str!` property. |
+| Bundler + dev server | Vite, with Bun as package manager + runtime | Vite is the best-trodden React + Tailwind + shadcn path (shadcn ships first-class Vite docs); Bun stays the PM/runtime (`bun install`, `bun run`). Overrides the global "no Vite" note by explicit request. |
 | Build of `ui/dist/` | Release CI only, not committed | Simpler than committing build output; safe because no consumer builds from source (see Distribution). |
 | Aesthetic | Terminal / workshop (continue current identity) | Distinctive developer-console identity; not generic SaaS. |
 | App shell | Persistent left sidebar + header + Cmd+K | Scales to ~8 destinations, surfaces ambient state (pending consent, running jobs) as sidebar badges, deep-linkable. |
@@ -74,13 +75,17 @@ uppercase micro-labels, dense rows.
 
 ### Frontend (`ui/`)
 
-`ui/` becomes a Bun project building to `ui/dist/`.
+`ui/` becomes a Bun-managed Vite + React project building to `ui/dist/`
+(Vite's `root` is `ui/`, `build.outDir` is `dist`). Bun is the package manager
+and script runner; `bun run dev` invokes Vite's dev server, `bun run build`
+invokes `vite build`.
 
 ```
 ui/
-  package.json            # bun project; scripts: dev, build, test, lint
-  tailwind.config.ts
-  index.html              # SPA entry
+  package.json            # bun-managed; scripts: dev (vite), build (vite build), test, lint
+  vite.config.ts          # React plugin, Tailwind plugin, /api dev proxy (strips Origin)
+  tsconfig.json
+  index.html              # Vite SPA entry (at ui/ root)
   src/
     app/                  # shell: sidebar, header, palette, router, theme provider
     components/ui/         # themed shadcn primitives
@@ -164,14 +169,20 @@ GitHub release, and the npm package consumes the same release binary. No consume
 runs `cargo build` from source. Therefore building `ui/dist/` only in release CI
 is safe.
 
-- **Dev:** the daemon serves `/api` on `mcp_port+2`. `bun dev` serves the UI with
-  HMR on its own port and proxies `/api` to the daemon. The UI dev origin is
-  localhost, so it passes the existing non-localhost `Origin` rejection. In debug
-  builds `rust-embed` (`debug-embed` off) serves `ui/dist/` live from disk, so a
-  debug `cargo run` also serves whatever was last `bun run build`.
+- **Dev:** the daemon serves `/api` on `mcp_port+2`. `bun run dev` starts Vite's
+  dev server with HMR on its own port; Vite's `server.proxy` forwards `/api`
+  (including the `/api/logs/stream` SSE endpoint) to the daemon. The API client
+  uses **relative** `/api` URLs so the same code is same-origin in production.
+  The origin guard requires the `Origin` port to match the `Host` port, so the
+  Vite proxy must **strip the `Origin` header** on proxied requests
+  (`configure: (proxy) => proxy.on('proxyReq', (r) => r.removeHeader('origin'))`);
+  the daemon then takes its "no `Origin` = allow" path. In debug builds
+  `rust-embed` (`debug-embed` off) serves `ui/dist/` live from disk, so a debug
+  `cargo run` also serves whatever was last `bun run build`.
 - **Release CI:** `.github/workflows/release.yml`, "Build (macOS Silicon)" job
   gains a step before "Build Binary": install Bun, `bun install`, `bun run build`
-  (populates `ui/dist/`). Then `cargo build --release` embeds it.
+  (runs `vite build`, populates `ui/dist/`). Then `cargo build --release` embeds
+  it.
 - **Empty-UI guard:** a release-build assertion (build.rs `cfg(not(debug))` check
   or an explicit CI step) fails the build if `ui/dist/index.html` is absent, so
   we can never ship a binary with an empty UI.
@@ -215,9 +226,12 @@ implementation plan.
   graph-viz deps in the last phase. Measure after Phase 1.
 - **Graph-visualisation library.** Deferred to Phase 5. Candidates and the
   perf/interaction trade-offs are evaluated in that phase's plan.
-- **Origin check on the dev port.** Confirm the existing origin guard accepts
-  `http://localhost:<bun-dev-port>` (any localhost port), not just the fixed
-  dashboard port, during Phase 1.
+- **Origin check on the dev port (resolved).** The origin guard rejects
+  mismatched localhost ports, so a direct browser->daemon fetch from the Vite
+  port would 403. Resolved by routing all dev traffic through Vite's `/api`
+  proxy with the `Origin` header stripped (see Dev above). Production is
+  same-origin and unaffected. A `cargo test` in Phase 1 asserts a proxied-style
+  request (no `Origin`) is allowed and a cross-port `Origin` is rejected.
 - **`server.toml` round-trip fidelity.** The writer must not clobber unrelated or
   comment content; decide between a structured re-serialise and a
   format-preserving edit in the settings phase.

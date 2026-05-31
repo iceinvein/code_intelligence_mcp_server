@@ -107,6 +107,39 @@ fn pick_port(start: u16) -> Result<u16> {
     ))
 }
 
+// ---------- Daemon state detection ----------
+
+/// What the `status` subcommand concluded about a running daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonState {
+    /// Nothing is serving the port and our launchd label is not loaded.
+    Stopped,
+    /// Running under our launchd label (`com.iceinvein.code-intelligence`).
+    Running,
+    /// A daemon is serving the port, but not via our launchd label, e.g.
+    /// Homebrew services (`homebrew.mxcl.code-intelligence-mcp`) or a process
+    /// started by hand. Reported so `status` never claims "stopped" while the
+    /// port is plainly in use.
+    RunningUnmanaged,
+}
+
+/// Decide daemon state from two independent signals: whether our launchd label
+/// reports the service loaded, and whether the MCP port is in use by anything.
+///
+/// The port probe is the catch-all that fixes the long-standing false-"stopped"
+/// report: `launchctl print` only knows about our own label, so a daemon
+/// supervised by Homebrew (a different label) or launched directly used to read
+/// as "stopped" even while it was serving requests.
+fn determine_daemon_state(label_running: bool, port_in_use: bool) -> DaemonState {
+    if label_running {
+        DaemonState::Running
+    } else if port_in_use {
+        DaemonState::RunningUnmanaged
+    } else {
+        DaemonState::Stopped
+    }
+}
+
 // ---------- plist template ----------
 
 fn render_plist(self_path: &Path, port: u16, autostart: bool, home: &Path) -> String {
@@ -376,7 +409,12 @@ pub fn handle_stop() -> Result<()> {
 pub fn handle_status() -> Result<()> {
     let plist_p = plist_path()?;
     let installed = plist_p.exists();
-    let running = launchctl_running().unwrap_or(false);
+    let label_running = launchctl_running().unwrap_or(false);
+    // Probe the port too: `launchctl print` only knows about our own label, so
+    // a daemon supervised by Homebrew or started by hand would otherwise read
+    // as "stopped" while it is plainly serving requests.
+    let port_in_use = !port_is_free(DEFAULT_PORT);
+    let state = determine_daemon_state(label_running, port_in_use);
 
     println!(
         "code-intelligence-mcp-server v{}",
@@ -387,13 +425,18 @@ pub fn handle_status() -> Result<()> {
         plist_p.display(),
         if installed { "present" } else { "missing" }
     );
-    println!(
-        "  daemon:    {}",
-        if running { "running" } else { "stopped" }
-    );
+    let daemon_line = match state {
+        DaemonState::Running => "running".to_string(),
+        DaemonState::RunningUnmanaged => format!(
+            "running (port {DEFAULT_PORT} in use; not managed by our launchd label, \
+             likely Homebrew services or a bare process)"
+        ),
+        DaemonState::Stopped => "stopped".to_string(),
+    };
+    println!("  daemon:    {daemon_line}");
 
-    // Try to surface PID + port by parsing `launchctl print` output.
-    if running {
+    // PID via `launchctl print` is only meaningful when our own label is loaded.
+    if state == DaemonState::Running {
         let out = Command::new("launchctl")
             .args(["print", &service_target()])
             .output()
@@ -656,6 +699,31 @@ mod tests {
     fn render_plist_respects_no_autostart() {
         let plist = render_plist(Path::new("/x"), 18000, false, Path::new("/Users/test"));
         assert!(plist.contains("<key>RunAtLoad</key>\n  <false/>"));
+    }
+
+    #[test]
+    fn daemon_state_running_when_our_label_is_loaded() {
+        // Our launchd label being live is authoritative regardless of the port
+        // probe outcome.
+        assert_eq!(determine_daemon_state(true, true), DaemonState::Running);
+        assert_eq!(determine_daemon_state(true, false), DaemonState::Running);
+    }
+
+    #[test]
+    fn daemon_state_unmanaged_when_port_busy_but_label_absent() {
+        // Regression: a daemon supervised by a *different* launchd label
+        // (Homebrew's `homebrew.mxcl.code-intelligence-mcp`) or started bare
+        // must never be reported as "stopped" while it is plainly serving the
+        // port. This is the false-"stopped" bug `status` used to print.
+        assert_eq!(
+            determine_daemon_state(false, true),
+            DaemonState::RunningUnmanaged
+        );
+    }
+
+    #[test]
+    fn daemon_state_stopped_only_when_nothing_listens() {
+        assert_eq!(determine_daemon_state(false, false), DaemonState::Stopped);
     }
 
     #[test]

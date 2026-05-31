@@ -6,6 +6,7 @@ import type {
   RepoDetail,
   ReindexResponse,
   DeleteResponse,
+  AddRepoResponse,
 } from "@/api/types";
 
 export function fetchRepos(signal?: AbortSignal): Promise<ReposResponse> {
@@ -30,4 +31,8 @@ export function reindexRepo(id: string): Promise<ReindexResponse> {
 
 export function deleteRepo(id: string): Promise<DeleteResponse> {
   return apiSend<DeleteResponse>("DELETE", `/repos/${encodeURIComponent(id)}`);
+}
+
+export function addRepo(path: string): Promise<AddRepoResponse> {
+  return apiSend<AddRepoResponse>("POST", "/repos", { path });
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useRepos, useRepoDetail, useReindexRepo, useDeleteRepo } from "@/features/repos/useRepos";
+import { useRepos, useRepoDetail, useReindexRepo, useDeleteRepo, useAddRepo } from "@/features/repos/useRepos";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +30,7 @@ export function ReposView() {
       <h2 className="mb-3 text-[10px] uppercase tracking-[0.18em] text-label">
         repositories &middot; {repos.length}
       </h2>
+      <AddRepoForm />
       {repos.length === 0 ? (
         <div className="text-xs text-muted-foreground">no repositories registered</div>
       ) : (
@@ -40,6 +41,36 @@ export function ReposView() {
         </div>
       )}
     </section>
+  );
+}
+
+function AddRepoForm() {
+  const [path, setPath] = useState("");
+  const add = useAddRepo();
+  const submit = () => {
+    const trimmed = path.trim();
+    if (!trimmed) return;
+    add.mutate(trimmed, { onSuccess: () => setPath("") });
+  };
+  return (
+    <div className="mb-4 flex items-center gap-2">
+      <input
+        value={path}
+        onChange={(e) => setPath(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+        }}
+        placeholder="/absolute/path/to/repo"
+        aria-label="repository path to add"
+        className="h-7 flex-1 rounded-md border border-border bg-card px-2 font-mono text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      />
+      <Button size="sm" disabled={add.isPending || path.trim() === ""} onClick={submit}>
+        {add.isPending ? "adding" : "add repo"}
+      </Button>
+      {add.isError ? (
+        <span className="text-[11px] text-destructive">{String((add.error as Error).message)}</span>
+      ) : null}
+    </div>
   );
 }
 

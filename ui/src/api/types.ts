@@ -114,3 +114,12 @@ export type DeleteResponse = {
   repo_path: string;
   data_dir: string;
 };
+
+export type AddRepoResponse = {
+  id: string;
+  name: string;
+  path: string;
+  data_dir: string;
+  created_at: string;
+  last_accessed: string;
+};

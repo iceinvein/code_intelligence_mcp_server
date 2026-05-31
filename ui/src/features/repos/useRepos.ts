@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { deleteRepo, fetchRepoDetail, fetchRepos, reindexRepo } from "@/api/repos";
+import { addRepo, deleteRepo, fetchRepoDetail, fetchRepos, reindexRepo } from "@/api/repos";
 
 export function useRepos() {
   return useQuery({
@@ -32,6 +32,16 @@ export function useDeleteRepo() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => deleteRepo(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["repos"] });
+    },
+  });
+}
+
+export function useAddRepo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) => addRepo(path),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["repos"] });
     },

@@ -26,7 +26,7 @@ use axum::{
     middleware,
     response::{
         sse::{Event, KeepAlive, Sse},
-        Html, IntoResponse, Json, Response,
+        IntoResponse, Json, Response,
     },
     routing::{get, post},
     Router,
@@ -36,7 +36,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 
-const DASHBOARD_HTML: &str = include_str!("../../ui/dashboard.html");
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -80,7 +79,6 @@ pub async fn spawn_api_server(
     });
 
     let app = Router::new()
-        .route("/", get(handle_dashboard))
         .route("/api/version", get(handle_version))
         .route("/api/status", get(handle_status))
         .route("/api/repos", get(handle_repos))
@@ -97,6 +95,7 @@ pub async fn spawn_api_server(
         .route("/api/jobs", get(handle_jobs))
         .route("/api/sessions", get(handle_sessions))
         .route("/api/logs/stream", get(handle_logs_stream))
+        .fallback(crate::server::assets::serve_spa)
         .layer(middleware::from_fn(crate::server::origin::check_origin))
         .with_state(state);
 
@@ -116,10 +115,6 @@ pub async fn spawn_api_server(
         }
     });
     Ok(())
-}
-
-async fn handle_dashboard() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
 }
 
 async fn handle_version(State(state): State<Arc<ApiState>>) -> Json<Value> {

@@ -1,6 +1,7 @@
 //! MCP server setup and handler implementation
 
 pub mod api;
+pub mod assets;
 pub mod consent;
 pub mod discovery;
 pub mod jobs;

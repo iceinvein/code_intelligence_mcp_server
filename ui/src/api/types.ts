@@ -2,6 +2,8 @@
 
 export type RepoActivity = {
   running: boolean;
+  // Job/run detail objects: left as unknown in Phase 1 (only `running` is
+  // rendered). These get concrete types when the jobs/activity views land.
   current: unknown | null;
   last_finished: unknown | null;
   latest_index_run: unknown | null;

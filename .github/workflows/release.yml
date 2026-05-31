@@ -87,6 +87,21 @@ jobs:
       - name: Install Protoc
         run: brew install protobuf
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build Web Portal
+        run: |
+          cd ui
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Assert UI built
+        run: |
+          test -f ui/dist/index.html || { echo "::error::ui/dist/index.html missing; web portal did not build"; exit 1; }
+
       - name: Build Binary
         run: cargo build --release --target aarch64-apple-darwin
 

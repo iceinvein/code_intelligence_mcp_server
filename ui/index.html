@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>code intelligence</title>
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem("cimcp.theme") || "system";
+          var root = document.documentElement;
+          root.classList.remove("theme-light", "theme-dark");
+          if (pref === "light") root.classList.add("theme-light");
+          else if (pref === "dark") root.classList.add("theme-dark");
+        } catch (_) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -8,6 +8,8 @@ use std::{
 use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
 use crate::registry::RepoRegistry;
 
+pub(crate) mod toml_writer;
+
 /// Returns the global data directory (~/.code-intelligence)
 ///
 /// This function uses a layered fallback strategy to avoid panicking:
@@ -71,6 +73,11 @@ struct ServerToml {
     lifecycle: Option<ServerTomlLifecycle>,
     reranker: Option<ServerTomlReranker>,
     descriptions: Option<ServerTomlDescriptions>,
+    indexing: Option<ServerTomlIndexing>,
+    retrieval: Option<ServerTomlRetrieval>,
+    ranking: Option<ServerTomlRanking>,
+    rrf: Option<ServerTomlRrf>,
+    learning: Option<ServerTomlLearning>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +88,43 @@ struct ServerTomlReranker {
 #[derive(Debug, Deserialize)]
 struct ServerTomlDescriptions {
     enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlIndexing {
+    consent_required: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlRetrieval {
+    hybrid_alpha: Option<f32>,
+    max_context_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlRanking {
+    vector_weight: Option<f32>,
+    keyword_weight: Option<f32>,
+    exported_boost: Option<f32>,
+    index_file_boost: Option<f32>,
+    test_penalty: Option<f32>,
+    popularity_weight: Option<f32>,
+    popularity_cap: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlRrf {
+    k: Option<f32>,
+    keyword_weight: Option<f32>,
+    vector_weight: Option<f32>,
+    graph_weight: Option<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlLearning {
+    enabled: Option<bool>,
+    selection_boost: Option<f32>,
+    file_affinity_boost: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +190,23 @@ pub struct StandaloneConfig {
     /// by default; set `INDEX_CONSENT_REQUIRED=false` to restore unconditional
     /// auto-indexing (CI, bench, power users).
     pub index_consent_required: bool,
+    // Tier 2 retrieval tuning (formerly hardcoded in repo_config()).
+    pub hybrid_alpha: f32,
+    pub max_context_bytes: usize,
+    pub rank_vector_weight: f32,
+    pub rank_keyword_weight: f32,
+    pub rank_exported_boost: f32,
+    pub rank_index_file_boost: f32,
+    pub rank_test_penalty: f32,
+    pub rank_popularity_weight: f32,
+    pub rank_popularity_cap: u64,
+    pub rrf_k: f32,
+    pub rrf_keyword_weight: f32,
+    pub rrf_vector_weight: f32,
+    pub rrf_graph_weight: f32,
+    pub learning_enabled: bool,
+    pub learning_selection_boost: f32,
+    pub learning_file_affinity_boost: f32,
 }
 
 impl Default for StandaloneConfig {
@@ -194,6 +255,22 @@ impl Default for StandaloneConfig {
             reranker_enabled: false,
             descriptions_enabled: false,
             index_consent_required: true,
+            hybrid_alpha: 0.7,
+            max_context_bytes: 200_000,
+            rank_vector_weight: 0.7,
+            rank_keyword_weight: 0.3,
+            rank_exported_boost: 1.0,
+            rank_index_file_boost: 0.05,
+            rank_test_penalty: 0.1,
+            rank_popularity_weight: 0.05,
+            rank_popularity_cap: 50,
+            rrf_k: 60.0,
+            rrf_keyword_weight: 1.0,
+            rrf_vector_weight: 1.0,
+            rrf_graph_weight: 0.5,
+            learning_enabled: true,
+            learning_selection_boost: 0.1,
+            learning_file_affinity_boost: 0.05,
         }
     }
 }
@@ -252,6 +329,72 @@ impl StandaloneConfig {
         if let Some(descriptions) = parsed.descriptions {
             if let Some(enabled) = descriptions.enabled {
                 config.descriptions_enabled = enabled;
+            }
+        }
+
+        if let Some(indexing) = parsed.indexing {
+            if let Some(v) = indexing.consent_required {
+                config.index_consent_required = v;
+            }
+        }
+
+        if let Some(retrieval) = parsed.retrieval {
+            if let Some(v) = retrieval.hybrid_alpha {
+                config.hybrid_alpha = v;
+            }
+            if let Some(v) = retrieval.max_context_bytes {
+                config.max_context_bytes = v;
+            }
+        }
+
+        if let Some(ranking) = parsed.ranking {
+            if let Some(v) = ranking.vector_weight {
+                config.rank_vector_weight = v;
+            }
+            if let Some(v) = ranking.keyword_weight {
+                config.rank_keyword_weight = v;
+            }
+            if let Some(v) = ranking.exported_boost {
+                config.rank_exported_boost = v;
+            }
+            if let Some(v) = ranking.index_file_boost {
+                config.rank_index_file_boost = v;
+            }
+            if let Some(v) = ranking.test_penalty {
+                config.rank_test_penalty = v;
+            }
+            if let Some(v) = ranking.popularity_weight {
+                config.rank_popularity_weight = v;
+            }
+            if let Some(v) = ranking.popularity_cap {
+                config.rank_popularity_cap = v;
+            }
+        }
+
+        if let Some(rrf) = parsed.rrf {
+            if let Some(v) = rrf.k {
+                config.rrf_k = v;
+            }
+            if let Some(v) = rrf.keyword_weight {
+                config.rrf_keyword_weight = v;
+            }
+            if let Some(v) = rrf.vector_weight {
+                config.rrf_vector_weight = v;
+            }
+            if let Some(v) = rrf.graph_weight {
+                config.rrf_graph_weight = v;
+            }
+        }
+
+        if let Some(learning) = parsed.learning {
+            if let Some(v) = learning.enabled {
+                config.learning_enabled = v;
+            }
+            if let Some(v) = learning.selection_boost {
+                config.learning_selection_boost = v;
+            }
+            if let Some(v) = learning.file_affinity_boost {
+                config.learning_file_affinity_boost = v;
             }
         }
 
@@ -377,20 +520,20 @@ impl StandaloneConfig {
             hash_embedding_dim: self.hash_embedding_dim,
             vector_search_limit: 20,
             vector_guaranteed_results: 3,
-            hybrid_alpha: 0.7,
-            rank_vector_weight: 0.7,
-            rank_keyword_weight: 0.3,
-            rank_exported_boost: 1.0,
-            rank_index_file_boost: 0.05,
-            rank_test_penalty: 0.1,
-            rank_popularity_weight: 0.05,
-            rank_popularity_cap: 50,
+            hybrid_alpha: self.hybrid_alpha,
+            rank_vector_weight: self.rank_vector_weight,
+            rank_keyword_weight: self.rank_keyword_weight,
+            rank_exported_boost: self.rank_exported_boost,
+            rank_index_file_boost: self.rank_index_file_boost,
+            rank_test_penalty: self.rank_test_penalty,
+            rank_popularity_weight: self.rank_popularity_weight,
+            rank_popularity_cap: self.rank_popularity_cap,
             index_patterns: self.default_index_patterns.clone(),
             exclude_patterns: self.default_exclude_patterns.clone(),
             watch_mode: self.default_watch_mode,
             watch_debounce_ms: 2000,
             watch_min_index_interval_ms: 5000,
-            max_context_bytes: 200_000,
+            max_context_bytes: self.max_context_bytes,
             index_node_modules: false,
             repo_roots: vec![repo_path],
             reranker_enabled: self.reranker_enabled,
@@ -398,9 +541,9 @@ impl StandaloneConfig {
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: Some(global_dir.join("reranker-cache")),
-            learning_enabled: true,
-            learning_selection_boost: 0.1,
-            learning_file_affinity_boost: 0.05,
+            learning_enabled: self.learning_enabled,
+            learning_selection_boost: self.learning_selection_boost,
+            learning_file_affinity_boost: self.learning_file_affinity_boost,
             max_context_tokens: 8192,
             token_encoding: "o200k_base".to_string(),
             parallel_workers: std::thread::available_parallelism()
@@ -413,10 +556,10 @@ impl StandaloneConfig {
             synonym_expansion_enabled: true,
             acronym_expansion_enabled: true,
             rrf_enabled: true,
-            rrf_k: 60.0,
-            rrf_keyword_weight: 1.0,
-            rrf_vector_weight: 1.0,
-            rrf_graph_weight: 0.5,
+            rrf_k: self.rrf_k,
+            rrf_keyword_weight: self.rrf_keyword_weight,
+            rrf_vector_weight: self.rrf_vector_weight,
+            rrf_graph_weight: self.rrf_graph_weight,
             hyde_enabled: true,
             hyde_llm_backend: "local".to_string(),
             hyde_api_key: None,
@@ -1689,6 +1832,70 @@ enabled = true
             cfg.reranker_enabled,
             "RERANKER_ENABLED=1 should enable the reranker in standalone load()"
         );
+    }
+
+    #[test]
+    fn from_toml_str_reads_tier2_sections() {
+        let toml = r#"
+[retrieval]
+hybrid_alpha = 0.55
+max_context_bytes = 123456
+
+[ranking]
+vector_weight = 0.6
+popularity_cap = 25
+
+[rrf]
+k = 42.0
+graph_weight = 0.9
+
+[learning]
+enabled = false
+selection_boost = 0.2
+
+[indexing]
+consent_required = false
+"#;
+        let cfg = StandaloneConfig::from_toml_str(toml).unwrap();
+        assert!((cfg.hybrid_alpha - 0.55).abs() < 1e-6);
+        assert_eq!(cfg.max_context_bytes, 123456);
+        assert!((cfg.rank_vector_weight - 0.6).abs() < 1e-6);
+        assert_eq!(cfg.rank_popularity_cap, 25);
+        assert!((cfg.rrf_k - 42.0).abs() < 1e-6);
+        assert!((cfg.rrf_graph_weight - 0.9).abs() < 1e-6);
+        assert!(!cfg.learning_enabled);
+        assert!((cfg.learning_selection_boost - 0.2).abs() < 1e-6);
+        assert!(!cfg.index_consent_required);
+    }
+
+    #[test]
+    fn defaults_reproduce_repo_config_literals() {
+        let s = StandaloneConfig::default();
+        let dir = Utf8PathBuf::from("/tmp/whatever");
+        let cfg = s.repo_config(dir.clone(), &dir);
+        assert!((cfg.hybrid_alpha - 0.7).abs() < 1e-6);
+        assert!((cfg.rank_vector_weight - 0.7).abs() < 1e-6);
+        assert!((cfg.rank_keyword_weight - 0.3).abs() < 1e-6);
+        assert_eq!(cfg.rank_popularity_cap, 50);
+        assert!((cfg.rrf_k - 60.0).abs() < 1e-6);
+        assert_eq!(cfg.max_context_bytes, 200_000);
+        assert!(cfg.learning_enabled);
+        assert!((cfg.learning_selection_boost - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn repo_config_sources_tier2_from_standalone() {
+        let s = StandaloneConfig {
+            hybrid_alpha: 0.42,
+            rank_test_penalty: 0.9,
+            learning_enabled: false,
+            ..StandaloneConfig::default()
+        };
+        let dir = Utf8PathBuf::from("/tmp/whatever");
+        let cfg = s.repo_config(dir.clone(), &dir);
+        assert!((cfg.hybrid_alpha - 0.42).abs() < 1e-6);
+        assert!((cfg.rank_test_penalty - 0.9).abs() < 1e-6);
+        assert!(!cfg.learning_enabled);
     }
 
     /// Verify that the default INDEX_PATTERNS cover every extension that

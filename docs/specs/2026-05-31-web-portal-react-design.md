@@ -206,8 +206,8 @@ implementation plan.
 3. **First-class search/investigate UI.** Query box, ranked results, expandable
    syntax-highlighted evidence, jump to definition/references. Upgrades the bare
    query playground into a daily-driver tool.
-4. **Settings editor.** Runtime-mutable config layer + `server.toml` write-back +
-   UI, with the hot-apply / restart-prompt split.
+4. **[shipped] Settings editor.** Restart-only `server.toml` write-back + UI,
+   including Tier 2 retrieval tuning previously hardcoded in `repo_config()`.
 5. **Graph/symbol exploration.** Call/type/dependency graph visualisation, symbol
    inspector (definition + references + usage examples), index browse by file
    tree. Heaviest area; graph-visualisation library chosen in this phase's plan.

@@ -5,6 +5,7 @@ import { ActivityView } from "@/features/activity/ActivityView";
 import { ConsentView } from "@/features/consent/ConsentView";
 import { LogsView } from "@/features/logs/LogsView";
 import { SearchView } from "@/features/search/SearchView";
+import { SettingsView } from "@/features/settings/SettingsView";
 
 function Placeholder({ name }: { name: string }) {
   return <div className="text-xs text-muted-foreground">{name}: coming in a later phase</div>;
@@ -20,7 +21,7 @@ export const router = createBrowserRouter([
       { path: "search", element: <SearchView /> },
       { path: "graph", element: <Placeholder name="graph" /> },
       { path: "symbols", element: <Placeholder name="symbols" /> },
-      { path: "settings", element: <Placeholder name="settings" /> },
+      { path: "settings", element: <SettingsView /> },
       { path: "consent", element: <ConsentView /> },
       { path: "logs", element: <LogsView /> },
       { path: "activity", element: <ActivityView /> },

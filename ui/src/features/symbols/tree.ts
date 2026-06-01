@@ -18,6 +18,47 @@ function finalize(dir: DirBuilder): TreeNode[] {
   return [...dirNodes, ...fileNodes];
 }
 
+export type FlatRow =
+  | { type: "dir"; name: string; path: string; depth: number; open: boolean }
+  | { type: "file"; name: string; path: string; depth: number; symbolCount: number };
+
+/**
+ * Flatten the tree into the rows that are currently visible (children of a
+ * directory appear only when its path is in `expanded`), tagging each with its
+ * depth. This is the windowing input for the virtualized FileTree.
+ */
+export function flattenVisible(
+  nodes: TreeNode[],
+  expanded: Set<string>,
+  depth = 0,
+): FlatRow[] {
+  const out: FlatRow[] = [];
+  for (const node of nodes) {
+    if (node.type === "file") {
+      out.push({ type: "file", name: node.name, path: node.path, depth, symbolCount: node.symbolCount });
+    } else {
+      const open = expanded.has(node.path);
+      out.push({ type: "dir", name: node.name, path: node.path, depth, open });
+      if (open) {
+        out.push(...flattenVisible(node.children, expanded, depth + 1));
+      }
+    }
+  }
+  return out;
+}
+
+/** All directory paths in the tree (used to expand everything by default). */
+export function allDirPaths(nodes: TreeNode[]): string[] {
+  const out: string[] = [];
+  for (const node of nodes) {
+    if (node.type === "dir") {
+      out.push(node.path);
+      out.push(...allDirPaths(node.children));
+    }
+  }
+  return out;
+}
+
 /** Build a nested directory tree from a flat file list. Dirs sort before files. */
 export function buildTree(files: IndexedFile[]): TreeNode[] {
   const root = emptyDir("", "");

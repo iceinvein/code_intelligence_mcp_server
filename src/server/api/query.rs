@@ -90,6 +90,7 @@ pub(crate) struct QueryUsageExamplesRequest {
     repo: String,
     symbol_name: String,
     limit: Option<u32>,
+    file: Option<String>,
 }
 
 pub(crate) async fn handle_query_search(
@@ -307,6 +308,7 @@ pub(crate) async fn handle_query_usage_examples(
     let tool = crate::tools::GetUsageExamplesTool {
         symbol_name: req.symbol_name,
         limit: req.limit,
+        file: req.file,
     };
     // handle_get_usage_examples is synchronous.
     let result = crate::handlers::handle_get_usage_examples(&app_state, tool)

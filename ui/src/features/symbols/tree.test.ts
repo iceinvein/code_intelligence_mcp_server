@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildTree } from "@/features/symbols/tree";
+import { buildTree, flattenVisible } from "@/features/symbols/tree";
 
 test("buildTree nests directories and places files, dirs sorted first", () => {
   const tree = buildTree([
@@ -27,4 +27,28 @@ test("buildTree nests directories and places files, dirs sorted first", () => {
   if (b.type !== "file") throw new Error("expected file");
   expect(b.path).toBe("src/b.rs");
   expect(b.symbolCount).toBe(2);
+});
+
+test("flattenVisible expands only open dirs and carries depth", () => {
+  const tree = buildTree([
+    { path: "src/a/c.rs", symbol_count: 1 },
+    { path: "src/b.rs", symbol_count: 2 },
+  ]);
+
+  // Nothing expanded: only the top-level dir row, at depth 0.
+  const collapsed = flattenVisible(tree, new Set());
+  expect(collapsed.map((r) => r.path)).toEqual(["src"]);
+  expect(collapsed[0]!.type).toBe("dir");
+  expect(collapsed[0]!.depth).toBe(0);
+
+  // src open, nested dir still collapsed: src, src/a (dir), src/b.rs (file).
+  const srcOpen = flattenVisible(tree, new Set(["src"]));
+  expect(srcOpen.map((r) => r.path)).toEqual(["src", "src/a", "src/b.rs"]);
+
+  // Both open: the nested file appears, at depth 2.
+  const allOpen = flattenVisible(tree, new Set(["src", "src/a"]));
+  expect(allOpen.map((r) => r.path)).toEqual(["src", "src/a", "src/a/c.rs", "src/b.rs"]);
+  const leaf = allOpen.find((r) => r.path === "src/a/c.rs")!;
+  expect(leaf.type).toBe("file");
+  expect(leaf.depth).toBe(2);
 });

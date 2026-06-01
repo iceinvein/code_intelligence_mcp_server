@@ -10,13 +10,79 @@ use serde_json::json;
 
 use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
 use crate::retrieval::assembler::FormatMode;
-use crate::storage::sqlite::SymbolRow;
+use crate::storage::sqlite::{SqliteStore, SymbolRow};
 use crate::tools::*;
 
 use super::budget::{
     budget_array, budget_string_field, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
 };
 use super::{extract_usage_line, AppState};
+
+#[cfg(test)]
+mod usage_examples_tests {
+    use super::*;
+    use crate::storage::sqlite::{EdgeRow, SqliteStore};
+
+    fn sym(id: &str, file: &str, name: &str, text: &str) -> SymbolRow {
+        SymbolRow {
+            id: id.into(),
+            file_path: file.into(),
+            language: "rust".into(),
+            kind: "function".into(),
+            name: name.into(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 3,
+            text: text.into(),
+        }
+    }
+
+    fn call_edge(from: &str, to: &str, at_file: &str, at_line: u32) -> EdgeRow {
+        EdgeRow {
+            from_symbol_id: from.into(),
+            to_symbol_id: to.into(),
+            edge_type: "call".into(),
+            at_file: Some(at_file.into()),
+            at_line: Some(at_line),
+            confidence: 1.0,
+            evidence_count: 1,
+            resolution: "exact".into(),
+        }
+    }
+
+    #[test]
+    fn collect_usage_examples_scopes_to_file_when_given() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+
+        // Two distinct `foo` symbols in different files, each with one caller.
+        for s in [
+            sym("foo_a", "a.rs", "foo", "fn foo() {}"),
+            sym("foo_b", "b.rs", "foo", "fn foo() {}"),
+            sym("caller_a", "ca.rs", "callerA", "fn callerA() { foo() }"),
+            sym("caller_b", "cb.rs", "callerB", "fn callerB() { foo() }"),
+        ] {
+            store.upsert_symbol(&s).unwrap();
+        }
+        store
+            .upsert_edge(&call_edge("caller_a", "foo_a", "ca.rs", 1))
+            .unwrap();
+        store
+            .upsert_edge(&call_edge("caller_b", "foo_b", "cb.rs", 1))
+            .unwrap();
+
+        // Scoped to a.rs: only caller_a's example surfaces.
+        let scoped = collect_usage_examples(&store, "foo", Some("a.rs"), 20).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0]["from_symbol_name"], "callerA");
+
+        // Unscoped (None): both callers surface.
+        let all = collect_usage_examples(&store, "foo", None, 20).unwrap();
+        assert_eq!(all.len(), 2);
+    }
+}
 
 /// Handle get_definition tool
 pub async fn handle_get_definition(
@@ -277,9 +343,42 @@ pub fn handle_get_usage_examples(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = tool.limit.unwrap_or(20).max(1) as usize;
 
-    let sqlite = &state.sqlite;
+    // When a file is given, scope examples to the symbol defined there so a
+    // common name does not pull in call sites of an unrelated same-named symbol.
+    let normalized_file = tool.file.as_ref().map(|f| {
+        let normalizer = PathNormalizer::new(state.config.base_dir.clone());
+        normalizer
+            .relative_to_base(&Utf8PathBuf::from(f.as_str()))
+            .map(|p| p.to_string())
+            .unwrap_or_else(|_| f.clone())
+    });
 
-    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 20)?;
+    let examples = collect_usage_examples(
+        &state.sqlite,
+        &tool.symbol_name,
+        normalized_file.as_deref(),
+        limit,
+    )?;
+
+    let budgeted_examples = budget_array(examples, limit);
+    let mut response = json!({
+        "symbol_name": tool.symbol_name,
+        "count": budgeted_examples.returned_count,
+    });
+    insert_budgeted_array(&mut response, "examples", budgeted_examples)?;
+    Ok(response)
+}
+
+/// Gather usage examples for `symbol_name`, optionally scoped to symbols defined
+/// in `file` (base-relative). Prefers stored usage examples; falls back to
+/// incoming call/import/reference edges. Returns the un-budgeted example list.
+fn collect_usage_examples(
+    sqlite: &SqliteStore,
+    symbol_name: &str,
+    file: Option<&str>,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>> {
+    let roots = sqlite.search_symbols_by_exact_name(symbol_name, file, 20)?;
 
     let mut examples = Vec::new();
     for root in roots {
@@ -335,13 +434,7 @@ pub fn handle_get_usage_examples(
         }
     }
 
-    let budgeted_examples = budget_array(examples, limit);
-    let mut response = json!({
-        "symbol_name": tool.symbol_name,
-        "count": budgeted_examples.returned_count,
-    });
-    insert_budgeted_array(&mut response, "examples", budgeted_examples)?;
-    Ok(response)
+    Ok(examples)
 }
 
 /// Handle get_module_summary tool

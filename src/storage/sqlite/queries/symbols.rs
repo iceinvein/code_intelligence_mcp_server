@@ -335,6 +335,23 @@ ORDER BY start_byte ASC
     Ok(out)
 }
 
+/// One row per indexed file with its symbol count, ordered by path. Drives the
+/// portal's file-tree browse.
+pub fn list_indexed_files(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT file_path, COUNT(*) AS symbol_count \
+             FROM symbols GROUP BY file_path ORDER BY file_path ASC",
+        )
+        .context("Failed to prepare list_indexed_files")?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((row.get::<_, String>(0)?, row.get::<_, i64>(1)?));
+    }
+    Ok(out)
+}
+
 pub fn list_symbol_id_name_pairs(conn: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = conn
         .prepare("SELECT id, name FROM symbols ORDER BY name ASC")
@@ -820,5 +837,61 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn list_indexed_files_groups_and_counts_by_file() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+        let conn = store.read().unwrap();
+
+        let symbols = vec![
+            SymbolRow {
+                id: "s1".into(),
+                file_path: "a.rs".into(),
+                language: "rust".into(),
+                kind: "function".into(),
+                name: "foo".into(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 10,
+                start_line: 1,
+                end_line: 3,
+                text: "fn foo() {}".into(),
+            },
+            SymbolRow {
+                id: "s2".into(),
+                file_path: "a.rs".into(),
+                language: "rust".into(),
+                kind: "function".into(),
+                name: "bar".into(),
+                exported: false,
+                start_byte: 11,
+                end_byte: 20,
+                start_line: 4,
+                end_line: 6,
+                text: "fn bar() {}".into(),
+            },
+            SymbolRow {
+                id: "s3".into(),
+                file_path: "b.rs".into(),
+                language: "rust".into(),
+                kind: "function".into(),
+                name: "baz".into(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 10,
+                start_line: 1,
+                end_line: 3,
+                text: "fn baz() {}".into(),
+            },
+        ];
+        batch_upsert_symbols(&conn, &symbols).unwrap();
+
+        let files = list_indexed_files(&conn).unwrap();
+        assert_eq!(
+            files,
+            vec![("a.rs".to_string(), 2), ("b.rs".to_string(), 1)]
+        );
     }
 }

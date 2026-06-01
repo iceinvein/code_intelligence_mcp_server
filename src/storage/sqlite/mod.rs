@@ -65,6 +65,11 @@ impl SqliteStore {
         queries::symbols::list_symbol_headers_by_file(&conn, file_path, exported_only)
     }
 
+    pub fn list_indexed_files(&self) -> Result<Vec<(String, i64)>> {
+        let conn = self.read()?;
+        queries::symbols::list_indexed_files(&conn)
+    }
+
     pub fn list_symbol_id_name_pairs(&self) -> Result<Vec<(String, String)>> {
         let conn = self.read()?;
         queries::symbols::list_symbol_id_name_pairs(&conn)

@@ -48,8 +48,8 @@ mod settings;
 use activity::{handle_jobs, handle_logs_stream, handle_sessions};
 use consent::{handle_consent_get, handle_consent_post};
 use query::{
-    handle_query_ask, handle_query_definition, handle_query_hydrate, handle_query_investigate,
-    handle_query_references, handle_query_repo_map, handle_query_search,
+    handle_query_ask, handle_query_definition, handle_query_files, handle_query_hydrate,
+    handle_query_investigate, handle_query_references, handle_query_repo_map, handle_query_search,
 };
 use repos::{
     handle_repo_add, handle_repo_delete, handle_repo_detail, handle_repo_reindex, handle_repos,
@@ -104,6 +104,7 @@ pub async fn spawn_api_server(
         .route("/api/query/repo-map", post(handle_query_repo_map))
         .route("/api/query/definition", post(handle_query_definition))
         .route("/api/query/references", post(handle_query_references))
+        .route("/api/query/files", post(handle_query_files))
         .route(
             "/api/consent",
             get(handle_consent_get).post(handle_consent_post),

@@ -73,6 +73,11 @@ pub(crate) struct QueryReferencesRequest {
     limit: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct QueryFilesRequest {
+    repo: String,
+}
+
 pub(crate) async fn handle_query_search(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<QuerySearchRequest>,
@@ -233,6 +238,25 @@ pub(crate) async fn handle_query_definition(
     )))
 }
 
+pub(crate) async fn handle_query_files(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryFilesRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let rows = app_state
+        .sqlite
+        .list_indexed_files()
+        .map_err(|e| ApiError(format!("files failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "files",
+        &repo_path,
+        &repo_id,
+        index_version,
+        build_files_result(rows),
+    )))
+}
+
 pub(crate) async fn handle_query_references(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<QueryReferencesRequest>,
@@ -314,6 +338,15 @@ fn query_envelope(
     })
 }
 
+/// Shape the indexed-file list for the tree: `{ files: [{ path, symbol_count }] }`.
+fn build_files_result(rows: Vec<(String, i64)>) -> Value {
+    let files: Vec<Value> = rows
+        .into_iter()
+        .map(|(path, symbol_count)| json!({ "path": path, "symbol_count": symbol_count }))
+        .collect();
+    json!({ "files": files })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +379,16 @@ mod tests {
             assert_eq!(envelope["warnings"].as_array().unwrap().len(), 0);
             assert_eq!(envelope["result"]["value"], true);
         }
+    }
+
+    #[test]
+    fn build_files_result_shapes_path_and_count() {
+        let v = build_files_result(vec![("a.rs".to_string(), 3), ("dir/b.rs".to_string(), 1)]);
+        let files = v["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["path"], "a.rs");
+        assert_eq!(files[0]["symbol_count"], 3);
+        assert_eq!(files[1]["path"], "dir/b.rs");
+        assert_eq!(files[1]["symbol_count"], 1);
     }
 }

@@ -43,6 +43,7 @@ mod activity;
 mod consent;
 mod query;
 mod repos;
+mod settings;
 
 use activity::{handle_jobs, handle_logs_stream, handle_sessions};
 use consent::{handle_consent_get, handle_consent_post};
@@ -53,6 +54,7 @@ use query::{
 use repos::{
     handle_repo_add, handle_repo_delete, handle_repo_detail, handle_repo_reindex, handle_repos,
 };
+use settings::{handle_settings_get, handle_settings_put};
 
 #[derive(Clone)]
 pub(crate) struct ApiState {
@@ -105,6 +107,10 @@ pub async fn spawn_api_server(
         .route(
             "/api/consent",
             get(handle_consent_get).post(handle_consent_post),
+        )
+        .route(
+            "/api/settings",
+            get(handle_settings_get).put(handle_settings_put),
         )
         .route("/api/jobs", get(handle_jobs))
         .route("/api/sessions", get(handle_sessions))

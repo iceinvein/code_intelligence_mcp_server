@@ -186,6 +186,13 @@ The server reads configuration from environment variables. Key ones:
 | `LLM_HF_REPO` | `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` | Override the HuggingFace repository for the local LLM (e.g. `Qwen/Qwen2.5-Coder-3B-Instruct-GGUF` for the 3B variant). |
 | `LLM_HF_MODEL_FILE` | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | Override the GGUF filename within the configured repo. |
 
+The web portal Settings editor (`/settings`) reads and writes these knobs to
+`~/.code-intelligence/server.toml`. Tier 2 retrieval tuning lives in new sections
+`[retrieval]`, `[ranking]`, `[rrf]`, `[learning]`, and `[indexing] consent_required`;
+these were previously hardcoded in `repo_config()` and the matching `*_WEIGHT` /
+`HYBRID_ALPHA` env vars only ever affected the legacy `BASE_DIR` path, not the v4
+daemon. Settings are daemon-global and apply on restart.
+
 ## Path Handling
 
 **Standard:** Use camino for UTF-8 typed paths, centralized normalization.

@@ -27,7 +27,7 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
 }
 
 export async function apiSend<T>(
-  method: "POST" | "DELETE",
+  method: "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
   signal?: AbortSignal,

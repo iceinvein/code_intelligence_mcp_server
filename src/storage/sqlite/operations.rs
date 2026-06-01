@@ -1,44 +1,38 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use super::schema::SCHEMA_SQL;
 use crate::path::Utf8Path;
 
 pub struct SqliteStore {
-    pub(crate) conn: RwLock<Connection>,
+    // A single rusqlite Connection behind a Mutex. Every rusqlite operation --
+    // even a SELECT -- mutably borrows the Connection's internal RefCell, so all
+    // access must be serialized (Connection is Send but not Sync). A Mutex does
+    // that; an RwLock would hand out concurrent read guards, letting two readers
+    // double-borrow the RefCell and panic ("RefCell already borrowed"). Because
+    // Connection is Send, Mutex<Connection> is Send + Sync, so no unsafe impls.
+    pub(crate) conn: Mutex<Connection>,
 }
 
-// SAFETY: rusqlite::Connection is Send but not Sync due to internal RefCell.
-// By wrapping it in RwLock, we provide synchronized access, making SqliteStore
-// safe to share across threads (Send + Sync).
-unsafe impl Send for SqliteStore {}
-unsafe impl Sync for SqliteStore {}
-
 impl SqliteStore {
-    /// Get read access to the connection
+    /// Acquire exclusive access to the connection.
     ///
-    /// Returns Result to handle poisoned RwLock gracefully instead of panicking.
-    /// A poisoned lock indicates a previous panic while holding the lock, which
-    /// suggests corrupt state - this error surfaces that condition for handling.
-    pub fn read(&self) -> Result<RwLockReadGuard<'_, Connection>> {
-        self.conn.read().map_err(|e| {
-            anyhow::anyhow!("RwLock read lock is poisoned: {}", e)
-                .context("Database connection lock poisoned - indicates a previous panic while holding read lock")
+    /// Named `read` for historical call-site compatibility, but it takes the
+    /// same exclusive lock as `write`: rusqlite needs exclusive access for every
+    /// operation, including reads. Returns Result to surface a poisoned lock
+    /// (a previous panic while holding it) instead of panicking again.
+    pub fn read(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.conn.lock().map_err(|e| {
+            anyhow::anyhow!("Database connection lock is poisoned: {}", e)
+                .context("Connection lock poisoned - indicates a previous panic while holding it")
         })
     }
 
-    /// Get write access to the connection
-    ///
-    /// Returns Result to handle poisoned RwLock gracefully instead of panicking.
-    /// A poisoned lock indicates a previous panic while holding the lock, which
-    /// suggests corrupt state - this error surfaces that condition for handling.
-    pub fn write(&self) -> Result<RwLockWriteGuard<'_, Connection>> {
-        self.conn.write().map_err(|e| {
-            anyhow::anyhow!("RwLock write lock is poisoned: {}", e)
-                .context("Database connection lock poisoned - indicates a previous panic while holding write lock")
-        })
+    /// Acquire exclusive access to the connection (alias of `read`; see above).
+    pub fn write(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.read()
     }
 }
 
@@ -69,13 +63,13 @@ impl SqliteStore {
         let _ = conn.execute("PRAGMA busy_timeout=5000", []).ok();
 
         Ok(Self {
-            conn: RwLock::new(conn),
+            conn: Mutex::new(conn),
         })
     }
 
     pub fn from_connection(conn: Connection) -> Self {
         Self {
-            conn: RwLock::new(conn),
+            conn: Mutex::new(conn),
         }
     }
 
@@ -85,14 +79,13 @@ impl SqliteStore {
         conn.execute("PRAGMA foreign_keys = ON", [])
             .context("Failed to enable foreign keys on in-memory connection")?;
         Ok(Self {
-            conn: RwLock::new(conn),
+            conn: Mutex::new(conn),
         })
     }
 
     pub fn init(&self) -> Result<()> {
         {
-            // Write lock needed for migration functions that modify schema
-            #[allow(clippy::readonly_write_lock)]
+            // Exclusive connection access for the schema migrations below.
             let conn = self.write()?;
             conn.execute_batch(SCHEMA_SQL)
                 .context("Failed to initialize sqlite schema: execute_batch SCHEMA_SQL")?;
@@ -200,4 +193,52 @@ fn migrate_add_search_runs_timing_columns(conn: &Connection) -> Result<()> {
         [],
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::super::SymbolRow;
+    use super::SqliteStore;
+    use std::sync::Arc;
+    use std::thread;
+
+    fn sym(id: &str) -> SymbolRow {
+        SymbolRow {
+            id: id.into(),
+            file_path: "a.rs".into(),
+            language: "rust".into(),
+            kind: "function".into(),
+            name: "foo".into(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 3,
+            text: "fn foo() {}".into(),
+        }
+    }
+
+    // Concurrent read-path queries on one shared store must not panic. With a
+    // RwLock<Connection>, multiple readers share one rusqlite Connection and
+    // double-borrow its internal RefCell ("RefCell already mutably borrowed").
+    #[test]
+    fn concurrent_reads_do_not_panic() {
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        store.init().unwrap();
+        store.upsert_symbol(&sym("s1")).unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&store);
+            handles.push(thread::spawn(move || {
+                for _ in 0..2000 {
+                    let _ = s.search_symbols_by_exact_name("foo", None, 5).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join()
+                .expect("worker thread panicked (RefCell double-borrow under concurrent reads)");
+        }
+    }
 }

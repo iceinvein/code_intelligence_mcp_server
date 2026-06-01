@@ -59,19 +59,38 @@ type QueryEnvelope<T> = {
   result: T;
 };
 
-async function queryPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const env = await apiSend<QueryEnvelope<T>>("POST", path, body);
+async function queryPost<T>(
+  path: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const env = await apiSend<QueryEnvelope<T>>("POST", path, body, signal);
   return env.result;
 }
 
-export function searchCode(repoPath: string, query: string, limit = 25): Promise<SearchResultData> {
-  return queryPost<SearchResultData>("/query/search", { repo: repoPath, query, limit });
+export function searchCode(
+  repoPath: string,
+  query: string,
+  limit = 25,
+  signal?: AbortSignal,
+): Promise<SearchResultData> {
+  return queryPost<SearchResultData>("/query/search", { repo: repoPath, query, limit }, signal);
 }
 
-export function getDefinition(repoPath: string, symbolName: string, file?: string): Promise<DefinitionData> {
-  return queryPost<DefinitionData>("/query/definition", { repo: repoPath, symbol_name: symbolName, file });
+export function getDefinition(
+  repoPath: string,
+  symbolName: string,
+  file?: string,
+  signal?: AbortSignal,
+): Promise<DefinitionData> {
+  return queryPost<DefinitionData>("/query/definition", { repo: repoPath, symbol_name: symbolName, file }, signal);
 }
 
-export function findReferences(repoPath: string, symbolName: string, file?: string): Promise<ReferencesData> {
-  return queryPost<ReferencesData>("/query/references", { repo: repoPath, symbol_name: symbolName, file });
+export function findReferences(
+  repoPath: string,
+  symbolName: string,
+  file?: string,
+  signal?: AbortSignal,
+): Promise<ReferencesData> {
+  return queryPost<ReferencesData>("/query/references", { repo: repoPath, symbol_name: symbolName, file }, signal);
 }

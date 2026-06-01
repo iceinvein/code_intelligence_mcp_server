@@ -30,6 +30,7 @@ export async function apiSend<T>(
   method: "POST" | "DELETE",
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
@@ -38,6 +39,7 @@ export async function apiSend<T>(
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     let detail = res.statusText;

@@ -4,9 +4,26 @@ import type { ReferenceEdge } from "@/api/search";
 
 // The definition `context` returned by the API is a markdown document (headers plus fenced
 // code blocks), not raw source. Pull the fenced code out so shiki highlights code, not markdown.
-function extractCode(context: string): string {
-  const fences = [...context.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => (m[1] ?? "").replace(/\n+$/, ""));
-  return fences.length > 0 ? fences.join("\n\n") : context.trim();
+// Fences are matched line-by-line (a line that starts with ```), so triple backticks appearing
+// mid-line inside a symbol body (e.g. a Rust raw string or doctest) do not prematurely close it.
+export function extractCode(context: string): string {
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  for (const line of context.split("\n")) {
+    if (line.startsWith("```")) {
+      if (current === null) {
+        current = [];
+      } else {
+        blocks.push(current.join("\n"));
+        current = null;
+      }
+      continue;
+    }
+    if (current !== null) current.push(line);
+  }
+  // Tolerate an unterminated trailing fence (malformed markdown) by keeping what we collected.
+  if (current !== null && current.length > 0) blocks.push(current.join("\n"));
+  return blocks.length > 0 ? blocks.join("\n\n") : context.trim();
 }
 
 function groupByFile(refs: ReferenceEdge[]): Array<{ file: string; rows: ReferenceEdge[] }> {

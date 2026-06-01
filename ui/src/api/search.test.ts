@@ -59,3 +59,18 @@ test("findReferences unwraps the references envelope and posts to the references
   expect(calls[0]!.url).toBe("/api/query/references");
   expect(JSON.parse(calls[0]!.body!)).toEqual({ repo: "/repo/demo", symbol_name: "foo", file: "a.rs" });
 });
+
+test("searchCode forwards the abort signal to fetch so stale requests can be cancelled", async () => {
+  let received: AbortSignal | null | undefined;
+  globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
+    received = init?.signal;
+    return new Response(
+      JSON.stringify(envelope("search", { query: "x", limit: 25, hits: [], hits_budget: { returned_count: 0, total_count: 0, truncated: false } })),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+
+  const controller = new AbortController();
+  await searchCode("/repo/demo", "x", 25, controller.signal);
+  expect(received).toBe(controller.signal);
+});

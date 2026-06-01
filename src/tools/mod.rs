@@ -76,6 +76,8 @@ pub struct GetCallHierarchyTool {
     pub depth: Option<u32>,
     /// Default 50.
     pub limit: Option<u32>,
+    /// Optional file to disambiguate the root among same-named symbols.
+    pub file: Option<String>,
 }
 
 #[macros::mcp_tool(
@@ -89,6 +91,8 @@ pub struct GetTypeGraphTool {
     pub direction: Option<String>,
     pub depth: Option<u32>,
     pub limit: Option<u32>,
+    /// Optional file to disambiguate the root among same-named symbols.
+    pub file: Option<String>,
 }
 
 #[macros::mcp_tool(
@@ -121,6 +125,8 @@ pub struct ExploreDependencyGraphTool {
     pub direction: Option<String>,
     pub depth: Option<u32>,
     pub limit: Option<u32>,
+    /// Optional file to disambiguate the root among same-named symbols.
+    pub file: Option<String>,
 }
 
 #[macros::mcp_tool(

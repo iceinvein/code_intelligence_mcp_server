@@ -5,6 +5,7 @@
 
 use super::AppState;
 use crate::graph::{build_call_hierarchy, build_dependency_graph, build_type_graph};
+use crate::path::{PathNormalizer, Utf8PathBuf};
 use crate::storage::sqlite::{SqliteStore, SymbolRow};
 use crate::tools::*;
 use anyhow::Result;
@@ -21,6 +22,29 @@ type DataFlowTraceResult = Result<
     anyhow::Error,
 >;
 
+/// Normalize a caller-supplied file to a base-relative path for root lookups.
+fn normalize_file(state: &AppState, file: Option<&String>) -> Option<String> {
+    file.map(|f| {
+        let normalizer = PathNormalizer::new(state.config.base_dir.clone());
+        normalizer
+            .relative_to_base(&Utf8PathBuf::from(f.as_str()))
+            .map(|p| p.to_string())
+            .unwrap_or_else(|_| f.clone())
+    })
+}
+
+/// Resolve the graph root symbol by exact name, optionally scoped to `file`.
+fn resolve_root(
+    sqlite: &SqliteStore,
+    symbol_name: &str,
+    file: Option<&str>,
+) -> Result<Option<SymbolRow>> {
+    Ok(sqlite
+        .search_symbols_by_exact_name(symbol_name, file, 10)?
+        .into_iter()
+        .next())
+}
+
 /// Handle explore_dependency_graph tool
 pub fn handle_explore_dependency_graph(
     state: &AppState,
@@ -32,8 +56,8 @@ pub fn handle_explore_dependency_graph(
 
     let sqlite = &state.sqlite;
 
-    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
-    let root = roots.first().cloned();
+    let root_file = normalize_file(state, tool.file.as_ref());
+    let root = resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?;
 
     let Some(root) = root else {
         return Ok(json!({
@@ -116,8 +140,8 @@ pub fn handle_get_call_hierarchy(
 
     let sqlite = &state.sqlite;
 
-    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
-    let root = roots.first().cloned();
+    let root_file = normalize_file(state, tool.file.as_ref());
+    let root = resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?;
 
     let Some(root) = root else {
         return Ok(json!({
@@ -144,8 +168,8 @@ pub fn handle_get_type_graph(
 
     let sqlite = &state.sqlite;
 
-    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
-    let root = roots.first().cloned();
+    let root_file = normalize_file(state, tool.file.as_ref());
+    let root = resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?;
 
     let Some(root) = root else {
         return Ok(json!({
@@ -158,6 +182,42 @@ pub fn handle_get_type_graph(
     };
     let graph = build_type_graph(sqlite, &root, direction, depth, limit)?;
     Ok(graph)
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+
+    fn sym(id: &str, file: &str, name: &str) -> SymbolRow {
+        SymbolRow {
+            id: id.into(),
+            file_path: file.into(),
+            language: "rust".into(),
+            kind: "function".into(),
+            name: name.into(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 3,
+            text: format!("fn {name}() {{}}"),
+        }
+    }
+
+    #[test]
+    fn resolve_root_scopes_by_file() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+        store.upsert_symbol(&sym("foo_a", "a.rs", "foo")).unwrap();
+        store.upsert_symbol(&sym("foo_b", "b.rs", "foo")).unwrap();
+
+        let a = resolve_root(&store, "foo", Some("a.rs")).unwrap().unwrap();
+        assert_eq!(a.id, "foo_a");
+        let b = resolve_root(&store, "foo", Some("b.rs")).unwrap().unwrap();
+        assert_eq!(b.id, "foo_b");
+        assert!(resolve_root(&store, "foo", None).unwrap().is_some());
+        assert!(resolve_root(&store, "nope", None).unwrap().is_none());
+    }
 }
 
 /// Handle trace_data_flow tool - trace variable reads/writes through the codebase

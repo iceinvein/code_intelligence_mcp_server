@@ -1332,7 +1332,7 @@ async fn run_secondary_hop(
 fn run_call_hierarchy_hop(
     state: &AppState,
     pivot: &str,
-    _file_path: Option<&str>,
+    file_path: Option<&str>,
 ) -> Result<Option<SecondaryHop>> {
     use crate::tools::GetCallHierarchyTool;
 
@@ -1345,6 +1345,7 @@ fn run_call_hierarchy_hop(
         // was the trigger.
         depth: Some(3),
         limit: Some(50),
+        file: file_path.map(ToOwned::to_owned),
     };
     let raw = super::graph::handle_get_call_hierarchy(state, tool)?;
     let locations = extract_locations_from_graph_nodes(state, &raw, "get_call_hierarchy")?;
@@ -1413,6 +1414,7 @@ fn run_dependency_graph_hop(state: &AppState, pivot: &str) -> Result<Option<Seco
         direction: Some("both".to_string()),
         depth: Some(2),
         limit: Some(50),
+        file: None,
     };
     let raw = super::graph::handle_explore_dependency_graph(state, tool)?;
     let locations = extract_locations_from_graph_nodes(state, &raw, "explore_dependency_graph")?;

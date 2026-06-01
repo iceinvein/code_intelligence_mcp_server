@@ -10,10 +10,12 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@radix-ui/react-alert-dialog": "^1.1.0",
     "@radix-ui/react-slot": "^1.1.0",
     "@tanstack/react-query": "^5.59.0",
     "@tanstack/react-virtual": "^3.13.26",
+    "@xyflow/react": "^12.10.2",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "cmdk": "^1.0.0",
@@ -29,6 +31,7 @@
     "@tailwindcss/vite": "^4.0.0",
     "@testing-library/react": "^16.0.1",
     "@types/bun": "^1.2.0",
+    "@types/dagre": "^0.7.54",
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

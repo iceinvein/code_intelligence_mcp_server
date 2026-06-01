@@ -1524,6 +1524,7 @@ pub async fn handle_get_context_bundle(
                     direction: Some("both".to_string()),
                     depth: Some(2),
                     limit: Some(20),
+                    file: file_hint.clone(),
                 },
             );
             match call_result {

@@ -93,6 +93,16 @@ pub(crate) struct QueryUsageExamplesRequest {
     file: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct QueryGraphRequest {
+    repo: String,
+    symbol_name: String,
+    file: Option<String>,
+    direction: Option<String>,
+    depth: Option<u32>,
+    limit: Option<u32>,
+}
+
 pub(crate) async fn handle_query_search(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<QuerySearchRequest>,
@@ -350,6 +360,87 @@ pub(crate) async fn handle_query_references(
     )))
 }
 
+pub(crate) async fn handle_query_call_hierarchy(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryGraphRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if req.symbol_name.trim().is_empty() {
+        return Err(ApiError("symbol_name is required".to_string()));
+    }
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let tool = crate::tools::GetCallHierarchyTool {
+        symbol_name: req.symbol_name,
+        direction: req.direction,
+        depth: req.depth,
+        limit: req.limit,
+        file: req.file,
+    };
+    let result = crate::handlers::handle_get_call_hierarchy(&app_state, tool)
+        .map_err(|e| ApiError(format!("call_hierarchy failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "call-hierarchy",
+        &repo_path,
+        &repo_id,
+        index_version,
+        result,
+    )))
+}
+
+pub(crate) async fn handle_query_type_graph(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryGraphRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if req.symbol_name.trim().is_empty() {
+        return Err(ApiError("symbol_name is required".to_string()));
+    }
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let tool = crate::tools::GetTypeGraphTool {
+        symbol_name: req.symbol_name,
+        direction: req.direction,
+        depth: req.depth,
+        limit: req.limit,
+        file: req.file,
+    };
+    let result = crate::handlers::handle_get_type_graph(&app_state, tool)
+        .map_err(|e| ApiError(format!("type_graph failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "type-graph",
+        &repo_path,
+        &repo_id,
+        index_version,
+        result,
+    )))
+}
+
+pub(crate) async fn handle_query_dependency_graph(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryGraphRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if req.symbol_name.trim().is_empty() {
+        return Err(ApiError("symbol_name is required".to_string()));
+    }
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let tool = crate::tools::ExploreDependencyGraphTool {
+        symbol_name: req.symbol_name,
+        direction: req.direction,
+        depth: req.depth,
+        limit: req.limit,
+        file: req.file,
+    };
+    let result = crate::handlers::handle_explore_dependency_graph(&app_state, tool)
+        .map_err(|e| ApiError(format!("dependency_graph failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "dependency-graph",
+        &repo_path,
+        &repo_id,
+        index_version,
+        result,
+    )))
+}
+
 async fn resolve_query_repo(
     state: &ApiState,
     repo: &str,
@@ -427,6 +518,9 @@ mod tests {
             "repo-map",
             "definition",
             "references",
+            "call-hierarchy",
+            "type-graph",
+            "dependency-graph",
         ] {
             let envelope = query_envelope(
                 command,

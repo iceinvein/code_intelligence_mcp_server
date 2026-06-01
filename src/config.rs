@@ -485,6 +485,15 @@ impl StandaloneConfig {
             config.index_consent_required = enabled;
         }
 
+        // Auto-reindex watch mode (on by default; opt out with WATCH_MODE=false).
+        if let Some(watch) = optional_env("WATCH_MODE")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+        {
+            config.default_watch_mode = watch;
+        }
+
         // Apply CLI overrides (highest priority)
         if let Some(host) = cli_host {
             config.host = host.to_string();
@@ -1769,6 +1778,23 @@ warm_ttl_seconds = 600
         assert_eq!(cfg.reranker_enabled, standalone.reranker_enabled);
         // Same for the descriptions toggle.
         assert_eq!(cfg.descriptions_enabled, standalone.descriptions_enabled);
+    }
+
+    #[test]
+    fn load_honors_watch_mode_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        let home = tmp_home_dir();
+        std::env::set_var("HOME", &home); // no server.toml here -> defaults
+        std::env::set_var("WATCH_MODE", "false");
+
+        let cfg = StandaloneConfig::load(None, None, None).unwrap();
+        assert!(
+            !cfg.default_watch_mode,
+            "WATCH_MODE=false env must disable the daemon's default watch mode"
+        );
+
+        std::env::remove_var("WATCH_MODE");
     }
 
     #[test]

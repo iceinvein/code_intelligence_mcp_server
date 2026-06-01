@@ -21,14 +21,14 @@ test("searchCode unwraps the envelope result and posts repo + query", async () =
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     calls.push({ url: String(url), body: (init?.body as string) ?? null });
     return new Response(
-      JSON.stringify(envelope("search", { query: "x", limit: 25, count: 1, results: [{ symbol_id: "s", symbol_name: "foo", kind: "fn", file_path: "a.rs", score: 0.9, exported: true }] })),
+      JSON.stringify(envelope("search", { query: "x", limit: 25, hits: [{ id: "s", name: "foo", kind: "fn", file_path: "a.rs", score: 0.9 }], hits_budget: { returned_count: 1, total_count: 1, truncated: false } })),
       { status: 200 },
     );
   }) as unknown as typeof fetch;
 
   const data = await searchCode("/repo/demo", "x");
-  expect(data.count).toBe(1);
-  expect(data.results[0]!.symbol_name).toBe("foo");
+  expect(data.hits_budget.total_count).toBe(1);
+  expect(data.hits[0]!.name).toBe("foo");
   expect(calls[0]!.url).toBe("/api/query/search");
   expect(JSON.parse(calls[0]!.body!)).toEqual({ repo: "/repo/demo", query: "x", limit: 25 });
 });

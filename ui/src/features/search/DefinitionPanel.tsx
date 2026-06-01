@@ -2,6 +2,13 @@ import { useDefinition, useReferences } from "@/features/search/useSearch";
 import { CodeBlock } from "@/components/ui/code-block";
 import type { ReferenceEdge } from "@/api/search";
 
+// The definition `context` returned by the API is a markdown document (headers plus fenced
+// code blocks), not raw source. Pull the fenced code out so shiki highlights code, not markdown.
+function extractCode(context: string): string {
+  const fences = [...context.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => (m[1] ?? "").replace(/\n+$/, ""));
+  return fences.length > 0 ? fences.join("\n\n") : context.trim();
+}
+
 function groupByFile(refs: ReferenceEdge[]): Array<{ file: string; rows: ReferenceEdge[] }> {
   const map = new Map<string, ReferenceEdge[]>();
   for (const r of refs) {
@@ -19,6 +26,7 @@ export function DefinitionPanel({ repoPath, symbolName, file }: { repoPath: stri
   const refs = useReferences(repoPath, symbolName, file, true);
 
   const lang = def.data?.definitions[0]?.language ?? "text";
+  const code = extractCode(def.data?.context ?? "");
   const groups = groupByFile(refs.data?.references ?? []);
 
   return (
@@ -27,8 +35,8 @@ export function DefinitionPanel({ repoPath, symbolName, file }: { repoPath: stri
         <div className="text-[11px] text-muted-foreground">loading definition...</div>
       ) : def.isError ? (
         <div className="text-[11px] text-destructive">failed to load definition</div>
-      ) : def.data?.context ? (
-        <CodeBlock code={def.data.context} lang={lang} />
+      ) : code ? (
+        <CodeBlock code={code} lang={lang} />
       ) : (
         <div className="text-[11px] text-muted-foreground">no definition found</div>
       )}

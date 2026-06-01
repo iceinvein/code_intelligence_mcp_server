@@ -1,19 +1,18 @@
 import { apiSend } from "@/api/client";
 
 export type SearchHit = {
-  symbol_id: string;
-  symbol_name: string;
+  id: string;
+  name: string;
   kind: string;
   file_path: string;
   score: number;
-  exported: boolean;
 };
 
 export type SearchResultData = {
   query: string;
   limit: number;
-  count: number;
-  results: SearchHit[];
+  hits: SearchHit[];
+  hits_budget: { returned_count: number; total_count: number; truncated: boolean };
 };
 
 export type DefinitionEntry = {

@@ -48,7 +48,7 @@ export function SearchView() {
     setParams(next);
   };
 
-  const results = search.data?.results ?? [];
+  const results = search.data?.hits ?? [];
 
   return (
     <section>
@@ -103,7 +103,7 @@ export function SearchView() {
           ) : null}
           <div>
             {results.map((hit) => (
-              <ResultRow key={hit.symbol_id} hit={hit} repoPath={repoPath} />
+              <ResultRow key={hit.id} hit={hit} repoPath={repoPath} />
             ))}
           </div>
         </>

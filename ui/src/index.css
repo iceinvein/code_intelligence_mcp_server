@@ -108,3 +108,29 @@ body {
   font-size: 12px;
   line-height: 1.5;
 }
+
+.shiki,
+.shiki span {
+  color: var(--shiki-dark);
+  background-color: var(--shiki-dark-bg);
+}
+:root.theme-light .shiki,
+:root.theme-light .shiki span {
+  color: var(--shiki-light);
+  background-color: var(--shiki-light-bg);
+}
+@media (prefers-color-scheme: light) {
+  :root:not(.theme-dark) .shiki,
+  :root:not(.theme-dark) .shiki span {
+    color: var(--shiki-light);
+    background-color: var(--shiki-light-bg);
+  }
+}
+.shiki {
+  padding: 8px 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}

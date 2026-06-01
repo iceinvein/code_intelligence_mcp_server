@@ -77,7 +77,7 @@ export function SymbolsView() {
         <div className="text-xs text-muted-foreground">select a repository to browse</div>
       ) : (
         <div className="flex flex-col gap-3 lg:flex-row">
-          <div className="max-h-[70vh] min-h-32 overflow-auto border-b border-border pb-2 lg:w-56 lg:shrink-0 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-2">
+          <div className="border-b border-border pb-2 lg:w-56 lg:shrink-0 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-2">
             {files.isLoading ? (
               <div className="text-[11px] text-muted-foreground">loading files...</div>
             ) : files.isError ? (

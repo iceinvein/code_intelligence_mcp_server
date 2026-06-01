@@ -208,9 +208,10 @@ implementation plan.
    query playground into a daily-driver tool.
 4. **[shipped] Settings editor.** Restart-only `server.toml` write-back + UI,
    including Tier 2 retrieval tuning previously hardcoded in `repo_config()`.
-5. **Graph/symbol exploration.** Call/type/dependency graph visualisation, symbol
-   inspector (definition + references + usage examples), index browse by file
-   tree. Heaviest area; graph-visualisation library chosen in this phase's plan.
+5. **Graph/symbol exploration.** Split into **[shipped] 5a symbols/browse**
+   (symbol inspector with definition + references + usage examples, index browse
+   by file tree) and **5b graph visualisation** (call/type/dependency graph).
+   Heaviest area; graph-visualisation library remains deferred to 5b.
 
 ## Testing
 

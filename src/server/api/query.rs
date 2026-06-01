@@ -78,6 +78,20 @@ pub(crate) struct QueryFilesRequest {
     repo: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct QueryFileSymbolsRequest {
+    repo: String,
+    file_path: String,
+    exported_only: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct QueryUsageExamplesRequest {
+    repo: String,
+    symbol_name: String,
+    limit: Option<u32>,
+}
+
 pub(crate) async fn handle_query_search(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<QuerySearchRequest>,
@@ -254,6 +268,56 @@ pub(crate) async fn handle_query_files(
         &repo_id,
         index_version,
         build_files_result(rows),
+    )))
+}
+
+pub(crate) async fn handle_query_file_symbols(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryFileSymbolsRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if req.file_path.trim().is_empty() {
+        return Err(ApiError("file_path is required".to_string()));
+    }
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let tool = crate::tools::GetFileSymbolsTool {
+        file_path: req.file_path,
+        exported_only: req.exported_only,
+    };
+    // handle_get_file_symbols is synchronous.
+    let result = crate::handlers::handle_get_file_symbols(&app_state, tool)
+        .map_err(|e| ApiError(format!("file_symbols failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "file-symbols",
+        &repo_path,
+        &repo_id,
+        index_version,
+        result,
+    )))
+}
+
+pub(crate) async fn handle_query_usage_examples(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryUsageExamplesRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if req.symbol_name.trim().is_empty() {
+        return Err(ApiError("symbol_name is required".to_string()));
+    }
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let tool = crate::tools::GetUsageExamplesTool {
+        symbol_name: req.symbol_name,
+        limit: req.limit,
+    };
+    // handle_get_usage_examples is synchronous.
+    let result = crate::handlers::handle_get_usage_examples(&app_state, tool)
+        .map_err(|e| ApiError(format!("usage_examples failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "usage-examples",
+        &repo_path,
+        &repo_id,
+        index_version,
+        result,
     )))
 }
 

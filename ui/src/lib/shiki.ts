@@ -1,6 +1,23 @@
 import type { Highlighter } from "shiki";
 
-const LANGS = ["typescript", "tsx", "rust", "python", "go", "java", "c", "cpp"];
+// Mirror every language the indexer can emit (see language_string in
+// src/indexer/pipeline/utils.rs); shiki loads each grammar lazily, so listing
+// all of them costs nothing in the initial bundle but avoids plaintext fallback.
+const LANGS = [
+  "typescript",
+  "tsx",
+  "rust",
+  "python",
+  "go",
+  "java",
+  "javascript",
+  "c",
+  "cpp",
+  "ruby",
+  "kotlin",
+  "csharp",
+  "swift",
+];
 const LIGHT = "github-light-default";
 const DARK = "github-dark-default";
 

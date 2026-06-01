@@ -22,11 +22,12 @@ export function useFileSymbols(repoPath: string | null, filePath: string | null)
 export function useUsageExamples(
   repoPath: string | null,
   symbolName: string | null,
+  file: string | null,
   enabled: boolean,
 ) {
   return useQuery({
-    queryKey: ["usage-examples", repoPath, symbolName],
-    queryFn: ({ signal }) => fetchUsageExamples(repoPath!, symbolName!, signal),
+    queryKey: ["usage-examples", repoPath, symbolName, file],
+    queryFn: ({ signal }) => fetchUsageExamples(repoPath!, symbolName!, file ?? undefined, signal),
     enabled: enabled && Boolean(repoPath) && Boolean(symbolName),
     staleTime: 60_000,
   });

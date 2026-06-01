@@ -3,11 +3,13 @@ import { useUsageExamples } from "@/features/symbols/useSymbols";
 export function UsageExamplesPanel({
   repoPath,
   symbolName,
+  file,
 }: {
   repoPath: string;
   symbolName: string;
+  file: string;
 }) {
-  const examples = useUsageExamples(repoPath, symbolName, true);
+  const examples = useUsageExamples(repoPath, symbolName, file, true);
   const rows = examples.data?.examples ?? [];
 
   return (

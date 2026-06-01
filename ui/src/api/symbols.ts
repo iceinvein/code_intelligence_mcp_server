@@ -56,11 +56,14 @@ export function fetchFileSymbols(
 export function fetchUsageExamples(
   repoPath: string,
   symbolName: string,
+  file?: string,
   signal?: AbortSignal,
 ): Promise<UsageExamplesData> {
   return queryPost<UsageExamplesData>(
     "/query/usage-examples",
-    { repo: repoPath, symbol_name: symbolName },
+    file === undefined
+      ? { repo: repoPath, symbol_name: symbolName }
+      : { repo: repoPath, symbol_name: symbolName, file },
     signal,
   );
 }

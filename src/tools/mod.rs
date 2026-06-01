@@ -99,6 +99,9 @@ pub struct GetTypeGraphTool {
 pub struct GetUsageExamplesTool {
     pub symbol_name: String,
     pub limit: Option<u32>,
+    /// Optional file to disambiguate same-named symbols. When set, only the
+    /// symbol defined in this file contributes usage examples.
+    pub file: Option<String>,
 }
 
 #[macros::mcp_tool(

@@ -58,9 +58,11 @@ test("fetchFileSymbols posts repo + file_path and unwraps symbols", async () => 
   expect(data.symbols[0]!.name).toBe("foo");
 });
 
-test("fetchUsageExamples posts repo + symbol_name and unwraps examples", async () => {
-  globalThis.fetch = mock(async () =>
-    envelope({
+test("fetchUsageExamples posts repo + symbol_name + file and unwraps examples", async () => {
+  const calls: Array<{ body: string | null }> = [];
+  globalThis.fetch = mock(async (_url: string, init?: RequestInit) => {
+    calls.push({ body: (init?.body as string) ?? null });
+    return envelope({
       symbol_name: "foo",
       count: 1,
       examples: [
@@ -73,10 +75,11 @@ test("fetchUsageExamples posts repo + symbol_name and unwraps examples", async (
           snippet: "foo()",
         },
       ],
-    }),
-  ) as unknown as typeof fetch;
+    });
+  }) as unknown as typeof fetch;
 
-  const data = await fetchUsageExamples("/r", "foo");
+  const data = await fetchUsageExamples("/r", "foo", "a.rs");
+  expect(JSON.parse(calls[0]!.body!)).toEqual({ repo: "/r", symbol_name: "foo", file: "a.rs" });
   expect(data.examples[0]!.from_symbol_name).toBe("bar");
   expect(data.examples[0]!.at_line).toBe(9);
 });

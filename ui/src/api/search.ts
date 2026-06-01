@@ -50,7 +50,7 @@ export type ReferencesData = {
   disambiguation?: { hint: string; available_files: string[] };
 };
 
-type QueryEnvelope<T> = {
+export type QueryEnvelope<T> = {
   ok: boolean;
   command: string;
   repo: { path: string; id: string };
@@ -59,7 +59,7 @@ type QueryEnvelope<T> = {
   result: T;
 };
 
-async function queryPost<T>(
+export async function queryPost<T>(
   path: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,

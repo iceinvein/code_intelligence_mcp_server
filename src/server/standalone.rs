@@ -688,6 +688,7 @@ impl StandaloneHandler {
                 Ok(Resolved::Ready(state))
             }
             GateDecision::NeedConsent => {
+                self.session_manager.record_pending(&repo_path);
                 let repo_id = RepoRegistry::path_hash(repo_path.as_str());
                 tracing::info!(
                     session = %session_id,

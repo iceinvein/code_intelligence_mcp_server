@@ -15,6 +15,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use dashmap::DashMap;
+use serde::Serialize;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -36,6 +37,29 @@ fn should_spawn_description_worker(
     descriptions_enabled && llm_enabled && !bench_disabled
 }
 
+/// One repo awaiting an indexing decision. Held in memory only: pending consent
+/// is transient, agent-driven state, so it is intentionally not persisted (that
+/// would write a registry entry for every temp/worktree dir the gate exists to
+/// skip). Cleared on restart; the gate re-records it when an agent retries.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingConsent {
+    pub repo_path: String,
+    pub repo_id: String,
+    pub detected: String,
+    pub recommendation: String,
+    pub detail: Option<String>,
+    pub first_seen_unix_s: i64,
+    pub last_seen_unix_s: i64,
+    pub occurrences: u32,
+}
+
+fn now_unix_s() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 pub struct SessionManager {
     pub standalone_config: Arc<StandaloneConfig>,
     pub registry: Arc<RepoRegistry>,
@@ -50,6 +74,8 @@ pub struct SessionManager {
     init_locks: DashMap<String, Arc<Mutex<()>>>,
     /// Tracks the last time each repo was accessed, for TTL-based eviction
     last_accessed: DashMap<String, Instant>,
+    /// Repos an agent bound implicitly that are awaiting a user indexing decision.
+    pending_consent: DashMap<String, PendingConsent>,
     metrics: Arc<MetricsRegistry>,
     /// Optional handle so watch-driven runs surface as `Job` entries for
     /// the dashboard. Tests construct managers without one.
@@ -74,6 +100,7 @@ impl SessionManager {
             repos: DashMap::new(),
             init_locks: DashMap::new(),
             last_accessed: DashMap::new(),
+            pending_consent: DashMap::new(),
             metrics,
             job_registry,
         })
@@ -121,6 +148,54 @@ impl SessionManager {
         self.last_accessed.insert(canonical, Instant::now());
 
         Ok(state_arc)
+    }
+
+    /// Record (or refresh) a repo awaiting a consent decision. Keyed by repo id
+    /// so repeated tool calls on the same repo bump `occurrences`/`last_seen`
+    /// instead of duplicating.
+    pub fn record_pending(&self, repo_path: &crate::path::Utf8Path) {
+        let repo_id = RepoRegistry::path_hash(repo_path.as_str());
+        let now = now_unix_s();
+        self.pending_consent
+            .entry(repo_id.clone())
+            .and_modify(|p| {
+                p.last_seen_unix_s = now;
+                p.occurrences = p.occurrences.saturating_add(1);
+            })
+            .or_insert_with(|| {
+                let class = crate::server::project_check::classify_repo(repo_path);
+                PendingConsent {
+                    repo_path: repo_path.as_str().to_string(),
+                    repo_id,
+                    detected: class.kind().to_string(),
+                    recommendation: class.recommendation(),
+                    detail: class.detail(),
+                    first_seen_unix_s: now,
+                    last_seen_unix_s: now,
+                    occurrences: 1,
+                }
+            });
+    }
+
+    /// Snapshot of pending repos, oldest first.
+    pub fn list_pending(&self) -> Vec<PendingConsent> {
+        let mut v: Vec<PendingConsent> = self
+            .pending_consent
+            .iter()
+            .map(|e| e.value().clone())
+            .collect();
+        v.sort_by_key(|p| p.first_seen_unix_s);
+        v
+    }
+
+    /// Whether a repo id is currently pending.
+    pub fn is_pending(&self, repo_id: &str) -> bool {
+        self.pending_consent.contains_key(repo_id)
+    }
+
+    /// Drop a pending entry once the user has resolved it.
+    pub fn clear_pending(&self, repo_id: &str) {
+        self.pending_consent.remove(repo_id);
     }
 
     /// Evict repos that have not been accessed within `warm_ttl_seconds`.
@@ -592,6 +667,43 @@ mod tests {
             second_ts >= first_ts,
             "last_accessed should be refreshed on fast-path hit"
         );
+    }
+
+    #[tokio::test]
+    async fn record_pending_tracks_and_dedupes_by_repo_id() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir =
+            crate::path::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 path");
+        let sm = SessionManager::new_for_test(data_dir).await;
+
+        // A plain absolute path (not under TMPDIR, not a worktree) classifies as standard.
+        let p = crate::path::Utf8Path::new("/Users/dev/proj");
+        sm.record_pending(p);
+        sm.record_pending(p);
+
+        let pending = sm.list_pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].repo_path, "/Users/dev/proj");
+        assert_eq!(pending[0].detected, "standard");
+        assert_eq!(pending[0].occurrences, 2);
+        assert!(sm.is_pending(&pending[0].repo_id));
+
+        sm.clear_pending(&pending[0].repo_id);
+        assert_eq!(sm.list_pending().len(), 0);
+        assert!(!sm.is_pending(&pending[0].repo_id));
+    }
+
+    #[tokio::test]
+    async fn list_pending_is_sorted_by_first_seen() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir =
+            crate::path::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 path");
+        let sm = SessionManager::new_for_test(data_dir).await;
+        sm.record_pending(crate::path::Utf8Path::new("/Users/dev/a"));
+        sm.record_pending(crate::path::Utf8Path::new("/Users/dev/b"));
+        let pending = sm.list_pending();
+        assert_eq!(pending.len(), 2);
+        assert!(pending[0].first_seen_unix_s <= pending[1].first_seen_unix_s);
     }
 
     // ─── eviction ───────────────────────────────────────────────────────────────

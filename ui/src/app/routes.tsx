@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate } from "react-router";
 import { Shell } from "@/app/Shell";
 import { ReposView } from "@/features/repos/ReposView";
 import { ActivityView } from "@/features/activity/ActivityView";
+import { ConsentView } from "@/features/consent/ConsentView";
 import { LogsView } from "@/features/logs/LogsView";
 import { SearchView } from "@/features/search/SearchView";
 
@@ -20,7 +21,7 @@ export const router = createBrowserRouter([
       { path: "graph", element: <Placeholder name="graph" /> },
       { path: "symbols", element: <Placeholder name="symbols" /> },
       { path: "settings", element: <Placeholder name="settings" /> },
-      { path: "consent", element: <Placeholder name="consent" /> },
+      { path: "consent", element: <ConsentView /> },
       { path: "logs", element: <LogsView /> },
       { path: "activity", element: <ActivityView /> },
       { path: "*", element: <Navigate to="/repos" replace /> },

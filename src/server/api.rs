@@ -92,6 +92,8 @@ pub async fn spawn_api_server(
         .route("/api/query/ask", post(handle_query_ask))
         .route("/api/query/hydrate", post(handle_query_hydrate))
         .route("/api/query/repo-map", post(handle_query_repo_map))
+        .route("/api/query/definition", post(handle_query_definition))
+        .route("/api/query/references", post(handle_query_references))
         .route("/api/jobs", get(handle_jobs))
         .route("/api/sessions", get(handle_sessions))
         .route("/api/logs/stream", get(handle_logs_stream))
@@ -521,6 +523,23 @@ struct QueryRepoMapRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct QueryDefinitionRequest {
+    repo: String,
+    symbol_name: String,
+    file: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryReferencesRequest {
+    repo: String,
+    symbol_name: String,
+    file: Option<String>,
+    reference_type: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 struct AddRepoRequest {
     path: String,
 }
@@ -706,6 +725,59 @@ async fn handle_query_repo_map(
     )))
 }
 
+async fn handle_query_definition(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryDefinitionRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if req.symbol_name.trim().is_empty() {
+        return Err(ApiError("symbol_name is required".to_string()));
+    }
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let tool = crate::tools::GetDefinitionTool {
+        symbol_name: req.symbol_name,
+        file: req.file,
+        limit: req.limit,
+    };
+    let result = crate::handlers::handle_get_definition(&app_state, tool)
+        .await
+        .map_err(|e| ApiError(format!("definition failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "definition",
+        &repo_path,
+        &repo_id,
+        index_version,
+        result,
+    )))
+}
+
+async fn handle_query_references(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<QueryReferencesRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if req.symbol_name.trim().is_empty() {
+        return Err(ApiError("symbol_name is required".to_string()));
+    }
+    let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
+    let tool = crate::tools::FindReferencesTool {
+        symbol_name: req.symbol_name,
+        file: req.file,
+        reference_type: req.reference_type,
+        limit: req.limit,
+    };
+    // handle_find_references is synchronous (unlike handle_get_definition above), so no .await here.
+    let result = crate::handlers::handle_find_references(&app_state, tool)
+        .map_err(|e| ApiError(format!("references failed: {e}")))?;
+    let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
+    Ok(Json(query_envelope(
+        "references",
+        &repo_path,
+        &repo_id,
+        index_version,
+        result,
+    )))
+}
+
 async fn resolve_query_repo(
     state: &ApiState,
     repo: &str,
@@ -864,7 +936,15 @@ mod tests {
 
     #[test]
     fn query_envelope_has_stable_agent_contract_fields() {
-        for command in ["ask", "search", "investigate", "hydrate", "repo-map"] {
+        for command in [
+            "ask",
+            "search",
+            "investigate",
+            "hydrate",
+            "repo-map",
+            "definition",
+            "references",
+        ] {
             let envelope = query_envelope(
                 command,
                 crate::path::Utf8Path::new("/tmp/workspace"),

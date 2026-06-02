@@ -123,3 +123,16 @@ export type AddRepoResponse = {
   created_at: string;
   last_accessed: string;
 };
+
+export type FsEntry = {
+  name: string;
+  path: string;
+  has_git: boolean;
+  hidden: boolean;
+};
+
+export type FsListing = {
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+};

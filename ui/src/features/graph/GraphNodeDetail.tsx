@@ -20,14 +20,18 @@ export function GraphNodeDetail({
         <Button size="sm" onClick={() => onReRoot(node)}>
           re-root here
         </Button>
-        <Button asChild size="sm" variant="outline">
-          <Link
-            to={`/symbols?repo=${encodeURIComponent(repoId)}&file=${encodeURIComponent(
-              node.file_path,
-            )}&sym=${encodeURIComponent(node.name)}`}
-          >
-            open in symbols
-          </Link>
+        <Button
+          render={
+            <Link
+              to={`/symbols?repo=${encodeURIComponent(repoId)}&file=${encodeURIComponent(
+                node.file_path,
+              )}&sym=${encodeURIComponent(node.name)}`}
+            />
+          }
+          size="sm"
+          variant="outline"
+        >
+          open in symbols
         </Button>
       </div>
       <SymbolInspector repoPath={repoPath} symbolName={node.name} file={node.file_path} />

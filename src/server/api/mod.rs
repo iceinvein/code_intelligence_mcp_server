@@ -12,6 +12,7 @@
 //! - `GET /api/repos/{id}`               -> repo metadata + per-repo stats
 //! - `POST /api/repos/{id}/reindex`      -> spawn a background re-index
 //! - `DELETE /api/repos/{id}`            -> drop the index, registry entry, and data dir
+//! - `GET /api/fs/list?path=&show_hidden=` -> subdirectories of a path (folder picker)
 //! - `GET /api/jobs`                     -> recent background jobs (running + last 15m finished)
 //!
 //! All routes bind 127.0.0.1 only and reject requests whose `Origin` header is
@@ -41,12 +42,14 @@ use crate::session::SessionManager;
 
 mod activity;
 mod consent;
+mod filesystem;
 mod query;
 mod repos;
 mod settings;
 
 use activity::{handle_jobs, handle_logs_stream, handle_sessions};
 use consent::{handle_consent_get, handle_consent_post};
+use filesystem::handle_fs_list;
 use query::{
     handle_query_ask, handle_query_call_hierarchy, handle_query_definition,
     handle_query_dependency_graph, handle_query_file_symbols, handle_query_files,
@@ -99,6 +102,7 @@ pub async fn spawn_api_server(
             "/api/repos/{id}",
             get(handle_repo_detail).delete(handle_repo_delete),
         )
+        .route("/api/fs/list", get(handle_fs_list))
         .route("/api/query/search", post(handle_query_search))
         .route("/api/query/investigate", post(handle_query_investigate))
         .route("/api/query/ask", post(handle_query_ask))
@@ -212,6 +216,7 @@ pub(crate) fn validate_repo_path(input: &str) -> Result<crate::path::Utf8PathBuf
         .map_err(|_| "path is not valid UTF-8".to_string())
 }
 
+#[derive(Debug)]
 pub(crate) struct ApiError(pub(crate) String);
 
 impl IntoResponse for ApiError {

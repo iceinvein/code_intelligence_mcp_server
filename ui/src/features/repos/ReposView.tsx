@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useRepos, useRepoDetail, useReindexRepo, useDeleteRepo, useAddRepo } from "@/features/repos/useRepos";
+import { useRepos, useRepoDetail, useReindexRepo, useDeleteRepo } from "@/features/repos/useRepos";
+import { FolderPickerDialog } from "@/features/repos/FolderPickerDialog";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,34 +46,13 @@ export function ReposView() {
 }
 
 function AddRepoForm() {
-  const [path, setPath] = useState("");
-  const add = useAddRepo();
-  const submit = () => {
-    const trimmed = path.trim();
-    if (!trimmed) return;
-    add.mutate(trimmed, { onSuccess: () => setPath("") });
-  };
+  const [open, setOpen] = useState(false);
   return (
-    <div className="mb-4 flex items-center gap-2">
-      <input
-        value={path}
-        onChange={(e) => {
-          setPath(e.target.value);
-          if (add.isError) add.reset();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") submit();
-        }}
-        placeholder="/absolute/path/to/repo"
-        aria-label="repository path to add"
-        className="h-7 flex-1 rounded-md border border-border bg-card px-2 font-mono text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      />
-      <Button size="sm" disabled={add.isPending || path.trim() === ""} onClick={submit}>
-        {add.isPending ? "adding" : "add repo"}
+    <div className="mb-4">
+      <Button size="sm" onClick={() => setOpen(true)}>
+        add repository
       </Button>
-      {add.isError ? (
-        <span className="text-[11px] text-destructive">{String((add.error as Error).message)}</span>
-      ) : null}
+      <FolderPickerDialog open={open} onOpenChange={setOpen} />
     </div>
   );
 }
@@ -109,11 +89,7 @@ function RepoRow({ repo }: { repo: Repo }) {
           {reindex.isPending ? "queued" : "reindex"}
         </Button>
         <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="destructive" size="sm">
-              drop
-            </Button>
-          </AlertDialogTrigger>
+          <AlertDialogTrigger render={<Button variant="destructive" size="sm">drop</Button>} />
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Drop {repo.name}?</AlertDialogTitle>

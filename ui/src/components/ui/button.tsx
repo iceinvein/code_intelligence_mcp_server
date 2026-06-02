@@ -1,6 +1,6 @@
-import { Slot } from "@radix-ui/react-slot";
+import { useRender } from "@base-ui/react/use-render";
 import { cva, type VariantProps } from "class-variance-authority";
-import { type ButtonHTMLAttributes, forwardRef } from "react";
+import { type ButtonHTMLAttributes, type ReactElement, forwardRef } from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
@@ -24,14 +24,18 @@ const buttonVariants = cva(
 );
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
-  VariantProps<typeof buttonVariants> & { asChild?: boolean };
+  VariantProps<typeof buttonVariants> & {
+    /** Base UI render prop: replace the underlying <button> (e.g. with a router Link). */
+    render?: ReactElement;
+  };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : "button";
-    return (
-      <Comp ref={ref} className={cn(buttonVariants({ variant, size, className }))} {...props} />
-    );
+  ({ className, variant, size, render, ...props }, ref) => {
+    return useRender({
+      defaultTagName: "button",
+      render,
+      props: { ref, className: cn(buttonVariants({ variant, size, className })), ...props },
+    });
   },
 );
 Button.displayName = "Button";

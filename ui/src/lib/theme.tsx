@@ -44,3 +44,21 @@ export function useTheme(): ThemeContextValue {
   if (!ctx) throw new Error("useTheme must be used within ThemeProvider");
   return ctx;
 }
+
+/** Resolves "system" to the actual light/dark in effect — for libraries (xyflow) that need a concrete mode. */
+export function useResolvedTheme(): "light" | "dark" {
+  const { theme } = useTheme();
+  const [systemDark, setSystemDark] = useState<boolean>(
+    () => globalThis.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
+  );
+
+  useEffect(() => {
+    const mq = globalThis.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    const onChange = () => setSystemDark(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  return theme === "system" ? (systemDark ? "dark" : "light") : theme;
+}

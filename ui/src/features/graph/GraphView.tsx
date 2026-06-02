@@ -6,6 +6,7 @@ import { GraphNodeDetail } from "@/features/graph/GraphNodeDetail";
 import { SymbolPicker } from "@/features/graph/SymbolPicker";
 import { useGraph } from "@/features/graph/useGraph";
 import { useRepos } from "@/features/repos/useRepos";
+import { cn } from "@/lib/utils";
 
 const TYPES: { key: GraphType; label: string }[] = [
   { key: "call", label: "call" },
@@ -66,8 +67,10 @@ export function GraphView() {
 
   return (
     <section>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <h2 className="text-[10px] uppercase tracking-[0.18em] text-label">graph</h2>
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-[0.6875rem] font-medium uppercase tracking-[0.13em] text-label">
+          graph
+        </span>
         {repoPath ? (
           <SymbolPicker
             repoPath={repoPath}
@@ -79,9 +82,12 @@ export function GraphView() {
             <button
               key={t.key}
               onClick={() => update({ type: t.key, dir: DIRECTIONS[t.key][0]! })}
-              className={`border px-2 py-1 text-[11px] ${
-                type === t.key ? "border-primary text-primary" : "border-border text-muted-foreground"
-              }`}
+              className={cn(
+                "rounded-md border px-2.5 py-1 text-[0.6875rem] transition-colors duration-150",
+                type === t.key
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-input text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
             >
               {t.label}
             </button>
@@ -90,7 +96,7 @@ export function GraphView() {
         <select
           value={direction}
           onChange={(e) => update({ dir: e.target.value })}
-          className="h-7 rounded-md border border-border bg-card px-2 text-[12px]"
+          className="h-8 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {DIRECTIONS[type].map((d) => (
             <option key={d} value={d}>
@@ -101,7 +107,7 @@ export function GraphView() {
         <select
           value={String(depth)}
           onChange={(e) => update({ depth: e.target.value })}
-          className="h-7 rounded-md border border-border bg-card px-2 text-[12px]"
+          className="h-8 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {[1, 2, 3].map((d) => (
             <option key={d} value={d}>
@@ -113,7 +119,7 @@ export function GraphView() {
           value={repoId}
           aria-label="repository"
           onChange={(e) => update({ repo: e.target.value })}
-          className="ml-auto h-7 rounded-md border border-border bg-card px-2 text-[12px]"
+          className="ml-auto h-8 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <option value="">select repo</option>
           {repos.map((r) => (
@@ -125,19 +131,20 @@ export function GraphView() {
       </div>
 
       {!repoPath ? (
-        <div className="text-xs text-muted-foreground">select a repository</div>
+        <p className="text-sm text-muted-foreground">select a repository.</p>
       ) : !symbol ? (
-        <div className="text-xs text-muted-foreground">search for a symbol to root the graph</div>
+        <p className="text-sm text-muted-foreground">search for a symbol to root the graph.</p>
       ) : graph.isLoading ? (
-        <div className="text-xs text-muted-foreground">building graph...</div>
+        <p className="text-sm text-muted-foreground">building graph…</p>
       ) : graph.isError ? (
-        <div className="text-xs text-destructive">
+        <p className="text-sm text-destructive">
           graph failed: {String((graph.error as Error).message)}
-        </div>
+        </p>
       ) : (graph.data?.nodes.length ?? 0) === 0 ? (
-        <div className="text-xs text-muted-foreground">
-          no graph for "{symbol}" (try another symbol or direction)
-        </div>
+        <p className="text-sm text-muted-foreground">
+          no graph for <span className="font-mono text-foreground">{symbol}</span> (try another
+          symbol or direction).
+        </p>
       ) : (
         <div className="flex gap-3">
           <div className="min-w-0 flex-1 rounded-md border border-border">
@@ -157,7 +164,7 @@ export function GraphView() {
                 onReRoot={reRoot}
               />
             ) : (
-              <div className="text-[11px] text-muted-foreground">click a node to inspect it</div>
+              <div className="text-sm text-muted-foreground">click a node to inspect it</div>
             )}
           </div>
         </div>

@@ -12,6 +12,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { SectionLabel } from "@/components/ui/datasheet";
+import { InlineError } from "@/components/ui/inline-error";
 import { SettingField } from "@/features/settings/SettingField";
 import { changedKeys, pendingChanges, type SettingsDraft } from "@/features/settings/diff";
 import { usePutSettings, useSettings } from "@/features/settings/useSettings";
@@ -90,7 +92,7 @@ export function SettingsView() {
 
   return (
     <section className="pb-20">
-      <h2 className="mb-3 text-[10px] uppercase tracking-[0.18em] text-label">settings</h2>
+      <SectionLabel>settings</SectionLabel>
 
       {saved ? (
         <div className="mb-4 rounded-md border border-primary bg-primary/10 px-3 py-2 text-xs">
@@ -138,18 +140,17 @@ export function SettingsView() {
       </AlertDialog>
 
       {settings.isLoading ? (
-        <div className="text-xs text-muted-foreground">loading...</div>
+        <p className="text-sm text-muted-foreground">loading…</p>
       ) : settings.isError ? (
-        <div className="text-xs text-destructive">
-          failed to load settings: {String((settings.error as Error).message)}
-        </div>
+        <InlineError
+          message={`failed to load settings: ${String((settings.error as Error).message)}`}
+          onRetry={() => settings.refetch()}
+        />
       ) : (
         <>
           {groups.map(({ group, fields: groupFields }) => (
-            <div key={group} className="mb-6">
-              <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-label">
-                {group}
-              </div>
+            <div key={group} className="mb-8">
+              <SectionLabel as="h3">{group}</SectionLabel>
               {groupFields.map((f) => (
                 <SettingField
                   key={f.key}
@@ -168,7 +169,7 @@ export function SettingsView() {
           ) : null}
 
           {dirtyKeys.length > 0 ? (
-            <div className="fixed bottom-0 left-0 right-0 border-t border-primary bg-background/95 px-4 py-3 sm:left-44 sm:px-6">
+            <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 px-4 py-3 backdrop-blur-sm sm:left-48 sm:px-6">
               <div className="flex items-center gap-3">
                 <span className="text-xs text-foreground">
                   {dirtyKeys.length} unsaved change{dirtyKeys.length === 1 ? "" : "s"}

@@ -37,7 +37,7 @@ test("ActivityView renders a job and a session from the API", async () => {
   }) as unknown as typeof fetch;
 
   const { findByText, findAllByText } = renderWithClient(<ActivityView />);
-  expect(await findByText("manual_reindex")).toBeDefined();
+  expect(await findByText("manual reindex")).toBeDefined();
   expect(await findByText("bound")).toBeDefined();
   expect((await findAllByText("/repo/x")).length).toBeGreaterThan(0);
 });

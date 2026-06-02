@@ -31,20 +31,20 @@ Voice for UI copy: short, factual, lowercase-friendly for system terms (`mcp-ses
 - "AI startup" landing aesthetic (gradient text, glassmorphism, animated mesh backgrounds).
 - Datadog / Grafana template appearance: strong information design, weak identity. The dashboard must not look like every other DevOps panel.
 - Cramped tool UIs (Acrobat, traditional ops consoles) that pack everything into toolbars and tiny dense tables.
-- Cyberpunk neon-on-near-black: dark mode is high-contrast slate plus warm ivory, never saturated neon. The terminal layout is calm and considered, not a hacker movie set.
-- Hero-metric template: big number + small label + accent stripe + supporting stats, repeated four times across the top of the page.
+- Cyberpunk neon-on-near-black: the secondary dark theme is high-contrast slate plus warm ivory, never saturated neon. Calm and considered, not a hacker movie set.
+- Hero-metric template: big number + small label + accent stripe + supporting stats, repeated four times across the top of the page. The overview's vital readout is one hairline-divided bar, not four floating stat cards.
 
 ## Design Principles
 
 1. **Status is the headline.** The first thing a user sees must answer "is the daemon doing what I expect?" Health, repos indexed, sessions bound, active jobs. Everything else is supporting evidence.
 2. **Earned density.** Start sparse where users land. Grow denser inside expanded sections (repo detail, log stream) where attention is focused. Never make the top of the page dense.
-3. **Typography carries the design.** Hierarchy through scale, weight, and font choice. Color does not do hierarchy. Accent appears in less than ten percent of pixels.
-4. **State changes are honest.** Running, succeeded, failed, idle. Each state has one clear visual treatment. No ambiguous tints, no badges that look the same at a glance.
-5. **High-contrast dark, warm identity.** Dark mode uses a deep cool slate background with crisp warm-ivory ink and a brighter teal accent. Contrast is higher than the previous "dim paper" stance; identity (italic serif brand, mono body, single accent) is preserved across both themes. The light theme remains the warm-cream surface described elsewhere.
+3. **Typography carries the design.** Hierarchy through scale, weight, and font choice; color never does hierarchy. Color is signal-only and stays well under ten percent of pixels: the state vocabulary plus the selection accent, nothing decorative.
+4. **State changes are honest.** Running, succeeded, failed, idle. Each state has one clear visual treatment carried by a distinct glyph SHAPE, a text label, and a color (never color alone). No ambiguous tints, no badges that look the same at a glance.
+5. **Precision instrument, light-primary.** The primary theme is a warm paper surface with near-black warm ink, hairline (1px) rules instead of card chrome, and monospace numerals for data. Type pairing: system-sans for chrome, mono for data/paths/code, a serif-italic wordmark as the one identity flourish. The aesthetic of a well-made desk instrument (Braun/Rams readout, a lab datasheet), not a devtool dashboard. Dark mode is a faithful secondary translation (deep cool slate, warm ivory, brighter teal), reachable via the explicit toggle; it is not the headline.
 
 ## Accessibility & Inclusion
 
-- **WCAG 2.1 AA** for color contrast across both light and dark themes. The 12.5px monospace timestamp column must meet AA on its background, not just AAA-by-accident at 14px.
+- **WCAG 2.1 AA** for color contrast across both light and dark themes. Small monospace metadata (11px timestamps, counts, paths in `muted-foreground`) must meet AA on its background. Light-mode amber `state-run` is the tightest pair (~4.7:1); never lighten it.
 - **prefers-reduced-motion**: respected. All transitions become instant or near-instant; the live log feed does not auto-animate-scroll.
 - **prefers-color-scheme**: respected, plus an explicit `system / light / dark` toggle that overrides it.
 - **Keyboard navigation**: every interactive element reachable by tab, with a visible `:focus-visible` ring tied to the accent token.

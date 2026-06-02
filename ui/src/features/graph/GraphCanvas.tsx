@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Background, Controls, MiniMap, ReactFlow } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { GraphData } from "@/api/graph";
+import { useResolvedTheme } from "@/lib/theme";
 import { layoutGraph } from "@/features/graph/layout";
 import { SymbolNode } from "@/features/graph/SymbolNode";
 import { toFlow, type SymbolFlowNode, type SymbolNodeData } from "@/features/graph/toFlow";
@@ -19,6 +20,7 @@ export function GraphCanvas({
   onSelect: (node: SymbolNodeData["node"]) => void;
   onReRoot: (node: SymbolNodeData["node"]) => void;
 }) {
+  const colorMode = useResolvedTheme();
   const { nodes, edges } = useMemo(() => {
     const positions = layoutGraph(data.nodes, data.edges);
     return toFlow(data, positions, rootId);
@@ -30,6 +32,7 @@ export function GraphCanvas({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        colorMode={colorMode}
         fitView
         onNodeClick={(_e, n) => onSelect(n.data.node)}
         onNodeDoubleClick={(_e, n) => onReRoot(n.data.node)}

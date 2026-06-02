@@ -1,5 +1,19 @@
 @import "tailwindcss";
 
+/* ────────────────────────────────────────────────────────────────────────
+   Code Intelligence portal — design tokens
+
+   Lane: precision instrument. Light is the primary theme: a warm paper
+   surface, near-black warm ink, hairline rules instead of card chrome, and
+   monospace numerals for data. Dark is a faithful secondary translation
+   (deep cool slate + warm ivory), not an inversion.
+
+   Color is signal-only: the surface stays near-monochrome and hue appears
+   almost exclusively to encode state (ok / run / fail / idle) and the current
+   selection (teal). State is never carried by color alone — every state in
+   the UI also carries a glyph and a text label.
+   ──────────────────────────────────────────────────────────────────────── */
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -18,119 +32,205 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-label: var(--label-color);
+
+  /* Signal-only state vocabulary. Pair every use with a glyph + label. */
+  --color-ok: var(--state-ok);
+  --color-run: var(--state-run);
+  --color-fail: var(--state-fail);
+  --color-idle: var(--state-idle);
+
   --font-mono: var(--font-mono);
   --font-sans: var(--font-sans);
   --font-serif: var(--font-serif);
-  --radius-sm: 3px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
+
+  /* Crisp instrument radii — small, never pill. */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
 }
 
+/* ── Light (primary) ──────────────────────────────────────────────────── */
 :root {
-  --background: oklch(10% 0.010 250);
-  --foreground: oklch(96% 0.008 85);
-  --card: oklch(14% 0.012 250);
-  --card-foreground: oklch(96% 0.008 85);
-  --popover: oklch(14% 0.012 250);
-  --popover-foreground: oklch(96% 0.008 85);
-  --primary: oklch(82% 0.150 195);
-  --primary-foreground: oklch(10% 0.010 250);
-  --muted: oklch(22% 0.010 250);
-  --muted-foreground: oklch(72% 0.012 80);
-  --accent: oklch(22% 0.010 250);
-  --accent-foreground: oklch(96% 0.008 85);
-  --destructive: oklch(82% 0.135 55);
-  --border: oklch(28% 0.012 250);
-  --input: oklch(28% 0.012 250);
-  --ring: oklch(82% 0.150 195);
-  --label-color: oklch(64% 0.014 80);
-  color-scheme: dark;
+  /* warm paper surface, raised sheet, recessed well */
+  --background: oklch(96.8% 0.006 83);
+  --foreground: oklch(23% 0.014 70);
+  --card: oklch(99.2% 0.004 83);
+  --card-foreground: oklch(23% 0.014 70);
+  --popover: oklch(99.4% 0.004 83);
+  --popover-foreground: oklch(23% 0.014 70);
+
+  /* selection accent — teal, the one non-state hue */
+  --primary: oklch(48% 0.118 200);
+  --primary-foreground: oklch(99% 0.004 200);
+
+  /* neutral hover/fill surface (shadcn "accent"), and secondary ink */
+  --muted: oklch(93.2% 0.007 83);
+  --muted-foreground: oklch(45% 0.012 75);
+  --accent: oklch(93.2% 0.007 83);
+  --accent-foreground: oklch(23% 0.014 70);
+
+  --destructive: oklch(52% 0.175 27);
+
+  --border: oklch(89% 0.006 83);
+  --input: oklch(85.5% 0.007 83);
+  --ring: oklch(48% 0.118 200);
+  --label-color: oklch(47% 0.012 78);
+
+  /* state signals */
+  --state-ok: oklch(50% 0.128 150);
+  --state-run: oklch(54% 0.112 68);
+  --state-fail: oklch(52% 0.175 27);
+  --state-idle: oklch(45% 0.012 75);
+
+  color-scheme: light;
+
   --font-serif: "Charter", "Iowan Old Style", "Sitka Text", Georgia, serif;
-  --font-mono: "JetBrains Mono", "Berkeley Mono", "SF Mono", Menlo, ui-monospace, monospace;
-  --font-sans: -apple-system, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Berkeley Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: light) {
-  :root:not(.theme-dark) {
-    --background: #f4ede1;
-    --foreground: #2a241a;
-    --card: #e7dec9;
-    --card-foreground: #2a241a;
-    --popover: #e7dec9;
-    --popover-foreground: #2a241a;
-    --primary: #2f6b5e;
-    --primary-foreground: #f4ede1;
-    --muted: #c9bb9e;
-    --muted-foreground: #6d5f3f;
-    --accent: #c9bb9e;
-    --accent-foreground: #2a241a;
-    --destructive: #8a3a1c;
-    --border: #d9ccaf;
-    --input: #d9ccaf;
-    --ring: #2f6b5e;
-    --label-color: #8a7a52;
-    color-scheme: light;
+/* ── Dark (secondary, system preference) ──────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) {
+    --background: oklch(15.5% 0.013 250);
+    --foreground: oklch(93% 0.011 82);
+    --card: oklch(18.8% 0.013 250);
+    --card-foreground: oklch(93% 0.011 82);
+    --popover: oklch(18.8% 0.013 250);
+    --popover-foreground: oklch(93% 0.011 82);
+
+    --primary: oklch(80% 0.118 198);
+    --primary-foreground: oklch(15.5% 0.013 250);
+
+    --muted: oklch(24% 0.013 250);
+    --muted-foreground: oklch(72% 0.012 80);
+    --accent: oklch(24% 0.013 250);
+    --accent-foreground: oklch(93% 0.011 82);
+
+    --destructive: oklch(71% 0.165 28);
+
+    --border: oklch(30% 0.013 250);
+    --input: oklch(34% 0.013 250);
+    --ring: oklch(80% 0.118 198);
+    --label-color: oklch(64% 0.012 80);
+
+    --state-ok: oklch(76% 0.148 152);
+    --state-run: oklch(80% 0.128 78);
+    --state-fail: oklch(71% 0.165 28);
+    --state-idle: oklch(64% 0.012 80);
+
+    color-scheme: dark;
   }
 }
 
-:root.theme-light {
-  --background: #f4ede1;
-  --foreground: #2a241a;
-  --card: #e7dec9;
-  --card-foreground: #2a241a;
-  --popover: #e7dec9;
-  --popover-foreground: #2a241a;
-  --primary: #2f6b5e;
-  --primary-foreground: #f4ede1;
-  --muted: #c9bb9e;
-  --muted-foreground: #6d5f3f;
-  --accent: #c9bb9e;
-  --accent-foreground: #2a241a;
-  --destructive: #8a3a1c;
-  --border: #d9ccaf;
-  --input: #d9ccaf;
-  --ring: #2f6b5e;
-  --label-color: #8a7a52;
-  color-scheme: light;
+/* ── Dark (explicit toggle) ───────────────────────────────────────────── */
+:root.theme-dark {
+  --background: oklch(15.5% 0.013 250);
+  --foreground: oklch(93% 0.011 82);
+  --card: oklch(18.8% 0.013 250);
+  --card-foreground: oklch(93% 0.011 82);
+  --popover: oklch(18.8% 0.013 250);
+  --popover-foreground: oklch(93% 0.011 82);
+
+  --primary: oklch(80% 0.118 198);
+  --primary-foreground: oklch(15.5% 0.013 250);
+
+  --muted: oklch(24% 0.013 250);
+  --muted-foreground: oklch(72% 0.012 80);
+  --accent: oklch(24% 0.013 250);
+  --accent-foreground: oklch(93% 0.011 82);
+
+  --destructive: oklch(71% 0.165 28);
+
+  --border: oklch(30% 0.013 250);
+  --input: oklch(34% 0.013 250);
+  --ring: oklch(80% 0.118 198);
+  --label-color: oklch(64% 0.012 80);
+
+  --state-ok: oklch(76% 0.148 152);
+  --state-run: oklch(80% 0.128 78);
+  --state-fail: oklch(71% 0.165 28);
+  --state-idle: oklch(64% 0.012 80);
+
+  color-scheme: dark;
 }
 
+/* ── Base elements ────────────────────────────────────────────────────── */
 * {
   border-color: var(--color-border);
 }
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
 }
 body {
   margin: 0;
   background: var(--color-background);
   color: var(--color-foreground);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  /* sans carries the chrome; mono is opt-in for data via .font-mono */
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
   line-height: 1.5;
+  font-kerning: normal;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
+/* Tabular numerals everywhere mono is used — datasheet columns must align. */
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "calt" 0;
+}
+
+/* Visible, accent-tied focus ring on every interactive element. */
+:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-primary) 22%, transparent);
+}
+
+/* Honest reduced-motion: transitions collapse, nothing auto-animates. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Shiki code highlighting — light is the default theme ─────────────── */
 .shiki,
 .shiki span {
-  color: var(--shiki-dark);
-  background-color: var(--shiki-dark-bg);
-}
-:root.theme-light .shiki,
-:root.theme-light .shiki span {
   color: var(--shiki-light);
   background-color: var(--shiki-light-bg);
 }
-@media (prefers-color-scheme: light) {
-  :root:not(.theme-dark) .shiki,
-  :root:not(.theme-dark) .shiki span {
-    color: var(--shiki-light);
-    background-color: var(--shiki-light-bg);
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .shiki,
+  :root:not(.theme-light) .shiki span {
+    color: var(--shiki-dark);
+    background-color: var(--shiki-dark-bg);
   }
 }
+:root.theme-dark .shiki,
+:root.theme-dark .shiki span {
+  color: var(--shiki-dark);
+  background-color: var(--shiki-dark-bg);
+}
 .shiki {
-  padding: 8px 10px;
-  border-radius: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 0.75rem;
+  line-height: 1.55;
 }

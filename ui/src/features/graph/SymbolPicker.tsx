@@ -29,12 +29,12 @@ export function SymbolPicker({
         onKeyDown={(e) => {
           if (e.key === "Enter") setQuery(draft.trim());
         }}
-        placeholder="find a symbol..."
+        placeholder="find a symbol…"
         aria-label="symbol search"
-        className="h-7 w-72 rounded-md border border-border bg-card px-2 font-mono text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="h-8 w-72 rounded-md border border-input bg-card px-2.5 font-mono text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
       />
       {query && hits.length > 0 ? (
-        <div className="absolute z-10 mt-1 max-h-64 w-72 overflow-auto rounded-md border border-border bg-card">
+        <div className="absolute z-10 mt-1 max-h-64 w-72 overflow-auto rounded-md border border-border bg-popover shadow-[0_12px_40px_-16px_oklch(20%_0.02_250/0.45)]">
           {hits.map((h) => (
             <button
               key={h.id}
@@ -43,9 +43,9 @@ export function SymbolPicker({
                 setQuery("");
                 setDraft(h.name);
               }}
-              className="flex w-full items-baseline gap-2 px-2 py-1 text-left font-mono text-[11px] hover:bg-primary/10"
+              className="flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left font-mono text-[0.6875rem] hover:bg-muted"
             >
-              <span className="text-primary">{h.name}</span>
+              <span className="font-medium text-foreground">{h.name}</span>
               <span className="text-muted-foreground">{h.kind}</span>
               <span className="ml-auto truncate text-muted-foreground">{h.file_path}</span>
             </button>

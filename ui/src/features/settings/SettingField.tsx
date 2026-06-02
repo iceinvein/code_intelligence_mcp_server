@@ -8,29 +8,34 @@ type Props = {
   onReset: (key: string) => void;
 };
 
+const SELECT_CLASS =
+  "h-7 rounded-md border border-input bg-card px-2 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+
 export function SettingField({ field, draftValue, dirty, onChange, onReset }: Props) {
   const current = draftValue !== undefined ? draftValue : field.value;
   const disabled = !field.editable;
 
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-border py-2">
+    <div className="flex items-start justify-between gap-4 border-b border-border py-2.5 last:border-b-0">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[12px] text-foreground">{field.key}</span>
+          <span className="font-mono text-[0.8125rem] text-foreground">{field.key}</span>
           {field.needs_reindex ? (
-            <span className="text-[9px] uppercase tracking-wide text-amber-500">reindex</span>
+            <span className="text-[0.625rem] uppercase tracking-[0.1em] text-run">reindex</span>
           ) : null}
           {dirty ? (
-            <span className="text-[9px] uppercase tracking-wide text-primary">edited</span>
+            <span className="text-[0.625rem] uppercase tracking-[0.1em] text-primary">edited</span>
           ) : null}
         </div>
-        <div className="mt-0.5 text-[11px] text-muted-foreground">{field.description}</div>
+        <div className="mt-1 max-w-prose text-[0.6875rem] leading-relaxed text-muted-foreground">
+          {field.description}
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
         {field.type === "bool" ? (
           <select
-            className="h-7 rounded-md border border-border bg-background px-2 py-1 text-xs"
+            className={SELECT_CLASS}
             disabled={disabled}
             value={String(current)}
             onChange={(e) => onChange(field.key, e.target.value === "true")}
@@ -40,7 +45,7 @@ export function SettingField({ field, draftValue, dirty, onChange, onReset }: Pr
           </select>
         ) : field.type === "enum" ? (
           <select
-            className="h-7 rounded-md border border-border bg-background px-2 py-1 text-xs"
+            className={SELECT_CLASS}
             disabled={disabled}
             value={String(current)}
             onChange={(e) => onChange(field.key, e.target.value)}
@@ -54,7 +59,7 @@ export function SettingField({ field, draftValue, dirty, onChange, onReset }: Pr
         ) : field.type === "number" ? (
           <input
             type="number"
-            className="h-7 w-28 rounded-md border border-border bg-background px-2 py-1 text-right font-mono text-xs"
+            className="h-7 w-28 rounded-md border border-input bg-card px-2 py-1 text-right font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             disabled={disabled}
             value={String(current)}
             min={field.range?.min}
@@ -65,7 +70,7 @@ export function SettingField({ field, draftValue, dirty, onChange, onReset }: Pr
         ) : (
           <input
             type="text"
-            className="h-7 w-72 max-w-[42vw] rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
+            className="h-7 w-72 max-w-[42vw] rounded-md border border-input bg-card px-2 py-1 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             disabled={disabled}
             value={String(current)}
             onChange={(e) => onChange(field.key, e.target.value)}
@@ -74,7 +79,7 @@ export function SettingField({ field, draftValue, dirty, onChange, onReset }: Pr
         {field.editable ? (
           <button
             type="button"
-            className="text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-30"
+            className="text-[0.6875rem] text-muted-foreground hover:text-foreground disabled:opacity-30"
             disabled={current === field.default}
             title="reset to default"
             onClick={() => onReset(field.key)}

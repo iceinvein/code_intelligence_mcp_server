@@ -51,8 +51,10 @@ export function SymbolsView() {
 
   return (
     <section>
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-[10px] uppercase tracking-[0.18em] text-label">symbols</h2>
+      <div className="mb-4 flex items-center gap-2">
+        <span className="text-[0.6875rem] font-medium uppercase tracking-[0.13em] text-label">
+          symbols
+        </span>
         <select
           value={repoId}
           aria-label="repository to browse"
@@ -62,7 +64,7 @@ export function SymbolsView() {
             next.delete("sym");
             setParams(next);
           }}
-          className="ml-auto h-7 rounded-md border border-border bg-card px-2 text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="ml-auto h-8 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <option value="">select repo</option>
           {repos.map((r) => (
@@ -74,14 +76,14 @@ export function SymbolsView() {
       </div>
 
       {!repoPath ? (
-        <div className="text-xs text-muted-foreground">select a repository to browse</div>
+        <p className="text-sm text-muted-foreground">select a repository to browse its symbols.</p>
       ) : (
         <div className="flex flex-col gap-3 lg:flex-row">
-          <div className="border-b border-border pb-2 lg:w-56 lg:shrink-0 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-2">
+          <div className="border-b border-border pb-2 lg:w-56 lg:shrink-0 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
             {files.isLoading ? (
-              <div className="text-[11px] text-muted-foreground">loading files...</div>
+              <div className="text-[0.6875rem] text-muted-foreground">loading files…</div>
             ) : files.isError ? (
-              <div className="text-[11px] text-destructive">failed to load files</div>
+              <div className="text-[0.6875rem] text-destructive">failed to load files</div>
             ) : (
               <FileTree
                 files={files.data?.files ?? []}
@@ -91,13 +93,13 @@ export function SymbolsView() {
             )}
           </div>
 
-          <div className="max-h-[70vh] min-h-32 overflow-auto border-b border-border pb-2 lg:w-56 lg:shrink-0 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-2">
+          <div className="max-h-[70vh] min-h-32 overflow-auto border-b border-border pb-2 lg:w-56 lg:shrink-0 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
             {!selectedFile ? (
-              <div className="text-[11px] text-muted-foreground">select a file</div>
+              <div className="text-[0.6875rem] text-muted-foreground">select a file</div>
             ) : fileSymbols.isLoading ? (
-              <div className="text-[11px] text-muted-foreground">loading symbols...</div>
+              <div className="text-[0.6875rem] text-muted-foreground">loading symbols…</div>
             ) : fileSymbols.isError ? (
-              <div className="text-[11px] text-destructive">failed to load symbols</div>
+              <div className="text-[0.6875rem] text-destructive">failed to load symbols</div>
             ) : (
               <SymbolOutline
                 symbols={fileSymbols.data?.symbols ?? []}
@@ -111,7 +113,7 @@ export function SymbolsView() {
             {selectedFile && selectedSym ? (
               <SymbolInspector repoPath={repoPath} symbolName={selectedSym} file={selectedFile} />
             ) : (
-              <div className="text-[11px] text-muted-foreground">select a symbol to inspect</div>
+              <div className="text-[0.6875rem] text-muted-foreground">select a symbol to inspect</div>
             )}
           </div>
         </div>

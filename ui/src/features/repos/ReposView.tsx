@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { useRepos, useRepoDetail, useReindexRepo, useDeleteRepo } from "@/features/repos/useRepos";
 import { FolderPickerDialog } from "@/features/repos/FolderPickerDialog";
-import { Card } from "@/components/ui/card";
+import { DataSheet, Row, SectionLabel, Field } from "@/components/ui/datasheet";
+import { StatusGlyph, type StatusState } from "@/components/ui/status";
+import { Skeleton } from "@/components/ui/skeleton";
+import { InlineError } from "@/components/ui/inline-error";
 import { Button } from "@/components/ui/button";
+import { formatAgo, formatCount } from "@/lib/format";
 import {
   AlertDialog,
   AlertDialogTrigger,
@@ -17,29 +21,37 @@ import {
 import type { Repo } from "@/api/types";
 
 export function ReposView() {
-  const { data, isLoading, isError, error } = useRepos();
-
-  if (isLoading) return <div className="text-xs text-muted-foreground">loading repositories...</div>;
-  if (isError)
-    return (
-      <div className="text-xs text-destructive">failed to load repositories: {String((error as Error).message)}</div>
-    );
-
+  const { data, isLoading, isError, error, refetch } = useRepos();
   const repos = data?.repos ?? [];
+
   return (
     <section>
-      <h2 className="mb-3 text-[10px] uppercase tracking-[0.18em] text-label">
-        repositories &middot; {repos.length}
-      </h2>
-      <AddRepoForm />
-      {repos.length === 0 ? (
-        <div className="text-xs text-muted-foreground">no repositories registered</div>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <SectionLabel className="mb-0" count={isLoading ? undefined : repos.length}>
+          repositories
+        </SectionLabel>
+        <AddRepoForm />
+      </div>
+
+      {isLoading ? (
+        <ListSkeleton />
+      ) : isError ? (
+        <InlineError
+          message={`failed to load repositories: ${String((error as Error).message)}`}
+          onRetry={() => refetch()}
+        />
+      ) : repos.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
+          no repositories registered. use{" "}
+          <span className="font-medium text-foreground">add repository</span> to pick a folder and
+          start indexing.
+        </div>
       ) : (
-        <div className="flex flex-col gap-2">
+        <DataSheet>
           {repos.map((repo) => (
             <RepoRow key={repo.id} repo={repo} />
           ))}
-        </div>
+        </DataSheet>
       )}
     </section>
   );
@@ -48,13 +60,19 @@ export function ReposView() {
 function AddRepoForm() {
   const [open, setOpen] = useState(false);
   return (
-    <div className="mb-4">
+    <>
       <Button size="sm" onClick={() => setOpen(true)}>
         add repository
       </Button>
       <FolderPickerDialog open={open} onOpenChange={setOpen} />
-    </div>
+    </>
   );
+}
+
+function repoState(repo: Repo): { state: StatusState; label: string } {
+  if (repo.activity.running) return { state: "run", label: "indexing" };
+  if (repo.activity.last_updated_unix_s != null) return { state: "ok", label: "indexed" };
+  return { state: "idle", label: "never indexed" };
 }
 
 function RepoRow({ repo }: { repo: Repo }) {
@@ -62,24 +80,26 @@ function RepoRow({ repo }: { repo: Repo }) {
   const detail = useRepoDetail(repo.id, expanded);
   const reindex = useReindexRepo();
   const drop = useDeleteRepo();
-  const running = repo.activity.running;
+  const { state, label } = repoState(repo);
 
   return (
-    <Card className="p-3">
-      <div className="flex items-center gap-3">
-        <span
-          aria-hidden
-          className={running ? "h-2 w-2 rounded-full bg-primary animate-pulse" : "h-2 w-2 rounded-full bg-primary"}
-        />
+    <div>
+      <Row>
+        <StatusGlyph state={state} srLabel={label} />
         <button
+          type="button"
           className="min-w-0 flex-1 text-left"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
         >
-          <div className="truncate text-[13px]">{repo.name}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{repo.path}</div>
+          <div className="truncate text-sm text-foreground">{repo.name}</div>
+          <div className="truncate font-mono text-[0.6875rem] text-muted-foreground">{repo.path}</div>
         </button>
-        <span className="text-[11px] text-muted-foreground">{running ? "indexing" : "indexed"}</span>
+        <span className="hidden shrink-0 font-mono text-[0.6875rem] text-muted-foreground sm:inline">
+          {repo.activity.last_updated_unix_s != null && !repo.activity.running
+            ? formatAgo(repo.activity.last_updated_unix_s)
+            : label}
+        </span>
         <Button
           variant="outline"
           size="sm"
@@ -89,12 +109,19 @@ function RepoRow({ repo }: { repo: Repo }) {
           {reindex.isPending ? "queued" : "reindex"}
         </Button>
         <AlertDialog>
-          <AlertDialogTrigger render={<Button variant="destructive" size="sm">drop</Button>} />
+          <AlertDialogTrigger
+            render={
+              <Button variant="destructive" size="sm">
+                drop
+              </Button>
+            }
+          />
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Drop {repo.name}?</AlertDialogTitle>
               <AlertDialogDescription>
-                This removes the registry entry and deletes the on-disk index data directory. This cannot be undone.
+                This removes the registry entry and deletes the on-disk index data directory. This
+                cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -103,25 +130,47 @@ function RepoRow({ repo }: { repo: Repo }) {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-      </div>
+      </Row>
+
       {expanded ? (
-        <div className="mt-3 border-t border-border pt-3 text-[11px] text-muted-foreground">
+        <div className="border-t border-border bg-background/40 px-3.5 py-3">
           {detail.isLoading ? (
-            <span>loading stats...</span>
-          ) : detail.isError ? (
-            <span className="text-destructive">failed to load stats</span>
-          ) : detail.data?.stats ? (
-            <div className="flex flex-wrap gap-x-6 gap-y-1 font-mono">
-              <span>symbols: {detail.data.stats.symbols ?? "n/a"}</span>
-              <span>edges: {detail.data.stats.edges ?? "n/a"}</span>
-              <span>descriptions: {detail.data.stats.descriptions ?? "n/a"}</span>
-              <span>undescribed: {detail.data.stats.undescribed_symbols ?? "n/a"}</span>
+            <div className="flex gap-6">
+              <Skeleton className="h-7 w-20" />
+              <Skeleton className="h-7 w-20" />
+              <Skeleton className="h-7 w-20" />
             </div>
+          ) : detail.isError ? (
+            <span className="text-xs text-destructive">failed to load stats</span>
+          ) : detail.data?.stats ? (
+            <dl className="flex flex-wrap gap-x-10 gap-y-3">
+              <Field label="symbols" value={formatCount(detail.data.stats.symbols)} />
+              <Field label="edges" value={formatCount(detail.data.stats.edges)} />
+              <Field label="descriptions" value={formatCount(detail.data.stats.descriptions)} />
+              <Field label="undescribed" value={formatCount(detail.data.stats.undescribed_symbols)} />
+            </dl>
           ) : (
-            <span>no stats yet (repo not indexed)</span>
+            <span className="text-xs text-muted-foreground">no stats yet (repo not indexed)</span>
           )}
         </div>
       ) : null}
-    </Card>
+    </div>
+  );
+}
+
+function ListSkeleton() {
+  return (
+    <DataSheet>
+      {Array.from({ length: 3 }).map((_, i) => (
+        <Row key={i}>
+          <Skeleton className="h-2.5 w-2.5 rounded-full" />
+          <div className="min-w-0 flex-1">
+            <Skeleton className="h-3.5 w-40" />
+            <Skeleton className="mt-1.5 h-2.5 w-64" />
+          </div>
+          <Skeleton className="h-6 w-16" />
+        </Row>
+      ))}
+    </DataSheet>
   );
 }

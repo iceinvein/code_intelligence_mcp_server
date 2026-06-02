@@ -12,8 +12,10 @@ export function SymbolInspector({
 }) {
   return (
     <div>
-      <div className="mb-1 font-mono text-[12px] text-primary">{symbolName}</div>
-      <div className="text-[11px] text-muted-foreground">{file}</div>
+      <div className="border-b border-border pb-3">
+        <div className="font-mono text-sm font-medium text-foreground">{symbolName}</div>
+        <div className="mt-0.5 truncate font-mono text-[0.6875rem] text-muted-foreground">{file}</div>
+      </div>
       <DefinitionPanel repoPath={repoPath} symbolName={symbolName} file={file} />
       <UsageExamplesPanel repoPath={repoPath} symbolName={symbolName} file={file} />
     </div>

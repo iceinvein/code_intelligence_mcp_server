@@ -26,8 +26,10 @@ function Row({
         style={pad}
         onClick={() => onSelectFile(row.path)}
         className={cn(
-          "flex h-full w-full items-center gap-2 text-left font-mono text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          selectedFile === row.path ? "text-primary" : "text-foreground hover:text-primary",
+          "flex h-full w-full items-center gap-2 rounded pr-1 text-left font-mono text-[0.6875rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          selectedFile === row.path
+            ? "bg-primary/10 text-primary"
+            : "text-foreground hover:bg-muted hover:text-foreground",
         )}
       >
         <span className="truncate">{row.name}</span>
@@ -41,7 +43,7 @@ function Row({
     <button
       style={pad}
       onClick={() => onToggle(row.path)}
-      className="flex h-full w-full items-center gap-1 text-left font-mono text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-full w-full items-center gap-1 rounded text-left font-mono text-[0.6875rem] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
       <span className="truncate">{row.name}/</span>

@@ -13,10 +13,10 @@ export function AlertDialogContent({
 }: ComponentPropsWithoutRef<typeof Primitive.Popup>) {
   return (
     <Primitive.Portal>
-      <Primitive.Backdrop className="fixed inset-0 z-50 bg-black/45" />
+      <Primitive.Backdrop className="fixed inset-0 z-50 bg-[oklch(20%_0.025_250/0.45)]" />
       <Primitive.Popup
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 w-[min(440px,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-popover p-5 text-popover-foreground",
+          "fixed left-1/2 top-1/2 z-50 w-[min(440px,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-popover p-5 text-popover-foreground shadow-[0_12px_40px_-16px_oklch(20%_0.02_250/0.45)]",
           className,
         )}
         {...props}

@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { createBrowserRouter, Navigate } from "react-router";
 import { Shell } from "@/app/Shell";
+import { OverviewView } from "@/features/overview/OverviewView";
 import { ReposView } from "@/features/repos/ReposView";
 import { ActivityView } from "@/features/activity/ActivityView";
 import { ConsentView } from "@/features/consent/ConsentView";
@@ -18,7 +19,7 @@ export const router = createBrowserRouter([
     path: "/",
     element: <Shell />,
     children: [
-      { index: true, element: <Navigate to="/repos" replace /> },
+      { index: true, element: <OverviewView /> },
       { path: "repos", element: <ReposView /> },
       { path: "search", element: <SearchView /> },
       {
@@ -34,7 +35,7 @@ export const router = createBrowserRouter([
       { path: "consent", element: <ConsentView /> },
       { path: "logs", element: <LogsView /> },
       { path: "activity", element: <ActivityView /> },
-      { path: "*", element: <Navigate to="/repos" replace /> },
+      { path: "*", element: <Navigate to="/" replace /> },
     ],
   },
 ]);

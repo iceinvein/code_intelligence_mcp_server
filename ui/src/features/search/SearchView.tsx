@@ -4,6 +4,8 @@ import { useRepos } from "@/features/repos/useRepos";
 import { useSearch } from "@/features/search/useSearch";
 import { ResultRow } from "@/features/search/ResultRow";
 import { Button } from "@/components/ui/button";
+import { SectionLabel } from "@/components/ui/datasheet";
+import { InlineError } from "@/components/ui/inline-error";
 
 export function SearchView() {
   const [params, setParams] = useSearchParams();
@@ -52,17 +54,17 @@ export function SearchView() {
 
   return (
     <section>
-      <h2 className="mb-3 text-[10px] uppercase tracking-[0.18em] text-label">search</h2>
-      <div className="mb-4 flex items-center gap-2">
+      <SectionLabel>search</SectionLabel>
+      <div className="mb-5 flex items-center gap-2">
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") submit();
           }}
-          placeholder="search code by meaning..."
+          placeholder="search code by meaning…"
           aria-label="search query"
-          className="h-7 flex-1 rounded-md border border-border bg-card px-2 font-mono text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-8 flex-1 rounded-md border border-input bg-card px-2.5 font-mono text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
         <select
           value={repoId}
@@ -72,7 +74,7 @@ export function SearchView() {
             next.set("repo", e.target.value);
             setParams(next);
           }}
-          className="h-7 rounded-md border border-border bg-card px-2 text-[12px] outline-none"
+          className="h-8 rounded-md border border-input bg-card px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <option value="">select repo</option>
           {repos.map((r) => (
@@ -81,32 +83,39 @@ export function SearchView() {
             </option>
           ))}
         </select>
-        <Button size="sm" disabled={!repoPath || draft.trim() === ""} onClick={submit}>
+        <Button size="default" disabled={!repoPath || draft.trim() === ""} onClick={submit}>
           search
         </Button>
       </div>
 
       {!repoPath ? (
-        <div className="text-xs text-muted-foreground">select a repository to search</div>
+        <p className="text-sm text-muted-foreground">select a repository to search its code.</p>
       ) : search.isLoading ? (
-        <div className="text-xs text-muted-foreground">searching...</div>
+        <p className="text-sm text-muted-foreground">searching…</p>
       ) : search.isError ? (
-        <div className="text-xs text-destructive">search failed: {String((search.error as Error).message)}</div>
+        <InlineError
+          message={`search failed: ${String((search.error as Error).message)}`}
+          onRetry={() => search.refetch()}
+        />
       ) : submittedQuery && results.length === 0 ? (
-        <div className="text-xs text-muted-foreground">no results for "{submittedQuery}"</div>
-      ) : (
+        <p className="text-sm text-muted-foreground">
+          no results for <span className="font-mono text-foreground">{submittedQuery}</span>
+        </p>
+      ) : results.length > 0 ? (
         <>
-          {submittedQuery ? (
-            <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-label">
-              {results.length} results
-            </div>
-          ) : null}
-          <div>
+          <div className="mb-2 text-[0.6875rem] font-medium uppercase tracking-[0.13em] text-label">
+            {results.length} {results.length === 1 ? "result" : "results"}
+          </div>
+          <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-card">
             {results.map((hit) => (
               <ResultRow key={hit.id} hit={hit} repoPath={repoPath} />
             ))}
           </div>
         </>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          enter a query to search <span className="font-mono text-foreground">{selectedRepo?.name}</span>.
+        </p>
       )}
     </section>
   );

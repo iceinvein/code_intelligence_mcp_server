@@ -9,8 +9,10 @@ export function Shell() {
       <Header />
       <div className="flex min-h-0 flex-1">
         <Sidebar />
-        <main className="min-w-0 flex-1 overflow-y-auto p-4">
-          <Outlet />
+        <main className="min-w-0 flex-1 overflow-y-auto px-5 py-6 sm:px-7 sm:py-7">
+          <div className="mx-auto max-w-[1080px]">
+            <Outlet />
+          </div>
         </main>
       </div>
       <CommandPalette />

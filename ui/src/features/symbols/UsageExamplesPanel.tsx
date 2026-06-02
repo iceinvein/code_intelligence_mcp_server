@@ -1,4 +1,5 @@
 import { useUsageExamples } from "@/features/symbols/useSymbols";
+import { SectionLabel } from "@/components/ui/datasheet";
 
 export function UsageExamplesPanel({
   repoPath,
@@ -13,18 +14,18 @@ export function UsageExamplesPanel({
   const rows = examples.data?.examples ?? [];
 
   return (
-    <div className="mt-2 border-t border-border pt-2">
-      <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-label">
-        usage examples &middot; {examples.data?.count ?? 0}
-      </div>
+    <div className="mt-3 border-t border-border pt-3">
+      <SectionLabel as="h3" className="mb-2" count={examples.data?.count ?? 0}>
+        usage examples
+      </SectionLabel>
       {examples.isLoading ? (
-        <div className="text-[11px] text-muted-foreground">loading usage examples...</div>
+        <div className="text-[0.6875rem] text-muted-foreground">loading usage examples…</div>
       ) : examples.isError ? (
-        <div className="text-[11px] text-destructive">failed to load usage examples</div>
+        <div className="text-[0.6875rem] text-destructive">failed to load usage examples</div>
       ) : rows.length === 0 ? (
-        <div className="text-[11px] text-muted-foreground">no usage examples</div>
+        <div className="text-[0.6875rem] text-muted-foreground">no usage examples</div>
       ) : (
-        <div className="flex flex-col gap-1 font-mono text-[11px]">
+        <div className="flex flex-col gap-2 font-mono text-[0.6875rem]">
           {rows.map((ex, i) => (
             <div key={`${ex.at_file}-${ex.at_line}-${i}`}>
               <div className="text-muted-foreground">

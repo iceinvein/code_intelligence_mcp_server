@@ -21,10 +21,16 @@ pub async fn handle_refresh_index(
                 let utf8_path = Utf8PathBuf::from_path_buf(path_buf.clone())
                     .map_err(|_| PathError::NonUtf8 { path: path_buf })?;
 
-                // Validate path is within base directory
-                normalizer.validate_within_base(&utf8_path)?;
+                let candidate = if utf8_path.is_absolute() {
+                    utf8_path
+                } else {
+                    normalizer.join_base(utf8_path.as_str())
+                };
 
-                Ok(utf8_path)
+                // Validate the resolved target is within base directory.
+                normalizer
+                    .canonicalize_within_base(&candidate)
+                    .map_err(anyhow::Error::from)
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
 

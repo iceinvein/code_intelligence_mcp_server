@@ -36,6 +36,8 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 /// JSON-RPC payloads are small (well under 256 KiB in practice). Cap at
 /// 8 MiB so a hostile client cannot fill memory through this proxy.
 const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PENDING_REPO_BINDINGS: usize = 4096;
+const MAX_STALE_SESSION_REMAPS: usize = 4096;
 
 /// Pending session-id → repo bindings captured from `?repo=` URL query
 /// parameters. Populated by the proxy on the way back; consumed by
@@ -66,6 +68,15 @@ pub fn new_bound_repos() -> BoundRepos {
 /// result instead of independently allocating a second backend session.
 type RecoveryCell = Arc<tokio::sync::OnceCell<Option<String>>>;
 type Recoveries = Arc<DashMap<String, RecoveryCell>>;
+
+fn trim_dashmap_to_capacity<V>(map: &DashMap<String, V>, max_entries: usize) {
+    while map.len() >= max_entries {
+        let Some(key) = map.iter().next().map(|entry| entry.key().clone()) else {
+            break;
+        };
+        map.remove(&key);
+    }
+}
 
 #[derive(Clone)]
 struct ProxyState {
@@ -192,14 +203,21 @@ async fn handle_delete(
 fn parse_repo_query(params: &HashMap<String, String>) -> Option<Utf8PathBuf> {
     let raw = params.get("repo")?;
     let path = Utf8PathBuf::from(raw.as_str());
-    if !path.is_absolute() || !path.is_dir() {
-        tracing::debug!(
-            repo = %raw,
-            "Ignoring ?repo= query: not an absolute existing directory"
-        );
+    if !path.is_absolute() {
+        tracing::debug!(repo = %raw, "Ignoring ?repo= query: not an absolute path");
         return None;
     }
-    Some(path)
+    match crate::path::canonicalize_existing_dir(&path) {
+        Ok(canonical) => Some(canonical),
+        Err(err) => {
+            tracing::debug!(
+                repo = %raw,
+                error = %err,
+                "Ignoring ?repo= query: not an accessible existing directory"
+            );
+            None
+        }
+    }
 }
 
 async fn forward(
@@ -343,6 +361,7 @@ async fn forward(
     // itself went stale (`remapped_sid.is_some()`) keeps the chain pinned
     // to whichever fresh id is currently live.
     if let Some(cs) = &client_sid {
+        trim_dashmap_to_capacity(&state.stale_to_fresh, MAX_STALE_SESSION_REMAPS);
         let first_remap = state
             .stale_to_fresh
             .insert(cs.clone(), new_sid.clone())
@@ -438,6 +457,7 @@ async fn send_upstream_once(
                 repo = %repo,
                 "proxy: captured ?repo= URL binding"
             );
+            trim_dashmap_to_capacity(&state.pending_repos, MAX_PENDING_REPO_BINDINGS);
             state.pending_repos.insert(sid.to_string(), repo.clone());
         }
     }
@@ -719,9 +739,13 @@ mod tests {
     fn parse_repo_query_accepts_absolute_existing_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let canonical = crate::path::canonicalize_existing_dir(&dir).unwrap();
         let mut params = HashMap::new();
         params.insert("repo".to_string(), dir.as_str().to_string());
-        assert_eq!(parse_repo_query(&params).as_deref(), Some(dir.as_path()));
+        assert_eq!(
+            parse_repo_query(&params).as_deref(),
+            Some(canonical.as_path())
+        );
     }
 
     #[test]

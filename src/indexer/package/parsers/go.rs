@@ -29,7 +29,7 @@ use regex::Regex;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn parse_go_mod(path: &Utf8Path) -> Result<PackageInfo> {
-    let content = std::fs::read_to_string(path)?;
+    let content = super::read_manifest_to_string(path)?;
 
     let manifest_path = path.to_string();
     let root_path = path

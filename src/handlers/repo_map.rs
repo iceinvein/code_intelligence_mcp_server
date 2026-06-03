@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 const DEFAULT_BUDGET_TOKENS: u32 = 4000;
 const DEFAULT_MAX_FILES: u32 = 40;
 const DEFAULT_MAX_SYMBOLS_PER_FILE: u32 = 8;
+const MAX_BUDGET_TOKENS: u32 = 32_000;
+const MAX_REPO_MAP_FILES: u32 = 200;
+const MAX_SYMBOLS_PER_FILE: u32 = 50;
 const MAX_SCAN_SYMBOLS: usize = 20_000;
 
 #[derive(Debug, Clone, Copy)]
@@ -44,12 +47,15 @@ fn build_repo_map(
     let budget_tokens = options
         .budget_tokens
         .unwrap_or(DEFAULT_BUDGET_TOKENS)
-        .max(200);
-    let max_files = options.max_files.unwrap_or(DEFAULT_MAX_FILES).max(1) as usize;
+        .clamp(200, MAX_BUDGET_TOKENS);
+    let max_files = options
+        .max_files
+        .unwrap_or(DEFAULT_MAX_FILES)
+        .clamp(1, MAX_REPO_MAP_FILES) as usize;
     let max_symbols_per_file = options
         .max_symbols_per_file
         .unwrap_or(DEFAULT_MAX_SYMBOLS_PER_FILE)
-        .max(1) as usize;
+        .clamp(1, MAX_SYMBOLS_PER_FILE) as usize;
 
     let total_symbols = rows.len();
     let mut grouped: BTreeMap<String, FileEntry> = BTreeMap::new();

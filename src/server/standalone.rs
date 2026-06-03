@@ -442,19 +442,19 @@ impl StandaloneHandler {
             )
         })?;
 
-        let repo_path = Utf8PathBuf::from(tool.repo.as_str());
-        if !repo_path.is_absolute() {
+        let requested_repo_path = Utf8PathBuf::from(tool.repo.as_str());
+        if !requested_repo_path.is_absolute() {
             return Err(CallToolError::from_message(format!(
                 "bind_workspace.repo must be an absolute path, got: {}",
                 tool.repo
             )));
         }
-        if !repo_path.is_dir() {
-            return Err(CallToolError::from_message(format!(
-                "bind_workspace.repo does not exist or is not a directory: {}",
-                repo_path
-            )));
-        }
+        let repo_path =
+            crate::path::canonicalize_existing_dir(&requested_repo_path).map_err(|e| {
+                CallToolError::from_message(format!(
+                    "bind_workspace.repo does not exist or is not an accessible directory: {e}"
+                ))
+            })?;
 
         self.upsert_session(&session_id, Some(repo_path.clone()));
         self.bound_repos
@@ -792,8 +792,13 @@ impl ServerHandler for StandaloneHandler {
             return Ok(tool_json_content(&result));
         }
 
-        // Cross-repo search bypasses single-repo resolution — handle before resolve_state()
+        // Cross-repo search can span registered repos, but still requires a
+        // bound/approved session before exposing global repository contents.
         if params.name == "search_across_repos" {
+            match self.resolve_state(&runtime).await? {
+                Resolved::Ready(_) => {}
+                Resolved::Consent(payload) => return Ok(tool_json_content(&payload)),
+            }
             let tool: SearchAcrossReposTool = parse_tool_args(&params)?;
             let result = handle_search_across_repos(&self.session_manager, tool)
                 .await

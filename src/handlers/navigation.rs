@@ -14,7 +14,7 @@ use crate::storage::sqlite::{SqliteStore, SymbolRow};
 use crate::tools::*;
 
 use super::budget::{
-    budget_array, budget_string_field, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
+    budget_array, budget_string_field, clamp_limit, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
 };
 use super::{extract_usage_line, AppState};
 
@@ -89,7 +89,7 @@ pub async fn handle_get_definition(
     state: &AppState,
     tool: GetDefinitionTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(10).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 10, 100);
 
     let sqlite = &state.sqlite;
 
@@ -264,7 +264,7 @@ pub fn handle_find_references(
     state: &AppState,
     tool: FindReferencesTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(200).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 200, 500);
     let reference_type = tool.reference_type.unwrap_or_else(|| "all".to_string());
 
     let sqlite = &state.sqlite;
@@ -341,7 +341,7 @@ pub fn handle_get_usage_examples(
     state: &AppState,
     tool: GetUsageExamplesTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 20, 100);
 
     // When a file is given, scope examples to the symbol defined there so a
     // common name does not pull in call sites of an unrelated same-named symbol.

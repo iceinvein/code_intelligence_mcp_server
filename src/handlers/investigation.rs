@@ -1264,9 +1264,7 @@ fn extract_locations_from_search(
         };
         if let Some(filter) = file_filter {
             if !row.file_path.contains(filter) {
-                // file_path is a "filter" hint, not a strict gate. Keep the
-                // row even if it doesn't match - hits that don't match get
-                // deprioritised by retrieval already.
+                continue;
             }
         }
         let body = body_with_cap(&row.text, PER_BODY_LINES_CAP);

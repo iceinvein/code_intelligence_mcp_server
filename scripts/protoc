@@ -25,11 +25,24 @@ if [ ! -x "$BIN" ]; then
 
   ZIP_NAME="protoc-${VERSION}-${PLATFORM}-${ARCH}.zip"
   URL="https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/${ZIP_NAME}"
+  case "${VERSION}:${PLATFORM}-${ARCH}" in
+    "29.3:osx-aarch_64") EXPECTED_SHA256="2b8a3403cd097f95f3ba656e14b76c732b6b26d7f183330b11e36ef2bc028765" ;;
+    "29.3:osx-x86_64") EXPECTED_SHA256="9a788036d8f9854f7b03c305df4777cf0e54e5b081e25bf15252da87e0e90875" ;;
+    *)
+      echo "no pinned checksum for protoc ${VERSION} ${PLATFORM}-${ARCH}" 1>&2
+      exit 1
+      ;;
+  esac
 
   TMP_DIR="$(mktemp -d)"
   trap 'rm -rf "$TMP_DIR"' EXIT
 
   curl -fsSL "$URL" -o "${TMP_DIR}/${ZIP_NAME}"
+  ACTUAL_SHA256="$(shasum -a 256 "${TMP_DIR}/${ZIP_NAME}" | awk '{print $1}')"
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "checksum mismatch for ${ZIP_NAME}: expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}" 1>&2
+    exit 1
+  fi
   unzip -o -q "${TMP_DIR}/${ZIP_NAME}" -d "$CACHE_DIR"
 fi
 

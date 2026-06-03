@@ -23,6 +23,8 @@ pub enum PathError {
     UncNotSupported { path: String },
     /// Path contains non-UTF-8 characters.
     NonUtf8 { path: std::path::PathBuf },
+    /// Path could not be canonicalized.
+    Canonicalize { path: Utf8PathBuf, error: String },
 }
 
 impl fmt::Display for PathError {
@@ -39,6 +41,9 @@ impl fmt::Display for PathError {
             }
             PathError::NonUtf8 { path } => {
                 write!(f, "Path contains non-UTF-8 characters: {}", path.display())
+            }
+            PathError::Canonicalize { path, error } => {
+                write!(f, "Failed to canonicalize path '{}': {}", path, error)
             }
         }
     }
@@ -218,6 +223,36 @@ impl PathNormalizer {
         Ok(())
     }
 
+    /// Canonicalize an existing path and verify the resolved target is inside
+    /// the canonical repository base. Unlike `validate_within_base`, this
+    /// follows symlinks and rejects symlink escapes.
+    pub fn canonicalize_within_base(&self, path: &Utf8Path) -> Result<Utf8PathBuf, PathError> {
+        let canonical_base = dunce::canonicalize(self.base_dir.as_std_path()).map_err(|e| {
+            PathError::Canonicalize {
+                path: self.base_dir.clone(),
+                error: e.to_string(),
+            }
+        })?;
+        let canonical_path =
+            dunce::canonicalize(path.as_std_path()).map_err(|e| PathError::Canonicalize {
+                path: path.to_path_buf(),
+                error: e.to_string(),
+            })?;
+        let canonical_base = Utf8PathBuf::from_path_buf(canonical_base)
+            .map_err(|path| PathError::NonUtf8 { path })?;
+        let canonical_path = Utf8PathBuf::from_path_buf(canonical_path)
+            .map_err(|path| PathError::NonUtf8 { path })?;
+
+        canonical_path
+            .strip_prefix(&canonical_base)
+            .map_err(|_| PathError::OutsideRepo {
+                path: canonical_path.clone(),
+                base: canonical_base,
+            })?;
+
+        Ok(canonical_path)
+    }
+
     /// Join a relative path to the base directory.
     ///
     /// # Arguments
@@ -270,6 +305,22 @@ impl PathNormalizer {
     pub fn to_std_path(path: &Utf8Path) -> std::path::PathBuf {
         path.as_std_path().to_path_buf()
     }
+}
+
+/// Canonicalize an existing directory to a UTF-8 path.
+pub fn canonicalize_existing_dir(path: &Utf8Path) -> Result<Utf8PathBuf, PathError> {
+    let canonical =
+        dunce::canonicalize(path.as_std_path()).map_err(|e| PathError::Canonicalize {
+            path: path.to_path_buf(),
+            error: e.to_string(),
+        })?;
+    if !canonical.is_dir() {
+        return Err(PathError::Canonicalize {
+            path: path.to_path_buf(),
+            error: "not a directory".to_string(),
+        });
+    }
+    Utf8PathBuf::from_path_buf(canonical).map_err(|path| PathError::NonUtf8 { path })
 }
 
 #[cfg(test)]
@@ -366,6 +417,36 @@ mod tests {
             "Path '{}' validation result mismatch",
             path
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn canonicalize_within_base_rejects_symlink_escape() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.rs"), "fn secret() {}").unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join("link_out")).unwrap();
+
+        let repo = Utf8PathBuf::from_path_buf(repo).unwrap();
+        let link_target =
+            Utf8PathBuf::from_path_buf(temp.path().join("repo/link_out/secret.rs")).unwrap();
+        let normalizer = PathNormalizer::new(repo);
+
+        let result = normalizer.canonicalize_within_base(&link_target);
+        assert!(matches!(result, Err(PathError::OutsideRepo { .. })));
+    }
+
+    #[test]
+    fn canonicalize_existing_dir_rejects_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let file = temp.path().join("not-dir");
+        std::fs::write(&file, "x").unwrap();
+        let file = Utf8PathBuf::from_path_buf(file).unwrap();
+
+        assert!(canonicalize_existing_dir(&file).is_err());
     }
 
     // Similar prefix but outside base tests (security: detect path confusion)

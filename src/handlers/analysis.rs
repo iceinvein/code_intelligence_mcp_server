@@ -14,7 +14,7 @@ use super::AppState;
 
 // Re-import the other handlers called by handle_get_context_bundle
 use super::budget::{
-    budget_array, budget_string_field, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
+    budget_array, budget_string_field, clamp_limit, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
 };
 use super::{
     handle_find_similar_code, handle_get_call_hierarchy, handle_get_definition, handle_search_code,
@@ -24,8 +24,8 @@ pub fn handle_find_affected_code(
     state: &AppState,
     tool: FindAffectedCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let depth = tool.depth.unwrap_or(3) as usize;
-    let limit = tool.limit.unwrap_or(100).max(1) as usize;
+    let depth = tool.depth.map(|d| (d as usize).clamp(1, 10)).unwrap_or(3);
+    let limit = clamp_limit(tool.limit, 100, 200);
     let include_tests = tool.include_tests.unwrap_or(false);
     let include_display = tool.include_display.unwrap_or(false);
 
@@ -271,7 +271,7 @@ pub fn handle_search_todos(
     state: &AppState,
     tool: SearchTodosTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 50, 200);
     let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
@@ -300,7 +300,7 @@ pub fn handle_find_tests_for_symbol(
     state: &AppState,
     tool: FindTestsForSymbolTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 20, 100);
     let include_display = tool.include_display.unwrap_or(false);
 
     let sqlite = &state.sqlite;
@@ -684,7 +684,7 @@ pub fn handle_find_dead_code(
     state: &AppState,
     tool: FindDeadCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 50, 200);
     let include_tests = tool.include_tests.unwrap_or(false);
     let include_display = tool.include_display.unwrap_or(false);
 
@@ -815,7 +815,7 @@ pub fn handle_find_duplicates(
     state: &AppState,
     tool: FindDuplicatesTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 50, 200);
     let include_display = tool.include_display.unwrap_or(false);
     let sqlite = &state.sqlite;
 
@@ -952,7 +952,7 @@ pub fn handle_find_stale_descriptions(
     state: &AppState,
     tool: FindStaleDescriptionsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(100).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 100, 200);
     let include_display = tool.include_display.unwrap_or(false);
     let sqlite = &state.sqlite;
 
@@ -1021,7 +1021,7 @@ pub fn handle_find_undocumented_symbols(
     state: &AppState,
     tool: FindUndocumentedSymbolsTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(100).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 100, 200);
     let min_lines = tool.min_lines.unwrap_or(3);
     let exported_only = tool.exported_only.unwrap_or(false);
     let include_display = tool.include_display.unwrap_or(false);

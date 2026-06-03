@@ -51,8 +51,18 @@ pub fn handle_install_agent(opts: AgentInstallOpts) -> Result<()> {
         if opts.scope == "user" && targets.iter().any(|target| target == "claude") {
             if opts.dry_run {
                 println!("Would patch ~/.claude.json with code-intelligence MCP endpoint");
-            } else if let Some(path) = patch_claude_json(port)? {
-                println!("Updated {}", path.display());
+            } else {
+                match patch_claude_json(port)? {
+                    crate::install::ClaudePatchResult::Created => {
+                        println!("Created ~/.claude.json");
+                    }
+                    crate::install::ClaudePatchResult::Patched { backup } => {
+                        println!("Updated ~/.claude.json (backup at {})", backup.display());
+                    }
+                    crate::install::ClaudePatchResult::Unchanged => {
+                        println!("~/.claude.json already up to date");
+                    }
+                }
             }
         } else if !printed_config {
             print_agent_config(&targets, port, Some(&repo));

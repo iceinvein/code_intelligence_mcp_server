@@ -55,7 +55,7 @@ pub async fn handle_search_code(
     db_path: &camino::Utf8Path,
     tool: SearchCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(5).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 5, 100);
     let exported_only = tool.exported_only.unwrap_or(false);
     let context_mode = ContextMode::from_str(tool.context.as_deref());
 

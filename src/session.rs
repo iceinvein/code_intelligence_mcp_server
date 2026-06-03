@@ -107,6 +107,8 @@ impl SessionManager {
     }
 
     pub async fn get_or_create_repo(&self, repo_path: &Utf8PathBuf) -> Result<Arc<AppState>> {
+        let repo_path = crate::path::canonicalize_existing_dir(repo_path)
+            .context("Failed to canonicalize repository path")?;
         let canonical = repo_path.as_str().to_string();
 
         // Fast path: check if already exists (no lock needed)
@@ -606,6 +608,12 @@ mod tests {
         (dir, path)
     }
 
+    fn canonical_key(path: &Utf8PathBuf) -> String {
+        crate::path::canonicalize_existing_dir(path)
+            .unwrap()
+            .to_string()
+    }
+
     // ─── existing tests ──────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -637,7 +645,7 @@ mod tests {
 
         manager.get_or_create_repo(&repo_path).await.unwrap();
 
-        let key = repo_path.as_str().to_string();
+        let key = canonical_key(&repo_path);
         assert!(
             manager.last_accessed.contains_key(&key),
             "last_accessed should have an entry after get_or_create"
@@ -653,7 +661,7 @@ mod tests {
         // First call — slow path (initialisation)
         manager.get_or_create_repo(&repo_path).await.unwrap();
 
-        let key = repo_path.as_str().to_string();
+        let key = canonical_key(&repo_path);
         let first_ts = *manager.last_accessed.get(&key).unwrap();
 
         // Sleep briefly so the two Instants differ
@@ -716,7 +724,7 @@ mod tests {
         let (_repo, repo_path) = temp_repo_dir();
 
         manager.get_or_create_repo(&repo_path).await.unwrap();
-        let key = repo_path.as_str().to_string();
+        let key = canonical_key(&repo_path);
 
         // Overwrite last_accessed with a timestamp far in the past
         manager
@@ -747,7 +755,7 @@ mod tests {
         let (_repo, repo_path) = temp_repo_dir();
 
         manager.get_or_create_repo(&repo_path).await.unwrap();
-        let key = repo_path.as_str().to_string();
+        let key = canonical_key(&repo_path);
 
         // last_accessed is "just now" — should NOT be evicted
         manager.evict_idle_repos().await;
@@ -769,7 +777,7 @@ mod tests {
         let (_repo, repo_path) = temp_repo_dir();
 
         manager.get_or_create_repo(&repo_path).await.unwrap();
-        let key = repo_path.as_str().to_string();
+        let key = canonical_key(&repo_path);
         let hash = crate::registry::RepoRegistry::path_hash(&key);
 
         // Capture the data dir BEFORE delete so we can check it was rmtree'd
@@ -925,7 +933,7 @@ mod tests {
         let (_repo, repo_path) = temp_repo_dir();
 
         manager.get_or_create_repo(&repo_path).await.unwrap();
-        let key = repo_path.as_str().to_string();
+        let key = canonical_key(&repo_path);
 
         // Backdate to look very old
         manager

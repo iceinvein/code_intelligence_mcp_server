@@ -275,6 +275,22 @@ impl Default for StandaloneConfig {
     }
 }
 
+fn validate_loopback_host(host: &str) -> Result<()> {
+    match host {
+        "localhost" | "127.0.0.1" | "::1" => Ok(()),
+        _ => {
+            if let Ok(addr) = host.parse::<std::net::IpAddr>() {
+                if addr.is_loopback() {
+                    return Ok(());
+                }
+            }
+            anyhow::bail!(
+                "server.host must be loopback-only (127.0.0.1, localhost, or ::1), got: {host}"
+            )
+        }
+    }
+}
+
 impl StandaloneConfig {
     /// Parse standalone config from TOML string
     pub fn from_toml_str(toml_str: &str) -> Result<Self> {
@@ -398,6 +414,7 @@ impl StandaloneConfig {
             }
         }
 
+        validate_loopback_host(&config.host)?;
         Ok(config)
     }
 
@@ -505,6 +522,7 @@ impl StandaloneConfig {
             config.discovery_port = Some(dp);
         }
 
+        validate_loopback_host(&config.host)?;
         Ok(config)
     }
 
@@ -1742,16 +1760,26 @@ mod tests {
     fn standalone_config_from_toml() {
         let toml_str = r#"
 [server]
-host = "0.0.0.0"
+host = "localhost"
 port = 4444
 
 [lifecycle]
 warm_ttl_seconds = 600
 "#;
         let cfg = StandaloneConfig::from_toml_str(toml_str).unwrap();
-        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.host, "localhost");
         assert_eq!(cfg.port, 4444);
         assert_eq!(cfg.warm_ttl_seconds, 600);
+    }
+
+    #[test]
+    fn standalone_config_rejects_non_loopback_host() {
+        let toml_str = r#"
+[server]
+host = "0.0.0.0"
+"#;
+        let err = StandaloneConfig::from_toml_str(toml_str).unwrap_err();
+        assert!(err.to_string().contains("loopback-only"));
     }
 
     #[test]

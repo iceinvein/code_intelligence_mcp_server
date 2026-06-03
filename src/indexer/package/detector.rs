@@ -4,7 +4,7 @@
 
 use crate::config::Config;
 use crate::path::{Utf8Path, Utf8PathBuf};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 /// Known manifest filenames for various package ecosystems.
 pub const MANIFEST_FILENAMES: &[&str] = &[
@@ -70,12 +70,13 @@ const VENDOR_DIRS: &[&str] = &[
 /// ```
 pub fn discover_manifests(config: &Config, root: &Utf8Path) -> anyhow::Result<Vec<Utf8PathBuf>> {
     let mut manifests = BTreeSet::new();
+    let mut visited_dirs = HashSet::new();
 
     if !root.exists() {
         return Ok(Vec::new());
     }
 
-    walk_dir(config, root, &mut manifests)?;
+    walk_dir(config, root, &mut manifests, &mut visited_dirs)?;
 
     Ok(manifests.into_iter().collect())
 }
@@ -85,7 +86,22 @@ fn walk_dir(
     config: &Config,
     dir: &Utf8Path,
     manifests: &mut BTreeSet<Utf8PathBuf>,
+    visited_dirs: &mut HashSet<Utf8PathBuf>,
 ) -> anyhow::Result<()> {
+    let canonical_dir = match dunce::canonicalize(dir.as_std_path()) {
+        Ok(path) => match Utf8PathBuf::from_path_buf(path) {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        },
+        Err(err) => {
+            tracing::debug!(dir = %dir, error = %err, "Failed to canonicalize directory");
+            return Ok(());
+        }
+    };
+    if !visited_dirs.insert(canonical_dir) {
+        return Ok(());
+    }
+
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) => {
@@ -116,15 +132,30 @@ fn walk_dir(
             Some(name) => name,
             None => continue,
         };
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(err) => {
+                tracing::debug!(
+                    path = %utf8_path,
+                    error = %err,
+                    "Failed to read directory entry type"
+                );
+                continue;
+            }
+        };
+
+        if file_type.is_symlink() {
+            continue;
+        }
 
         // Check if this is a directory we should skip
-        if utf8_path.is_dir() {
+        if file_type.is_dir() {
             if should_skip_package_dir(config, &utf8_path, file_name) {
                 continue;
             }
             // Recurse into subdirectory
-            walk_dir(config, &utf8_path, manifests)?;
-        } else if MANIFEST_FILENAMES.contains(&file_name) {
+            walk_dir(config, &utf8_path, manifests, visited_dirs)?;
+        } else if file_type.is_file() && MANIFEST_FILENAMES.contains(&file_name) {
             // Found a manifest file - check it's not in an excluded path
             if !is_excluded_path(config, &utf8_path) {
                 manifests.insert(utf8_path);
@@ -419,6 +450,29 @@ mod tests {
             Utf8Path::new("/path/to/app"),
             "app"
         ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn discover_manifests_does_not_follow_symlinked_directories() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        std::fs::write(outside.join("package.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join("linked-outside")).unwrap();
+
+        let mut config = test_config();
+        config.base_dir = Utf8PathBuf::from_path_buf(repo.clone()).unwrap();
+        let repo = Utf8PathBuf::from_path_buf(repo).unwrap();
+
+        let manifests = discover_manifests(&config, &repo).unwrap();
+        let paths: Vec<String> = manifests.into_iter().map(|p| p.to_string()).collect();
+
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("/repo/package.json"));
     }
 
     #[test]

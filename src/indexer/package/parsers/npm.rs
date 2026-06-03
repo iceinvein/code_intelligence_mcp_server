@@ -29,7 +29,7 @@ use serde_json::Value;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn parse_package_json(path: &Utf8Path) -> Result<PackageInfo> {
-    let content = std::fs::read_to_string(path)?;
+    let content = super::read_manifest_to_string(path)?;
     let json: Value = serde_json::from_str(&content)?;
 
     let manifest_path = path.to_string();

@@ -11,7 +11,17 @@ use crate::tools::*;
 use anyhow::Result;
 use serde_json::json;
 
-use super::budget::{budget_array, insert_budgeted_array, BudgetedArray};
+use super::budget::{budget_array, clamp_limit, insert_budgeted_array, BudgetedArray};
+
+const MAX_GRAPH_DEPTH: usize = 10;
+const MAX_GRAPH_LIMIT: usize = 200;
+const MAX_DATA_FLOW_LIMIT: usize = 200;
+
+fn clamp_depth(requested: Option<u32>, default: usize) -> usize {
+    requested
+        .map(|d| (d as usize).clamp(1, MAX_GRAPH_DEPTH))
+        .unwrap_or(default)
+}
 
 /// Type alias for data flow trace results
 type DataFlowTraceResult = Result<
@@ -50,8 +60,8 @@ pub fn handle_explore_dependency_graph(
     state: &AppState,
     tool: ExploreDependencyGraphTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let depth = tool.depth.unwrap_or(2) as usize;
-    let limit = tool.limit.unwrap_or(200).max(1) as usize;
+    let depth = clamp_depth(tool.depth, 2);
+    let limit = clamp_limit(tool.limit, 200, MAX_GRAPH_LIMIT);
     let direction = tool.direction.unwrap_or_else(|| "downstream".to_string());
 
     let sqlite = &state.sqlite;
@@ -78,7 +88,7 @@ pub fn handle_get_similarity_cluster(
     state: &AppState,
     tool: GetSimilarityClusterTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = tool.limit.unwrap_or(20).max(1) as usize;
+    let limit = clamp_limit(tool.limit, 20, 100);
 
     let sqlite = &state.sqlite;
 
@@ -134,8 +144,8 @@ pub fn handle_get_call_hierarchy(
     state: &AppState,
     tool: GetCallHierarchyTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let depth = tool.depth.unwrap_or(2) as usize;
-    let limit = tool.limit.unwrap_or(200).max(1) as usize;
+    let depth = clamp_depth(tool.depth, 2);
+    let limit = clamp_limit(tool.limit, 200, MAX_GRAPH_LIMIT);
     let direction = tool.direction.unwrap_or_else(|| "callees".to_string());
 
     let sqlite = &state.sqlite;
@@ -162,8 +172,8 @@ pub fn handle_get_type_graph(
     state: &AppState,
     tool: GetTypeGraphTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let depth = tool.depth.unwrap_or(2) as usize;
-    let limit = tool.limit.unwrap_or(200).max(1) as usize;
+    let depth = clamp_depth(tool.depth, 2);
+    let limit = clamp_limit(tool.limit, 200, MAX_GRAPH_LIMIT);
     let direction = tool.direction.as_deref().unwrap_or("both");
 
     let sqlite = &state.sqlite;
@@ -225,8 +235,8 @@ pub fn handle_trace_data_flow(
     state: &AppState,
     tool: TraceDataFlowTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let depth = tool.depth.unwrap_or(3) as usize;
-    let limit = tool.limit.unwrap_or(50).max(1) as usize;
+    let depth = clamp_depth(tool.depth, 3);
+    let limit = clamp_limit(tool.limit, 50, MAX_DATA_FLOW_LIMIT);
     let direction = tool.direction.unwrap_or_else(|| "both".to_string());
     let include_display = tool.include_display.unwrap_or(false);
 
@@ -406,7 +416,7 @@ fn trace_data_flow_edges(
     visited.insert(root_id.to_string());
 
     for _level in 0..depth {
-        if reads.len() + writes.len() >= limit {
+        if reads.len() + writes.len() >= limit || queue.is_empty() {
             break;
         }
         let mut next_queue = Vec::new();

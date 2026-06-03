@@ -713,6 +713,7 @@ impl IndexPipeline {
                 sqlite.delete_todos_by_file(&file_path)?;
                 sqlite.delete_docstrings_by_file(&file_path)?;
                 sqlite.delete_decorators_by_file(&file_path)?;
+                sqlite.delete_framework_patterns_by_file(&file_path)?;
                 sqlite.delete_file_fingerprint(&file_path)?;
 
                 self.tantivy.delete_symbols_by_file(&file_path)?;
@@ -750,6 +751,7 @@ impl IndexPipeline {
 
         // Tally stats from parse results
         let mut parsed_files = Vec::new();
+        let mut skipped_changed_files = Vec::new();
         for result in parse_results {
             match result {
                 parse::ParseResult::Parsed(pf) => {
@@ -760,10 +762,33 @@ impl IndexPipeline {
                 parse::ParseResult::Unchanged => {
                     stats.files_unchanged += 1;
                 }
-                parse::ParseResult::Skipped { reason } => {
-                    tracing::debug!(reason = %reason, "File skipped during parse");
+                parse::ParseResult::Skipped { reason, file_path } => {
+                    tracing::debug!(reason = %reason, file_path = %file_path, "File skipped during parse");
                     stats.files_skipped += 1;
+                    skipped_changed_files.push(file_path);
                 }
+            }
+        }
+
+        if !skipped_changed_files.is_empty() {
+            let sqlite = SqliteStore::open(&self.db_path)?;
+            sqlite.init()?;
+            let mut any_tantivy_delete = false;
+            for file_path in skipped_changed_files {
+                sqlite.delete_symbols_by_file(&file_path)?;
+                sqlite.delete_usage_examples_by_file(&file_path)?;
+                sqlite.delete_todos_by_file(&file_path)?;
+                sqlite.delete_docstrings_by_file(&file_path)?;
+                sqlite.delete_decorators_by_file(&file_path)?;
+                sqlite.delete_framework_patterns_by_file(&file_path)?;
+                sqlite.delete_file_fingerprint(&file_path)?;
+
+                self.tantivy.delete_symbols_by_file(&file_path)?;
+                self.vectors.delete_records_by_file_path(&file_path).await?;
+                any_tantivy_delete = true;
+            }
+            if any_tantivy_delete {
+                self.tantivy.commit()?;
             }
         }
 

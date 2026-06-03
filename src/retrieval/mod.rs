@@ -36,11 +36,20 @@ use ranking::{
     expand_with_edges, prepare_rerank_docs, should_rerank,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::Instant,
 };
+
+fn redact_query_for_telemetry(query: &str) -> String {
+    let trimmed = query.trim();
+    let mut hasher = Sha256::new();
+    hasher.update(trimmed.as_bytes());
+    let hash = hex::encode(hasher.finalize());
+    format!("sha256:{}:len={}", &hash[..16], trimmed.len())
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedHit {
@@ -1102,7 +1111,7 @@ impl Retriever {
             keyword_ms,
             vector_ms,
             merge_ms,
-            query: trim_query(query, 200),
+            query: redact_query_for_telemetry(query),
             query_limit: limit as u64,
             exported_only,
             result_count: hits.len() as u64,

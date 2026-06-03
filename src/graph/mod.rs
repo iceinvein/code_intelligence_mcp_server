@@ -146,7 +146,7 @@ pub fn build_dependency_graph(
     let allowed_types = edge_types.unwrap_or(&["call", "reference"]);
 
     for _ in 0..depth {
-        if edges.len() >= limit {
+        if edges.len() >= limit || frontier.is_empty() {
             break;
         }
         let mut next = Vec::new();
@@ -239,7 +239,7 @@ pub fn build_call_hierarchy(
 
     let mut frontier = vec![root.id.clone()];
     for _ in 0..depth {
-        if edges.len() >= limit {
+        if edges.len() >= limit || frontier.is_empty() {
             break;
         }
         let mut next = Vec::new();
@@ -336,7 +336,7 @@ pub fn build_type_graph(
     if do_downstream {
         let mut frontier = vec![root.id.clone()];
         for _ in 0..depth {
-            if edges.len() >= limit {
+            if edges.len() >= limit || frontier.is_empty() {
                 break;
             }
             let mut next = Vec::new();
@@ -375,7 +375,7 @@ pub fn build_type_graph(
     if do_upstream {
         let mut frontier = vec![root.id.clone()];
         for _ in 0..depth {
-            if edges.len() >= limit {
+            if edges.len() >= limit || frontier.is_empty() {
                 break;
             }
             let mut next = Vec::new();

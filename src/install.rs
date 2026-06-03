@@ -142,11 +142,23 @@ fn determine_daemon_state(label_running: bool, port_in_use: bool) -> DaemonState
 
 // ---------- plist template ----------
 
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 fn render_plist(self_path: &Path, port: u16, autostart: bool, home: &Path) -> String {
     let logs = home.join(".code-intelligence/logs");
     let stdout_log = logs.join("launchd.out.log");
     let stderr_log = logs.join("launchd.err.log");
-    let self_str = self_path.display().to_string();
+    let self_str = xml_escape(&self_path.display().to_string());
+    let home_str = xml_escape(&home.display().to_string());
+    let stdout_str = xml_escape(&stdout_log.display().to_string());
+    let stderr_str = xml_escape(&stderr_log.display().to_string());
     let autostart_bool = if autostart { "true" } else { "false" };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -195,9 +207,9 @@ fn render_plist(self_path: &Path, port: u16, autostart: bool, home: &Path) -> St
 </dict>
 </plist>
 "#,
-        home = home.display(),
-        stdout = stdout_log.display(),
-        stderr = stderr_log.display(),
+        home = home_str,
+        stdout = stdout_str,
+        stderr = stderr_str,
     )
 }
 
@@ -335,10 +347,15 @@ pub fn handle_install(opts: InstallOpts) -> Result<()> {
 
     if want_patch {
         match patch_claude_json(port) {
-            Ok(Some(backup)) => {
+            Ok(ClaudePatchResult::Patched { backup }) => {
                 println!("Patched ~/.claude.json (backup at {})", backup.display());
             }
-            Ok(None) => println!("~/.claude.json already up to date; no changes made."),
+            Ok(ClaudePatchResult::Created) => {
+                println!("Created ~/.claude.json with code-intelligence MCP entry.");
+            }
+            Ok(ClaudePatchResult::Unchanged) => {
+                println!("~/.claude.json already up to date; no changes made.");
+            }
             Err(e) => eprintln!("Warning: could not patch ~/.claude.json: {e}"),
         }
     } else {
@@ -455,9 +472,14 @@ pub fn handle_status() -> Result<()> {
 // ---------- ~/.claude.json patcher ----------
 
 /// Patches the `code-intelligence` entry in `~/.claude.json` to point at the
-/// HTTP daemon. Returns `Ok(Some(backup_path))` if a write happened,
-/// `Ok(None)` if no change was needed.
-pub fn patch_claude_json(port: u16) -> Result<Option<PathBuf>> {
+/// HTTP daemon.
+pub enum ClaudePatchResult {
+    Created,
+    Patched { backup: PathBuf },
+    Unchanged,
+}
+
+pub fn patch_claude_json(port: u16) -> Result<ClaudePatchResult> {
     let path = claude_json_path()?;
     if !path.exists() {
         // No file to patch. Create a minimal one so subsequent Claude Code
@@ -475,7 +497,7 @@ pub fn patch_claude_json(port: u16) -> Result<Option<PathBuf>> {
             &path,
             serde_json::to_string_pretty(&new_content)?.as_bytes(),
         )?;
-        return Ok(Some(path));
+        return Ok(ClaudePatchResult::Created);
     }
 
     let raw = fs::read_to_string(&path).context("reading ~/.claude.json")?;
@@ -504,7 +526,7 @@ pub fn patch_claude_json(port: u16) -> Result<Option<PathBuf>> {
         let existing_type = existing.get("type").and_then(|v| v.as_str());
         let target_url = format!("http://127.0.0.1:{port}/mcp");
         if existing_type == Some("streamable-http") && existing_url == Some(target_url.as_str()) {
-            return Ok(None);
+            return Ok(ClaudePatchResult::Unchanged);
         }
     }
 
@@ -516,7 +538,7 @@ pub fn patch_claude_json(port: u16) -> Result<Option<PathBuf>> {
 
     let serialized = serde_json::to_string_pretty(&value)?;
     atomic_write(&path, serialized.as_bytes())?;
-    Ok(Some(backup))
+    Ok(ClaudePatchResult::Patched { backup })
 }
 
 fn backup_path(target: &Path) -> PathBuf {
@@ -699,6 +721,18 @@ mod tests {
     fn render_plist_respects_no_autostart() {
         let plist = render_plist(Path::new("/x"), 18000, false, Path::new("/Users/test"));
         assert!(plist.contains("<key>RunAtLoad</key>\n  <false/>"));
+    }
+
+    #[test]
+    fn render_plist_escapes_xml_values() {
+        let plist = render_plist(
+            Path::new("/Users/a&b/bin/<server>"),
+            18000,
+            true,
+            Path::new("/Users/a&b"),
+        );
+        assert!(plist.contains("/Users/a&amp;b/bin/&lt;server&gt;"));
+        assert!(plist.contains("/Users/a&amp;b/.code-intelligence/logs/launchd.err.log"));
     }
 
     #[test]

@@ -21,6 +21,21 @@ pub use go::parse_go_mod;
 pub use npm::parse_package_json;
 pub use python::parse_pyproject_toml;
 
+pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
+pub(super) fn read_manifest_to_string(path: &Utf8Path) -> anyhow::Result<String> {
+    let metadata = std::fs::metadata(path.as_std_path())?;
+    if metadata.len() > MAX_MANIFEST_BYTES {
+        anyhow::bail!(
+            "manifest too large: {} bytes exceeds {} bytes: {}",
+            metadata.len(),
+            MAX_MANIFEST_BYTES,
+            path
+        );
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
 /// Parse a package manifest file and return package information.
 ///
 /// This dispatcher function routes to the appropriate language-specific parser

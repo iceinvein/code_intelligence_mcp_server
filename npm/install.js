@@ -3,6 +3,7 @@ const path = require("path");
 const axios = require("axios");
 const tar = require("tar");
 const os = require("os");
+const crypto = require("crypto");
 
 const REPO = "iceinvein/code_intelligence_mcp_server";
 const BINARY_NAME = "code-intelligence-mcp-server";
@@ -35,6 +36,7 @@ async function install() {
 	const target = MAPPING[platform][arch];
 	const tarFilename = `${BINARY_NAME}-${target}.tar.gz`;
 	const url = `https://github.com/${REPO}/releases/download/${VERSION}/${tarFilename}`;
+	const checksumUrl = `${url}.sha256`;
 
 	const binDir = path.join(__dirname, "bin");
 	const destBinary = path.join(binDir, BINARY_NAME);
@@ -48,26 +50,52 @@ async function install() {
 	console.log(`URL: ${url}`);
 
 	try {
-		const response = await axios({
+		const checksumResponse = await axios({
 			method: "get",
-			url: url,
-			responseType: "stream",
+			url: checksumUrl,
+			responseType: "text",
 		});
+		const expectedSha = String(checksumResponse.data).trim().split(/\s+/)[0];
+		if (!/^[a-fA-F0-9]{64}$/.test(expectedSha)) {
+			throw new Error(`Invalid checksum response from ${checksumUrl}`);
+		}
 
-		// Pipe the tar.gz stream directly into the extractor
-		const extract = tar.x({
-			C: binDir,
-			// We want to extract the binary, but the tar structure might depend on how it was packed.
-			// The CI "tar czf" command packs the binary directly at the root of the tarball.
-			// So we just extract it.
-		});
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "code-intel-install-"));
+		const tmpTar = path.join(tmpDir, tarFilename);
+		try {
+			const response = await axios({
+				method: "get",
+				url: url,
+				responseType: "stream",
+			});
+			const writer = fs.createWriteStream(tmpTar, { mode: 0o600 });
+			response.data.pipe(writer);
+			await new Promise((resolve, reject) => {
+				writer.on("finish", resolve);
+				writer.on("error", reject);
+				response.data.on("error", reject);
+			});
 
-		response.data.pipe(extract);
+			const actualSha = crypto
+				.createHash("sha256")
+				.update(fs.readFileSync(tmpTar))
+				.digest("hex");
+			if (actualSha.toLowerCase() !== expectedSha.toLowerCase()) {
+				throw new Error(
+					`Checksum mismatch for ${tarFilename}: expected ${expectedSha}, got ${actualSha}`,
+				);
+			}
 
-		await new Promise((resolve, reject) => {
-			extract.on("finish", resolve);
-			extract.on("error", reject);
-		});
+			await tar.x({
+				C: binDir,
+				// We want to extract the binary, but the tar structure might depend on how it was packed.
+				// The CI "tar czf" command packs the binary directly at the root of the tarball.
+				// So we just extract it.
+				file: tmpTar,
+			});
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
 
 		// Verify the binary exists
 		if (fs.existsSync(destBinary)) {

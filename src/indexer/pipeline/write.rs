@@ -6,6 +6,23 @@ use crate::storage::sqlite::queries;
 use crate::storage::sqlite::schema::{EdgeEvidenceRow, EdgeRow};
 use crate::storage::tantivy::TantivyIndex;
 
+struct ForeignKeysOffGuard<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> ForeignKeysOffGuard<'a> {
+    fn new(conn: &'a Connection) -> Result<Self> {
+        conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+        Ok(Self { conn })
+    }
+}
+
+impl Drop for ForeignKeysOffGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.conn.execute_batch("PRAGMA foreign_keys=ON");
+    }
+}
+
 /// Statistics returned by write_batch
 #[derive(Debug, Clone, Default)]
 pub struct WriteStats {
@@ -40,7 +57,7 @@ pub fn write_batch(
     // Disable FK enforcement during batch writes. Chunks of files are written
     // in order, and usage_examples.from_symbol_id may reference symbols from
     // files in later chunks that haven't been inserted yet.
-    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+    let _fk_guard = ForeignKeysOffGuard::new(conn)?;
 
     for chunk in parsed_files.chunks(CHUNK_SIZE) {
         // --- SQLite: one transaction per chunk ---
@@ -182,9 +199,6 @@ pub fn write_batch(
         }
     }
 
-    // Re-enable FK enforcement after batch writes
-    conn.execute_batch("PRAGMA foreign_keys=ON")?;
-
     // Single Tantivy commit after ALL chunks
     tantivy
         .commit()
@@ -215,7 +229,7 @@ pub fn write_edges_batch(
     // write_batch ran with foreign_keys=OFF and re-enabled it. We need the
     // same loosening here because edge targets may reference symbols in
     // later chunks of the same write pass.
-    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+    let _fk_guard = ForeignKeysOffGuard::new(conn)?;
 
     for chunk in edge_bundles.chunks(CHUNK_SIZE) {
         let tx = conn
@@ -235,7 +249,6 @@ pub fn write_edges_batch(
             .context("Failed to commit transaction for write_edges_batch chunk")?;
     }
 
-    conn.execute_batch("PRAGMA foreign_keys=ON")?;
     Ok(edges_written)
 }
 

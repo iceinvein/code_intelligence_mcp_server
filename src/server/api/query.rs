@@ -453,17 +453,35 @@ async fn resolve_query_repo(
     ApiError,
 > {
     let raw = crate::path::Utf8PathBuf::from(repo);
-    let canonical = dunce::canonicalize(raw.as_std_path()).map_err(|e| {
+    let repo_path = crate::path::canonicalize_existing_dir(&raw).map_err(|e| {
         ApiError(format!(
             "workspace not found or not accessible: {repo}: {e}"
         ))
     })?;
-    if !canonical.is_dir() {
-        return Err(ApiError(format!("workspace is not a directory: {repo}")));
-    }
-    let repo_path = crate::path::Utf8PathBuf::from_path_buf(canonical)
-        .map_err(|_| ApiError(format!("workspace path is not valid UTF-8: {repo}")))?;
     let repo_id = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+
+    match state
+        .session_manager
+        .registry
+        .consent_status(repo_path.as_str())
+        .map_err(|e| ApiError(format!("failed to check workspace consent: {e}")))?
+    {
+        Some(crate::registry::IndexConsent::Approved) => {}
+        Some(crate::registry::IndexConsent::Declined) => {
+            return Err(ApiError(format!(
+                "workspace indexing was declined: {}",
+                repo_path
+            )));
+        }
+        None => {
+            state.session_manager.record_pending(&repo_path);
+            return Err(ApiError(format!(
+                "workspace is not approved for indexing yet: {}; approve it before querying",
+                repo_path
+            )));
+        }
+    }
+
     let app_state = state
         .session_manager
         .get_or_create_repo(&repo_path)

@@ -1,12 +1,12 @@
 {
 	"name": "@iceinvein/code-intelligence-mcp-standalone",
 	"version": "3.3.0",
-	"description": "Code Intelligence MCP Server - Standalone HTTP mode for multi-client setups",
+	"description": "Deprecated package; use @iceinvein/code-intelligence-mcp",
 	"bin": {
 		"code-intelligence-mcp-standalone": "bin/run.js"
 	},
 	"scripts": {
-		"postinstall": "node install.js"
+		"postinstall": "node deprecated.js"
 	},
 	"repository": {
 		"type": "git",

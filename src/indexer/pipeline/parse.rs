@@ -38,6 +38,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const MAX_SOURCE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Full output of parsing one file — everything needed to write.
 ///
 /// `edges` is empty after parsing. Edge extraction is deferred to a separate
@@ -74,19 +76,22 @@ pub enum ParseResult {
     /// Fully parsed file with all extracted data
     Parsed(Box<ParsedFile>),
     /// File skipped (unsupported language, read error, etc.)
-    Skipped { reason: String },
+    Skipped { reason: String, file_path: String },
 }
 
 /// Parse a single file and return all extracted data.
 /// Takes a read-only SQLite connection for fingerprint checks and cross-file lookups.
 /// Does NOT write to any storage backend.
 pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> ParseResult {
+    let rel = file_key_path(config, file);
+
     // 1. Determine language from path
     let language_id = match language_id_for_path(file) {
         Some(id) => id,
         None => {
             return ParseResult::Skipped {
                 reason: format!("Unsupported language for file: {}", file.display()),
+                file_path: rel,
             };
         }
     };
@@ -97,13 +102,12 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         Err(e) => {
             return ParseResult::Skipped {
                 reason: format!("Failed to fingerprint file: {}", e),
+                file_path: rel,
             };
         }
     };
 
     // 3. Check if unchanged by querying SQLite fingerprints table
-    let rel = file_key_path(config, file);
-
     let is_unchanged = match conn
         .query_row(
             "SELECT mtime_ns, size_bytes FROM file_fingerprints WHERE file_path = ?1",
@@ -125,12 +129,23 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         return ParseResult::Unchanged;
     }
 
+    if fp.size_bytes > MAX_SOURCE_FILE_BYTES {
+        return ParseResult::Skipped {
+            reason: format!(
+                "File too large to index: {} bytes exceeds {} bytes",
+                fp.size_bytes, MAX_SOURCE_FILE_BYTES
+            ),
+            file_path: rel,
+        };
+    }
+
     // 4. Read file
     let source = match fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
             return ParseResult::Skipped {
                 reason: format!("Failed to read file: {}", e),
+                file_path: rel,
             };
         }
     };
@@ -158,6 +173,7 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         Err(e) => {
             return ParseResult::Skipped {
                 reason: format!("Failed to extract symbols: {}", e),
+                file_path: rel,
             };
         }
     };
@@ -395,6 +411,7 @@ pub fn parse_files(
                     Err(e) => {
                         return ParseResult::Skipped {
                             reason: format!("Failed to get DB connection: {}", e),
+                            file_path: file_key_path(&config, file),
                         };
                     }
                 };
@@ -597,7 +614,9 @@ mod tests {
                 assert!(fn_sym.exported);
             }
             ParseResult::Unchanged => panic!("File should not be unchanged on first parse"),
-            ParseResult::Skipped { reason } => panic!("File should not be skipped: {}", reason),
+            ParseResult::Skipped { reason, .. } => {
+                panic!("File should not be skipped: {}", reason)
+            }
         }
 
         // Cleanup
@@ -716,7 +735,9 @@ mod tests {
                 // Success
             }
             ParseResult::Parsed(_) => panic!("File should be unchanged"),
-            ParseResult::Skipped { reason } => panic!("File should not be skipped: {}", reason),
+            ParseResult::Skipped { reason, .. } => {
+                panic!("File should not be skipped: {}", reason)
+            }
         }
 
         // Cleanup
@@ -812,7 +833,7 @@ mod tests {
         let result = parse_single_file(&test_file, &config, &conn);
 
         match result {
-            ParseResult::Skipped { reason } => {
+            ParseResult::Skipped { reason, .. } => {
                 assert!(reason.contains("Unsupported language"));
             }
             ParseResult::Unchanged => panic!("File should be skipped, not unchanged"),

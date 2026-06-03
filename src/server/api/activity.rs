@@ -8,7 +8,7 @@ use axum::{
         Json,
     },
 };
-use futures::stream::Stream;
+use futures::stream::{Stream, StreamExt};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
@@ -33,8 +33,16 @@ pub(crate) async fn handle_jobs(State(state): State<Arc<ApiState>>) -> Json<Valu
 pub(crate) async fn handle_logs_stream(
     State(state): State<Arc<ApiState>>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let rx = state.log_broadcaster.subscribe();
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
+    // Snapshot recent history and subscribe atomically, then replay the
+    // backfill before the live tail so the dashboard opens populated rather
+    // than to an empty panel.
+    let (history, rx) = state.log_broadcaster.subscribe_with_history();
+    let history_stream = futures::stream::iter(
+        history
+            .into_iter()
+            .map(|line| Ok(Event::default().data(line))),
+    );
+    let live_stream = futures::stream::unfold(rx, |mut rx| async move {
         match rx.recv().await {
             Ok(line) => Some((Ok(Event::default().data(line)), rx)),
             Err(RecvError::Lagged(n)) => Some((
@@ -46,7 +54,7 @@ pub(crate) async fn handle_logs_stream(
             Err(RecvError::Closed) => None,
         }
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(history_stream.chain(live_stream)).keep_alive(KeepAlive::default())
 }
 
 pub(crate) async fn handle_sessions(State(state): State<Arc<ApiState>>) -> Json<Value> {

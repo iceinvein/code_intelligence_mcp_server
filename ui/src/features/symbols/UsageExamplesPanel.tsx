@@ -1,5 +1,7 @@
 import { useUsageExamples } from "@/features/symbols/useSymbols";
 import { SectionLabel } from "@/components/ui/datasheet";
+import { InlineError } from "@/components/ui/inline-error";
+import { describeError } from "@/lib/errors";
 
 export function UsageExamplesPanel({
   repoPath,
@@ -21,7 +23,7 @@ export function UsageExamplesPanel({
       {examples.isLoading ? (
         <div className="text-[0.6875rem] text-muted-foreground">loading usage examples…</div>
       ) : examples.isError ? (
-        <div className="text-[0.6875rem] text-destructive">failed to load usage examples</div>
+        <InlineError compact message={describeError(examples.error, "couldn't load usage examples")} onRetry={() => examples.refetch()} />
       ) : rows.length === 0 ? (
         <div className="text-[0.6875rem] text-muted-foreground">no usage examples</div>
       ) : (

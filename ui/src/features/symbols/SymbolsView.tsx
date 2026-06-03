@@ -5,6 +5,8 @@ import { FileTree } from "@/features/symbols/FileTree";
 import { SymbolInspector } from "@/features/symbols/SymbolInspector";
 import { SymbolOutline } from "@/features/symbols/SymbolOutline";
 import { useFileSymbols, useFiles } from "@/features/symbols/useSymbols";
+import { InlineError } from "@/components/ui/inline-error";
+import { describeError } from "@/lib/errors";
 
 export function SymbolsView() {
   const [params, setParams] = useSearchParams();
@@ -83,7 +85,11 @@ export function SymbolsView() {
             {files.isLoading ? (
               <div className="text-[0.6875rem] text-muted-foreground">loading files…</div>
             ) : files.isError ? (
-              <div className="text-[0.6875rem] text-destructive">failed to load files</div>
+              <InlineError
+                compact
+                message={describeError(files.error, "couldn't load files")}
+                onRetry={() => files.refetch()}
+              />
             ) : (
               <FileTree
                 files={files.data?.files ?? []}
@@ -99,7 +105,11 @@ export function SymbolsView() {
             ) : fileSymbols.isLoading ? (
               <div className="text-[0.6875rem] text-muted-foreground">loading symbols…</div>
             ) : fileSymbols.isError ? (
-              <div className="text-[0.6875rem] text-destructive">failed to load symbols</div>
+              <InlineError
+                compact
+                message={describeError(fileSymbols.error, "couldn't load symbols")}
+                onRetry={() => fileSymbols.refetch()}
+              />
             ) : (
               <SymbolOutline
                 symbols={fileSymbols.data?.symbols ?? []}

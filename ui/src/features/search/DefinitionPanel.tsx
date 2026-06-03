@@ -1,6 +1,8 @@
 import { useDefinition, useReferences } from "@/features/search/useSearch";
 import { CodeBlock } from "@/components/ui/code-block";
 import { SectionLabel } from "@/components/ui/datasheet";
+import { InlineError } from "@/components/ui/inline-error";
+import { describeError } from "@/lib/errors";
 import type { ReferenceEdge } from "@/api/search";
 
 // The definition `context` returned by the API is a markdown document (headers plus fenced
@@ -52,7 +54,7 @@ export function DefinitionPanel({ repoPath, symbolName, file }: { repoPath: stri
       {def.isLoading ? (
         <div className="text-[0.6875rem] text-muted-foreground">loading definition…</div>
       ) : def.isError ? (
-        <div className="text-[0.6875rem] text-destructive">failed to load definition</div>
+        <InlineError compact message={describeError(def.error, "couldn't load definition")} onRetry={() => def.refetch()} />
       ) : code ? (
         <CodeBlock code={code} lang={lang} />
       ) : (
@@ -65,7 +67,7 @@ export function DefinitionPanel({ repoPath, symbolName, file }: { repoPath: stri
       {refs.isLoading ? (
         <div className="text-[0.6875rem] text-muted-foreground">loading references…</div>
       ) : refs.isError ? (
-        <div className="text-[0.6875rem] text-destructive">failed to load references</div>
+        <InlineError compact message={describeError(refs.error, "couldn't load references")} onRetry={() => refs.refetch()} />
       ) : groups.length === 0 ? (
         <div className="text-[0.6875rem] text-muted-foreground">no references</div>
       ) : (

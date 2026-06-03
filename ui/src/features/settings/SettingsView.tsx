@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { SectionLabel } from "@/components/ui/datasheet";
 import { InlineError } from "@/components/ui/inline-error";
+import { describeError } from "@/lib/errors";
 import { SettingField } from "@/features/settings/SettingField";
 import { changedKeys, pendingChanges, type SettingsDraft } from "@/features/settings/diff";
 import { usePutSettings, useSettings } from "@/features/settings/useSettings";
@@ -143,7 +144,7 @@ export function SettingsView() {
         <p className="text-sm text-muted-foreground">loading…</p>
       ) : settings.isError ? (
         <InlineError
-          message={`failed to load settings: ${String((settings.error as Error).message)}`}
+          message={describeError(settings.error, "couldn't load settings")}
           onRetry={() => settings.refetch()}
         />
       ) : (
@@ -165,7 +166,7 @@ export function SettingsView() {
           ))}
 
           {put.isError ? (
-            <div className="text-xs text-destructive">{String((put.error as Error).message)}</div>
+            <div className="text-xs text-destructive">{describeError(put.error, "couldn't save settings")}</div>
           ) : null}
 
           {dirtyKeys.length > 0 ? (

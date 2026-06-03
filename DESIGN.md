@@ -1,6 +1,6 @@
 ---
 name: Code Intelligence
-description: The local code-intelligence daemon dashboard — a precision desk instrument.
+description: The local code-intelligence daemon dashboard – a precision desk instrument.
 colors:
   paper: "oklch(96.8% 0.006 83)"
   surface: "oklch(99.2% 0.004 83)"
@@ -99,7 +99,7 @@ A warm-neutral instrument palette: ink on paper, with a single cool selection ac
 
 ### Neutral
 - **Paper** (`oklch(96.8% 0.006 83)`): the page background. The desk.
-- **Surface** (`oklch(99.2% 0.004 83)`): raised sheets — datasheet frames, inputs, popovers, code blocks.
+- **Surface** (`oklch(99.2% 0.004 83)`): raised sheets – datasheet frames, inputs, popovers, code blocks.
 - **Ink** (`oklch(23% 0.014 70)`): primary text. A warm near-black, never `#000`.
 - **Ink Muted** (`oklch(45% 0.012 75)`): secondary text, paths, timestamps, counts. AA on paper.
 - **Label** (`oklch(47% 0.012 78)`): all-caps section eyebrows and field labels.
@@ -114,7 +114,7 @@ A warm-neutral instrument palette: ink on paper, with a single cool selection ac
 ### Named Rules
 **The Signal-Only Rule.** Color encodes state and selection, nothing else. There is no decorative color anywhere on the surface. If a hue is not telling the reader about a state or a selection, it is wrong.
 
-**The Tightest-Pair Rule.** Light-mode Run Amber sits at ~4.7:1 on paper — it passes AA with no headroom. Never lighten `state-run` in the light theme.
+**The Tightest-Pair Rule.** Light-mode Run Amber sits at ~4.7:1 on paper – it passes AA with no headroom. Never lighten `state-run` in the light theme.
 
 ## 3. Typography
 
@@ -122,7 +122,7 @@ A warm-neutral instrument palette: ink on paper, with a single cool selection ac
 **Chrome Font:** system-ui stack (`-apple-system, BlinkMacSystemFont, Segoe UI, system-ui`)
 **Data/Mono Font:** JetBrains Mono (with Berkeley Mono, SF Mono, ui-monospace, Menlo)
 
-**Character:** A three-role split with strict jobs. The serif-italic wordmark is the single identity flourish. Native system-sans carries all chrome (nav, headings, labels, prose, buttons) — fast, legible, unpretentious. Monospace carries every piece of data (numerals, paths, IDs, code) with `tabular-nums` so columns align like a printed datasheet. Fixed rem scale, never fluid.
+**Character:** A three-role split with strict jobs. The serif-italic wordmark is the single identity flourish. Native system-sans carries all chrome (nav, headings, labels, prose, buttons) – fast, legible, unpretentious. Monospace carries every piece of data (numerals, paths, IDs, code) with `tabular-nums` so columns align like a printed datasheet. Fixed rem scale, never fluid.
 
 ### Hierarchy
 - **Wordmark** (serif italic, 1.0625rem, tracking -0.01em): the brand mark in the header, only.
@@ -139,10 +139,10 @@ A warm-neutral instrument palette: ink on paper, with a single cool selection ac
 Flat by default. Depth is conveyed by hairline rules and a single tone step (Paper → Surface), not by shadow. The instrument is a flat sheet; nothing floats at rest.
 
 ### Shadow Vocabulary (the only shadows in the system)
-- **Overlay drop** (`box-shadow: 0 12px 40px -16px oklch(20% 0.02 250 / 0.45)`): used only on genuinely floating layers — dialogs, the command palette, the symbol-picker dropdown. Soft and low.
+- **Overlay drop** (`box-shadow: 0 12px 40px -16px oklch(20% 0.02 250 / 0.45)`): used only on genuinely floating layers – dialogs, the command palette, the symbol-picker dropdown. Soft and low.
 
 ### Named Rules
-**The Flat-By-Default Rule.** Surfaces are flat. The only shadow in the system lifts a true overlay (modal, palette, dropdown) off the page. Resting cards, rows, and panels get a hairline border and a tone step — never a shadow.
+**The Flat-By-Default Rule.** Surfaces are flat. The only shadow in the system lifts a true overlay (modal, palette, dropdown) off the page. Resting cards, rows, and panels get a hairline border and a tone step – never a shadow.
 
 ## 5. Components
 
@@ -170,7 +170,7 @@ Flat by default. Depth is conveyed by hairline rules and a single tone step (Pap
 - **Focus:** 2px teal ring (`focus-visible:ring-ring`).
 
 ### Navigation
-- Left rail, system-sans labels with small Lucide icons. **Active = Selection-Teal text on a `bg-primary/10` tint** — never a colored side-stripe. Collapses to an icon-only rail below the `sm` breakpoint.
+- Left rail, system-sans labels with small Lucide icons. **Active = Selection-Teal text on a `bg-primary/10` tint** – never a colored side-stripe. Collapses to an icon-only rail below the `sm` breakpoint.
 
 ## 6. Do's and Don'ts
 
@@ -178,7 +178,7 @@ Flat by default. Depth is conveyed by hairline rules and a single tone step (Pap
 - **Do** keep the surface near-monochrome and reserve color for state and selection (the Signal-Only Rule).
 - **Do** use the Datasheet (hairline frame + `divide-y` rows) for every list. Spacing and rules group content, not cards.
 - **Do** set all numbers, paths, IDs, and code in monospace with `tabular-nums`.
-- **Do** give every state a glyph shape AND a text label AND a color — so it survives greyscale and color-blindness.
+- **Do** give every state a glyph shape AND a text label AND a color – so it survives greyscale and color-blindness.
 - **Do** keep the overview's vitals as one hairline-divided bar.
 - **Do** write copy short, factual, lowercase-friendly for system terms. No exclamation marks, no emoji.
 
@@ -186,8 +186,8 @@ Flat by default. Depth is conveyed by hairline rules and a single tone step (Pap
 - **Don't** build the hero-metric template: big number + small label + accent stripe + supporting stats, repeated four times. The vital readout is one bar, not four cards.
 - **Don't** use generic SaaS admin styling: templated card grids, blue-on-white, gradient hero-metric blocks.
 - **Don't** use the "AI startup" aesthetic: gradient text, glassmorphism, animated mesh backgrounds.
-- **Don't** look like Datadog/Grafana — strong information design, weak identity. This must not read as every other DevOps panel.
+- **Don't** look like Datadog/Grafana – strong information design, weak identity. This must not read as every other DevOps panel.
 - **Don't** make the dark theme cyberpunk neon-on-near-black; it is high-contrast slate plus warm ivory, never saturated neon.
 - **Don't** use a `border-left`/`border-right` greater than 1px as a colored accent stripe on rows, cards, or callouts. Active nav is a tint + accent text, not a stripe.
 - **Don't** float resting surfaces on shadows. Hairline + tone step only; shadow is for overlays.
-- **Don't** lighten light-mode Run Amber — it passes AA with zero headroom.
+- **Don't** lighten light-mode Run Amber – it passes AA with zero headroom.

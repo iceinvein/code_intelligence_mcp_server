@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ────────────────────────────────────────────────────────────────────────
-   Code Intelligence portal — design tokens
+   Code Intelligence portal – design tokens
 
    Lane: precision instrument. Light is the primary theme: a warm paper
    surface, near-black warm ink, hairline rules instead of card chrome, and
@@ -10,7 +10,7 @@
 
    Color is signal-only: the surface stays near-monochrome and hue appears
    almost exclusively to encode state (ok / run / fail / idle) and the current
-   selection (teal). State is never carried by color alone — every state in
+   selection (teal). State is never carried by color alone – every state in
    the UI also carries a glyph and a text label.
    ──────────────────────────────────────────────────────────────────────── */
 
@@ -43,7 +43,7 @@
   --font-sans: var(--font-sans);
   --font-serif: var(--font-serif);
 
-  /* Crisp instrument radii — small, never pill. */
+  /* Crisp instrument radii – small, never pill. */
   --radius-sm: 2px;
   --radius-md: 3px;
   --radius-lg: 4px;
@@ -59,7 +59,7 @@
   --popover: oklch(99.4% 0.004 83);
   --popover-foreground: oklch(23% 0.014 70);
 
-  /* selection accent — teal, the one non-state hue */
+  /* selection accent – teal, the one non-state hue */
   --primary: oklch(48% 0.118 200);
   --primary-foreground: oklch(99% 0.004 200);
 
@@ -179,7 +179,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Tabular numerals everywhere mono is used — datasheet columns must align. */
+/* Tabular numerals everywhere mono is used – datasheet columns must align. */
 .font-mono {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "calt" 0;
@@ -208,7 +208,7 @@ body {
   }
 }
 
-/* ── Shiki code highlighting — light is the default theme ─────────────── */
+/* ── Shiki code highlighting – light is the default theme ─────────────── */
 .shiki,
 .shiki span {
   color: var(--shiki-light);

@@ -28,17 +28,18 @@ export function OverviewView() {
 
   return (
     <div className="flex flex-col gap-8">
-      {/* Daemon line — the headline. Sparse and calm. */}
+      {/* Daemon line – the headline. Sparse and calm. */}
       <section aria-labelledby="daemon-line">
         <h1 id="daemon-line" className="sr-only">
           daemon status
         </h1>
         {unreachable ? (
-          <div className="flex items-center gap-2.5 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
-            <StatusGlyph state="fail" srLabel="daemon unreachable" />
-            <span className="font-medium text-foreground">daemon unreachable</span>
-            <span className="font-mono text-[0.6875rem] text-muted-foreground">
-              127.0.0.1:17802
+          <div className="flex items-start gap-2.5 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+            <StatusGlyph state="fail" srLabel="daemon unreachable" className="mt-0.5" />
+            <span className="text-foreground">
+              <span className="font-medium">daemon unreachable</span> at{" "}
+              <span className="font-mono text-[0.8125rem]">127.0.0.1:17802</span>. check that it is
+              running, then reload.
             </span>
           </div>
         ) : (
@@ -58,7 +59,7 @@ export function OverviewView() {
         )}
       </section>
 
-      {/* Vital readout — one hairline-divided bar, not four hero cards. */}
+      {/* Vital readout – one hairline-divided bar, not four hero cards. */}
       <section aria-label="daemon vitals">
         <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border bg-border sm:grid-cols-4">
           <Vital
@@ -70,7 +71,7 @@ export function OverviewView() {
                 <span>{unreachable ? "down" : "running"}</span>
               </span>
             }
-            sub={s ? `up ${formatUptime(s.uptime_s)}` : unreachable ? "no response" : "—"}
+            sub={s ? `up ${formatUptime(s.uptime_s)}` : unreachable ? "no response" : "–"}
           />
           <Vital
             label="repositories"
@@ -95,7 +96,7 @@ export function OverviewView() {
         </dl>
       </section>
 
-      {/* Repositories — condensed, links out to full management. */}
+      {/* Repositories – condensed, links out to full management. */}
       <section>
         <div className="mb-3 flex items-baseline justify-between">
           <SectionLabel className="mb-0" count={repos.isLoading ? undefined : repoList.length}>
@@ -139,7 +140,7 @@ export function OverviewView() {
         )}
       </section>
 
-      {/* Recent jobs — the activity tail. */}
+      {/* Recent jobs – the activity tail. */}
       <section>
         <div className="mb-3 flex items-baseline justify-between">
           <SectionLabel className="mb-0" count={runningJobs > 0 ? `${runningJobs} running` : undefined}>

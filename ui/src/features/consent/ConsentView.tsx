@@ -4,6 +4,7 @@ import { DataSheet, Row, SectionLabel } from "@/components/ui/datasheet";
 import { StatusGlyph } from "@/components/ui/status";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineError } from "@/components/ui/inline-error";
+import { describeError } from "@/lib/errors";
 import { useConsent, useResolveConsent } from "@/features/consent/useConsent";
 
 export function ConsentView() {
@@ -22,7 +23,7 @@ export function ConsentView() {
         <Skeleton className="h-24 w-full" />
       ) : consent.isError ? (
         <InlineError
-          message={`failed to load consent: ${String((consent.error as Error).message)}`}
+          message={describeError(consent.error, "couldn't load consent")}
           onRetry={() => consent.refetch()}
         />
       ) : pending.length === 0 && declined.length === 0 ? (

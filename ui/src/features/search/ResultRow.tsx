@@ -20,10 +20,15 @@ export function ResultRow({ hit, repoPath }: { hit: SearchHit; repoPath: string 
           )}
           aria-hidden
         />
-        <span className={cn("font-medium", expanded ? "text-primary" : "text-foreground")}>
+        <span
+          className={cn(
+            "min-w-0 shrink truncate font-medium",
+            expanded ? "text-primary" : "text-foreground",
+          )}
+        >
           {hit.name}
         </span>
-        <span className="text-[0.6875rem] text-muted-foreground">{hit.kind}</span>
+        <span className="shrink-0 text-[0.6875rem] text-muted-foreground">{hit.kind}</span>
         <span className="ml-auto min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">
           {hit.file_path}
         </span>

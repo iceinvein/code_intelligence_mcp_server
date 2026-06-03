@@ -6,6 +6,8 @@ import { GraphNodeDetail } from "@/features/graph/GraphNodeDetail";
 import { SymbolPicker } from "@/features/graph/SymbolPicker";
 import { useGraph } from "@/features/graph/useGraph";
 import { useRepos } from "@/features/repos/useRepos";
+import { InlineError } from "@/components/ui/inline-error";
+import { describeError } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 
 const TYPES: { key: GraphType; label: string }[] = [
@@ -137,9 +139,7 @@ export function GraphView() {
       ) : graph.isLoading ? (
         <p className="text-sm text-muted-foreground">building graph…</p>
       ) : graph.isError ? (
-        <p className="text-sm text-destructive">
-          graph failed: {String((graph.error as Error).message)}
-        </p>
+        <InlineError message={describeError(graph.error, "graph failed")} onRetry={() => graph.refetch()} />
       ) : (graph.data?.nodes.length ?? 0) === 0 ? (
         <p className="text-sm text-muted-foreground">
           no graph for <span className="font-mono text-foreground">{symbol}</span> (try another

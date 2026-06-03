@@ -45,7 +45,7 @@ export function useTheme(): ThemeContextValue {
   return ctx;
 }
 
-/** Resolves "system" to the actual light/dark in effect — for libraries (xyflow) that need a concrete mode. */
+/** Resolves "system" to the actual light/dark in effect – for libraries (xyflow) that need a concrete mode. */
 export function useResolvedTheme(): "light" | "dark" {
   const { theme } = useTheme();
   const [systemDark, setSystemDark] = useState<boolean>(

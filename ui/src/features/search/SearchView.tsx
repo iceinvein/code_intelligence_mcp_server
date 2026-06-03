@@ -6,6 +6,7 @@ import { ResultRow } from "@/features/search/ResultRow";
 import { Button } from "@/components/ui/button";
 import { SectionLabel } from "@/components/ui/datasheet";
 import { InlineError } from "@/components/ui/inline-error";
+import { describeError } from "@/lib/errors";
 
 export function SearchView() {
   const [params, setParams] = useSearchParams();
@@ -93,10 +94,7 @@ export function SearchView() {
       ) : search.isLoading ? (
         <p className="text-sm text-muted-foreground">searching…</p>
       ) : search.isError ? (
-        <InlineError
-          message={`search failed: ${String((search.error as Error).message)}`}
-          onRetry={() => search.refetch()}
-        />
+        <InlineError message={describeError(search.error, "search failed")} onRetry={() => search.refetch()} />
       ) : submittedQuery && results.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           no results for <span className="font-mono text-foreground">{submittedQuery}</span>

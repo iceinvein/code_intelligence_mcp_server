@@ -6,6 +6,7 @@ import { StatusGlyph, type StatusState } from "@/components/ui/status";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineError } from "@/components/ui/inline-error";
 import { Button } from "@/components/ui/button";
+import { describeError } from "@/lib/errors";
 import { formatAgo, formatCount } from "@/lib/format";
 import {
   AlertDialog,
@@ -37,7 +38,7 @@ export function ReposView() {
         <ListSkeleton />
       ) : isError ? (
         <InlineError
-          message={`failed to load repositories: ${String((error as Error).message)}`}
+          message={describeError(error, "couldn't load repositories")}
           onRetry={() => refetch()}
         />
       ) : repos.length === 0 ? (

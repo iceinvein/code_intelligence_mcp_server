@@ -5,10 +5,10 @@ import { cn } from "@/lib/utils";
  * each state also has a distinct SHAPE and an accessible text label, so the
  * meaning survives color-blindness and greyscale.
  *
- *   ok   — filled disc        (healthy, indexed, succeeded, bound)
- *   run  — disc + pinging ring (indexing, in-progress)
- *   fail — solid triangle      (failed, unreachable)
- *   idle — hollow ring         (idle, never-indexed, unbound)
+ *   ok   – filled disc        (healthy, indexed, succeeded, bound)
+ *   run  – disc + pinging ring (indexing, in-progress)
+ *   fail – solid triangle      (failed, unreachable)
+ *   idle – hollow ring         (idle, never-indexed, unbound)
  */
 export type StatusState = "ok" | "run" | "fail" | "idle";
 

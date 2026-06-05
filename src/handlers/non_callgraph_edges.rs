@@ -1,14 +1,12 @@
 use super::evidence_pack::PackLocation;
 use std::collections::HashSet;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonCallgraphShape {
     Pipeline,
     Callsite,
 }
 
-#[allow(dead_code)]
 pub fn extract_non_callgraph_candidates(
     target: &str,
     locations: &[PackLocation],

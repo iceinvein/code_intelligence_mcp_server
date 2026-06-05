@@ -17,6 +17,7 @@ use crate::handlers::planning::plan_code_investigation;
 use crate::tools::InvestigateTool;
 
 use super::evidence_pack::{build_evidence_pack, pack_to_value, EvidencePackInput, PackLocation};
+use super::non_callgraph_edges::{extract_non_callgraph_candidates, NonCallgraphShape};
 use super::AppState;
 
 /// Hard cap on the number of caller rows the callsites lookup pulls
@@ -669,6 +670,25 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         None
     };
 
+    let mut candidate_sources = pack_locations_from_verified(&primary.locations);
+    if let Some(s) = secondary.as_ref() {
+        candidate_sources.extend(pack_locations_from_verified(&s.locations));
+    }
+    let non_callgraph_candidates = match shape {
+        InvestigationShape::CallTrace | InvestigationShape::DataTrace => {
+            Some(NonCallgraphShape::Pipeline)
+        }
+        InvestigationShape::Discover if is_callsite_enumeration_question(&question) => {
+            Some(NonCallgraphShape::Callsite)
+        }
+        _ => None,
+    }
+    .map(|non_callgraph_shape| {
+        let candidate_target = target.unwrap_or(question.as_str());
+        extract_non_callgraph_candidates(candidate_target, &candidate_sources, non_callgraph_shape)
+    })
+    .unwrap_or_default();
+
     let mut bundle = build_response(
         &question,
         shape,
@@ -678,6 +698,7 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         test_coverage,
         callsites,
         supporting_modules,
+        non_callgraph_candidates,
         max_hops,
     );
 
@@ -1597,6 +1618,7 @@ fn build_response(
     test_coverage: Option<TestCoverage>,
     callsites: Option<CallSites>,
     supporting_modules: Option<SupportingModules>,
+    non_callgraph_candidates: Vec<PackLocation>,
     max_hops: u32,
 ) -> Value {
     let mut all_locations = primary.locations.clone();
@@ -1654,7 +1676,7 @@ fn build_response(
             .map(|s| pack_locations_from_verified(&s.locations))
             .unwrap_or_default(),
         secondary_via: secondary.as_ref().map(|s| s.via.to_string()),
-        extra_candidates: Vec::new(),
+        extra_candidates: non_callgraph_candidates,
     });
 
     let test_coverage_value = test_coverage.as_ref().map(|tc| {
@@ -2513,6 +2535,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
 
@@ -2529,6 +2552,54 @@ mod tests {
             !answer_hint.contains("do NOT call Grep, Read, or search_code to verify or expand"),
             "answer_hint must not forbid follow-up verification for partial/candidate packs: {answer_hint}",
         );
+    }
+
+    #[test]
+    fn build_response_includes_non_callgraph_candidates_in_pack() {
+        let primary = PrimaryHop {
+            raw: json!({"context": "dispatchToolUse(payload);"}),
+            locations: vec![VerifiedLocation {
+                symbol_id: "sym_dispatch".to_string(),
+                symbol_name: "dispatchToolUse".to_string(),
+                file_path: "src/tools.ts".to_string(),
+                kind: "function".to_string(),
+                start_line: 10,
+                end_line: 12,
+                via: "search_code",
+                body: "dispatchToolUse(payload);".to_string(),
+                route_exposure: Vec::new(),
+            }],
+        };
+
+        let response = build_response(
+            "trace the tool-use pipeline",
+            InvestigationShape::CallTrace,
+            json!({}),
+            primary,
+            None,
+            None,
+            None,
+            None,
+            vec![PackLocation {
+                symbol_id: Some("hook".to_string()),
+                symbol_name: Some("onBeforeToolUse".to_string()),
+                file_path: Some("src/config.ts".to_string()),
+                kind: Some("callback_producer".to_string()),
+                start_line: Some(30),
+                end_line: Some(30),
+                via: Some("non_callgraph_edges".to_string()),
+                body: Some(
+                    "onBeforeToolUse: async payload => dispatchToolUse(payload)".to_string(),
+                ),
+            }],
+            3,
+        );
+
+        assert!(response["pack"]["rows"]
+            .as_array()
+            .expect("pack rows")
+            .iter()
+            .any(|row| row["reason"] == "callback_producer"));
     }
 
     #[test]
@@ -2566,6 +2637,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
 
@@ -2630,6 +2702,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
         let serialized = serde_json::to_string(&response).expect("response should serialize");
@@ -2686,6 +2759,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
 
@@ -2799,6 +2873,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
 
@@ -3182,6 +3257,7 @@ mod tests {
             None,
             Some(callsites),
             None,
+            Vec::new(),
             3,
         );
 
@@ -3261,6 +3337,7 @@ mod tests {
             None,
             None,
             Some(supporting),
+            Vec::new(),
             3,
         );
         let block = response
@@ -3296,6 +3373,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
         assert!(
@@ -3319,6 +3397,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
         assert!(
@@ -3359,6 +3438,7 @@ mod tests {
             None,
             None,
             None,
+            Vec::new(),
             3,
         );
 

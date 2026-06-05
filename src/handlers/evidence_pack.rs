@@ -809,6 +809,42 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_pack_includes_extra_non_callgraph_candidates() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace the tool-use pipeline".to_string(),
+            target: "toolUse".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![location_via(
+                10,
+                "dispatchToolUse(payload);",
+                Some("search_code"),
+            )],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: vec![PackLocation {
+                symbol_id: Some("hook".to_string()),
+                symbol_name: Some("onBeforeToolUse".to_string()),
+                file_path: Some("src/config.ts".to_string()),
+                kind: Some("callback_producer".to_string()),
+                start_line: Some(30),
+                end_line: Some(30),
+                via: Some("non_callgraph_edges".to_string()),
+                body: Some(
+                    "onBeforeToolUse: async payload => dispatchToolUse(payload)".to_string(),
+                ),
+            }],
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert!(value["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["reason"] == "callback_producer"));
+    }
+
+    #[test]
     fn candidate_only_pipeline_pack_is_partial_even_with_required_roles() {
         let pack = build_evidence_pack(EvidencePackInput {
             question: "trace the tool-use pipeline".to_string(),

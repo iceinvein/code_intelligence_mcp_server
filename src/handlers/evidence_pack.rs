@@ -309,16 +309,11 @@ fn is_candidate_reason(reason: Option<&str>) -> bool {
 }
 
 fn impact_role(file_path: Option<&str>, reason: Option<&str>, fallback_role: &str) -> String {
-    let file_path = file_path.unwrap_or_default().to_ascii_lowercase();
+    let file_path = file_path.unwrap_or_default();
+    let file_path_lower = file_path.to_ascii_lowercase();
     let reason = reason.unwrap_or_default().to_ascii_lowercase();
 
-    if reason.contains("test")
-        || file_path.contains("/test/")
-        || file_path.contains("/tests/")
-        || file_path.contains("__tests__")
-        || file_path.contains(".test.")
-        || file_path.contains("_test.")
-    {
+    if reason.contains("test") || crate::classify::is_test_file(file_path) {
         "affected_test"
     } else if reason.contains("cochange")
         || reason.contains("co-change")
@@ -327,20 +322,20 @@ fn impact_role(file_path: Option<&str>, reason: Option<&str>, fallback_role: &st
         "cochange"
     } else if reason.contains("dependency")
         || reason.contains("import")
-        || file_path.ends_with("cargo.toml")
-        || file_path.ends_with("package.json")
-        || file_path.ends_with("package-lock.json")
+        || file_path_lower.ends_with("cargo.toml")
+        || file_path_lower.ends_with("package.json")
+        || file_path_lower.ends_with("package-lock.json")
     {
         "dependency"
     } else if reason.contains("config")
-        || file_path.contains("config")
-        || file_path.ends_with(".toml")
-        || file_path.ends_with(".yaml")
-        || file_path.ends_with(".yml")
-        || file_path.ends_with(".json")
+        || file_path_lower.contains("config")
+        || file_path_lower.ends_with(".toml")
+        || file_path_lower.ends_with(".yaml")
+        || file_path_lower.ends_with(".yml")
+        || file_path_lower.ends_with(".json")
     {
         "config"
-    } else if !file_path.is_empty() {
+    } else if !file_path_lower.is_empty() {
         "affected_production"
     } else {
         fallback_role
@@ -895,6 +890,47 @@ mod tests {
         let value = pack_to_value(&pack);
 
         assert_ne!(value["rows"][0]["risk"], "unknown");
+    }
+
+    #[test]
+    fn impact_pack_uses_test_file_classifier_for_affected_tests() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "what breaks if createSession changes?".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::ImpactRadius,
+            primary: vec![
+                PackLocation {
+                    symbol_id: Some("test-rs".to_string()),
+                    symbol_name: Some("test_create_session".to_string()),
+                    file_path: Some("tests/foo.rs".to_string()),
+                    kind: Some("function".to_string()),
+                    start_line: Some(10),
+                    end_line: Some(10),
+                    via: None,
+                    body: Some("createSession();".to_string()),
+                },
+                PackLocation {
+                    symbol_id: Some("spec-ts".to_string()),
+                    symbol_name: Some("creates session".to_string()),
+                    file_path: Some("src/foo.spec.ts".to_string()),
+                    kind: Some("function".to_string()),
+                    start_line: Some(20),
+                    end_line: Some(20),
+                    via: None,
+                    body: Some("createSession();".to_string()),
+                },
+            ],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"][0]["role"], "affected_test");
+        assert_eq!(value["rows"][0]["risk"], "low");
+        assert_eq!(value["rows"][1]["role"], "affected_test");
+        assert_eq!(value["rows"][1]["risk"], "low");
     }
 
     #[test]

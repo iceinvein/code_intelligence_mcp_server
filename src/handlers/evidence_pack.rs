@@ -1112,6 +1112,12 @@ mod tests {
 
             assert_eq!(pack.kind, EvidencePackKind::CallsiteEnumeration);
             assert_eq!(pack.rows.len(), 2);
+            assert_eq!(pack.rows[0].file_path.as_deref(), Some("src/review.ts"));
+            assert_eq!(pack.rows[0].line, Some(42));
+            assert_eq!(pack.rows[0].role, "callsite");
+            assert_eq!(pack.rows[1].file_path.as_deref(), Some("src/review.ts"));
+            assert_eq!(pack.rows[1].line, Some(91));
+            assert_eq!(pack.rows[1].role, "callsite");
             assert_eq!(pack.coverage.status, CoverageStatus::Complete);
         }
 
@@ -1136,8 +1142,10 @@ mod tests {
             assert_eq!(pack.kind, EvidencePackKind::PipelineTrace);
             assert!(pack.rows.iter().any(|row| row.role == "producer"));
             assert_eq!(pack.coverage.status, CoverageStatus::Partial);
-            assert!(pack.coverage.missing.contains("bridge"));
-            assert!(pack.coverage.missing.contains("subscriber"));
+            assert_eq!(
+                pack.coverage.missing,
+                "verified pipeline roles: producer,bridge,subscriber"
+            );
         }
 
         #[test]

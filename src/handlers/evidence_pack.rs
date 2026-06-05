@@ -1061,6 +1061,144 @@ mod tests {
         );
     }
 
+    mod golden_failures {
+        use super::*;
+
+        fn pack_location(
+            file_path: &str,
+            start_line: u32,
+            body: &str,
+            via: Option<&str>,
+            kind: Option<&str>,
+        ) -> PackLocation {
+            PackLocation {
+                symbol_id: Some(format!("sym-{file_path}-{start_line}")),
+                symbol_name: Some("handler".to_string()),
+                file_path: Some(file_path.to_string()),
+                kind: kind.map(str::to_string),
+                start_line: Some(start_line),
+                end_line: Some(start_line),
+                via: via.map(str::to_string),
+                body: Some(body.to_string()),
+            }
+        }
+
+        #[test]
+        fn distinct_create_session_callsites_are_not_merged() {
+            let pack = build_evidence_pack(EvidencePackInput {
+                question: "list callsites for createSession".to_string(),
+                target: "createSession".to_string(),
+                shape: InvestigationShape::Discover,
+                primary: vec![
+                    pack_location(
+                        "src/review.ts",
+                        42,
+                        "const session = createSession(request);",
+                        Some("find_references"),
+                        Some("function"),
+                    ),
+                    pack_location(
+                        "src/review.ts",
+                        91,
+                        "return createSession(fallbackRequest);",
+                        Some("find_references"),
+                        Some("function"),
+                    ),
+                ],
+                secondary: Vec::new(),
+                secondary_via: None,
+                extra_candidates: Vec::new(),
+            });
+
+            assert_eq!(pack.kind, EvidencePackKind::CallsiteEnumeration);
+            assert_eq!(pack.rows.len(), 2);
+            assert_eq!(pack.coverage.status, CoverageStatus::Complete);
+        }
+
+        #[test]
+        fn callback_producer_candidate_downgrades_incomplete_pipeline() {
+            let pack = build_evidence_pack(EvidencePackInput {
+                question: "trace how tool-use flows from provider to renderer".to_string(),
+                target: "toolUse".to_string(),
+                shape: InvestigationShape::CallTrace,
+                primary: Vec::new(),
+                secondary: Vec::new(),
+                secondary_via: None,
+                extra_candidates: vec![pack_location(
+                    "src/provider.ts",
+                    17,
+                    "onBeforeToolUse: async toolUse => provider.enqueue(toolUse)",
+                    Some("non_callgraph_edges"),
+                    Some("callback_producer"),
+                )],
+            });
+
+            assert_eq!(pack.kind, EvidencePackKind::PipelineTrace);
+            assert!(pack.rows.iter().any(|row| row.role == "producer"));
+            assert_eq!(pack.coverage.status, CoverageStatus::Partial);
+            assert!(pack.coverage.missing.contains("bridge"));
+            assert!(pack.coverage.missing.contains("subscriber"));
+        }
+
+        #[test]
+        fn impact_pack_assigns_test_config_and_production_roles() {
+            let pack = build_evidence_pack(EvidencePackInput {
+                question: "what breaks if createSession changes?".to_string(),
+                target: "createSession".to_string(),
+                shape: InvestigationShape::ImpactRadius,
+                primary: vec![
+                    pack_location(
+                        "src/review.ts",
+                        10,
+                        "const session = createSession(request);",
+                        Some("find_references"),
+                        Some("function"),
+                    ),
+                    pack_location(
+                        "src/review.test.ts",
+                        22,
+                        "expect(createSession(request)).toBeDefined();",
+                        Some("find_references"),
+                        Some("function"),
+                    ),
+                    pack_location(
+                        "src/session-config.ts",
+                        5,
+                        "export const sessionFactory = createSession;",
+                        Some("find_references"),
+                        Some("function"),
+                    ),
+                ],
+                secondary: Vec::new(),
+                secondary_via: None,
+                extra_candidates: Vec::new(),
+            });
+
+            let production = pack
+                .rows
+                .iter()
+                .find(|row| row.file_path.as_deref() == Some("src/review.ts"))
+                .expect("production row should be present");
+            let test = pack
+                .rows
+                .iter()
+                .find(|row| row.file_path.as_deref() == Some("src/review.test.ts"))
+                .expect("test row should be present");
+            let config = pack
+                .rows
+                .iter()
+                .find(|row| row.file_path.as_deref() == Some("src/session-config.ts"))
+                .expect("config row should be present");
+
+            assert_eq!(production.role, "affected_production");
+            assert_eq!(test.role, "affected_test");
+            assert_eq!(config.role, "config");
+            assert_ne!(production.role, test.role);
+            assert_ne!(production.role, config.role);
+            assert_ne!(test.role, config.role);
+        }
+    }
+
     #[test]
     fn empty_pack_reports_no_hits() {
         let pack = build_evidence_pack(EvidencePackInput {

@@ -21,6 +21,7 @@ mod index;
 mod investigation;
 mod learning;
 mod navigation;
+mod non_callgraph_edges;
 mod planning;
 mod repo_map;
 mod search;

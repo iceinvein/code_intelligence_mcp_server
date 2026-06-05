@@ -6,7 +6,7 @@
 //! the second-hop specialist (call-graph, data-flow, impact, or dependency)
 //! whose result the agent would otherwise have to fetch by hand.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,7 @@ const CALLSITES_LOOKUP_LIMIT: usize = 40;
 /// questions. Each module gets a small representative callee list.
 const SUPPORTING_MODULES_CAP: usize = 20;
 const SUPPORTING_MODULES_CALLEES_PER_MODULE: usize = 5;
+const NON_CALLGRAPH_CANDIDATE_CAP: usize = 8;
 
 /// Hard cap for the response JSON. Beyond this we degrade by dropping
 /// secondary `body` fields, then by trimming `context_chain`, then by
@@ -674,20 +675,17 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
     if let Some(s) = secondary.as_ref() {
         candidate_sources.extend(pack_locations_from_verified(&s.locations));
     }
-    let non_callgraph_candidates = match shape {
-        InvestigationShape::CallTrace | InvestigationShape::DataTrace => {
-            Some(NonCallgraphShape::Pipeline)
-        }
-        InvestigationShape::Discover if is_callsite_enumeration_question(&question) => {
-            Some(NonCallgraphShape::Callsite)
-        }
-        _ => None,
-    }
-    .map(|non_callgraph_shape| {
-        let candidate_target = target.unwrap_or(question.as_str());
-        extract_non_callgraph_candidates(candidate_target, &candidate_sources, non_callgraph_shape)
-    })
-    .unwrap_or_default();
+    let non_callgraph_candidates = non_callgraph_shape_for(&question, shape)
+        .and_then(|non_callgraph_shape| {
+            non_callgraph_target(target, &primary.locations).map(|candidate_target| {
+                capped_non_callgraph_candidates(
+                    candidate_target,
+                    &candidate_sources,
+                    non_callgraph_shape,
+                )
+            })
+        })
+        .unwrap_or_default();
 
     let mut bundle = build_response(
         &question,
@@ -1606,6 +1604,63 @@ fn pack_locations_from_verified(locations: &[VerifiedLocation]) -> Vec<PackLocat
             body: Some(loc.body.clone()),
         })
         .collect()
+}
+
+fn non_callgraph_shape_for(question: &str, shape: InvestigationShape) -> Option<NonCallgraphShape> {
+    match shape {
+        InvestigationShape::CallTrace => Some(NonCallgraphShape::Pipeline),
+        InvestigationShape::Discover if is_callsite_enumeration_question(question) => {
+            Some(NonCallgraphShape::Callsite)
+        }
+        _ => None,
+    }
+}
+
+fn non_callgraph_target<'a>(
+    explicit_target: Option<&'a str>,
+    primary_locations: &'a [VerifiedLocation],
+) -> Option<&'a str> {
+    explicit_target.or_else(|| {
+        primary_locations
+            .first()
+            .map(|loc| loc.symbol_name.as_str())
+    })
+}
+
+fn capped_non_callgraph_candidates(
+    target: &str,
+    candidate_sources: &[PackLocation],
+    shape: NonCallgraphShape,
+) -> Vec<PackLocation> {
+    let mut seen = candidate_sources
+        .iter()
+        .map(non_callgraph_candidate_key)
+        .collect::<HashSet<_>>();
+    let mut candidates = Vec::new();
+
+    for candidate in extract_non_callgraph_candidates(target, candidate_sources, shape) {
+        if candidates.len() >= NON_CALLGRAPH_CANDIDATE_CAP {
+            break;
+        }
+        if seen.insert(non_callgraph_candidate_key(&candidate)) {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates
+}
+
+fn non_callgraph_candidate_key(location: &PackLocation) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        location.file_path.as_deref().unwrap_or_default(),
+        location
+            .start_line
+            .map(|line| line.to_string())
+            .unwrap_or_default(),
+        location.body.as_deref().unwrap_or_default(),
+        location.kind.as_deref().unwrap_or_default()
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2600,6 +2655,69 @@ mod tests {
             .expect("pack rows")
             .iter()
             .any(|row| row["reason"] == "callback_producer"));
+    }
+
+    #[test]
+    fn data_trace_does_not_select_non_callgraph_candidates() {
+        assert_eq!(
+            non_callgraph_shape_for(
+                "trace where toolUse is read and written",
+                InvestigationShape::DataTrace,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn non_callgraph_extraction_uses_primary_target_and_caps_candidates() {
+        let primary = vec![VerifiedLocation {
+            symbol_id: "sym_tool_use".to_string(),
+            symbol_name: "toolUse".to_string(),
+            file_path: "src/tools.ts".to_string(),
+            kind: "function".to_string(),
+            start_line: 10,
+            end_line: 30,
+            via: "search_code",
+            body: String::new(),
+            route_exposure: Vec::new(),
+        }];
+        let target = non_callgraph_target(None, &primary).expect("primary target");
+        assert_eq!(target, "toolUse");
+        assert_eq!(non_callgraph_target(None, &[]), None);
+        assert_eq!(
+            non_callgraph_target(Some("explicitToolUse"), &primary),
+            Some("explicitToolUse")
+        );
+
+        let mut sources = vec![PackLocation {
+            symbol_id: Some("existing".to_string()),
+            symbol_name: Some("existingEmitter".to_string()),
+            file_path: Some("src/existing.ts".to_string()),
+            kind: Some("event_emitter".to_string()),
+            start_line: Some(1),
+            end_line: Some(1),
+            via: Some("search_code".to_string()),
+            body: Some("webContents.send('tool-use', payload);".to_string()),
+        }];
+        sources.extend((0..12).map(|i| PackLocation {
+            symbol_id: Some(format!("source-{i}")),
+            symbol_name: Some(format!("sourceEmitter{i}")),
+            file_path: Some(format!("src/source_{i}.ts")),
+            kind: Some("function".to_string()),
+            start_line: Some(10),
+            end_line: Some(10),
+            via: Some("search_code".to_string()),
+            body: Some("webContents.send('tool-use', payload);".to_string()),
+        }));
+
+        let candidates =
+            capped_non_callgraph_candidates(target, &sources, NonCallgraphShape::Pipeline);
+
+        assert_eq!(candidates.len(), NON_CALLGRAPH_CANDIDATE_CAP);
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.file_path.as_deref() == Some("src/existing.ts")));
+        assert_eq!(candidates[0].file_path.as_deref(), Some("src/source_0.ts"));
     }
 
     #[test]

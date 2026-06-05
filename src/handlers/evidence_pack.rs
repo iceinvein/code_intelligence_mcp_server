@@ -473,27 +473,19 @@ fn coverage_for(kind: EvidencePackKind, rows: &[EvidenceRow], target: &str) -> C
             let required = ["producer", "bridge", "subscriber"];
             let missing = required
                 .iter()
-                .filter(|role| !rows.iter().any(|row| row.role == **role))
+                .filter(|role| {
+                    !rows.iter().any(|row| {
+                        row.role == **role && !is_candidate_reason(row.reason.as_deref())
+                    })
+                })
                 .copied()
                 .collect::<Vec<_>>();
 
             if !missing.is_empty() {
                 return Coverage {
                     status: CoverageStatus::Partial,
-                    basis: "pipeline evidence is missing required roles".to_string(),
-                    missing: missing.join(","),
-                };
-            }
-
-            if rows
-                .iter()
-                .all(|row| is_candidate_reason(row.reason.as_deref()))
-            {
-                return Coverage {
-                    status: CoverageStatus::Partial,
-                    basis: "pipeline evidence is limited to non-callgraph candidates".to_string(),
-                    missing: "verified pipeline rows; only candidate non-callgraph rows were found"
-                        .to_string(),
+                    basis: "pipeline evidence is missing verified required roles".to_string(),
+                    missing: format!("verified pipeline roles: {}", missing.join(",")),
                 };
             }
         }
@@ -892,7 +884,63 @@ mod tests {
         assert_eq!(value["coverage"]["status"], "partial");
         assert_eq!(
             value["coverage"]["missing"],
-            "verified pipeline rows; only candidate non-callgraph rows were found"
+            "verified pipeline roles: producer,bridge,subscriber"
+        );
+    }
+
+    #[test]
+    fn mixed_verified_dispatcher_and_candidate_pipeline_roles_stays_partial() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace the tool-use pipeline".to_string(),
+            target: "toolUse".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![location_via(
+                10,
+                "dispatchToolUse(payload);",
+                Some("search_code"),
+            )],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: vec![
+                PackLocation {
+                    symbol_id: Some("producer".to_string()),
+                    symbol_name: Some("config.onBeforeToolUse".to_string()),
+                    file_path: Some("src/config.ts".to_string()),
+                    kind: Some("callback_producer".to_string()),
+                    start_line: Some(12),
+                    end_line: Some(12),
+                    via: Some("non_callgraph_edges".to_string()),
+                    body: Some("onBeforeToolUse: async () => dispatchToolUse()".to_string()),
+                },
+                PackLocation {
+                    symbol_id: Some("bridge".to_string()),
+                    symbol_name: Some("sendToolUse".to_string()),
+                    file_path: Some("src/main.ts".to_string()),
+                    kind: Some("event_emitter".to_string()),
+                    start_line: Some(24),
+                    end_line: Some(24),
+                    via: Some("non_callgraph_edges".to_string()),
+                    body: Some("webContents.send('tool-use', payload);".to_string()),
+                },
+                PackLocation {
+                    symbol_id: Some("subscriber".to_string()),
+                    symbol_name: Some("onToolUse".to_string()),
+                    file_path: Some("src/renderer.ts".to_string()),
+                    kind: Some("event_subscriber".to_string()),
+                    start_line: Some(36),
+                    end_line: Some(36),
+                    via: Some("non_callgraph_edges".to_string()),
+                    body: Some("ipcRenderer.on('tool-use', onToolUse);".to_string()),
+                },
+            ],
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["coverage"]["status"], "partial");
+        assert_eq!(
+            value["coverage"]["missing"],
+            "verified pipeline roles: producer,bridge,subscriber"
         );
     }
 
@@ -1007,7 +1055,10 @@ mod tests {
         assert_eq!(value["rows"][1]["role"], "bridge");
         assert_eq!(value["rows"][1]["ordinal"], 4);
         assert_eq!(value["coverage"]["status"], "partial");
-        assert_eq!(value["coverage"]["missing"], "subscriber");
+        assert_eq!(
+            value["coverage"]["missing"],
+            "verified pipeline roles: subscriber"
+        );
     }
 
     #[test]

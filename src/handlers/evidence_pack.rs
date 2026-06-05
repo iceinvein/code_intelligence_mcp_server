@@ -92,45 +92,10 @@ pub struct EvidencePackInput {
     pub primary: Vec<PackLocation>,
     pub secondary: Vec<PackLocation>,
     pub secondary_via: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvidencePackRequest {
-    pub question: String,
-    pub target: String,
-    pub shape: InvestigationShape,
-    pub primary: Vec<PackLocation>,
-    pub secondary: Vec<PackLocation>,
-    pub secondary_via: Option<String>,
     pub extra_candidates: Vec<PackLocation>,
 }
 
-pub trait IntoEvidencePackRequest {
-    fn into_request(self) -> EvidencePackRequest;
-}
-
-impl IntoEvidencePackRequest for EvidencePackInput {
-    fn into_request(self) -> EvidencePackRequest {
-        EvidencePackRequest {
-            question: self.question,
-            target: self.target,
-            shape: self.shape,
-            primary: self.primary,
-            secondary: self.secondary,
-            secondary_via: self.secondary_via,
-            extra_candidates: Vec::new(),
-        }
-    }
-}
-
-impl IntoEvidencePackRequest for EvidencePackRequest {
-    fn into_request(self) -> EvidencePackRequest {
-        self
-    }
-}
-
-pub fn build_evidence_pack(input: impl IntoEvidencePackRequest) -> EvidencePack {
-    let input = input.into_request();
+pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
     let kind = pack_kind(&input.question, input.shape);
     let mut rows = Vec::with_capacity(
         input.primary.len() + input.secondary.len() + input.extra_candidates.len(),
@@ -537,31 +502,6 @@ fn answer_guidance(kind: EvidencePackKind) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::handlers::investigation::InvestigationShape;
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct EvidencePackInput {
-        question: String,
-        target: String,
-        shape: InvestigationShape,
-        primary: Vec<PackLocation>,
-        secondary: Vec<PackLocation>,
-        secondary_via: Option<String>,
-        extra_candidates: Vec<PackLocation>,
-    }
-
-    impl IntoEvidencePackRequest for EvidencePackInput {
-        fn into_request(self) -> EvidencePackRequest {
-            EvidencePackRequest {
-                question: self.question,
-                target: self.target,
-                shape: self.shape,
-                primary: self.primary,
-                secondary: self.secondary,
-                secondary_via: self.secondary_via,
-                extra_candidates: self.extra_candidates,
-            }
-        }
-    }
 
     fn location(start_line: u32, body: &str) -> PackLocation {
         location_via(start_line, body, None)

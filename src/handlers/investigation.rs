@@ -1654,6 +1654,7 @@ fn build_response(
             .map(|s| pack_locations_from_verified(&s.locations))
             .unwrap_or_default(),
         secondary_via: secondary.as_ref().map(|s| s.via.to_string()),
+        extra_candidates: Vec::new(),
     });
 
     let test_coverage_value = test_coverage.as_ref().map(|tc| {

@@ -32,7 +32,7 @@ pub fn extract_non_callgraph_candidates(
 
             let line_number = base_line.saturating_add(offset as u32);
             let kind = match shape {
-                NonCallgraphShape::Pipeline => pipeline_candidate_kind(trimmed),
+                NonCallgraphShape::Pipeline => pipeline_candidate_kind(target, trimmed),
                 NonCallgraphShape::Callsite => callsite_candidate_kind(target, trimmed),
             };
 
@@ -65,7 +65,11 @@ pub fn extract_non_callgraph_candidates(
     candidates
 }
 
-fn pipeline_candidate_kind(line: &str) -> Option<&'static str> {
+fn pipeline_candidate_kind(target: &str, line: &str) -> Option<&'static str> {
+    if !matches_target(target, line) {
+        return None;
+    }
+
     if is_event_emitter(line) {
         return Some("event_emitter");
     }
@@ -76,6 +80,37 @@ fn pipeline_candidate_kind(line: &str) -> Option<&'static str> {
         return Some("callback_producer");
     }
     None
+}
+
+fn matches_target(target: &str, line: &str) -> bool {
+    let target_lower = target.to_ascii_lowercase();
+    let line_lower = line.to_ascii_lowercase();
+    if target_lower.is_empty() {
+        return false;
+    }
+    if line_lower.contains(&target_lower) {
+        return true;
+    }
+
+    let target_alnum = alphanumeric_lowercase(target);
+    if target_alnum.is_empty() {
+        return false;
+    }
+    let line_alnum = alphanumeric_lowercase(line);
+    if line_alnum.contains(&target_alnum) {
+        return true;
+    }
+
+    let target_tokens = split_tokens(target);
+    if target_tokens.is_empty() {
+        return false;
+    }
+
+    let line_tokens = split_tokens(line);
+    contains_token_sequence(&line_tokens, &target_tokens)
+        || target_tokens
+            .last()
+            .is_some_and(|tail| tail.len() >= 4 && line_tokens.iter().any(|token| token == tail))
 }
 
 fn callsite_candidate_kind(target: &str, line: &str) -> Option<&'static str> {
@@ -131,6 +166,51 @@ fn source_id(location: &PackLocation) -> String {
 const CALLBACK_NAMES: &[&str] = &[
     "onbefore", "onafter", "before", "after", "handler", "callback", "listener",
 ];
+
+fn alphanumeric_lowercase(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn split_tokens(value: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut previous_was_lowercase = false;
+
+    for ch in value.chars() {
+        if !ch.is_ascii_alphanumeric() {
+            push_token(&mut tokens, &mut current);
+            previous_was_lowercase = false;
+            continue;
+        }
+
+        if ch.is_ascii_uppercase() && previous_was_lowercase {
+            push_token(&mut tokens, &mut current);
+        }
+
+        previous_was_lowercase = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        current.push(ch.to_ascii_lowercase());
+    }
+
+    push_token(&mut tokens, &mut current);
+    tokens
+}
+
+fn push_token(tokens: &mut Vec<String>, current: &mut String) {
+    if !current.is_empty() {
+        tokens.push(std::mem::take(current));
+    }
+}
+
+fn contains_token_sequence(line_tokens: &[String], target_tokens: &[String]) -> bool {
+    target_tokens.len() <= line_tokens.len()
+        && line_tokens
+            .windows(target_tokens.len())
+            .any(|window| window == target_tokens)
+}
 
 #[cfg(test)]
 mod tests {
@@ -222,5 +302,49 @@ mod tests {
             candidates[0].symbol_id.as_deref(),
             Some("source-symbol:config_hook:11")
         );
+    }
+
+    #[test]
+    fn pipeline_ignores_unrelated_response_send() {
+        let candidates = extract_non_callgraph_candidates(
+            "tool-use",
+            &[location("response.send('health', payload);")],
+            NonCallgraphShape::Pipeline,
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn pipeline_ignores_unrelated_button_subscriber() {
+        let candidates = extract_non_callgraph_candidates(
+            "tool-use",
+            &[location("button.on('click', handler);")],
+            NonCallgraphShape::Pipeline,
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn pipeline_ignores_unrelated_before_after_words() {
+        let candidates = extract_non_callgraph_candidates(
+            "tool-use",
+            &[location("const afterDelay = 100;")],
+            NonCallgraphShape::Pipeline,
+        );
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn pipeline_ignores_unrelated_ipc_subscriber_channel() {
+        let candidates = extract_non_callgraph_candidates(
+            "tool-use",
+            &[location("ipcRenderer.on('session-message', handler);")],
+            NonCallgraphShape::Pipeline,
+        );
+
+        assert!(candidates.is_empty());
     }
 }

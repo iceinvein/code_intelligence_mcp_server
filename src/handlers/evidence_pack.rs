@@ -200,7 +200,11 @@ fn row_from_location(
     let role = match kind {
         EvidencePackKind::CallsiteEnumeration => callsite_role(location.via.as_deref()),
         EvidencePackKind::PipelineTrace => infer_pipeline_role(body.unwrap_or(&evidence)),
-        EvidencePackKind::ImpactRadius => impact_role(location.kind.as_deref(), fallback_role),
+        EvidencePackKind::ImpactRadius => impact_role(
+            location.file_path.as_deref(),
+            location.kind.as_deref(),
+            fallback_role,
+        ),
         _ => location.via.as_deref().unwrap_or(fallback_role).to_string(),
     };
     let ordinal = match kind {
@@ -208,7 +212,7 @@ fn row_from_location(
         _ => Some(fallback_ordinal),
     };
     let risk = if matches!(kind, EvidencePackKind::ImpactRadius) {
-        Some(impact_risk(&role).to_string())
+        impact_risk(&role).map(str::to_string)
     } else {
         None
     };
@@ -229,12 +233,8 @@ fn row_from_location(
 }
 
 fn verify_rows(kind: EvidencePackKind, target: &str, rows: Vec<EvidenceRow>) -> Vec<EvidenceRow> {
-    let rows = match kind {
-        EvidencePackKind::CallsiteEnumeration => dedup_rows_by_file_line(rows),
-        _ => rows,
-    };
-
-    rows.into_iter()
+    let rows = rows
+        .into_iter()
         .map(|mut row| {
             if matches!(kind, EvidencePackKind::CallsiteEnumeration)
                 && (row.role == "callsite" || row.role == "caller")
@@ -245,25 +245,47 @@ fn verify_rows(kind: EvidencePackKind, target: &str, rows: Vec<EvidenceRow>) -> 
 
             row
         })
-        .collect()
+        .collect();
+
+    match kind {
+        EvidencePackKind::CallsiteEnumeration => dedup_rows_by_file_line(rows, target),
+        _ => rows,
+    }
 }
 
-fn dedup_rows_by_file_line(rows: Vec<EvidenceRow>) -> Vec<EvidenceRow> {
+fn dedup_rows_by_file_line(rows: Vec<EvidenceRow>, target: &str) -> Vec<EvidenceRow> {
     let mut deduped = Vec::with_capacity(rows.len());
 
     for row in rows {
-        let duplicate = row.file_path.as_ref().zip(row.line).is_some_and(|key| {
-            deduped.iter().any(|existing: &EvidenceRow| {
-                existing.file_path.as_ref().zip(existing.line) == Some(key)
-            })
-        });
+        let Some(key) = row.file_path.clone().zip(row.line) else {
+            deduped.push(row);
+            continue;
+        };
 
-        if !duplicate {
+        if let Some(existing_index) = deduped.iter().position(|existing: &EvidenceRow| {
+            existing.file_path.as_ref().zip(existing.line) == Some((&key.0, key.1))
+        }) {
+            if row_confidence(&row, target) > row_confidence(&deduped[existing_index], target) {
+                deduped[existing_index] = row;
+            }
+        } else {
             deduped.push(row);
         }
     }
 
     deduped
+}
+
+fn row_confidence(row: &EvidenceRow, target: &str) -> u8 {
+    let verified = matches!(row.role.as_str(), "callsite" | "caller");
+    let mentions_target = evidence_mentions_target(&row.evidence, target);
+
+    match (verified, mentions_target) {
+        (true, true) => 3,
+        (true, false) => 2,
+        (false, true) => 1,
+        (false, false) => 0,
+    }
 }
 
 fn evidence_mentions_target(evidence: &str, target: &str) -> bool {
@@ -286,35 +308,52 @@ fn is_candidate_reason(reason: Option<&str>) -> bool {
     )
 }
 
-fn impact_role(reason: Option<&str>, fallback_role: &str) -> String {
-    let Some(reason) = reason else {
-        return fallback_role.to_string();
-    };
-    let reason = reason.to_ascii_lowercase();
+fn impact_role(file_path: Option<&str>, reason: Option<&str>, fallback_role: &str) -> String {
+    let file_path = file_path.unwrap_or_default().to_ascii_lowercase();
+    let reason = reason.unwrap_or_default().to_ascii_lowercase();
 
-    if reason.contains("test") {
-        "test"
-    } else if reason.contains("caller")
-        || reason.contains("callsite")
-        || reason.contains("reference")
+    if reason.contains("test")
+        || file_path.contains("/test/")
+        || file_path.contains("/tests/")
+        || file_path.contains("__tests__")
+        || file_path.contains(".test.")
+        || file_path.contains("_test.")
     {
-        "caller"
-    } else if reason.contains("dependency") || reason.contains("import") {
+        "affected_test"
+    } else if reason.contains("cochange")
+        || reason.contains("co-change")
+        || reason.contains("co_change")
+    {
+        "cochange"
+    } else if reason.contains("dependency")
+        || reason.contains("import")
+        || file_path.ends_with("cargo.toml")
+        || file_path.ends_with("package.json")
+        || file_path.ends_with("package-lock.json")
+    {
         "dependency"
-    } else if reason.contains("definition") || reason.contains("target") {
-        "target"
+    } else if reason.contains("config")
+        || file_path.contains("config")
+        || file_path.ends_with(".toml")
+        || file_path.ends_with(".yaml")
+        || file_path.ends_with(".yml")
+        || file_path.ends_with(".json")
+    {
+        "config"
+    } else if !file_path.is_empty() {
+        "affected_production"
     } else {
         fallback_role
     }
     .to_string()
 }
 
-fn impact_risk(role: &str) -> &'static str {
+fn impact_risk(role: &str) -> Option<&'static str> {
     match role {
-        "target" | "caller" => "high",
-        "dependency" => "medium",
-        "test" => "low",
-        _ => "unknown",
+        "affected_production" | "dependency" => Some("high"),
+        "cochange" | "config" => Some("medium"),
+        "affected_test" => Some("low"),
+        _ => None,
     }
 }
 
@@ -752,6 +791,29 @@ mod tests {
     }
 
     #[test]
+    fn callsite_pack_prefers_verified_duplicate_over_candidate() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls createSession".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![
+                location_via(10, "createSession();", Some("search_code")),
+                location_via(10, "createSession();", Some("find_references")),
+            ],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(value["rows"][0]["line"], 10);
+        assert_eq!(value["rows"][0]["role"], "callsite");
+        assert_eq!(value["coverage"]["status"], "complete");
+    }
+
+    #[test]
     fn candidate_only_pipeline_pack_is_partial_even_with_required_roles() {
         let pack = build_evidence_pack(EvidencePackInput {
             question: "trace the tool-use pipeline".to_string(),
@@ -816,6 +878,23 @@ mod tests {
         });
 
         assert_eq!(pack.kind, EvidencePackKind::ImpactRadius);
+    }
+
+    #[test]
+    fn impact_pack_does_not_emit_unknown_risk_for_ordinary_rows() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "what breaks if createSession changes?".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::ImpactRadius,
+            primary: vec![location(10, "createSession();")],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_ne!(value["rows"][0]["risk"], "unknown");
     }
 
     #[test]

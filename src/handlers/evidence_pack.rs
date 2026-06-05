@@ -94,9 +94,47 @@ pub struct EvidencePackInput {
     pub secondary_via: Option<String>,
 }
 
-pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidencePackRequest {
+    pub question: String,
+    pub target: String,
+    pub shape: InvestigationShape,
+    pub primary: Vec<PackLocation>,
+    pub secondary: Vec<PackLocation>,
+    pub secondary_via: Option<String>,
+    pub extra_candidates: Vec<PackLocation>,
+}
+
+pub trait IntoEvidencePackRequest {
+    fn into_request(self) -> EvidencePackRequest;
+}
+
+impl IntoEvidencePackRequest for EvidencePackInput {
+    fn into_request(self) -> EvidencePackRequest {
+        EvidencePackRequest {
+            question: self.question,
+            target: self.target,
+            shape: self.shape,
+            primary: self.primary,
+            secondary: self.secondary,
+            secondary_via: self.secondary_via,
+            extra_candidates: Vec::new(),
+        }
+    }
+}
+
+impl IntoEvidencePackRequest for EvidencePackRequest {
+    fn into_request(self) -> EvidencePackRequest {
+        self
+    }
+}
+
+pub fn build_evidence_pack(input: impl IntoEvidencePackRequest) -> EvidencePack {
+    let input = input.into_request();
     let kind = pack_kind(&input.question, input.shape);
-    let mut rows = Vec::with_capacity(input.primary.len() + input.secondary.len());
+    let mut rows = Vec::with_capacity(
+        input.primary.len() + input.secondary.len() + input.extra_candidates.len(),
+    );
 
     for location in input.primary {
         rows.push(row_from_location(
@@ -119,11 +157,23 @@ pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
         ));
     }
 
+    for location in input.extra_candidates {
+        rows.push(row_from_location(
+            location,
+            &input.target,
+            kind,
+            "candidate",
+            rows.len() as u32 + 1,
+        ));
+    }
+
+    rows = verify_rows(kind, &input.target, rows);
+
     if matches!(kind, EvidencePackKind::PipelineTrace) {
         rows.sort_by_key(|row| row.ordinal.unwrap_or(u32::MAX));
     }
 
-    let coverage = coverage_for(kind, &rows);
+    let coverage = coverage_for(kind, &rows, &input.target);
 
     EvidencePack {
         kind,
@@ -185,11 +235,17 @@ fn row_from_location(
     let role = match kind {
         EvidencePackKind::CallsiteEnumeration => callsite_role(location.via.as_deref()),
         EvidencePackKind::PipelineTrace => infer_pipeline_role(body.unwrap_or(&evidence)),
+        EvidencePackKind::ImpactRadius => impact_role(location.kind.as_deref(), fallback_role),
         _ => location.via.as_deref().unwrap_or(fallback_role).to_string(),
     };
     let ordinal = match kind {
         EvidencePackKind::PipelineTrace => pipeline_ordinal(&role),
         _ => Some(fallback_ordinal),
+    };
+    let risk = if matches!(kind, EvidencePackKind::ImpactRadius) {
+        Some(impact_risk(&role).to_string())
+    } else {
+        None
     };
 
     EvidenceRow {
@@ -203,7 +259,97 @@ fn row_from_location(
         enclosing_symbol: None,
         evidence,
         reason: location.kind,
-        risk: None,
+        risk,
+    }
+}
+
+fn verify_rows(kind: EvidencePackKind, target: &str, rows: Vec<EvidenceRow>) -> Vec<EvidenceRow> {
+    let rows = match kind {
+        EvidencePackKind::CallsiteEnumeration => dedup_rows_by_file_line(rows),
+        _ => rows,
+    };
+
+    rows.into_iter()
+        .map(|mut row| {
+            if matches!(kind, EvidencePackKind::CallsiteEnumeration)
+                && (row.role == "callsite" || row.role == "caller")
+                && !evidence_mentions_target(&row.evidence, target)
+            {
+                row.role = "candidate".to_string();
+            }
+
+            row
+        })
+        .collect()
+}
+
+fn dedup_rows_by_file_line(rows: Vec<EvidenceRow>) -> Vec<EvidenceRow> {
+    let mut deduped = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let duplicate = row.file_path.as_ref().zip(row.line).is_some_and(|key| {
+            deduped.iter().any(|existing: &EvidenceRow| {
+                existing.file_path.as_ref().zip(existing.line) == Some(key)
+            })
+        });
+
+        if !duplicate {
+            deduped.push(row);
+        }
+    }
+
+    deduped
+}
+
+fn evidence_mentions_target(evidence: &str, target: &str) -> bool {
+    if evidence.contains(target) {
+        return true;
+    }
+
+    let final_segment = target
+        .split(['.', ':', '#'])
+        .rfind(|segment| !segment.is_empty())
+        .unwrap_or(target);
+
+    evidence.contains(final_segment)
+}
+
+fn is_candidate_reason(reason: Option<&str>) -> bool {
+    matches!(
+        reason,
+        Some("callback_producer" | "event_emitter" | "event_subscriber" | "config_hook")
+    )
+}
+
+fn impact_role(reason: Option<&str>, fallback_role: &str) -> String {
+    let Some(reason) = reason else {
+        return fallback_role.to_string();
+    };
+    let reason = reason.to_ascii_lowercase();
+
+    if reason.contains("test") {
+        "test"
+    } else if reason.contains("caller")
+        || reason.contains("callsite")
+        || reason.contains("reference")
+    {
+        "caller"
+    } else if reason.contains("dependency") || reason.contains("import") {
+        "dependency"
+    } else if reason.contains("definition") || reason.contains("target") {
+        "target"
+    } else {
+        fallback_role
+    }
+    .to_string()
+}
+
+fn impact_risk(role: &str) -> &'static str {
+    match role {
+        "target" | "caller" => "high",
+        "dependency" => "medium",
+        "test" => "low",
+        _ => "unknown",
     }
 }
 
@@ -296,7 +442,7 @@ fn pipeline_ordinal(role: &str) -> Option<u32> {
     }
 }
 
-fn coverage_for(kind: EvidencePackKind, rows: &[EvidenceRow]) -> Coverage {
+fn coverage_for(kind: EvidencePackKind, rows: &[EvidenceRow], target: &str) -> Coverage {
     if rows.is_empty() {
         return Coverage {
             status: CoverageStatus::NoHits,
@@ -321,7 +467,7 @@ fn coverage_for(kind: EvidencePackKind, rows: &[EvidenceRow]) -> Coverage {
             return Coverage {
                 status: CoverageStatus::Partial,
                 basis: "callsite evidence is limited to search candidates".to_string(),
-                missing: "callsite references not verified; rows are search candidates".to_string(),
+                missing: format!("verified callsite evidence for {target}"),
             };
         }
         EvidencePackKind::PipelineTrace => {
@@ -337,6 +483,18 @@ fn coverage_for(kind: EvidencePackKind, rows: &[EvidenceRow]) -> Coverage {
                     status: CoverageStatus::Partial,
                     basis: "pipeline evidence is missing required roles".to_string(),
                     missing: missing.join(","),
+                };
+            }
+
+            if rows
+                .iter()
+                .all(|row| is_candidate_reason(row.reason.as_deref()))
+            {
+                return Coverage {
+                    status: CoverageStatus::Partial,
+                    basis: "pipeline evidence is limited to non-callgraph candidates".to_string(),
+                    missing: "verified pipeline rows; only candidate non-callgraph rows were found"
+                        .to_string(),
                 };
             }
         }
@@ -380,6 +538,31 @@ mod tests {
     use super::*;
     use crate::handlers::investigation::InvestigationShape;
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct EvidencePackInput {
+        question: String,
+        target: String,
+        shape: InvestigationShape,
+        primary: Vec<PackLocation>,
+        secondary: Vec<PackLocation>,
+        secondary_via: Option<String>,
+        extra_candidates: Vec<PackLocation>,
+    }
+
+    impl IntoEvidencePackRequest for EvidencePackInput {
+        fn into_request(self) -> EvidencePackRequest {
+            EvidencePackRequest {
+                question: self.question,
+                target: self.target,
+                shape: self.shape,
+                primary: self.primary,
+                secondary: self.secondary,
+                secondary_via: self.secondary_via,
+                extra_candidates: self.extra_candidates,
+            }
+        }
+    }
+
     fn location(start_line: u32, body: &str) -> PackLocation {
         location_via(start_line, body, None)
     }
@@ -409,6 +592,7 @@ mod tests {
             ],
             secondary: vec![],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -428,6 +612,7 @@ mod tests {
             primary: vec![location(10, "setup();\nmore_setup();\ntarget_fn();")],
             secondary: vec![],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -445,6 +630,7 @@ mod tests {
             primary: vec![location(10, "fn target_fn() {}")],
             secondary: vec![],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -461,6 +647,7 @@ mod tests {
             primary: vec![location(10, "let reference_count = 0;")],
             secondary: vec![],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -477,6 +664,7 @@ mod tests {
             primary: vec![location(10, "target_fn();")],
             secondary: vec![],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -493,6 +681,7 @@ mod tests {
             primary: vec![location(10, "createSession();")],
             secondary: vec![],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -518,6 +707,7 @@ mod tests {
             }],
             secondary: Vec::new(),
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         assert_eq!(pack.kind, EvidencePackKind::CallsiteEnumeration);
@@ -532,6 +722,7 @@ mod tests {
             primary: vec![location_via(10, "createSession();", Some("search_code"))],
             secondary: Vec::new(),
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -541,7 +732,7 @@ mod tests {
         assert_eq!(value["coverage"]["status"], "partial");
         assert_eq!(
             value["coverage"]["missing"],
-            "callsite references not verified; rows are search candidates"
+            "verified callsite evidence for createSession"
         );
     }
 
@@ -562,6 +753,7 @@ mod tests {
                 Some("get_call_hierarchy"),
             )],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -573,6 +765,105 @@ mod tests {
     }
 
     #[test]
+    fn verified_callsite_without_target_evidence_is_downgraded_to_candidate() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls createSession".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location_via(
+                10,
+                "const session = await makeSession();",
+                Some("find_references"),
+            )],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"][0]["role"], "candidate");
+        assert_eq!(value["coverage"]["status"], "partial");
+        assert_eq!(
+            value["coverage"]["missing"],
+            "verified callsite evidence for createSession"
+        );
+    }
+
+    #[test]
+    fn callsite_pack_deduplicates_same_file_and_line() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls createSession".to_string(),
+            target: "createSession".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![
+                location_via(10, "createSession();", Some("find_references")),
+                location_via(10, "createSession();", Some("get_call_hierarchy")),
+            ],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(value["coverage"]["status"], "complete");
+    }
+
+    #[test]
+    fn candidate_only_pipeline_pack_is_partial_even_with_required_roles() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace the tool-use pipeline".to_string(),
+            target: "toolUse".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: vec![
+                PackLocation {
+                    symbol_id: Some("producer".to_string()),
+                    symbol_name: Some("config.onBeforeToolUse".to_string()),
+                    file_path: Some("src/config.ts".to_string()),
+                    kind: Some("callback_producer".to_string()),
+                    start_line: Some(12),
+                    end_line: Some(12),
+                    via: Some("non_callgraph_edges".to_string()),
+                    body: Some("onBeforeToolUse: async () => dispatch()".to_string()),
+                },
+                PackLocation {
+                    symbol_id: Some("bridge".to_string()),
+                    symbol_name: Some("sendToolUse".to_string()),
+                    file_path: Some("src/main.ts".to_string()),
+                    kind: Some("event_emitter".to_string()),
+                    start_line: Some(24),
+                    end_line: Some(24),
+                    via: Some("non_callgraph_edges".to_string()),
+                    body: Some("webContents.send('tool-use', payload);".to_string()),
+                },
+                PackLocation {
+                    symbol_id: Some("subscriber".to_string()),
+                    symbol_name: Some("onToolUse".to_string()),
+                    file_path: Some("src/renderer.ts".to_string()),
+                    kind: Some("event_subscriber".to_string()),
+                    start_line: Some(36),
+                    end_line: Some(36),
+                    via: Some("non_callgraph_edges".to_string()),
+                    body: Some("ipcRenderer.on('tool-use', onToolUse);".to_string()),
+                },
+            ],
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["coverage"]["status"], "partial");
+        assert_eq!(
+            value["coverage"]["missing"],
+            "verified pipeline rows; only candidate non-callgraph rows were found"
+        );
+    }
+
+    #[test]
     fn callsite_words_do_not_override_explicit_impact_radius_shape() {
         let pack = build_evidence_pack(EvidencePackInput {
             question: "who calls createSession and what breaks if it changes?".to_string(),
@@ -581,6 +872,7 @@ mod tests {
             primary: vec![location(10, "createSession();")],
             secondary: Vec::new(),
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         assert_eq!(pack.kind, EvidencePackKind::ImpactRadius);
@@ -595,6 +887,7 @@ mod tests {
             primary: vec![location(10, "createSession();")],
             secondary: Vec::new(),
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         assert_eq!(pack.kind, EvidencePackKind::PipelineTrace);
@@ -612,6 +905,7 @@ mod tests {
                 "webContents.send('session:message', payload);",
             )],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);
@@ -634,6 +928,7 @@ mod tests {
             primary: vec![],
             secondary: vec![],
             secondary_via: None,
+            extra_candidates: Vec::new(),
         });
 
         let value = pack_to_value(&pack);

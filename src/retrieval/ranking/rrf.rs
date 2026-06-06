@@ -8,7 +8,9 @@ use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
 use std::collections::HashMap;
 
-const DEFAULT_RRF_K: f32 = 60.0;
+/// Default RRF constant. The canonical source for the `rrf.k` config
+/// default (see `Config`); the standard RRF value from the original paper.
+pub const DEFAULT_RRF_K: f32 = 60.0;
 
 /// RRF source for tracking where a rank came from
 #[derive(Debug, Clone, Copy)]
@@ -22,14 +24,17 @@ pub enum RankSource {
 /// Combine multiple ranked lists using Reciprocal Rank Fusion
 ///
 /// RRF formula: score = sum(weight / (k + rank))
-/// where k is a constant (default 60) to prevent division by zero
-/// and weight is the source-specific weight
+/// where k is a constant (default [`DEFAULT_RRF_K`]) that flattens the
+/// rank curve and prevents division by zero, and weight is the
+/// source-specific weight.
 ///
 /// # Arguments
 /// * `keyword_hits` - Ranked results from keyword search (Tantivy)
 /// * `vector_hits` - Ranked results from vector search (LanceDB)
 /// * `graph_hits` - Ranked results by PageRank scores
 /// * `weights` - Tuple of (keyword_weight, vector_weight, graph_weight)
+/// * `k` - RRF constant from config (`rrf.k`); clamped to `>= 0.0` so the
+///   `k + rank + 1` denominator can never be zero or negative.
 ///
 /// # Returns
 /// Combined and sorted results with RRF scores
@@ -38,9 +43,12 @@ pub fn reciprocal_rank_fusion(
     vector_hits: &[RankedHit],
     graph_hits: &[RankedHit],
     weights: (f32, f32, f32), // (keyword_weight, vector_weight, graph_weight)
+    k: f32,
 ) -> Vec<RankedHit> {
     let (w_kw, w_vec, w_graph) = weights;
-    let k = DEFAULT_RRF_K;
+    // Guard the denominator: config supplies `k` verbatim, so a stray
+    // negative value must not push `k + rank + 1` to zero or below.
+    let k = k.max(0.0);
 
     let mut rrf_scores: HashMap<String, f32> = HashMap::new();
     let mut hit_data: HashMap<String, RankedHit> = HashMap::new();
@@ -156,8 +164,13 @@ mod tests {
             make_hit("b", 0.3, true),
         ];
 
-        let results =
-            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
+        let results = reciprocal_rank_fusion(
+            &keyword_hits,
+            &vector_hits,
+            &graph_hits,
+            (1.0, 1.0, 0.5),
+            DEFAULT_RRF_K,
+        );
 
         // Results should be sorted by RRF score
         assert!(!results.is_empty());
@@ -174,8 +187,13 @@ mod tests {
         let vector_hits: Vec<RankedHit> = vec![];
         let graph_hits: Vec<RankedHit> = vec![];
 
-        let results =
-            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
+        let results = reciprocal_rank_fusion(
+            &keyword_hits,
+            &vector_hits,
+            &graph_hits,
+            (1.0, 1.0, 0.5),
+            DEFAULT_RRF_K,
+        );
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "a");
@@ -187,8 +205,13 @@ mod tests {
         let vector_hits: Vec<RankedHit> = vec![];
         let graph_hits: Vec<RankedHit> = vec![];
 
-        let results =
-            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (1.0, 1.0, 0.5));
+        let results = reciprocal_rank_fusion(
+            &keyword_hits,
+            &vector_hits,
+            &graph_hits,
+            (1.0, 1.0, 0.5),
+            DEFAULT_RRF_K,
+        );
 
         assert!(results.is_empty());
     }
@@ -200,13 +223,23 @@ mod tests {
         let graph_hits: Vec<RankedHit> = vec![];
 
         // With higher keyword weight, 'a' should win
-        let results_high_kw =
-            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (2.0, 0.5, 0.0));
+        let results_high_kw = reciprocal_rank_fusion(
+            &keyword_hits,
+            &vector_hits,
+            &graph_hits,
+            (2.0, 0.5, 0.0),
+            DEFAULT_RRF_K,
+        );
         assert_eq!(results_high_kw[0].id, "a");
 
         // With higher vector weight, 'b' should win
-        let results_high_vec =
-            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &graph_hits, (0.5, 2.0, 0.0));
+        let results_high_vec = reciprocal_rank_fusion(
+            &keyword_hits,
+            &vector_hits,
+            &graph_hits,
+            (0.5, 2.0, 0.0),
+            DEFAULT_RRF_K,
+        );
         assert_eq!(results_high_vec[0].id, "b");
     }
 
@@ -218,11 +251,59 @@ mod tests {
             make_hit("c", 0.5, false),
         ];
 
-        let results = reciprocal_rank_fusion(&hits, &[], &[], (1.0, 0.0, 0.0));
+        let results = reciprocal_rank_fusion(&hits, &[], &[], (1.0, 0.0, 0.0), DEFAULT_RRF_K);
 
         // All have same score, but exported should come first
         assert!(results[0].exported);
         assert!(results[1].exported);
         assert!(!results[2].exported);
+    }
+
+    #[test]
+    fn test_rrf_k_controls_rank_flattening() {
+        // `top` rides a single rank-0 keyword hit; `spread` accumulates two
+        // rank-2 hits across keyword + vector. A small k keeps the rank-0
+        // advantage decisive (top > spread); a large k flattens the rank
+        // curve so the two-source accumulation wins (spread > top). This
+        // guards that the configurable `rrf.k` actually reaches the fusion
+        // math rather than being shadowed by a hardcoded constant.
+        let keyword_hits = vec![
+            make_hit("top", 0.9, true),
+            make_hit("f1", 0.8, true),
+            make_hit("spread", 0.7, true),
+        ];
+        let vector_hits = vec![
+            make_hit("g1", 0.9, true),
+            make_hit("g2", 0.8, true),
+            make_hit("spread", 0.7, true),
+        ];
+
+        let score_of = |hits: &[RankedHit], id: &str| -> f32 {
+            hits.iter().find(|h| h.id == id).map(|h| h.score).unwrap()
+        };
+
+        // Small k: top (1/1.5 ≈ 0.667) beats spread (2/3.5 ≈ 0.571).
+        let small_k =
+            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &[], (1.0, 1.0, 0.0), 0.5);
+        assert!(score_of(&small_k, "top") > score_of(&small_k, "spread"));
+
+        // Large k: spread (2/63 ≈ 0.0317) overtakes top (1/61 ≈ 0.0164).
+        let large_k =
+            reciprocal_rank_fusion(&keyword_hits, &vector_hits, &[], (1.0, 1.0, 0.0), 60.0);
+        assert!(score_of(&large_k, "spread") > score_of(&large_k, "top"));
+    }
+
+    #[test]
+    fn test_rrf_negative_k_is_clamped() {
+        // A negative `k` from config must not blow up the denominator.
+        // It is clamped to 0.0, so results are still finite and ordered.
+        let keyword_hits = vec![make_hit("a", 0.9, true), make_hit("b", 0.8, true)];
+
+        let results = reciprocal_rank_fusion(&keyword_hits, &[], &[], (1.0, 0.0, 0.0), -5.0);
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|h| h.score.is_finite()));
+        // Clamp makes this identical to k = 0.0: rank-0 'a' still leads.
+        assert_eq!(results[0].id, "a");
     }
 }

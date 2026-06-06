@@ -264,7 +264,7 @@ impl Default for StandaloneConfig {
             rank_test_penalty: 0.1,
             rank_popularity_weight: 0.05,
             rank_popularity_cap: 50,
-            rrf_k: 60.0,
+            rrf_k: crate::retrieval::ranking::rrf::DEFAULT_RRF_K,
             rrf_keyword_weight: 1.0,
             rrf_vector_weight: 1.0,
             rrf_graph_weight: 0.5,

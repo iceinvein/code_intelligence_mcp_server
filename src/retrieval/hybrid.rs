@@ -187,8 +187,13 @@ async fn execute_single_query_search(
         // matches irrelevant identifiers for conceptual queries.
         let weights = rrf_weights(&retriever.config, is_nl_query);
 
-        let mut rrf_results =
-            reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
+        let mut rrf_results = reciprocal_rank_fusion(
+            &keyword_ranked,
+            &vector_ranked,
+            &graph_hits,
+            weights,
+            retriever.config.rrf_k,
+        );
 
         normalize_rrf_scores(&mut rrf_results);
 
@@ -370,7 +375,13 @@ async fn execute_multi_query_search(
 
     let weights = rrf_weights(&retriever.config, is_nl_query);
 
-    let mut ranked = reciprocal_rank_fusion(&keyword_ranked, &vector_ranked, &graph_hits, weights);
+    let mut ranked = reciprocal_rank_fusion(
+        &keyword_ranked,
+        &vector_ranked,
+        &graph_hits,
+        weights,
+        retriever.config.rrf_k,
+    );
 
     normalize_rrf_scores(&mut ranked);
 

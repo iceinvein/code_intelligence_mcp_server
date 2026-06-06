@@ -28,6 +28,63 @@ pub struct EdgeRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalIndexRow {
+    pub id: String,
+    pub source_kind: String,
+    pub producer: String,
+    pub language: String,
+    pub root_path: String,
+    pub artifact_path: String,
+    pub artifact_hash: String,
+    pub status: String,
+    pub diagnostics_json: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalSymbolRow {
+    pub id: String,
+    pub external_index_id: String,
+    pub external_symbol: String,
+    pub display_name: String,
+    pub language: String,
+    pub kind: String,
+    pub file_path: Option<String>,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+    pub start_byte: Option<u32>,
+    pub end_byte: Option<u32>,
+    pub metadata_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalReferenceRow {
+    pub id: i64,
+    pub external_index_id: String,
+    pub from_external_symbol_id: Option<String>,
+    pub to_external_symbol_id: Option<String>,
+    pub relationship: String,
+    pub file_path: String,
+    pub line: u32,
+    pub column: Option<u32>,
+    pub end_line: Option<u32>,
+    pub end_column: Option<u32>,
+    pub confidence: f32,
+    pub provenance: String,
+    pub metadata_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SymbolMappingRow {
+    pub external_symbol_id: String,
+    pub internal_symbol_id: String,
+    pub mapping_kind: String,
+    pub confidence: f32,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EdgeEvidenceRow {
     pub from_symbol_id: String,
     pub to_symbol_id: String,
@@ -365,6 +422,86 @@ CREATE INDEX IF NOT EXISTS idx_edge_evidence_from ON edge_evidence(from_symbol_i
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_to ON edge_evidence(to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_type ON edge_evidence(edge_type);
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_loc ON edge_evidence(at_file, at_line);
+
+CREATE TABLE IF NOT EXISTS external_indexes (
+  id TEXT PRIMARY KEY NOT NULL,
+  source_kind TEXT NOT NULL,
+  producer TEXT NOT NULL,
+  language TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  artifact_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  diagnostics_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_external_indexes_language_status
+  ON external_indexes(language, status);
+
+CREATE TABLE IF NOT EXISTS external_symbols (
+  id TEXT PRIMARY KEY NOT NULL,
+  external_index_id TEXT NOT NULL,
+  external_symbol TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  language TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  file_path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  start_byte INTEGER,
+  end_byte INTEGER,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(external_index_id) REFERENCES external_indexes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_external_symbols_index_name
+  ON external_symbols(external_index_id, display_name);
+CREATE INDEX IF NOT EXISTS idx_external_symbols_index_file
+  ON external_symbols(external_index_id, file_path);
+CREATE INDEX IF NOT EXISTS idx_external_symbols_external_symbol
+  ON external_symbols(external_symbol);
+
+CREATE TABLE IF NOT EXISTS external_references (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  external_index_id TEXT NOT NULL,
+  from_external_symbol_id TEXT,
+  to_external_symbol_id TEXT,
+  relationship TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  column INTEGER,
+  end_line INTEGER,
+  end_column INTEGER,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  provenance TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(external_index_id) REFERENCES external_indexes(id) ON DELETE CASCADE,
+  FOREIGN KEY(from_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL,
+  FOREIGN KEY(to_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_external_references_to
+  ON external_references(to_external_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_external_references_from
+  ON external_references(from_external_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_external_references_relationship
+  ON external_references(relationship);
+CREATE INDEX IF NOT EXISTS idx_external_references_file_line
+  ON external_references(file_path, line);
+
+CREATE TABLE IF NOT EXISTS symbol_mappings (
+  external_symbol_id TEXT PRIMARY KEY NOT NULL,
+  internal_symbol_id TEXT NOT NULL,
+  mapping_kind TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(external_symbol_id) REFERENCES external_symbols(id) ON DELETE CASCADE,
+  FOREIGN KEY(internal_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_symbol_mappings_internal
+  ON symbol_mappings(internal_symbol_id);
 
 CREATE TABLE IF NOT EXISTS file_fingerprints (
   file_path TEXT PRIMARY KEY NOT NULL,

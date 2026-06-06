@@ -247,7 +247,7 @@ SET
       WHEN end_column IS NULL THEN 'n;'
       ELSE 'u' || end_column || ';'
     END
-WHERE dedupe_key IS NULL OR dedupe_key = '';
+;
 
 UPDATE external_references
 SET updated_at = COALESCE(updated_at, created_at, unixepoch())
@@ -687,6 +687,134 @@ INSERT INTO external_references (
 VALUES (
   'idx-rust-analyzer', NULL, 'ext:téarget', 'reference',
   'src/é_main.rs', 42, NULL, 42, 13, 0.5, 'old-import', '{"pass":1}'
+);
+"#,
+        )
+        .unwrap();
+
+        let store = SqliteStore::from_connection(conn);
+        store.init().unwrap();
+        store.upsert_symbol(&sym("s1")).unwrap();
+        store
+            .upsert_symbol_mapping(&SymbolMappingInsert {
+                external_symbol_id: "ext:téarget",
+                internal_symbol_id: "s1",
+                mapping_kind: "exact",
+                confidence: 0.99,
+            })
+            .unwrap();
+
+        store
+            .upsert_external_reference(&ExternalReferenceInsert {
+                external_index_id: "idx-rust-analyzer",
+                from_external_symbol_id: None,
+                to_external_symbol_id: Some("ext:téarget"),
+                relationship: "reference",
+                file_path: "src/é_main.rs",
+                line: 42,
+                column: None,
+                end_line: Some(42),
+                end_column: Some(13),
+                confidence: 0.9,
+                provenance: "rust-analyzer",
+                metadata_json: "{}",
+            })
+            .unwrap();
+
+        let stats = store.external_index_stats("idx-rust-analyzer").unwrap();
+        assert_eq!(stats.reference_count, 1);
+    }
+
+    #[test]
+    fn init_repairs_stale_unicode_external_reference_dedupe_keys() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE external_indexes (
+  id TEXT PRIMARY KEY NOT NULL,
+  source_kind TEXT NOT NULL,
+  producer TEXT NOT NULL,
+  language TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  artifact_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  diagnostics_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE external_symbols (
+  id TEXT PRIMARY KEY NOT NULL,
+  external_index_id TEXT NOT NULL,
+  external_symbol TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  language TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  file_path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  start_byte INTEGER,
+  end_byte INTEGER,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(external_index_id) REFERENCES external_indexes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE external_references (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  external_index_id TEXT NOT NULL,
+  from_external_symbol_id TEXT,
+  to_external_symbol_id TEXT,
+  relationship TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  column INTEGER,
+  end_line INTEGER,
+  end_column INTEGER,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  provenance TEXT NOT NULL,
+  dedupe_key TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER,
+  FOREIGN KEY(external_index_id) REFERENCES external_indexes(id) ON DELETE CASCADE,
+  FOREIGN KEY(from_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL,
+  FOREIGN KEY(to_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX idx_external_references_index_dedupe
+  ON external_references(external_index_id, dedupe_key);
+
+INSERT INTO external_indexes (
+  id, source_kind, producer, language, root_path, artifact_path, artifact_hash, status
+)
+VALUES (
+  'idx-rust-analyzer', 'lsp', 'rust-analyzer', 'rust', '/repo',
+  '/repo/.cache/ra.json', 'sha256:abc', 'ready'
+);
+
+INSERT INTO external_symbols (
+  id, external_index_id, external_symbol, display_name, language, kind,
+  file_path, start_line, end_line, start_byte, end_byte, metadata_json
+)
+VALUES (
+  'ext:téarget', 'idx-rust-analyzer', 'crate::téarget', 'téarget', 'rust', 'function',
+  'src/lib.rs', 1, 3, 0, 20, '{}'
+);
+
+INSERT INTO external_references (
+  external_index_id, from_external_symbol_id, to_external_symbol_id, relationship,
+  file_path, line, column, end_line, end_column, confidence, provenance, dedupe_key, metadata_json
+)
+VALUES (
+  'idx-rust-analyzer', NULL, 'ext:téarget', 'reference',
+  'src/é_main.rs', 42, NULL, 42, 13, 0.5, 'old-import',
+  'n;s10:ext:téarget;s9:reference;s13:src/é_main.rs;u42;n;u42;u13;',
+  '{"pass":1}'
 );
 "#,
         )

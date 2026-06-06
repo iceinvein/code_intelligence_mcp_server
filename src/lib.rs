@@ -10,6 +10,7 @@ pub mod classify;
 pub mod cli;
 pub mod config;
 pub mod embeddings;
+pub mod external_index;
 pub mod graph;
 pub mod handlers;
 pub mod indexer;

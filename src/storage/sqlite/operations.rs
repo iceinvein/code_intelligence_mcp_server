@@ -102,6 +102,9 @@ impl SqliteStore {
             migrate_add_search_runs_timing_columns(&conn).with_context(|| {
                 "Failed to run migration: migrate_add_search_runs_timing_columns"
             })?;
+            migrate_external_reference_dedupe_columns(&conn).with_context(|| {
+                "Failed to run migration: migrate_external_reference_dedupe_columns"
+            })?;
         }
         Ok(())
     }
@@ -196,6 +199,135 @@ fn migrate_add_search_runs_timing_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_external_reference_dedupe_columns(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "external_references")? {
+        return Ok(());
+    }
+
+    if !column_exists(conn, "external_references", "dedupe_key")? {
+        conn.execute(
+            "ALTER TABLE external_references ADD COLUMN dedupe_key TEXT",
+            [],
+        )
+        .context("Failed to add external_references.dedupe_key")?;
+    }
+    if !column_exists(conn, "external_references", "updated_at")? {
+        conn.execute(
+            "ALTER TABLE external_references ADD COLUMN updated_at INTEGER",
+            [],
+        )
+        .context("Failed to add external_references.updated_at")?;
+    }
+
+    conn.execute_batch(
+        r#"
+UPDATE external_references
+SET
+  dedupe_key =
+    CASE
+      WHEN from_external_symbol_id IS NULL THEN 'n;'
+      ELSE 's' || length(from_external_symbol_id) || ':' || from_external_symbol_id || ';'
+    END ||
+    CASE
+      WHEN to_external_symbol_id IS NULL THEN 'n;'
+      ELSE 's' || length(to_external_symbol_id) || ':' || to_external_symbol_id || ';'
+    END ||
+    's' || length(relationship) || ':' || relationship || ';' ||
+    's' || length(file_path) || ':' || file_path || ';' ||
+    'u' || line || ';' ||
+    CASE
+      WHEN column IS NULL THEN 'n;'
+      ELSE 'u' || column || ';'
+    END ||
+    CASE
+      WHEN end_line IS NULL THEN 'n;'
+      ELSE 'u' || end_line || ';'
+    END ||
+    CASE
+      WHEN end_column IS NULL THEN 'n;'
+      ELSE 'u' || end_column || ';'
+    END
+WHERE dedupe_key IS NULL OR dedupe_key = '';
+
+UPDATE external_references
+SET updated_at = COALESCE(updated_at, created_at, unixepoch())
+WHERE updated_at IS NULL;
+
+UPDATE external_references
+SET
+  confidence = (
+    SELECT MAX(dupe.confidence)
+    FROM external_references dupe
+    WHERE dupe.external_index_id = external_references.external_index_id
+      AND dupe.dedupe_key = external_references.dedupe_key
+  ),
+  provenance = (
+    SELECT dupe.provenance
+    FROM external_references dupe
+    WHERE dupe.external_index_id = external_references.external_index_id
+      AND dupe.dedupe_key = external_references.dedupe_key
+    ORDER BY dupe.id DESC
+    LIMIT 1
+  ),
+  metadata_json = (
+    SELECT dupe.metadata_json
+    FROM external_references dupe
+    WHERE dupe.external_index_id = external_references.external_index_id
+      AND dupe.dedupe_key = external_references.dedupe_key
+    ORDER BY dupe.id DESC
+    LIMIT 1
+  ),
+  updated_at = unixepoch()
+WHERE id IN (
+  SELECT MIN(id)
+  FROM external_references
+  GROUP BY external_index_id, dedupe_key
+);
+
+DELETE FROM external_references
+WHERE id NOT IN (
+  SELECT MIN(id)
+  FROM external_references
+  GROUP BY external_index_id, dedupe_key
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_external_references_index_dedupe
+  ON external_references(external_index_id, dedupe_key);
+"#,
+    )
+    .context("Failed to backfill external_references dedupe keys")?;
+
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, table_name: &str) -> Result<bool> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table_name],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("Failed to check sqlite table existence: table={table_name}"))?;
+    Ok(count > 0)
+}
+
+fn column_exists(conn: &Connection, table_name: &str, column_name: &str) -> Result<bool> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table_name})"))
+        .with_context(|| format!("Failed to prepare PRAGMA table_info({table_name})"))?;
+    let mut rows = stmt
+        .query([])
+        .with_context(|| format!("Failed to query PRAGMA table_info({table_name})"))?;
+
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod concurrency_tests {
     use super::super::queries::external::{
@@ -203,6 +335,7 @@ mod concurrency_tests {
     };
     use super::super::SymbolRow;
     use super::SqliteStore;
+    use rusqlite::Connection;
     use std::sync::Arc;
     use std::thread;
 
@@ -311,5 +444,163 @@ mod concurrency_tests {
         assert_eq!(stats.symbol_count, 0);
         assert_eq!(stats.reference_count, 0);
         assert_eq!(stats.mapping_count, 0);
+    }
+
+    #[test]
+    fn init_migrates_old_external_references_table_for_dedupe_upserts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE external_indexes (
+  id TEXT PRIMARY KEY NOT NULL,
+  source_kind TEXT NOT NULL,
+  producer TEXT NOT NULL,
+  language TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  artifact_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  diagnostics_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE external_symbols (
+  id TEXT PRIMARY KEY NOT NULL,
+  external_index_id TEXT NOT NULL,
+  external_symbol TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  language TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  file_path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  start_byte INTEGER,
+  end_byte INTEGER,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(external_index_id) REFERENCES external_indexes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE external_references (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  external_index_id TEXT NOT NULL,
+  from_external_symbol_id TEXT,
+  to_external_symbol_id TEXT,
+  relationship TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  column INTEGER,
+  end_line INTEGER,
+  end_column INTEGER,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  provenance TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  FOREIGN KEY(external_index_id) REFERENCES external_indexes(id) ON DELETE CASCADE,
+  FOREIGN KEY(from_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL,
+  FOREIGN KEY(to_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL
+);
+
+INSERT INTO external_indexes (
+  id, source_kind, producer, language, root_path, artifact_path, artifact_hash, status
+)
+VALUES (
+  'idx-rust-analyzer', 'lsp', 'rust-analyzer', 'rust', '/repo',
+  '/repo/.cache/ra.json', 'sha256:abc', 'ready'
+);
+
+INSERT INTO external_symbols (
+  id, external_index_id, external_symbol, display_name, language, kind,
+  file_path, start_line, end_line, start_byte, end_byte, metadata_json
+)
+VALUES (
+  'ext:target', 'idx-rust-analyzer', 'crate::target', 'target', 'rust', 'function',
+  'src/lib.rs', 1, 3, 0, 20, '{}'
+);
+
+INSERT INTO external_references (
+  external_index_id, from_external_symbol_id, to_external_symbol_id, relationship,
+  file_path, line, column, end_line, end_column, confidence, provenance, metadata_json
+)
+VALUES (
+  'idx-rust-analyzer', NULL, 'ext:target', 'reference',
+  'src/main.rs', 42, NULL, 42, 13, 0.5, 'old-import', '{"pass":1}'
+);
+"#,
+        )
+        .unwrap();
+
+        let store = SqliteStore::from_connection(conn);
+        store.init().unwrap();
+        store.upsert_symbol(&sym("s1")).unwrap();
+        store
+            .upsert_external_index(&ExternalIndexInsert {
+                id: "idx-rust-analyzer",
+                source_kind: "lsp",
+                producer: "rust-analyzer",
+                language: "rust",
+                root_path: "/repo",
+                artifact_path: "/repo/.cache/ra.json",
+                artifact_hash: "sha256:abc",
+                status: "ready",
+                diagnostics_json: "{}",
+            })
+            .unwrap();
+        store
+            .upsert_external_symbol(&ExternalSymbolInsert {
+                id: "ext:target",
+                external_index_id: "idx-rust-analyzer",
+                external_symbol: "crate::target",
+                display_name: "target",
+                language: "rust",
+                kind: "function",
+                file_path: Some("src/lib.rs"),
+                start_line: Some(1),
+                end_line: Some(3),
+                start_byte: Some(0),
+                end_byte: Some(20),
+                metadata_json: "{}",
+            })
+            .unwrap();
+        store
+            .upsert_symbol_mapping(&SymbolMappingInsert {
+                external_symbol_id: "ext:target",
+                internal_symbol_id: "s1",
+                mapping_kind: "exact",
+                confidence: 0.99,
+            })
+            .unwrap();
+
+        store
+            .upsert_external_reference(&ExternalReferenceInsert {
+                external_index_id: "idx-rust-analyzer",
+                from_external_symbol_id: None,
+                to_external_symbol_id: Some("ext:target"),
+                relationship: "reference",
+                file_path: "src/main.rs",
+                line: 42,
+                column: None,
+                end_line: Some(42),
+                end_column: Some(13),
+                confidence: 0.9,
+                provenance: "rust-analyzer",
+                metadata_json: "{}",
+            })
+            .unwrap();
+
+        let stats = store.external_index_stats("idx-rust-analyzer").unwrap();
+        assert_eq!(stats.reference_count, 1);
+
+        let refs = store
+            .list_external_references_to_internal_symbol("s1", Some("reference"), 10)
+            .unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].confidence, 0.9);
+        assert_eq!(refs[0].provenance, "rust-analyzer");
+        assert_eq!(refs[0].metadata_json, "{}");
     }
 }

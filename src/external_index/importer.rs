@@ -4,7 +4,9 @@ use anyhow::{bail, Context, Result};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
 
-use crate::external_index::artifact::{read_normalized_artifact, NormalizedExternalSymbol};
+use crate::external_index::artifact::{
+    parse_normalized_artifact_from_slice, NormalizedExternalSymbol,
+};
 use crate::storage::sqlite::queries::external::{
     self, ExternalIndexInsert, ExternalReferenceInsert, ExternalSymbolInsert, SymbolMappingInsert,
 };
@@ -33,7 +35,7 @@ pub fn import_external_index(
     let artifact_hash = sha256_hex(&artifact_bytes);
     let index_hash = first_16(&artifact_hash);
     let index_id = format!("external:{index_hash}");
-    let artifact = read_normalized_artifact(artifact_path)?;
+    let artifact = parse_normalized_artifact_from_slice(&artifact_bytes, artifact_path)?;
     let artifact_path_display = artifact_path.to_string_lossy();
     let root_path = if repo_root.is_empty() {
         Cow::Borrowed(artifact.root_path.as_str())

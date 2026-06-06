@@ -235,6 +235,86 @@ fn reimporting_same_artifact_is_idempotent() {
     assert_eq!(second_stats.mapping_count, 2);
 }
 
+#[test]
+fn reimport_removes_stale_mapping_when_symbol_becomes_unmapped() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+
+    let artifact_path = Path::new("tests/fixtures/external_index/typescript-normalized.json");
+    let first =
+        import_external_index(&store, "/fixture/repo", artifact_path).expect("first import");
+    assert_eq!(first.symbols_mapped, 2);
+    assert_eq!(
+        mapping_count_for_external_symbol(&store, &first.index_id, "local src/app.ts target()."),
+        1
+    );
+
+    insert_symbol_with_kind(
+        &store,
+        "target_internal",
+        "src/app.ts",
+        "target",
+        "class",
+        20,
+        22,
+    );
+
+    let second =
+        import_external_index(&store, "/fixture/repo", artifact_path).expect("second import");
+
+    assert_eq!(second.symbols_mapped, 1);
+    assert_eq!(second.symbols_unmapped, 1);
+    assert_eq!(
+        mapping_count_for_external_symbol(&store, &second.index_id, "local src/app.ts target()."),
+        0
+    );
+    let stats = store
+        .external_index_stats(&second.index_id)
+        .expect("external stats");
+    assert_eq!(stats.mapping_count, 1);
+}
+
+#[test]
+fn leaves_duplicate_exact_range_candidates_unmapped() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "first_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "second_internal", "src/app.ts", "target", 1, 3);
+
+    let artifact = r#"{
+      "source_kind": "normalized_json",
+      "producer": "manual-fixture",
+      "language": "typescript",
+      "root_path": "/fixture/repo",
+      "symbols": [
+        {
+          "external_symbol": "local src/app.ts target().",
+          "display_name": "target",
+          "kind": "function",
+          "file_path": "src/app.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "start_byte": 0,
+          "end_byte": 42
+        }
+      ],
+      "references": []
+    }"#;
+    let artifact_path = write_artifact(artifact);
+
+    let report =
+        import_external_index(&store, "/fixture/repo", artifact_path.path()).expect("import");
+
+    assert_eq!(report.symbols_mapped, 0);
+    assert_eq!(report.symbols_unmapped, 1);
+    assert_eq!(
+        mapping_count_for_external_symbol(&store, &report.index_id, "local src/app.ts target()."),
+        0
+    );
+}
+
 fn insert_symbol(
     store: &SqliteStore,
     id: &str,
@@ -243,12 +323,24 @@ fn insert_symbol(
     start_line: u32,
     end_line: u32,
 ) {
+    insert_symbol_with_kind(store, id, file_path, name, "function", start_line, end_line);
+}
+
+fn insert_symbol_with_kind(
+    store: &SqliteStore,
+    id: &str,
+    file_path: &str,
+    name: &str,
+    kind: &str,
+    start_line: u32,
+    end_line: u32,
+) {
     store
         .upsert_symbol(&SymbolRow {
             id: id.to_string(),
             file_path: file_path.to_string(),
             language: "typescript".to_string(),
-            kind: "function".to_string(),
+            kind: kind.to_string(),
             name: name.to_string(),
             exported: false,
             start_byte: 0,
@@ -258,6 +350,25 @@ fn insert_symbol(
             text: format!("function {name}() {{}}"),
         })
         .expect("insert symbol");
+}
+
+fn mapping_count_for_external_symbol(
+    store: &SqliteStore,
+    external_index_id: &str,
+    external_symbol: &str,
+) -> i64 {
+    let conn = store.read().expect("read sqlite");
+    conn.query_row(
+        r#"
+SELECT COUNT(*)
+FROM symbol_mappings sm
+JOIN external_symbols es ON es.id = sm.external_symbol_id
+WHERE es.external_index_id = ?1 AND es.external_symbol = ?2
+"#,
+        [external_index_id, external_symbol],
+        |row| row.get(0),
+    )
+    .expect("mapping count")
 }
 
 fn write_artifact(contents: &str) -> tempfile::NamedTempFile {

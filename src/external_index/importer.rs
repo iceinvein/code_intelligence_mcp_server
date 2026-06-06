@@ -1,6 +1,7 @@
 use std::{borrow::Cow, collections::HashMap, fs, path::Path};
 
 use anyhow::{bail, Context, Result};
+use rusqlite::params;
 use sha2::{Digest, Sha256};
 
 use crate::external_index::artifact::{read_normalized_artifact, NormalizedExternalSymbol};
@@ -140,6 +141,19 @@ pub fn import_external_index(
                 diagnostics_json: "{}",
             },
         )?;
+
+        tx.execute(
+            r#"
+DELETE FROM symbol_mappings
+WHERE external_symbol_id IN (
+  SELECT id FROM external_symbols WHERE external_index_id = ?1
+)
+"#,
+            params![&index_id],
+        )
+        .with_context(|| {
+            format!("Failed to clear stale external symbol mappings: index_id={index_id}")
+        })?;
 
         for symbol in &prepared_symbols {
             external::upsert_external_symbol(
@@ -299,11 +313,18 @@ fn find_internal_symbol_mapping(
 
     let candidates =
         store.search_symbols_by_exact_name(&external_symbol.display_name, Some(file_path), 50)?;
-    if let Some(exact) = candidates
+
+    let exact_candidates = candidates
         .iter()
-        .find(|candidate| exact_range(candidate, external_symbol))
-    {
-        return Ok(Some((exact.id.clone(), "exact_range", 1.0)));
+        .filter(|candidate| {
+            exact_range(candidate, external_symbol) && compatible_kind(candidate, external_symbol)
+        })
+        .collect::<Vec<_>>();
+    if exact_candidates.len() == 1 {
+        return Ok(Some((exact_candidates[0].id.clone(), "exact_range", 1.0)));
+    }
+    if exact_candidates.len() > 1 {
+        return Ok(None);
     }
 
     let compatible_candidates = candidates

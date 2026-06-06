@@ -144,13 +144,20 @@ pub fn upsert_external_reference(
     conn: &Connection,
     reference: &ExternalReferenceInsert<'_>,
 ) -> Result<i64> {
+    let dedupe_key = external_reference_dedupe_key(reference);
     conn.execute(
         r#"
 INSERT INTO external_references (
   external_index_id, from_external_symbol_id, to_external_symbol_id, relationship,
-  file_path, line, column, end_line, end_column, confidence, provenance, metadata_json
+  file_path, line, column, end_line, end_column, confidence, provenance, dedupe_key, metadata_json,
+  updated_at
 )
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, unixepoch())
+ON CONFLICT(external_index_id, dedupe_key) DO UPDATE SET
+  confidence=MAX(external_references.confidence, excluded.confidence),
+  provenance=excluded.provenance,
+  metadata_json=excluded.metadata_json,
+  updated_at=unixepoch()
 "#,
         params![
             reference.external_index_id,
@@ -164,6 +171,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             reference.end_column.map(i64::from),
             reference.confidence,
             reference.provenance,
+            dedupe_key,
             reference.metadata_json,
         ],
     )
@@ -173,7 +181,19 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             reference.external_index_id, reference.relationship, reference.file_path, reference.line
         )
     })?;
-    Ok(conn.last_insert_rowid())
+    let id = conn
+        .query_row(
+            "SELECT id FROM external_references WHERE external_index_id = ?1 AND dedupe_key = ?2",
+            params![reference.external_index_id, dedupe_key],
+            |row| row.get(0),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to read upserted external reference id: index_id={}, dedupe_key={}",
+                reference.external_index_id, dedupe_key
+            )
+        })?;
+    Ok(id)
 }
 
 pub fn upsert_symbol_mapping(conn: &Connection, mapping: &SymbolMappingInsert<'_>) -> Result<()> {
@@ -385,6 +405,47 @@ fn u32_from_i64(value: i64) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("Invalid u32 value from sqlite: {value}"))
 }
 
+fn external_reference_dedupe_key(reference: &ExternalReferenceInsert<'_>) -> String {
+    let mut key = String::new();
+    push_opt_str_key(&mut key, reference.from_external_symbol_id);
+    push_opt_str_key(&mut key, reference.to_external_symbol_id);
+    push_str_key(&mut key, reference.relationship);
+    push_str_key(&mut key, reference.file_path);
+    push_u32_key(&mut key, reference.line);
+    push_opt_u32_key(&mut key, reference.column);
+    push_opt_u32_key(&mut key, reference.end_line);
+    push_opt_u32_key(&mut key, reference.end_column);
+    key
+}
+
+fn push_str_key(key: &mut String, value: &str) {
+    key.push('s');
+    key.push_str(&value.len().to_string());
+    key.push(':');
+    key.push_str(value);
+    key.push(';');
+}
+
+fn push_opt_str_key(key: &mut String, value: Option<&str>) {
+    match value {
+        Some(value) => push_str_key(key, value),
+        None => key.push_str("n;"),
+    }
+}
+
+fn push_u32_key(key: &mut String, value: u32) {
+    key.push('u');
+    key.push_str(&value.to_string());
+    key.push(';');
+}
+
+fn push_opt_u32_key(key: &mut String, value: Option<u32>) {
+    match value {
+        Some(value) => push_u32_key(key, value),
+        None => key.push_str("n;"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
@@ -583,5 +644,109 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         assert_eq!(stats.symbol_count, 1);
         assert_eq!(stats.reference_count, 1);
         assert_eq!(stats.mapping_count, 1);
+    }
+
+    #[test]
+    fn upserting_same_external_reference_deduplicates_and_updates_metadata() {
+        let conn = setup_test_db();
+        insert_test_symbol(&conn, "sym-internal-target");
+
+        upsert_external_index(
+            &conn,
+            &ExternalIndexInsert {
+                id: "idx-rust-analyzer",
+                source_kind: "lsp",
+                producer: "rust-analyzer",
+                language: "rust",
+                root_path: "/repo",
+                artifact_path: "/repo/.cache/ra.json",
+                artifact_hash: "sha256:abc",
+                status: "ready",
+                diagnostics_json: "{}",
+            },
+        )
+        .unwrap();
+        upsert_external_symbol(
+            &conn,
+            &ExternalSymbolInsert {
+                id: "ext:target",
+                external_index_id: "idx-rust-analyzer",
+                external_symbol: "crate::target",
+                display_name: "target",
+                language: "rust",
+                kind: "function",
+                file_path: Some("src/lib.rs"),
+                start_line: Some(1),
+                end_line: Some(5),
+                start_byte: Some(0),
+                end_byte: Some(64),
+                metadata_json: "{}",
+            },
+        )
+        .unwrap();
+        upsert_symbol_mapping(
+            &conn,
+            &SymbolMappingInsert {
+                external_symbol_id: "ext:target",
+                internal_symbol_id: "sym-internal-target",
+                mapping_kind: "exact",
+                confidence: 0.99,
+            },
+        )
+        .unwrap();
+
+        let first_id = upsert_external_reference(
+            &conn,
+            &ExternalReferenceInsert {
+                external_index_id: "idx-rust-analyzer",
+                from_external_symbol_id: None,
+                to_external_symbol_id: Some("ext:target"),
+                relationship: "reference",
+                file_path: "src/main.rs",
+                line: 42,
+                column: None,
+                end_line: Some(42),
+                end_column: Some(13),
+                confidence: 0.5,
+                provenance: "first-import",
+                metadata_json: r#"{"pass":1}"#,
+            },
+        )
+        .unwrap();
+        let second_id = upsert_external_reference(
+            &conn,
+            &ExternalReferenceInsert {
+                external_index_id: "idx-rust-analyzer",
+                from_external_symbol_id: None,
+                to_external_symbol_id: Some("ext:target"),
+                relationship: "reference",
+                file_path: "src/main.rs",
+                line: 42,
+                column: None,
+                end_line: Some(42),
+                end_column: Some(13),
+                confidence: 0.9,
+                provenance: "second-import",
+                metadata_json: r#"{"pass":2}"#,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first_id, second_id);
+
+        let references = list_external_references_to_internal_symbol(
+            &conn,
+            "sym-internal-target",
+            Some("reference"),
+            10,
+        )
+        .unwrap();
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].confidence, 0.9);
+        assert_eq!(references[0].provenance, "second-import");
+        assert_eq!(references[0].metadata_json, r#"{"pass":2}"#);
+
+        let stats = external_index_stats(&conn, "idx-rust-analyzer").unwrap();
+        assert_eq!(stats.reference_count, 1);
     }
 }

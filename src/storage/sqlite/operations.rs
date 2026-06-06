@@ -111,6 +111,7 @@ impl SqliteStore {
             .execute_batch(
                 r#"
 DELETE FROM cross_repo_edges;
+DELETE FROM external_indexes;
 DELETE FROM edges;
 DELETE FROM edge_evidence;
 DELETE FROM symbols;
@@ -197,6 +198,9 @@ fn migrate_add_search_runs_timing_columns(conn: &Connection) -> Result<()> {
 
 #[cfg(test)]
 mod concurrency_tests {
+    use super::super::queries::external::{
+        ExternalIndexInsert, ExternalReferenceInsert, ExternalSymbolInsert, SymbolMappingInsert,
+    };
     use super::super::SymbolRow;
     use super::SqliteStore;
     use std::sync::Arc;
@@ -240,5 +244,72 @@ mod concurrency_tests {
             h.join()
                 .expect("worker thread panicked (RefCell double-borrow under concurrent reads)");
         }
+    }
+
+    #[test]
+    fn clear_all_removes_external_index_data() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+        store.upsert_symbol(&sym("s1")).unwrap();
+        store
+            .upsert_external_index(&ExternalIndexInsert {
+                id: "idx-rust-analyzer",
+                source_kind: "lsp",
+                producer: "rust-analyzer",
+                language: "rust",
+                root_path: "/repo",
+                artifact_path: "/repo/.cache/ra.json",
+                artifact_hash: "sha256:abc",
+                status: "ready",
+                diagnostics_json: "{}",
+            })
+            .unwrap();
+        store
+            .upsert_external_symbol(&ExternalSymbolInsert {
+                id: "ext:target",
+                external_index_id: "idx-rust-analyzer",
+                external_symbol: "crate::target",
+                display_name: "target",
+                language: "rust",
+                kind: "function",
+                file_path: Some("src/lib.rs"),
+                start_line: Some(1),
+                end_line: Some(3),
+                start_byte: Some(0),
+                end_byte: Some(20),
+                metadata_json: "{}",
+            })
+            .unwrap();
+        store
+            .upsert_symbol_mapping(&SymbolMappingInsert {
+                external_symbol_id: "ext:target",
+                internal_symbol_id: "s1",
+                mapping_kind: "exact",
+                confidence: 0.99,
+            })
+            .unwrap();
+        store
+            .upsert_external_reference(&ExternalReferenceInsert {
+                external_index_id: "idx-rust-analyzer",
+                from_external_symbol_id: None,
+                to_external_symbol_id: Some("ext:target"),
+                relationship: "reference",
+                file_path: "src/main.rs",
+                line: 42,
+                column: Some(7),
+                end_line: Some(42),
+                end_column: Some(13),
+                confidence: 0.9,
+                provenance: "rust-analyzer",
+                metadata_json: "{}",
+            })
+            .unwrap();
+
+        store.clear_all().unwrap();
+
+        let stats = store.external_index_stats("idx-rust-analyzer").unwrap();
+        assert_eq!(stats.symbol_count, 0);
+        assert_eq!(stats.reference_count, 0);
+        assert_eq!(stats.mapping_count, 0);
     }
 }

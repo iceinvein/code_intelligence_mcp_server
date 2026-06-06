@@ -476,8 +476,11 @@ CREATE TABLE IF NOT EXISTS external_references (
   end_column INTEGER,
   confidence REAL NOT NULL DEFAULT 1.0,
   provenance TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
   metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(external_index_id, dedupe_key),
   FOREIGN KEY(external_index_id) REFERENCES external_indexes(id) ON DELETE CASCADE,
   FOREIGN KEY(from_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL,
   FOREIGN KEY(to_external_symbol_id) REFERENCES external_symbols(id) ON DELETE SET NULL

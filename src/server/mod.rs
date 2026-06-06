@@ -155,6 +155,8 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
     vec![
         SearchCodeTool::tool(),
         RefreshIndexTool::tool(),
+        ImportExternalIndexTool::tool(),
+        GenerateExternalIndexTool::tool(),
         GetDefinitionTool::tool(),
         FindReferencesTool::tool(),
         GetFileSymbolsTool::tool(),
@@ -269,6 +271,16 @@ pub async fn dispatch_tool_call(
         }),
 
         // --- Sync handlers ---
+        "import_external_index" => {
+            dispatch_sync!(params, ImportExternalIndexTool, |tool| {
+                handle_import_external_index(state, tool)
+            })
+        }
+        "generate_external_index" => {
+            dispatch_sync!(params, GenerateExternalIndexTool, |tool| {
+                handle_generate_external_index(state, tool)
+            })
+        }
         "get_file_symbols" => {
             dispatch_sync!(params, GetFileSymbolsTool, |tool| handle_get_file_symbols(
                 state, tool
@@ -665,6 +677,26 @@ mod tests {
         assert!(
             names.contains(&"approve_indexing"),
             "approve_indexing must be advertised in all_tools()"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_import_external_index() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"import_external_index"),
+            "all_tools() must include 'import_external_index', but only found: {names:?}"
+        );
+    }
+
+    #[test]
+    fn all_tools_contains_generate_external_index() {
+        let tools = all_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"generate_external_index"),
+            "all_tools() must include 'generate_external_index', but only found: {names:?}"
         );
     }
 

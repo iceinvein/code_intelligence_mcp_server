@@ -46,7 +46,10 @@ pub use graph::{
     handle_explore_dependency_graph, handle_get_call_hierarchy, handle_get_similarity_cluster,
     handle_get_type_graph, handle_trace_data_flow,
 };
-pub use index::{handle_get_index_stats, handle_refresh_index};
+pub use index::{
+    handle_generate_external_index, handle_get_index_stats, handle_import_external_index,
+    handle_refresh_index,
+};
 pub use investigation::handle_investigate;
 pub use learning::{handle_report_file_access, handle_report_selection};
 pub use navigation::{

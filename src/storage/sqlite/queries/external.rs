@@ -59,6 +59,14 @@ pub struct ExternalIndexStats {
     pub mapping_count: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalOverlayStats {
+    pub index_count: u64,
+    pub symbol_count: u64,
+    pub reference_count: u64,
+    pub mapped_symbol_count: u64,
+}
+
 pub fn upsert_external_index(conn: &Connection, index: &ExternalIndexInsert<'_>) -> Result<()> {
     conn.execute(
         r#"
@@ -346,6 +354,36 @@ WHERE es.external_index_id = ?1
     })
 }
 
+pub fn external_overlay_stats(conn: &Connection) -> Result<ExternalOverlayStats> {
+    let index_count = count_all(
+        conn,
+        "SELECT COUNT(*) FROM external_indexes",
+        "external indexes",
+    )?;
+    let symbol_count = count_all(
+        conn,
+        "SELECT COUNT(*) FROM external_symbols",
+        "external symbols",
+    )?;
+    let reference_count = count_all(
+        conn,
+        "SELECT COUNT(*) FROM external_references",
+        "external references",
+    )?;
+    let mapped_symbol_count = count_all(
+        conn,
+        "SELECT COUNT(*) FROM symbol_mappings",
+        "external symbol mappings",
+    )?;
+
+    Ok(ExternalOverlayStats {
+        index_count,
+        symbol_count,
+        reference_count,
+        mapped_symbol_count,
+    })
+}
+
 fn count_for_index(
     conn: &Connection,
     sql: &str,
@@ -357,6 +395,13 @@ fn count_for_index(
         .with_context(|| {
             format!("Failed to count {label} for external index: index_id={external_index_id}")
         })?;
+    Ok(count.max(0) as u64)
+}
+
+fn count_all(conn: &Connection, sql: &str, label: &str) -> Result<u64> {
+    let count: i64 = conn
+        .query_row(sql, [], |row| row.get(0))
+        .with_context(|| format!("Failed to count {label}"))?;
     Ok(count.max(0) as u64)
 }
 
@@ -644,6 +689,12 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         assert_eq!(stats.symbol_count, 1);
         assert_eq!(stats.reference_count, 1);
         assert_eq!(stats.mapping_count, 1);
+
+        let overlay_stats = external_overlay_stats(&conn).unwrap();
+        assert_eq!(overlay_stats.index_count, 1);
+        assert_eq!(overlay_stats.symbol_count, 1);
+        assert_eq!(overlay_stats.reference_count, 1);
+        assert_eq!(overlay_stats.mapped_symbol_count, 1);
     }
 
     #[test]

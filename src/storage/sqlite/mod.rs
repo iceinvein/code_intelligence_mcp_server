@@ -241,6 +241,11 @@ impl SqliteStore {
         queries::external::external_index_stats(&conn, external_index_id)
     }
 
+    pub fn external_overlay_stats(&self) -> Result<queries::external::ExternalOverlayStats> {
+        let conn = self.read()?;
+        queries::external::external_overlay_stats(&conn)
+    }
+
     pub fn count_descriptions(&self) -> Result<usize> {
         let conn = self.read()?;
         queries::descriptions::count_descriptions(&conn)

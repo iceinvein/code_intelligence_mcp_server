@@ -1,7 +1,7 @@
 //! Indexing-related handlers: refresh_index, get_index_stats
 
 use super::AppState;
-use crate::path::{PathError, Utf8PathBuf};
+use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
 use crate::tools::*;
 use serde_json::json;
 
@@ -10,7 +10,7 @@ pub async fn handle_refresh_index(
     state: &AppState,
     tool: RefreshIndexTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let normalizer = crate::path::PathNormalizer::new(state.config.base_dir.clone());
+    let normalizer = PathNormalizer::new(state.config.base_dir.clone());
 
     let stats = if let Some(files) = tool.files {
         let paths = files
@@ -46,6 +46,42 @@ pub async fn handle_refresh_index(
     }))
 }
 
+/// Handle import_external_index tool
+pub fn handle_import_external_index(
+    state: &AppState,
+    tool: ImportExternalIndexTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let artifact = resolve_external_index_artifact_path(state, &tool.artifact_path)?;
+    let report = crate::external_index::importer::import_external_index(
+        &state.sqlite,
+        state.config.base_dir.as_str(),
+        artifact.as_std_path(),
+    )?;
+
+    Ok(json!({
+        "ok": true,
+        "index_id": report.index_id,
+        "symbols_imported": report.symbols_imported,
+        "references_imported": report.references_imported,
+        "symbols_mapped": report.symbols_mapped,
+        "symbols_unmapped": report.symbols_unmapped,
+    }))
+}
+
+/// Handle generate_external_index tool
+pub fn handle_generate_external_index(
+    _state: &AppState,
+    tool: GenerateExternalIndexTool,
+) -> Result<serde_json::Value, anyhow::Error> {
+    Ok(json!({
+        "ok": false,
+        "status": "unsupported",
+        "producer": tool.producer,
+        "language": tool.language,
+        "message": "External index producer generation is not implemented yet. Use import_external_index with a normalized local artifact.",
+    }))
+}
+
 /// Handle get_index_stats tool
 pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, anyhow::Error> {
     let sqlite = &state.sqlite;
@@ -57,6 +93,7 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
     let last_updated = sqlite.most_recent_symbol_update()?;
     let latest_index_run = sqlite.latest_index_run()?;
     let latest_search_run = sqlite.latest_search_run()?;
+    let external = sqlite.external_overlay_stats()?;
 
     Ok(json!({
         "base_dir": state.config.base_dir,
@@ -67,5 +104,31 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
         "last_updated_unix_s": last_updated,
         "latest_index_run": latest_index_run,
         "latest_search_run": latest_search_run,
+        "external_indexes": {
+            "index_count": external.index_count,
+            "symbol_count": external.symbol_count,
+            "reference_count": external.reference_count,
+            "mapped_symbol_count": external.mapped_symbol_count,
+        },
     }))
+}
+
+fn resolve_external_index_artifact_path(
+    state: &AppState,
+    artifact_path: &str,
+) -> Result<Utf8PathBuf, anyhow::Error> {
+    let normalizer = PathNormalizer::new(state.config.base_dir.clone());
+    let path_buf = std::path::PathBuf::from(artifact_path);
+    let utf8_path = Utf8PathBuf::from_path_buf(path_buf.clone())
+        .map_err(|_| PathError::NonUtf8 { path: path_buf })?;
+
+    let candidate = if utf8_path.is_absolute() {
+        utf8_path
+    } else {
+        normalizer.join_base(utf8_path.as_str())
+    };
+
+    normalizer
+        .canonicalize_within_base(&candidate)
+        .map_err(anyhow::Error::from)
 }

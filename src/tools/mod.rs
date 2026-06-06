@@ -26,6 +26,25 @@ pub struct RefreshIndexTool {
 }
 
 #[macros::mcp_tool(
+    name = "import_external_index",
+    description = "Import a normalized external code index artifact and merge its precise symbols/references into the provenance overlay. The artifact path must be local and within the bound repository."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct ImportExternalIndexTool {
+    pub artifact_path: String,
+}
+
+#[macros::mcp_tool(
+    name = "generate_external_index",
+    description = "Run an explicitly configured external index producer for the bound repository, then import the generated artifact. This is opt-in and never runs automatically unless external index auto generation is enabled."
+)]
+#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
+pub struct GenerateExternalIndexTool {
+    pub producer: Option<String>,
+    pub language: Option<String>,
+}
+
+#[macros::mcp_tool(
     name = "get_definition",
     description = "Get definition context for a specific symbol name. This low-level lookup does not return source bodies for a full natural-language investigation. For natural-language questions, flows, callsite enumeration, or anything that needs grounded synthesis, prefer ask_code or investigate because they return evidence bodies and pack.rows in one response. Use this only when you already know the exact symbol and need its definition metadata; use hydrate_symbols if bodies are needed."
 )]

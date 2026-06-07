@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use code_intelligence_mcp_server::external_index::importer::import_external_index;
-use code_intelligence_mcp_server::storage::sqlite::{SqliteStore, SymbolRow};
+use code_intelligence_mcp_server::external_index::provider::{
+    merged_references_to_internal_symbol, ReferenceSource,
+};
+use code_intelligence_mcp_server::storage::sqlite::{EdgeRow, SqliteStore, SymbolRow};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -56,6 +59,156 @@ fn imports_normalized_artifact_and_maps_exact_range() {
         .expect("list references");
     assert_eq!(references.len(), 1);
     assert_eq!(references[0].file_path, "src/caller.ts");
+}
+
+#[test]
+fn merged_references_include_mapped_external_reference_provenance() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+
+    let report = import_external_index(
+        &store,
+        "/fixture/repo",
+        Path::new("tests/fixtures/external_index/typescript-normalized.json"),
+    )
+    .expect("import external index");
+
+    let references =
+        merged_references_to_internal_symbol(&store, "target_internal", Some("call"), 20)
+            .expect("merged references");
+
+    assert_eq!(references.len(), 1);
+    let reference = &references[0];
+    assert_eq!(reference.source, ReferenceSource::External);
+    assert_eq!(reference.to_symbol_id, "target_internal");
+    assert_eq!(reference.reference_type, "call");
+    assert_eq!(reference.at_file.as_deref(), Some("src/caller.ts"));
+    assert_eq!(reference.at_line, Some(2));
+    assert_eq!(reference.confidence, 1.0);
+    assert_eq!(
+        reference.external_index_id.as_deref(),
+        Some(report.index_id.as_str())
+    );
+    assert_eq!(reference.provenance.as_deref(), Some("fixture"));
+    assert_eq!(reference.metadata_json.as_deref(), Some("{}"));
+}
+
+#[test]
+fn merged_references_keep_native_fallback_when_external_refs_absent() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+    insert_edge(
+        &store,
+        "caller_internal",
+        "target_internal",
+        "call",
+        "src/caller.ts",
+        2,
+        0.75,
+    );
+
+    let references =
+        merged_references_to_internal_symbol(&store, "target_internal", Some("call"), 20)
+            .expect("merged references");
+
+    assert_eq!(references.len(), 1);
+    let reference = &references[0];
+    assert_eq!(reference.source, ReferenceSource::Native);
+    assert_eq!(reference.to_symbol_id, "target_internal");
+    assert_eq!(reference.from_symbol_id.as_deref(), Some("caller_internal"));
+    assert_eq!(reference.from_symbol_name.as_deref(), Some("caller"));
+    assert_eq!(reference.from_symbol_file.as_deref(), Some("src/caller.ts"));
+    assert_eq!(reference.reference_type, "call");
+    assert_eq!(reference.at_file.as_deref(), Some("src/caller.ts"));
+    assert_eq!(reference.at_line, Some(2));
+    assert_eq!(reference.confidence, 0.75);
+    assert!(reference.external_index_id.is_none());
+    assert!(reference.provenance.is_none());
+    assert!(reference.metadata_json.is_none());
+}
+
+#[test]
+fn merged_references_dedupe_prefers_external_on_same_location_and_type() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+    insert_edge(
+        &store,
+        "caller_internal",
+        "target_internal",
+        "call",
+        "src/caller.ts",
+        2,
+        1.0,
+    );
+    import_external_index(
+        &store,
+        "/fixture/repo",
+        Path::new("tests/fixtures/external_index/typescript-normalized.json"),
+    )
+    .expect("import external index");
+
+    let references =
+        merged_references_to_internal_symbol(&store, "target_internal", Some("call"), 20)
+            .expect("merged references");
+
+    assert_eq!(references.len(), 1);
+    assert_eq!(references[0].source, ReferenceSource::External);
+    assert_eq!(references[0].at_file.as_deref(), Some("src/caller.ts"));
+    assert_eq!(references[0].at_line, Some(2));
+    assert_eq!(references[0].reference_type, "call");
+}
+
+#[test]
+fn merged_references_filter_relationship_for_native_and_external_refs() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+    insert_edge(
+        &store,
+        "caller_internal",
+        "target_internal",
+        "import",
+        "src/caller.ts",
+        1,
+        0.8,
+    );
+    import_external_index(
+        &store,
+        "/fixture/repo",
+        Path::new("tests/fixtures/external_index/typescript-normalized.json"),
+    )
+    .expect("import external index");
+
+    let call_refs =
+        merged_references_to_internal_symbol(&store, "target_internal", Some("call"), 20)
+            .expect("call references");
+    assert_eq!(call_refs.len(), 1);
+    assert_eq!(call_refs[0].source, ReferenceSource::External);
+    assert_eq!(call_refs[0].reference_type, "call");
+
+    let import_refs =
+        merged_references_to_internal_symbol(&store, "target_internal", Some("import"), 20)
+            .expect("import references");
+    assert_eq!(import_refs.len(), 1);
+    assert_eq!(import_refs[0].source, ReferenceSource::Native);
+    assert_eq!(import_refs[0].reference_type, "import");
+
+    let all_refs = merged_references_to_internal_symbol(&store, "target_internal", Some("all"), 20)
+        .expect("all references");
+    assert_eq!(all_refs.len(), 2);
+    assert!(all_refs.iter().any(|reference| {
+        reference.source == ReferenceSource::External && reference.reference_type == "call"
+    }));
+    assert!(all_refs.iter().any(|reference| {
+        reference.source == ReferenceSource::Native && reference.reference_type == "import"
+    }));
 }
 
 #[test]
@@ -350,6 +503,29 @@ fn insert_symbol_with_kind(
             text: format!("function {name}() {{}}"),
         })
         .expect("insert symbol");
+}
+
+fn insert_edge(
+    store: &SqliteStore,
+    from_symbol_id: &str,
+    to_symbol_id: &str,
+    edge_type: &str,
+    at_file: &str,
+    at_line: u32,
+    confidence: f32,
+) {
+    store
+        .upsert_edge(&EdgeRow {
+            from_symbol_id: from_symbol_id.to_string(),
+            to_symbol_id: to_symbol_id.to_string(),
+            edge_type: edge_type.to_string(),
+            at_file: Some(at_file.to_string()),
+            at_line: Some(at_line),
+            confidence,
+            evidence_count: 1,
+            resolution: "resolved".to_string(),
+        })
+        .expect("insert edge");
 }
 
 fn mapping_count_for_external_symbol(

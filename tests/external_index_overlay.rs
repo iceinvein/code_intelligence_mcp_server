@@ -373,6 +373,119 @@ fn merged_references_keep_distinct_external_refs_on_same_line() {
 }
 
 #[test]
+fn merged_references_dedupe_mapped_external_refs_by_logical_span() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+
+    let lower_confidence_artifact = r#"{
+      "source_kind": "normalized_json",
+      "producer": "manual-fixture-low",
+      "language": "typescript",
+      "root_path": "/fixture/repo",
+      "symbols": [
+        {
+          "external_symbol": "low src/app.ts target().",
+          "display_name": "target",
+          "kind": "function",
+          "file_path": "src/app.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "start_byte": 0,
+          "end_byte": 42
+        },
+        {
+          "external_symbol": "low src/caller.ts caller().",
+          "display_name": "caller",
+          "kind": "function",
+          "file_path": "src/caller.ts",
+          "start_line": 1,
+          "end_line": 4,
+          "start_byte": 0,
+          "end_byte": 60
+        }
+      ],
+      "references": [
+        {
+          "from_external_symbol": "low src/caller.ts caller().",
+          "to_external_symbol": "low src/app.ts target().",
+          "relationship": "call",
+          "file_path": "src/caller.ts",
+          "line": 2,
+          "column": 10,
+          "end_line": 2,
+          "end_column": 16,
+          "confidence": 0.5,
+          "provenance": "lower"
+        }
+      ]
+    }"#;
+    let higher_confidence_artifact = r#"{
+      "source_kind": "normalized_json",
+      "producer": "manual-fixture-high",
+      "language": "typescript",
+      "root_path": "/fixture/repo",
+      "symbols": [
+        {
+          "external_symbol": "high src/app.ts target().",
+          "display_name": "target",
+          "kind": "function",
+          "file_path": "src/app.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "start_byte": 0,
+          "end_byte": 42
+        },
+        {
+          "external_symbol": "high src/caller.ts caller().",
+          "display_name": "caller",
+          "kind": "function",
+          "file_path": "src/caller.ts",
+          "start_line": 1,
+          "end_line": 4,
+          "start_byte": 0,
+          "end_byte": 60
+        }
+      ],
+      "references": [
+        {
+          "from_external_symbol": "high src/caller.ts caller().",
+          "to_external_symbol": "high src/app.ts target().",
+          "relationship": "call",
+          "file_path": "src/caller.ts",
+          "line": 2,
+          "column": 10,
+          "end_line": 2,
+          "end_column": 16,
+          "confidence": 0.9,
+          "provenance": "higher"
+        }
+      ]
+    }"#;
+    let lower_path = write_artifact(lower_confidence_artifact);
+    let higher_path = write_artifact(higher_confidence_artifact);
+    import_external_index(&store, "/fixture/repo", lower_path.path()).expect("import lower");
+    import_external_index(&store, "/fixture/repo", higher_path.path()).expect("import higher");
+
+    let references =
+        merged_references_to_internal_symbol(&store, "target_internal", Some("call"), 20)
+            .expect("merged references");
+
+    assert_eq!(references.len(), 1);
+    let reference = &references[0];
+    assert_eq!(reference.source, ReferenceSource::External);
+    assert_eq!(reference.from_symbol_id.as_deref(), Some("caller_internal"));
+    assert_eq!(reference.at_file.as_deref(), Some("src/caller.ts"));
+    assert_eq!(reference.at_line, Some(2));
+    assert_eq!(reference.at_column, Some(10));
+    assert_eq!(reference.at_end_line, Some(2));
+    assert_eq!(reference.at_end_column, Some(16));
+    assert_eq!(reference.confidence, 0.9);
+    assert_eq!(reference.provenance.as_deref(), Some("higher"));
+}
+
+#[test]
 fn merged_references_keep_lower_confidence_distinct_external_span_over_native_same_line() {
     let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
     store.init().expect("init sqlite");

@@ -289,7 +289,7 @@ fn source_rank(source: ReferenceSource) -> u8 {
 struct DedupeKey {
     to_symbol_id: String,
     from_symbol_id: Option<String>,
-    from_external_symbol_id: Option<String>,
+    from_unmapped_external_symbol_id: Option<String>,
     reference_type: String,
     at_file: Option<String>,
     at_line: Option<u32>,
@@ -303,7 +303,11 @@ impl From<&MergedReference> for DedupeKey {
         Self {
             to_symbol_id: reference.to_symbol_id.clone(),
             from_symbol_id: reference.from_symbol_id.clone(),
-            from_external_symbol_id: reference.from_external_symbol_id.clone(),
+            from_unmapped_external_symbol_id: reference
+                .from_symbol_id
+                .is_none()
+                .then(|| reference.from_external_symbol_id.clone())
+                .flatten(),
             reference_type: reference.reference_type.clone(),
             at_file: reference.at_file.clone(),
             at_line: reference.at_line,

@@ -1,10 +1,25 @@
 use std::path::Path;
+use std::sync::Arc;
 
+use code_intelligence_mcp_server::config::{Config, EmbeddingsBackend, EmbeddingsDevice};
+use code_intelligence_mcp_server::embeddings::{hash::HashEmbedder, SharedEmbedder};
 use code_intelligence_mcp_server::external_index::importer::import_external_index;
 use code_intelligence_mcp_server::external_index::provider::{
     merged_references_to_internal_symbol, ReferenceSource,
 };
-use code_intelligence_mcp_server::storage::sqlite::{EdgeRow, SqliteStore, SymbolRow};
+use code_intelligence_mcp_server::handlers::{
+    handle_find_affected_code, handle_get_call_hierarchy, AppState,
+};
+use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
+use code_intelligence_mcp_server::metrics::MetricsRegistry;
+use code_intelligence_mcp_server::path::Utf8PathBuf;
+use code_intelligence_mcp_server::retrieval::Retriever;
+use code_intelligence_mcp_server::storage::{
+    sqlite::{EdgeRow, SqliteStore, SymbolRow},
+    tantivy::TantivyIndex,
+    vector::LanceDbStore,
+};
+use code_intelligence_mcp_server::tools::{FindAffectedCodeTool, GetCallHierarchyTool};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -59,6 +74,120 @@ fn imports_normalized_artifact_and_maps_exact_range() {
         .expect("list references");
     assert_eq!(references.len(), 1);
     assert_eq!(references[0].file_path, "src/caller.ts");
+}
+
+#[test]
+fn get_call_hierarchy_callers_includes_external_overlay() {
+    let (_tmp, app_state) = test_app_state();
+    insert_symbol(
+        &app_state.sqlite,
+        "target_internal",
+        "src/app.ts",
+        "target",
+        1,
+        3,
+    );
+    insert_symbol(
+        &app_state.sqlite,
+        "caller_internal",
+        "src/caller.ts",
+        "caller",
+        1,
+        4,
+    );
+    let report = import_external_index(
+        &app_state.sqlite,
+        "/fixture/repo",
+        Path::new("tests/fixtures/external_index/typescript-normalized.json"),
+    )
+    .expect("import external index");
+
+    let response = handle_get_call_hierarchy(
+        &app_state,
+        GetCallHierarchyTool {
+            symbol_name: "target".to_string(),
+            direction: Some("callers".to_string()),
+            depth: Some(1),
+            limit: Some(20),
+            file: Some("src/app.ts".to_string()),
+        },
+    )
+    .expect("call hierarchy");
+
+    let edges = response["edges"].as_array().expect("edges array");
+    let edge = edges
+        .iter()
+        .find(|edge| edge["from"] == "caller_internal" && edge["to"] == "target_internal")
+        .expect("external caller edge");
+    assert_eq!(edge["edge_type"], "call");
+    assert_eq!(edge["at_file"], "src/caller.ts");
+    assert_eq!(edge["at_line"], 2);
+    assert_eq!(edge["source"], "external");
+    assert_eq!(edge["external_index_id"], report.index_id);
+    assert_eq!(edge["provenance"], "fixture");
+    assert_eq!(edge["confidence"], 1.0);
+
+    let nodes = response["nodes"].as_array().expect("nodes array");
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node["id"] == "caller_internal" && node["name"] == "caller"),
+        "mapped external caller should be added as a graph node"
+    );
+}
+
+#[test]
+fn find_affected_code_includes_external_overlay_when_native_edge_absent() {
+    let (_tmp, app_state) = test_app_state();
+    insert_symbol(
+        &app_state.sqlite,
+        "target_internal",
+        "src/app.ts",
+        "target",
+        1,
+        3,
+    );
+    insert_symbol(
+        &app_state.sqlite,
+        "caller_internal",
+        "src/caller.ts",
+        "caller",
+        1,
+        4,
+    );
+    let report = import_external_index(
+        &app_state.sqlite,
+        "/fixture/repo",
+        Path::new("tests/fixtures/external_index/typescript-normalized.json"),
+    )
+    .expect("import external index");
+
+    let response = handle_find_affected_code(
+        &app_state,
+        FindAffectedCodeTool {
+            symbol_name: "target".to_string(),
+            file_path: Some("src/app.ts".to_string()),
+            depth: Some(1),
+            limit: Some(20),
+            include_tests: Some(true),
+            edge_types: None,
+            include_display: Some(false),
+        },
+    )
+    .expect("affected code");
+
+    let affected = response["affected"].as_array().expect("affected array");
+    let entry = affected
+        .iter()
+        .find(|entry| entry["symbol_id"] == "caller_internal")
+        .expect("external caller affected entry");
+    assert_eq!(entry["symbol_name"], "caller");
+    assert_eq!(entry["file_path"], "src/caller.ts");
+    assert_eq!(entry["source"], "external");
+    assert_eq!(entry["external_index_id"], report.index_id);
+    assert_eq!(entry["provenance"], "fixture");
+    assert_eq!(entry["confidence"], 1.0);
+    assert_eq!(entry["reference_type"], "call");
 }
 
 #[test]
@@ -1022,4 +1151,134 @@ fn write_artifact(contents: &str) -> tempfile::NamedTempFile {
 fn external_index_id_for_json(contents: &str) -> String {
     let hash = hex::encode(Sha256::digest(contents.as_bytes()));
     format!("external:{}", &hash[..16])
+}
+
+fn test_app_state() -> (tempfile::TempDir, AppState) {
+    let tmp = tempfile::TempDir::new().expect("temp dir");
+    let base_dir = tmp
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| tmp.path().to_path_buf());
+    let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone())
+        .unwrap_or_else(|_| Utf8PathBuf::from(base_dir.to_string_lossy().as_ref()));
+    let config = Arc::new(Config {
+        db_path: base_dir_utf8.join("code-intelligence.db"),
+        vector_db_path: base_dir_utf8.join("vectors"),
+        tantivy_index_path: base_dir_utf8.join("tantivy-index"),
+        base_dir: base_dir_utf8.clone(),
+        embeddings_backend: EmbeddingsBackend::Hash,
+        embeddings_model_dir: None,
+        embeddings_device: EmbeddingsDevice::Cpu,
+        embedding_batch_size: 32,
+        hash_embedding_dim: 32,
+        vector_search_limit: 20,
+        vector_guaranteed_results: 3,
+        hybrid_alpha: 0.7,
+        rank_vector_weight: 0.7,
+        rank_keyword_weight: 0.3,
+        rank_exported_boost: 0.1,
+        rank_index_file_boost: 0.05,
+        rank_test_penalty: 0.1,
+        rank_popularity_weight: 0.05,
+        rank_popularity_cap: 50,
+        index_patterns: vec![
+            "**/*.ts".to_string(),
+            "**/*.tsx".to_string(),
+            "**/*.rs".to_string(),
+        ],
+        exclude_patterns: vec![],
+        watch_mode: false,
+        watch_debounce_ms: 100,
+        watch_min_index_interval_ms: 50,
+        max_context_bytes: 200_000,
+        index_node_modules: false,
+        repo_roots: vec![base_dir_utf8],
+        reranker_enabled: false,
+        reranker_model_path: None,
+        reranker_top_k: 20,
+        reranker_cache_dir: None,
+        learning_enabled: false,
+        learning_selection_boost: 0.1,
+        learning_file_affinity_boost: 0.05,
+        max_context_tokens: 8192,
+        token_encoding: "o200k_base".to_string(),
+        parallel_workers: 4,
+        embedding_cache_enabled: true,
+        pagerank_damping: 0.85,
+        pagerank_iterations: 20,
+        synonym_expansion_enabled: true,
+        acronym_expansion_enabled: true,
+        rrf_enabled: true,
+        rrf_k: 60.0,
+        rrf_keyword_weight: 1.0,
+        rrf_vector_weight: 1.0,
+        rrf_graph_weight: 0.5,
+        hyde_enabled: false,
+        hyde_llm_backend: "openai".to_string(),
+        hyde_api_key: None,
+        hyde_max_tokens: 512,
+        metrics_enabled: false,
+        metrics_port: 9090,
+        package_detection_enabled: false,
+        llm_enabled: false,
+        descriptions_enabled: false,
+        llm_device: EmbeddingsDevice::Cpu,
+        llm_model_dir: None,
+        llm_max_tokens: 30,
+        llm_batch_commit: 10,
+        answer_llm_n_ctx: 16384,
+        sampling_descriptions_enabled: true,
+        leader_election_enabled: false,
+        leader_heartbeat_interval_ms: 10_000,
+        leader_ttl_seconds: 30,
+        embedding_truncate_dim: None,
+        embedding_dim_override: None,
+    });
+
+    let sqlite = Arc::new(SqliteStore::open(&config.db_path).expect("sqlite open"));
+    sqlite.init().expect("sqlite init");
+    let tantivy_index =
+        Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).expect("tantivy"));
+    let hash_embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(
+        config.hash_embedding_dim,
+    ))));
+    let metrics = Arc::new(MetricsRegistry::new().expect("metrics"));
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let vector_store = rt.block_on(async {
+        let lancedb = LanceDbStore::connect(&config.vector_db_path)
+            .await
+            .expect("lancedb connect");
+        Arc::new(
+            lancedb
+                .open_or_create_table("symbols", config.hash_embedding_dim)
+                .await
+                .expect("lancedb table"),
+        )
+    });
+    let indexer = IndexPipeline::new(
+        config.clone(),
+        tantivy_index.clone(),
+        vector_store.clone(),
+        hash_embedder.clone(),
+        metrics.clone(),
+    );
+    let retriever = Retriever::new(
+        config.clone(),
+        tantivy_index,
+        vector_store,
+        hash_embedder,
+        None,
+        None,
+        metrics,
+    );
+    let state = AppState {
+        config,
+        indexer,
+        retriever,
+        sqlite,
+        mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: Arc::new(Default::default()),
+    };
+    (tmp, state)
 }

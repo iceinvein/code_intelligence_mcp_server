@@ -12,6 +12,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::external_index::provider::{
+    merged_references_to_internal_symbol, MergedReference, ReferenceSource,
+};
 use crate::handlers::framework_routes::route_exposures_for_symbol;
 use crate::handlers::planning::plan_code_investigation;
 use crate::tools::InvestigateTool;
@@ -828,6 +831,10 @@ struct CallSiteEntry {
     caller_file: String,
     at_line: u32,
     edge_type: String,
+    source: Option<String>,
+    confidence: Option<f32>,
+    external_index_id: Option<String>,
+    provenance: Option<String>,
 }
 
 /// IPC boundary files for cross-process flow questions. Lists Property
@@ -1059,6 +1066,37 @@ fn prefer_external_callers(
     }
 }
 
+fn callsite_entry_from_reference(
+    reference: &MergedReference,
+    caller: &crate::storage::sqlite::SymbolRow,
+) -> Option<CallSiteEntry> {
+    if reference.reference_type != "call" {
+        return None;
+    }
+    if reference
+        .from_symbol_id
+        .as_deref()
+        .is_some_and(|id| id != caller.id)
+    {
+        return None;
+    }
+
+    Some(CallSiteEntry {
+        caller_id: caller.id.clone(),
+        caller_name: caller.name.clone(),
+        caller_file: caller.file_path.clone(),
+        at_line: reference.at_line.unwrap_or(caller.start_line),
+        edge_type: reference.reference_type.clone(),
+        source: Some(match reference.source {
+            ReferenceSource::Native => "native".to_string(),
+            ReferenceSource::External => "external".to_string(),
+        }),
+        confidence: Some(reference.confidence),
+        external_index_id: reference.external_index_id.clone(),
+        provenance: reference.provenance.clone(),
+    })
+}
+
 fn run_callsites_lookup(
     state: &AppState,
     question: &str,
@@ -1117,25 +1155,29 @@ fn run_callsites_lookup(
 
         for sym in chosen {
             target_files_seen.insert(sym.file_path.clone());
-            let edges = sqlite.list_edges_to(&sym.id, CALLSITES_LOOKUP_LIMIT * 2)?;
-            for edge in edges {
-                if edge.edge_type != "call" {
+            let references = merged_references_to_internal_symbol(
+                sqlite,
+                &sym.id,
+                Some("call"),
+                CALLSITES_LOOKUP_LIMIT * 2,
+            )?;
+            for reference in references {
+                if reference.reference_type != "call" {
                     continue;
                 }
-                let Some(from_row) = sqlite.get_symbol_by_id(&edge.from_symbol_id)? else {
+                let Some(from_symbol_id) = reference.from_symbol_id.as_deref() else {
+                    continue;
+                };
+                let Some(from_row) = sqlite.get_symbol_by_id(from_symbol_id)? else {
                     continue;
                 };
                 if crate::classify::is_generated_output_path(&from_row.file_path) {
                     continue;
                 }
-                let line = edge.at_line.unwrap_or(from_row.start_line);
-                callers.push(CallSiteEntry {
-                    caller_id: from_row.id,
-                    caller_name: from_row.name,
-                    caller_file: from_row.file_path,
-                    at_line: line,
-                    edge_type: edge.edge_type,
-                });
+                let Some(entry) = callsite_entry_from_reference(&reference, &from_row) else {
+                    continue;
+                };
+                callers.push(entry);
                 if callers.len() >= CALLSITES_LOOKUP_LIMIT {
                     break;
                 }
@@ -1829,9 +1871,14 @@ fn build_response(
                 "caller_file": c.caller_file,
                 "at_line": c.at_line,
                 "edge_type": c.edge_type,
+                "source": c.source,
+                "confidence": c.confidence,
+                "external_index_id": c.external_index_id,
+                "provenance": c.provenance,
             })).collect::<Vec<_>>(),
             "note": "callers are verified call-graph edges resolved server-side \
-                from the edges table. The list above is exhaustive for the resolved \
+                from the edges table plus the approved external reference overlay. \
+                The list above is exhaustive for the resolved \
                 target (subject to `truncated`). Cite every entry by file:line; do \
                 not stop at the first 1-3. Do NOT editorialise about whether a \
                 caller is 'direct' or 'transitive' / 'funnels through' a helper -- \
@@ -3271,6 +3318,10 @@ mod tests {
                 caller_file: "src/ipc.ts".into(),
                 at_line: 10,
                 edge_type: "call".into(),
+                source: None,
+                confidence: None,
+                external_index_id: None,
+                provenance: None,
             },
             CallSiteEntry {
                 caller_id: "2".into(),
@@ -3278,6 +3329,10 @@ mod tests {
                 caller_file: "src/session-manager.ts".into(),
                 at_line: 50,
                 edge_type: "call".into(),
+                source: None,
+                confidence: None,
+                external_index_id: None,
+                provenance: None,
             },
             CallSiteEntry {
                 caller_id: "3".into(),
@@ -3285,6 +3340,10 @@ mod tests {
                 caller_file: "src/pr.ts".into(),
                 at_line: 20,
                 edge_type: "call".into(),
+                source: None,
+                confidence: None,
+                external_index_id: None,
+                provenance: None,
             },
         ];
         let out = prefer_external_callers(callers, &target_files);
@@ -3311,6 +3370,10 @@ mod tests {
                 caller_file: "src/util.ts".into(),
                 at_line: 10,
                 edge_type: "call".into(),
+                source: None,
+                confidence: None,
+                external_index_id: None,
+                provenance: None,
             },
             CallSiteEntry {
                 caller_id: "2".into(),
@@ -3318,6 +3381,10 @@ mod tests {
                 caller_file: "src/util.ts".into(),
                 at_line: 50,
                 edge_type: "call".into(),
+                source: None,
+                confidence: None,
+                external_index_id: None,
+                provenance: None,
             },
         ];
         let out = prefer_external_callers(callers, &target_files);
@@ -3326,6 +3393,54 @@ mod tests {
             2,
             "fall back to self-file when no external callers exist (some calls really are internal)"
         );
+    }
+
+    #[test]
+    fn external_reference_with_mapped_caller_becomes_callsite_entry() {
+        let reference = crate::external_index::provider::MergedReference {
+            to_symbol_id: "target_internal".to_string(),
+            from_symbol_id: Some("caller_internal".to_string()),
+            from_external_symbol_id: Some("external:caller".to_string()),
+            from_symbol_name: None,
+            from_symbol_file: None,
+            reference_type: "call".to_string(),
+            at_file: Some("src/caller.ts".to_string()),
+            at_line: Some(42),
+            at_column: None,
+            at_end_line: None,
+            at_end_column: None,
+            source: crate::external_index::provider::ReferenceSource::External,
+            confidence: 0.9,
+            external_index_id: Some("external:fixture".to_string()),
+            provenance: Some("fixture".to_string()),
+            metadata_json: Some("{}".to_string()),
+        };
+        let caller = crate::storage::sqlite::SymbolRow {
+            id: "caller_internal".to_string(),
+            file_path: "src/caller.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: "caller".to_string(),
+            exported: false,
+            start_byte: 0,
+            end_byte: 60,
+            start_line: 40,
+            end_line: 45,
+            text: "function caller() { target(); }".to_string(),
+        };
+
+        let entry = callsite_entry_from_reference(&reference, &caller)
+            .expect("mapped external call reference should become a callsite");
+
+        assert_eq!(entry.caller_id, "caller_internal");
+        assert_eq!(entry.caller_name, "caller");
+        assert_eq!(entry.caller_file, "src/caller.ts");
+        assert_eq!(entry.at_line, 42);
+        assert_eq!(entry.edge_type, "call");
+        assert_eq!(entry.source.as_deref(), Some("external"));
+        assert_eq!(entry.confidence, Some(0.9));
+        assert_eq!(entry.external_index_id.as_deref(), Some("external:fixture"));
+        assert_eq!(entry.provenance.as_deref(), Some("fixture"));
     }
 
     #[test]
@@ -3355,6 +3470,10 @@ mod tests {
                     caller_file: "src/main/ipc-handlers.ts".to_string(),
                     at_line: 180,
                     edge_type: "call".to_string(),
+                    source: None,
+                    confidence: None,
+                    external_index_id: None,
+                    provenance: None,
                 },
                 CallSiteEntry {
                     caller_id: "sym_pr".to_string(),
@@ -3362,6 +3481,10 @@ mod tests {
                     caller_file: "src/main/pr-review-manager.ts".to_string(),
                     at_line: 1679,
                     edge_type: "call".to_string(),
+                    source: None,
+                    confidence: None,
+                    external_index_id: None,
+                    provenance: None,
                 },
             ],
         };

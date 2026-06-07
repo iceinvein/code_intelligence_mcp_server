@@ -4,12 +4,15 @@
 //! clusters, and data-flow traces.
 
 use super::AppState;
+use crate::external_index::provider::{
+    merged_references_to_internal_symbol, MergedReference, ReferenceSource,
+};
 use crate::graph::{build_call_hierarchy, build_dependency_graph, build_type_graph};
 use crate::path::{PathNormalizer, Utf8PathBuf};
 use crate::storage::sqlite::{SqliteStore, SymbolRow};
 use crate::tools::*;
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::budget::{budget_array, clamp_limit, insert_budgeted_array, BudgetedArray};
 
@@ -163,8 +166,130 @@ pub fn handle_get_call_hierarchy(
         }));
     };
 
-    let graph = build_call_hierarchy(sqlite, &root, &direction, depth, limit)?;
+    let mut graph = build_call_hierarchy(sqlite, &root, &direction, depth, limit)?;
+    if direction == "callers" || direction == "both" {
+        overlay_external_callers(sqlite, &mut graph, &root, limit)?;
+    }
     Ok(graph)
+}
+
+fn overlay_external_callers(
+    sqlite: &SqliteStore,
+    graph: &mut Value,
+    root: &SymbolRow,
+    limit: usize,
+) -> Result<()> {
+    let references = merged_references_to_internal_symbol(sqlite, &root.id, Some("call"), limit)?;
+    let mut existing_nodes = graph
+        .get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect::<std::collections::HashSet<_>>();
+    let mut pending_nodes = Vec::new();
+
+    {
+        let Some(edges) = graph.get_mut("edges").and_then(Value::as_array_mut) else {
+            return Ok(());
+        };
+        let mut existing_edges = edges
+            .iter()
+            .map(edge_key)
+            .collect::<std::collections::HashSet<_>>();
+
+        for reference in references
+            .into_iter()
+            .filter(|reference| reference.source == ReferenceSource::External)
+        {
+            let edge = external_call_edge_json(&reference, &root.id);
+            let key = edge_key(&edge);
+
+            if existing_edges.contains(&key) {
+                if let Some(existing) = edges
+                    .iter_mut()
+                    .find(|existing_edge| edge_key(existing_edge) == key)
+                {
+                    *existing = edge;
+                }
+                continue;
+            }
+            if edges.len() >= limit {
+                break;
+            }
+
+            edges.push(edge);
+            existing_edges.insert(key);
+
+            let Some(from_symbol_id) = reference.from_symbol_id.as_deref() else {
+                continue;
+            };
+            if !existing_nodes.insert(from_symbol_id.to_string()) {
+                continue;
+            }
+            let Some(caller) = sqlite.get_symbol_by_id(from_symbol_id)? else {
+                continue;
+            };
+            pending_nodes.push(handler_node_json(&caller));
+        }
+    }
+
+    if let Some(nodes) = graph.get_mut("nodes").and_then(Value::as_array_mut) {
+        nodes.extend(pending_nodes);
+    }
+
+    Ok(())
+}
+
+fn external_call_edge_json(reference: &MergedReference, root_id: &str) -> Value {
+    json!({
+        "from": reference.from_symbol_id,
+        "to": root_id,
+        "edge_type": reference.reference_type,
+        "type": reference.reference_type,
+        "at_file": reference.at_file,
+        "at_line": reference.at_line,
+        "source": reference.source,
+        "confidence": reference.confidence,
+        "external_index_id": reference.external_index_id,
+        "provenance": reference.provenance,
+        "metadata_json": reference.metadata_json,
+    })
+}
+
+fn handler_node_json(sym: &SymbolRow) -> Value {
+    json!({
+        "id": sym.id,
+        "name": sym.name,
+        "kind": sym.kind,
+        "file_path": sym.file_path,
+        "exported": sym.exported,
+        "line_range": [sym.start_line, sym.end_line],
+    })
+}
+
+fn edge_key(edge: &Value) -> (String, String, String, Option<String>, Option<u32>) {
+    (
+        edge.get("from")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        edge.get("to")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        edge.get("edge_type")
+            .or_else(|| edge.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        edge.get("at_file")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        edge.get("at_line")
+            .and_then(Value::as_u64)
+            .and_then(|line| u32::try_from(line).ok()),
+    )
 }
 
 /// Handle get_type_graph tool

@@ -4,6 +4,7 @@
 //! duplicates, TODOs, tests, decorators, framework patterns, stale descriptions,
 //! undocumented symbols, impact prediction, and context bundle assembly.
 
+use crate::external_index::provider::{merged_references_to_internal_symbol, ReferenceSource};
 use crate::graph::build_dependency_graph;
 use crate::storage::sqlite::SymbolRow;
 use crate::tools::*;
@@ -123,6 +124,15 @@ pub fn handle_find_affected_code(
                 affected_list.push(affected_entry);
             }
 
+            append_external_affected_entries(
+                sqlite,
+                root,
+                &mut affected_list,
+                limit,
+                include_tests,
+                edge_types_slice,
+            )?;
+
             // Sort by severity descending
             affected_list.sort_by(|a, b| {
                 let sa = a.get("severity").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -183,6 +193,99 @@ pub fn handle_find_affected_code(
         response["display"] = json!(format_affected_code(root, &affected, affected_files));
     }
     Ok(response)
+}
+
+fn append_external_affected_entries(
+    sqlite: &crate::storage::sqlite::SqliteStore,
+    root: &SymbolRow,
+    affected_list: &mut Vec<serde_json::Value>,
+    limit: usize,
+    include_tests: bool,
+    edge_types: Option<&[&str]>,
+) -> Result<(), anyhow::Error> {
+    let mut seen = affected_list
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("symbol_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .collect::<std::collections::HashSet<_>>();
+    seen.insert(root.id.clone());
+
+    for relationship in external_affected_relationships(edge_types) {
+        let references =
+            merged_references_to_internal_symbol(sqlite, &root.id, Some(relationship), limit)?;
+        for reference in references
+            .into_iter()
+            .filter(|reference| reference.source == ReferenceSource::External)
+        {
+            let Some(from_symbol_id) = reference.from_symbol_id.as_deref() else {
+                continue;
+            };
+            if !seen.insert(from_symbol_id.to_string()) {
+                continue;
+            }
+            let Some(row) = sqlite.get_symbol_by_id(from_symbol_id)? else {
+                continue;
+            };
+            if !include_tests && is_test_file_for_affected(&row.file_path) {
+                continue;
+            }
+
+            let in_degree = sqlite.count_incoming_edges(&row.id).unwrap_or(0);
+            let depth_score = 8.0_f64;
+            let export_score = if row.exported { 10.0 } else { 4.0 };
+            let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
+            let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3) as u8)
+                .clamp(1, 10);
+            let impact_level = match severity {
+                8..=10 => "critical",
+                5..=7 => "high",
+                _ => "medium",
+            };
+            let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
+            let mut affected_entry = json!({
+                "symbol_id": row.id,
+                "symbol_name": row.name,
+                "kind": row.kind,
+                "file_path": row.file_path,
+                "exported": row.exported,
+                "severity": severity,
+                "impact": impact_level,
+                "in_degree": in_degree,
+                "source": "external",
+                "confidence": reference.confidence,
+                "external_index_id": reference.external_index_id,
+                "provenance": reference.provenance,
+                "metadata_json": reference.metadata_json,
+                "reference_type": reference.reference_type,
+                "at_file": reference.at_file,
+                "at_line": reference.at_line,
+            });
+            if !route_exposure.is_empty() {
+                affected_entry["route_exposure"] = json!(route_exposure);
+            }
+            affected_list.push(affected_entry);
+        }
+    }
+
+    Ok(())
+}
+
+fn external_affected_relationships(edge_types: Option<&[&str]>) -> Vec<&'static str> {
+    let Some(edge_types) = edge_types else {
+        return vec!["call", "reference"];
+    };
+    let mut relationships = Vec::new();
+    if edge_types.iter().any(|edge_type| *edge_type == "call") {
+        relationships.push("call");
+    }
+    if edge_types.iter().any(|edge_type| *edge_type == "reference") {
+        relationships.push("reference");
+    }
+    relationships
 }
 
 /// Check if a file path appears to be a test file.

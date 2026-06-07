@@ -52,3 +52,7 @@ python3 -m bench.run list                # enumerate prior rounds in bench/resul
 ```
 
 Full benchmark execution (prep, run, judge, report) is wired in Task 14 and later tasks.
+
+## External Index Smoke Fixtures
+
+Use `external-index-smoke.yaml` for fast regression checks of provenance overlay behavior. These cases verify that precise external references are preferred over Tree-sitter fallback rows and that callsite/impact answers preserve explicit provenance.

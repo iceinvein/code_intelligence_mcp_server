@@ -233,10 +233,14 @@ pub fn build_call_hierarchy(
     let mut nodes = std::collections::HashMap::<String, serde_json::Value>::new();
     let mut edges = Vec::<serde_json::Value>::new();
     let mut visited = std::collections::HashSet::<String>::new();
+    let mut seen_edges =
+        std::collections::HashSet::<(String, String, String, Option<String>, Option<u32>)>::new();
 
     nodes.insert(root.id.clone(), node_json(root));
     visited.insert(root.id.clone());
 
+    let do_callers = direction == "callers" || direction == "both";
+    let do_callees = direction == "callees" || direction == "both";
     let mut frontier = vec![root.id.clone()];
     for _ in 0..depth {
         if edges.len() >= limit || frontier.is_empty() {
@@ -247,7 +251,7 @@ pub fn build_call_hierarchy(
             if edges.len() >= limit {
                 break;
             }
-            if direction == "callers" {
+            if do_callers {
                 let incoming = sqlite.list_edges_to(&current_id, limit)?;
                 for e in incoming {
                     if edges.len() >= limit {
@@ -266,12 +270,15 @@ pub fn build_call_hierarchy(
                         .entry(caller.id.clone())
                         .or_insert_with(|| node_json(&caller));
                     let is_async = e.edge_type == "async_call" || e.edge_type == "spawn";
-                    edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
+                    if seen_edges.insert(call_hierarchy_edge_key(&e)) {
+                        edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
+                    }
                     if visited.insert(caller.id.clone()) {
                         next.push(caller.id);
                     }
                 }
-            } else {
+            }
+            if do_callees {
                 let outgoing = sqlite.list_edges_from(&current_id, limit)?;
                 for e in outgoing {
                     if edges.len() >= limit {
@@ -290,7 +297,9 @@ pub fn build_call_hierarchy(
                         .entry(callee.id.clone())
                         .or_insert_with(|| node_json(&callee));
                     let is_async = e.edge_type == "async_call" || e.edge_type == "spawn";
-                    edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
+                    if seen_edges.insert(call_hierarchy_edge_key(&e)) {
+                        edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
+                    }
                     if visited.insert(callee.id.clone()) {
                         next.push(callee.id);
                     }
@@ -307,6 +316,18 @@ pub fn build_call_hierarchy(
         "nodes": nodes.into_values().collect::<Vec<_>>(),
         "edges": edges,
     }))
+}
+
+fn call_hierarchy_edge_key(
+    edge: &crate::storage::sqlite::EdgeRow,
+) -> (String, String, String, Option<String>, Option<u32>) {
+    (
+        edge.from_symbol_id.clone(),
+        edge.to_symbol_id.clone(),
+        edge.edge_type.clone(),
+        edge.at_file.clone(),
+        edge.at_line,
+    )
 }
 
 /// Build a type graph starting from a root symbol.
@@ -488,6 +509,55 @@ mod tests {
         let edges2 = g2.get("edges").unwrap().as_array().unwrap();
         assert_eq!(edges2.len(), 2);
         assert_eq!(nodes2.len(), 3);
+    }
+
+    #[test]
+    fn call_hierarchy_both_includes_callers_and_callees() {
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let caller = sym("caller", "caller");
+        let root = sym("root", "root");
+        let callee = sym("callee", "callee");
+        sqlite.upsert_symbol(&caller).unwrap();
+        sqlite.upsert_symbol(&root).unwrap();
+        sqlite.upsert_symbol(&callee).unwrap();
+
+        sqlite
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "caller".to_string(),
+                to_symbol_id: "root".to_string(),
+                edge_type: "call".to_string(),
+                at_file: Some("src/caller.ts".to_string()),
+                at_line: Some(1),
+                confidence: 1.0,
+                evidence_count: 1,
+                resolution: "local".to_string(),
+            })
+            .unwrap();
+        sqlite
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "root".to_string(),
+                to_symbol_id: "callee".to_string(),
+                edge_type: "call".to_string(),
+                at_file: Some("src/root.ts".to_string()),
+                at_line: Some(2),
+                confidence: 1.0,
+                evidence_count: 1,
+                resolution: "local".to_string(),
+            })
+            .unwrap();
+
+        let graph = build_call_hierarchy(&sqlite, &root, "both", 2, 100).unwrap();
+        let edges = graph.get("edges").unwrap().as_array().unwrap();
+
+        assert_eq!(edges.len(), 2);
+        assert!(edges
+            .iter()
+            .any(|edge| edge["from"] == "caller" && edge["to"] == "root"));
+        assert!(edges
+            .iter()
+            .any(|edge| edge["from"] == "root" && edge["to"] == "callee"));
     }
 
     #[test]

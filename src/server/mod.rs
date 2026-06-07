@@ -275,12 +275,13 @@ pub async fn dispatch_tool_call(
             })
         }
 
-        // --- Sync handlers ---
         "generate_external_index" => {
-            dispatch_sync!(params, GenerateExternalIndexTool, |tool| {
+            dispatch_async!(params, GenerateExternalIndexTool, |tool| {
                 handle_generate_external_index(state, tool)
             })
         }
+
+        // --- Sync handlers ---
         "get_file_symbols" => {
             dispatch_sync!(params, GetFileSymbolsTool, |tool| handle_get_file_symbols(
                 state, tool

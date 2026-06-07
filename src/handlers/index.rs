@@ -76,14 +76,32 @@ pub async fn handle_import_external_index(
 }
 
 /// Handle generate_external_index tool
-pub fn handle_generate_external_index(
-    _state: &AppState,
+pub async fn handle_generate_external_index(
+    state: &AppState,
     tool: GenerateExternalIndexTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    Ok(crate::external_index::producers::generate_and_import(
-        tool.producer,
-        tool.language,
-    ))
+    let sqlite = state.sqlite.clone();
+    let base_dir = state.config.base_dir.clone();
+    let repo_data_dir = state
+        .config
+        .db_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Configured SQLite path has no parent directory"))?
+        .to_path_buf();
+    let producer = tool.producer;
+    let language = tool.language;
+
+    tokio::task::spawn_blocking(move || {
+        crate::external_index::producers::generate_and_import(
+            &sqlite,
+            base_dir.as_str(),
+            &repo_data_dir,
+            producer,
+            language,
+        )
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("External index producer task failed: {err}"))?
 }
 
 /// Handle get_index_stats tool

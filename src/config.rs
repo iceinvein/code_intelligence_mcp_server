@@ -1524,6 +1524,7 @@ mod tests {
             "EXTERNAL_INDEX_AUTO",
             "EXTERNAL_INDEX_PRODUCER",
             "EXTERNAL_INDEX_ON_REFRESH",
+            "EXTERNAL_INDEX_TYPESCRIPT_COMMAND",
             "RERANKER_MODEL_PATH",
             "RERANKER_TOP_K",
             "RERANKER_CACHE_DIR",

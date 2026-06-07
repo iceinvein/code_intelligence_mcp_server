@@ -183,6 +183,8 @@ The server reads configuration from environment variables. Key ones:
 | `ANSWER_LLM_N_CTX` | `32768` | llama.cpp context size for the `ask_code` answer LLM when synthesis is enabled. Sized to fit a full evidence-bearing prompt plus the generated answer. Minimum `512`. |
 | `LLM_HF_REPO` | `Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF` | Override the HuggingFace repository for the local LLM (e.g. `Qwen/Qwen2.5-Coder-3B-Instruct-GGUF` for the 3B variant). |
 | `LLM_HF_MODEL_FILE` | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | Override the GGUF filename within the configured repo. |
+| `EXTERNAL_INDEX_PRODUCER` | unset | Explicit external index producer to run via `generate_external_index`. Supported producer ids: `typescript`, `rust`, `python`, `go`, `java`, `kotlin`, `csharp`, `swift`, `c`, `cpp`, `ruby`. |
+| `EXTERNAL_INDEX_<LANG>_COMMAND` | language default | Override the command for a producer wrapper. Supported variables: `EXTERNAL_INDEX_TYPESCRIPT_COMMAND`, `EXTERNAL_INDEX_RUST_COMMAND`, `EXTERNAL_INDEX_PYTHON_COMMAND`, `EXTERNAL_INDEX_GO_COMMAND`, `EXTERNAL_INDEX_JAVA_COMMAND`, `EXTERNAL_INDEX_KOTLIN_COMMAND`, `EXTERNAL_INDEX_CSHARP_COMMAND`, `EXTERNAL_INDEX_SWIFT_COMMAND`, `EXTERNAL_INDEX_C_COMMAND`, `EXTERNAL_INDEX_CPP_COMMAND`, `EXTERNAL_INDEX_RUBY_COMMAND`. Commands must write the normalized JSON artifact expected by the importer. |
 
 ## Path Handling
 

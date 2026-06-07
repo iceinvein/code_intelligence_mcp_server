@@ -344,6 +344,23 @@ mod find_references_tests {
     }
 
     #[test]
+    fn formats_external_reference_without_internal_caller_with_legacy_string_fallback() {
+        let mut reference = merged_reference(ReferenceSource::External);
+        reference.from_symbol_id = None;
+
+        let value = format_find_reference(reference);
+
+        assert_eq!(value["from_symbol_id"], "");
+        assert_eq!(value["from_symbol_name"], "");
+        assert_eq!(value["from_symbol_file"], "");
+        assert_eq!(value["source"], "external");
+        assert_eq!(value["external_index_id"], "external:fixture");
+        assert_eq!(value["provenance"], "fixture");
+        assert_eq!(value["metadata_json"], "{}");
+        assert_eq!(value["from_external_symbol_id"], "external-caller");
+    }
+
+    #[test]
     fn formats_native_reference_with_backward_compatible_old_fields() {
         let value = format_find_reference(merged_reference(ReferenceSource::Native));
 
@@ -630,7 +647,7 @@ fn collect_find_references_response(
 fn format_find_reference(reference: MergedReference) -> serde_json::Value {
     json!({
         "to_symbol_id": reference.to_symbol_id,
-        "from_symbol_id": reference.from_symbol_id,
+        "from_symbol_id": reference.from_symbol_id.unwrap_or_default(),
         "from_symbol_name": reference.from_symbol_name.unwrap_or_default(),
         "from_symbol_file": reference.from_symbol_file.unwrap_or_default(),
         "reference_type": reference.reference_type,

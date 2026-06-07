@@ -372,8 +372,8 @@ pub fn external_overlay_stats(conn: &Connection) -> Result<ExternalOverlayStats>
     )?;
     let mapped_symbol_count = count_all(
         conn,
-        "SELECT COUNT(*) FROM symbol_mappings",
-        "external symbol mappings",
+        "SELECT COUNT(DISTINCT internal_symbol_id) FROM symbol_mappings",
+        "mapped internal symbols",
     )?;
 
     Ok(ExternalOverlayStats {
@@ -694,6 +694,88 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         assert_eq!(overlay_stats.index_count, 1);
         assert_eq!(overlay_stats.symbol_count, 1);
         assert_eq!(overlay_stats.reference_count, 1);
+        assert_eq!(overlay_stats.mapped_symbol_count, 1);
+    }
+
+    #[test]
+    fn overlay_stats_count_distinct_mapped_internal_symbols() {
+        let conn = setup_test_db();
+        insert_test_symbol(&conn, "sym-internal-target");
+
+        for (index_id, symbol_id, file_path) in [
+            ("idx-rust-analyzer", "ext:target:ra", "src/lib.rs"),
+            ("idx-typescript", "ext:target:ts", "src/app.ts"),
+        ] {
+            upsert_external_index(
+                &conn,
+                &ExternalIndexInsert {
+                    id: index_id,
+                    source_kind: "lsp",
+                    producer: "test-producer",
+                    language: "rust",
+                    root_path: "/repo",
+                    artifact_path: "/repo/.cache/external.json",
+                    artifact_hash: "sha256:abc",
+                    status: "ready",
+                    diagnostics_json: "{}",
+                },
+            )
+            .unwrap();
+
+            upsert_external_symbol(
+                &conn,
+                &ExternalSymbolInsert {
+                    id: symbol_id,
+                    external_index_id: index_id,
+                    external_symbol: "crate::target",
+                    display_name: "target",
+                    language: "rust",
+                    kind: "function",
+                    file_path: Some(file_path),
+                    start_line: Some(1),
+                    end_line: Some(5),
+                    start_byte: Some(0),
+                    end_byte: Some(64),
+                    metadata_json: "{}",
+                },
+            )
+            .unwrap();
+
+            upsert_symbol_mapping(
+                &conn,
+                &SymbolMappingInsert {
+                    external_symbol_id: symbol_id,
+                    internal_symbol_id: "sym-internal-target",
+                    mapping_kind: "exact",
+                    confidence: 0.99,
+                },
+            )
+            .unwrap();
+
+            upsert_external_reference(
+                &conn,
+                &ExternalReferenceInsert {
+                    external_index_id: index_id,
+                    from_external_symbol_id: None,
+                    to_external_symbol_id: Some(symbol_id),
+                    relationship: "reference",
+                    file_path,
+                    line: 42,
+                    column: Some(7),
+                    end_line: Some(42),
+                    end_column: Some(13),
+                    confidence: 0.9,
+                    provenance: "test-producer",
+                    metadata_json: "{}",
+                },
+            )
+            .unwrap();
+        }
+
+        let overlay_stats = external_overlay_stats(&conn).unwrap();
+        assert_eq!(overlay_stats.index_count, 2);
+        assert_eq!(overlay_stats.symbol_count, 2);
+        assert_eq!(overlay_stats.reference_count, 2);
         assert_eq!(overlay_stats.mapped_symbol_count, 1);
     }
 

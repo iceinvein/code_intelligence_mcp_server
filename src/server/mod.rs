@@ -269,13 +269,13 @@ pub async fn dispatch_tool_call(
         "get_context_bundle" => dispatch_async!(params, GetContextBundleTool, |tool| {
             handle_get_context_bundle(state, tool)
         }),
-
-        // --- Sync handlers ---
         "import_external_index" => {
-            dispatch_sync!(params, ImportExternalIndexTool, |tool| {
+            dispatch_async!(params, ImportExternalIndexTool, |tool| {
                 handle_import_external_index(state, tool)
             })
         }
+
+        // --- Sync handlers ---
         "generate_external_index" => {
             dispatch_sync!(params, GenerateExternalIndexTool, |tool| {
                 handle_generate_external_index(state, tool)

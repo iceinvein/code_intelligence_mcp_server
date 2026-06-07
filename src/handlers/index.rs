@@ -47,16 +47,23 @@ pub async fn handle_refresh_index(
 }
 
 /// Handle import_external_index tool
-pub fn handle_import_external_index(
+pub async fn handle_import_external_index(
     state: &AppState,
     tool: ImportExternalIndexTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let artifact = resolve_external_index_artifact_path(state, &tool.artifact_path)?;
-    let report = crate::external_index::importer::import_external_index(
-        &state.sqlite,
-        state.config.base_dir.as_str(),
-        artifact.as_std_path(),
-    )?;
+    let sqlite = state.sqlite.clone();
+    let base_dir = state.config.base_dir.clone();
+
+    let report = tokio::task::spawn_blocking(move || {
+        crate::external_index::importer::import_external_index(
+            &sqlite,
+            base_dir.as_str(),
+            artifact.as_std_path(),
+        )
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("External index import task failed: {err}"))??;
 
     Ok(json!({
         "ok": true,

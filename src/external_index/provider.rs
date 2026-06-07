@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -207,11 +207,19 @@ fn compare_references(left: &MergedReference, right: &MergedReference) -> Orderi
 fn remove_native_overlaid_by_external(references: Vec<MergedReference>) -> Vec<MergedReference> {
     let mut best_native_by_key = HashMap::new();
     let mut best_external_by_key = HashMap::new();
+    let mut external_sources_by_key: HashMap<NativeOverlayKey, HashSet<Option<String>>> =
+        HashMap::new();
 
     for reference in &references {
         let Some(key) = NativeOverlayKey::from_reference(reference) else {
             continue;
         };
+        if reference.source == ReferenceSource::External {
+            external_sources_by_key
+                .entry(key.clone())
+                .or_default()
+                .insert(reference.from_external_symbol_id.clone());
+        }
         let best_by_key = match reference.source {
             ReferenceSource::Native => &mut best_native_by_key,
             ReferenceSource::External => &mut best_external_by_key,
@@ -242,6 +250,9 @@ fn remove_native_overlaid_by_external(references: Vec<MergedReference>) -> Vec<M
                         })
                 }
                 ReferenceSource::External => {
+                    if is_distinct_external_overlay(reference, &key, &external_sources_by_key) {
+                        return true;
+                    }
                     best_native_by_key
                         .get(&key)
                         .is_none_or(|native_confidence| {
@@ -252,6 +263,19 @@ fn remove_native_overlaid_by_external(references: Vec<MergedReference>) -> Vec<M
             }
         })
         .collect()
+}
+
+fn is_distinct_external_overlay(
+    reference: &MergedReference,
+    key: &NativeOverlayKey,
+    external_sources_by_key: &HashMap<NativeOverlayKey, HashSet<Option<String>>>,
+) -> bool {
+    reference.at_column.is_some()
+        || reference.at_end_line.is_some()
+        || reference.at_end_column.is_some()
+        || external_sources_by_key
+            .get(key)
+            .is_some_and(|sources| sources.len() > 1)
 }
 
 fn source_rank(source: ReferenceSource) -> u8 {

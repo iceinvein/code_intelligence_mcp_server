@@ -373,6 +373,101 @@ fn merged_references_keep_distinct_external_refs_on_same_line() {
 }
 
 #[test]
+fn merged_references_keep_lower_confidence_distinct_external_span_over_native_same_line() {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+    insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+    insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+    insert_edge(
+        &store,
+        "caller_internal",
+        "target_internal",
+        "call",
+        "src/caller.ts",
+        2,
+        0.9,
+    );
+
+    let artifact = r#"{
+      "source_kind": "normalized_json",
+      "producer": "manual-fixture",
+      "language": "typescript",
+      "root_path": "/fixture/repo",
+      "symbols": [
+        {
+          "external_symbol": "local src/app.ts target().",
+          "display_name": "target",
+          "kind": "function",
+          "file_path": "src/app.ts",
+          "start_line": 1,
+          "end_line": 3,
+          "start_byte": 0,
+          "end_byte": 42
+        },
+        {
+          "external_symbol": "local src/caller.ts caller().",
+          "display_name": "caller",
+          "kind": "function",
+          "file_path": "src/caller.ts",
+          "start_line": 1,
+          "end_line": 4,
+          "start_byte": 0,
+          "end_byte": 60
+        }
+      ],
+      "references": [
+        {
+          "from_external_symbol": "local src/caller.ts caller().",
+          "to_external_symbol": "local src/app.ts target().",
+          "relationship": "call",
+          "file_path": "src/caller.ts",
+          "line": 2,
+          "column": 10,
+          "end_line": 2,
+          "end_column": 16,
+          "confidence": 1.0,
+          "provenance": "fixture"
+        },
+        {
+          "from_external_symbol": "local src/caller.ts caller().",
+          "to_external_symbol": "local src/app.ts target().",
+          "relationship": "call",
+          "file_path": "src/caller.ts",
+          "line": 2,
+          "column": 20,
+          "end_line": 2,
+          "end_column": 26,
+          "confidence": 0.8,
+          "provenance": "fixture"
+        }
+      ]
+    }"#;
+    let artifact_path = write_artifact(artifact);
+    import_external_index(&store, "/fixture/repo", artifact_path.path()).expect("import");
+
+    let references =
+        merged_references_to_internal_symbol(&store, "target_internal", Some("call"), 20)
+            .expect("merged references");
+
+    assert_eq!(references.len(), 2);
+    assert!(references
+        .iter()
+        .all(|reference| reference.source == ReferenceSource::External));
+    assert!(references.iter().any(|reference| {
+        reference.at_column == Some(10)
+            && reference.at_end_line == Some(2)
+            && reference.at_end_column == Some(16)
+            && reference.confidence == 1.0
+    }));
+    assert!(references.iter().any(|reference| {
+        reference.at_column == Some(20)
+            && reference.at_end_line == Some(2)
+            && reference.at_end_column == Some(26)
+            && reference.confidence == 0.8
+    }));
+}
+
+#[test]
 fn merged_references_filters_native_relationship_before_limit() {
     let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
     store.init().expect("init sqlite");

@@ -80,13 +80,10 @@ pub fn handle_generate_external_index(
     _state: &AppState,
     tool: GenerateExternalIndexTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    Ok(json!({
-        "ok": false,
-        "status": "unsupported",
-        "producer": tool.producer,
-        "language": tool.language,
-        "message": "External index producer generation is not implemented yet. Use import_external_index with a normalized local artifact.",
-    }))
+    Ok(crate::external_index::producers::generate_and_import(
+        tool.producer,
+        tool.language,
+    ))
 }
 
 /// Handle get_index_stats tool

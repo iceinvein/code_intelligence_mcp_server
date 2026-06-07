@@ -1,6 +1,7 @@
 //! Indexing-related handlers: refresh_index, get_index_stats
 
 use super::AppState;
+use crate::indexer::pipeline::ExternalIndexTrigger;
 use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
 use crate::tools::*;
 use serde_json::json;
@@ -12,7 +13,7 @@ pub async fn handle_refresh_index(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let normalizer = PathNormalizer::new(state.config.base_dir.clone());
 
-    let stats = if let Some(files) = tool.files {
+    let outcome = if let Some(files) = tool.files {
         let paths = files
             .into_iter()
             .map(|p| {
@@ -35,14 +36,21 @@ pub async fn handle_refresh_index(
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
         // Pass Utf8PathBuf slice directly to pipeline API
-        state.indexer.index_paths(&paths).await
+        state
+            .indexer
+            .index_paths_with_external_index(&paths, ExternalIndexTrigger::ManualRefresh)
+            .await
     } else {
-        state.indexer.index_all().await
+        state
+            .indexer
+            .index_all_with_external_index(ExternalIndexTrigger::ManualRefresh)
+            .await
     }?;
 
     Ok(json!({
         "ok": true,
-        "stats": stats,
+        "stats": outcome.stats,
+        "external_index": outcome.external_index,
     }))
 }
 

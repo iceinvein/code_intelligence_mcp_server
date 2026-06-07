@@ -1,5 +1,6 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use code_intelligence_mcp_server::config::{Config, EmbeddingsBackend, EmbeddingsDevice};
 use code_intelligence_mcp_server::embeddings::{hash::HashEmbedder, SharedEmbedder};
@@ -8,7 +9,7 @@ use code_intelligence_mcp_server::external_index::provider::{
     merged_references_to_internal_symbol, ReferenceSource,
 };
 use code_intelligence_mcp_server::handlers::{
-    handle_find_affected_code, handle_get_call_hierarchy, AppState,
+    handle_find_affected_code, handle_get_call_hierarchy, handle_refresh_index, AppState,
 };
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::metrics::MetricsRegistry;
@@ -19,8 +20,12 @@ use code_intelligence_mcp_server::storage::{
     tantivy::TantivyIndex,
     vector::LanceDbStore,
 };
-use code_intelligence_mcp_server::tools::{FindAffectedCodeTool, GetCallHierarchyTool};
+use code_intelligence_mcp_server::tools::{
+    FindAffectedCodeTool, GetCallHierarchyTool, RefreshIndexTool,
+};
 use sha2::{Digest, Sha256};
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn imports_normalized_artifact_and_maps_exact_range() {
@@ -188,6 +193,86 @@ fn find_affected_code_includes_external_overlay_when_native_edge_absent() {
     assert_eq!(entry["provenance"], "fixture");
     assert_eq!(entry["confidence"], 1.0);
     assert_eq!(entry["reference_type"], "call");
+}
+
+#[test]
+fn refresh_index_runs_external_producer_when_enabled_for_explicit_refresh() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let (_tmp, app_state) =
+        test_app_state_with_external_index(true, Some("rust".to_string()), "explicit");
+    let producer = app_state.config.base_dir.join("fake-rust-producer.sh");
+    std::fs::write(
+        producer.as_std_path(),
+        r#"#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    shift
+    out="$1"
+  fi
+  shift
+done
+cat > "$out" <<'JSON'
+{
+  "source_kind": "normalized_json",
+  "producer": "fake-rust",
+  "language": "rust",
+  "root_path": "/fixture/repo",
+  "symbols": [],
+  "references": []
+}
+JSON
+"#,
+    )
+    .expect("write fake producer");
+    make_executable(producer.as_std_path());
+    let _env = EnvVarGuard::set("EXTERNAL_INDEX_RUST_COMMAND", producer.as_str());
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let response = rt
+        .block_on(handle_refresh_index(
+            &app_state,
+            RefreshIndexTool { files: None },
+        ))
+        .expect("refresh index");
+
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["external_index"]["ok"], true);
+    assert_eq!(response["external_index"]["producer"], "rust");
+    let stats = app_state
+        .sqlite
+        .external_overlay_stats()
+        .expect("external stats");
+    assert_eq!(stats.index_count, 1);
+}
+
+#[test]
+fn refresh_index_reports_missing_external_toolchain_without_failing_indexing() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let (_tmp, app_state) =
+        test_app_state_with_external_index(true, Some("rust".to_string()), "explicit");
+    let _env = EnvVarGuard::set(
+        "EXTERNAL_INDEX_RUST_COMMAND",
+        "__missing_refresh_external_index_toolchain__",
+    );
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let response = rt
+        .block_on(handle_refresh_index(
+            &app_state,
+            RefreshIndexTool { files: None },
+        ))
+        .expect("refresh index should not fail when producer is missing");
+
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["external_index"]["ok"], false);
+    assert_eq!(response["external_index"]["status"], "missing_toolchain");
+    assert_eq!(response["external_index"]["producer"], "rust");
+    let stats = app_state
+        .sqlite
+        .external_overlay_stats()
+        .expect("external stats");
+    assert_eq!(stats.index_count, 0);
 }
 
 #[test]
@@ -1154,6 +1239,14 @@ fn external_index_id_for_json(contents: &str) -> String {
 }
 
 fn test_app_state() -> (tempfile::TempDir, AppState) {
+    test_app_state_with_external_index(false, None, "disabled")
+}
+
+fn test_app_state_with_external_index(
+    external_index_auto: bool,
+    external_index_producer: Option<String>,
+    external_index_on_refresh: &str,
+) -> (tempfile::TempDir, AppState) {
     let tmp = tempfile::TempDir::new().expect("temp dir");
     let base_dir = tmp
         .path()
@@ -1220,6 +1313,9 @@ fn test_app_state() -> (tempfile::TempDir, AppState) {
         metrics_enabled: false,
         metrics_port: 9090,
         package_detection_enabled: false,
+        external_index_auto,
+        external_index_producer,
+        external_index_on_refresh: external_index_on_refresh.to_string(),
         llm_enabled: false,
         descriptions_enabled: false,
         llm_device: EmbeddingsDevice::Cpu,
@@ -1281,4 +1377,33 @@ fn test_app_state() -> (tempfile::TempDir, AppState) {
         ask_code_cache: Arc::new(Default::default()),
     };
     (tmp, state)
+}
+
+fn make_executable(path: &Path) {
+    let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).expect("chmod");
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.previous {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
 }

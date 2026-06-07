@@ -634,6 +634,9 @@ impl StandaloneConfig {
             metrics_enabled: true,
             metrics_port: 9090,
             package_detection_enabled: true,
+            external_index_auto: self.external_index_auto,
+            external_index_producer: self.external_index_producer.clone(),
+            external_index_on_refresh: self.external_index_on_refresh.clone(),
             llm_enabled: true,
             llm_device: EmbeddingsDevice::Cpu,
             llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
@@ -727,6 +730,11 @@ pub struct Config {
 
     // Package detection config (09-04)
     pub package_detection_enabled: bool,
+
+    // External index producer config
+    pub external_index_auto: bool,
+    pub external_index_producer: Option<String>,
+    pub external_index_on_refresh: String,
 
     // LLM description generation config
     pub llm_enabled: bool,
@@ -1207,6 +1215,15 @@ impl Config {
             .map(parse_usize)
             .transpose()?;
 
+        let external_index_auto = optional_env("EXTERNAL_INDEX_AUTO")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(false);
+        let external_index_producer = optional_env("EXTERNAL_INDEX_PRODUCER");
+        let external_index_on_refresh =
+            optional_env("EXTERNAL_INDEX_ON_REFRESH").unwrap_or_else(|| "disabled".to_string());
+
         Ok(Self {
             base_dir,
             db_path,
@@ -1282,6 +1299,11 @@ impl Config {
 
             // Package detection config (09-04)
             package_detection_enabled,
+
+            // External index producer config
+            external_index_auto,
+            external_index_producer,
+            external_index_on_refresh,
 
             // LLM description generation
             llm_enabled,
@@ -1863,6 +1885,15 @@ host = "0.0.0.0"
         assert_eq!(cfg.reranker_enabled, standalone.reranker_enabled);
         // Same for the descriptions toggle.
         assert_eq!(cfg.descriptions_enabled, standalone.descriptions_enabled);
+        assert_eq!(cfg.external_index_auto, standalone.external_index_auto);
+        assert_eq!(
+            cfg.external_index_producer,
+            standalone.external_index_producer
+        );
+        assert_eq!(
+            cfg.external_index_on_refresh,
+            standalone.external_index_on_refresh
+        );
     }
 
     #[test]

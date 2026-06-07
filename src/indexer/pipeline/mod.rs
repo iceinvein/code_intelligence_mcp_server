@@ -28,6 +28,7 @@ use crate::{
     },
 };
 use anyhow::{Context, Result};
+use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -68,6 +69,18 @@ pub(crate) fn should_generate_embedding(
         return false;
     }
     true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalIndexTrigger {
+    ManualRefresh,
+    Watch,
+}
+
+#[derive(Debug)]
+pub struct IndexRunOutcome {
+    pub stats: IndexRunStats,
+    pub external_index: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -227,6 +240,18 @@ impl IndexPipeline {
         Ok(stats)
     }
 
+    pub async fn index_all_with_external_index(
+        &self,
+        trigger: ExternalIndexTrigger,
+    ) -> Result<IndexRunOutcome> {
+        let stats = self.index_all().await?;
+        let external_index = self.maybe_generate_external_index(trigger).await;
+        Ok(IndexRunOutcome {
+            stats,
+            external_index,
+        })
+    }
+
     fn update_resource_gauges(&self) -> Result<()> {
         let sqlite = SqliteStore::open(&self.db_path)?;
         let symbol_count = sqlite.count_symbols()?;
@@ -352,6 +377,77 @@ impl IndexPipeline {
         let stats = self.index_files(files, false).await?;
         self.persist_index_run_metrics(started_at_unix_s, started_at.elapsed(), &stats)?;
         Ok(stats)
+    }
+
+    pub async fn index_paths_with_external_index(
+        &self,
+        paths: &[Utf8PathBuf],
+        trigger: ExternalIndexTrigger,
+    ) -> Result<IndexRunOutcome> {
+        let stats = self.index_paths(paths).await?;
+        let external_index = self.maybe_generate_external_index(trigger).await;
+        Ok(IndexRunOutcome {
+            stats,
+            external_index,
+        })
+    }
+
+    async fn maybe_generate_external_index(&self, trigger: ExternalIndexTrigger) -> Option<Value> {
+        if !Self::should_run_external_index(&self.config, trigger) {
+            return None;
+        }
+
+        let db_path = self.db_path.clone();
+        let base_dir = self.config.base_dir.clone();
+        let repo_data_dir = self
+            .db_path
+            .parent()
+            .map(|path| path.to_path_buf())
+            .unwrap_or_else(|| self.db_path.clone());
+        let producer = self.config.external_index_producer.clone();
+        let language = producer.clone();
+
+        Some(
+            match tokio::task::spawn_blocking(move || -> Result<Value> {
+                let sqlite = SqliteStore::open(&db_path)?;
+                crate::external_index::producers::generate_and_import(
+                    &sqlite,
+                    base_dir.as_str(),
+                    &repo_data_dir,
+                    producer,
+                    language,
+                )
+            })
+            .await
+            {
+                Ok(Ok(value)) => value,
+                Ok(Err(err)) => json!({
+                    "ok": false,
+                    "status": "producer_error",
+                    "error": err.to_string(),
+                }),
+                Err(err) => json!({
+                    "ok": false,
+                    "status": "producer_task_failed",
+                    "error": err.to_string(),
+                }),
+            },
+        )
+    }
+
+    fn should_run_external_index(config: &Config, trigger: ExternalIndexTrigger) -> bool {
+        if !config.external_index_auto {
+            return false;
+        }
+
+        match config.external_index_on_refresh.as_str() {
+            "explicit" => trigger == ExternalIndexTrigger::ManualRefresh,
+            "watch" => matches!(
+                trigger,
+                ExternalIndexTrigger::ManualRefresh | ExternalIndexTrigger::Watch
+            ),
+            _ => false,
+        }
     }
 
     /// Check if any files in the workspace have changed since last indexing
@@ -503,15 +599,15 @@ impl IndexPipeline {
                             coalesced.saturating_sub(1),
                         );
 
-                        match pipeline.index_all().await {
-                            Ok(stats) => {
+                        match pipeline.index_all_with_external_index(ExternalIndexTrigger::Watch).await {
+                            Ok(outcome) => {
                                 last_index_time = Some(Instant::now());
                                 consecutive_failures = 0;
                                 first_run = false;
                                 tracing::info!(
                                     repo = %repo_name,
-                                    files_indexed = stats.files_indexed,
-                                    symbols_indexed = stats.symbols_indexed,
+                                    files_indexed = outcome.stats.files_indexed,
+                                    symbols_indexed = outcome.stats.symbols_indexed,
                                     coalesced_events = coalesced - 1,
                                     "Watch index run completed"
                                 );
@@ -519,7 +615,7 @@ impl IndexPipeline {
                                     crate::server::jobs::mark_succeeded(
                                         reg,
                                         id,
-                                        serde_json::to_value(&stats).unwrap_or_default(),
+                                        serde_json::to_value(&outcome.stats).unwrap_or_default(),
                                     );
                                 }
                             }
@@ -1136,7 +1232,9 @@ impl IndexPipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::should_generate_embedding;
+    use super::{should_generate_embedding, ExternalIndexTrigger, IndexPipeline};
+    use crate::config::StandaloneConfig;
+    use crate::path::Utf8PathBuf;
 
     #[test]
     fn skips_file_kind() {
@@ -1209,6 +1307,67 @@ mod tests {
             true,
             0,
             30
+        ));
+    }
+
+    #[test]
+    fn external_index_refresh_policy_is_opt_in() {
+        let cfg = StandaloneConfig::default().repo_config(
+            Utf8PathBuf::from("/tmp/repo"),
+            &Utf8PathBuf::from("/tmp/data"),
+        );
+
+        assert!(!IndexPipeline::should_run_external_index(
+            &cfg,
+            ExternalIndexTrigger::ManualRefresh
+        ));
+        assert!(!IndexPipeline::should_run_external_index(
+            &cfg,
+            ExternalIndexTrigger::Watch
+        ));
+    }
+
+    #[test]
+    fn external_index_explicit_policy_runs_only_for_manual_refresh() {
+        let standalone = StandaloneConfig {
+            external_index_auto: true,
+            external_index_on_refresh: "explicit".to_string(),
+            ..StandaloneConfig::default()
+        };
+        let cfg = standalone.repo_config(
+            Utf8PathBuf::from("/tmp/repo"),
+            &Utf8PathBuf::from("/tmp/data"),
+        );
+
+        assert!(IndexPipeline::should_run_external_index(
+            &cfg,
+            ExternalIndexTrigger::ManualRefresh
+        ));
+        assert!(!IndexPipeline::should_run_external_index(
+            &cfg,
+            ExternalIndexTrigger::Watch
+        ));
+    }
+
+    #[test]
+    fn external_index_watch_policy_runs_for_manual_and_watch_refresh() {
+        let standalone = StandaloneConfig {
+            external_index_auto: true,
+            external_index_on_refresh: "watch".to_string(),
+            ..StandaloneConfig::default()
+        };
+        let cfg = standalone.repo_config(
+            Utf8PathBuf::from("/tmp/repo"),
+            &Utf8PathBuf::from("/tmp/data"),
+        );
+
+        assert!(IndexPipeline::should_run_external_index(
+            &cfg,
+            ExternalIndexTrigger::ManualRefresh
+        ));
+        assert!(IndexPipeline::should_run_external_index(
+            &cfg,
+            ExternalIndexTrigger::Watch
         ));
     }
 }

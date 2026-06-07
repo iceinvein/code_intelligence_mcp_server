@@ -147,6 +147,16 @@ impl SqliteStore {
         queries::edges::list_edges_to(&conn, to_symbol_id, limit)
     }
 
+    pub fn list_edges_to_by_type(
+        &self,
+        to_symbol_id: &str,
+        edge_type: &str,
+        limit: usize,
+    ) -> Result<Vec<EdgeRow>> {
+        let conn = self.read()?;
+        queries::edges::list_edges_to_by_type(&conn, to_symbol_id, edge_type, limit)
+    }
+
     pub fn count_incoming_edges(&self, to_symbol_id: &str) -> Result<u64> {
         let conn = self.read()?;
         queries::edges::count_incoming_edges(&conn, to_symbol_id)

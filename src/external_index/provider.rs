@@ -1,10 +1,16 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::storage::sqlite::{EdgeRow, ExternalReferenceRow, SqliteStore};
+
+const MAX_PROVIDER_LIMIT: usize = 500;
+const MIN_FETCH_LIMIT: usize = 50;
+const MAX_FETCH_LIMIT: usize = 1_000;
+const FETCH_MULTIPLIER: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -17,11 +23,15 @@ pub enum ReferenceSource {
 pub struct MergedReference {
     pub to_symbol_id: String,
     pub from_symbol_id: Option<String>,
+    pub from_external_symbol_id: Option<String>,
     pub from_symbol_name: Option<String>,
     pub from_symbol_file: Option<String>,
     pub reference_type: String,
     pub at_file: Option<String>,
     pub at_line: Option<u32>,
+    pub at_column: Option<u32>,
+    pub at_end_line: Option<u32>,
+    pub at_end_column: Option<u32>,
     pub source: ReferenceSource,
     pub confidence: f32,
     pub external_index_id: Option<String>,
@@ -39,21 +49,26 @@ pub fn merged_references_to_internal_symbol(
         return Ok(Vec::new());
     }
 
+    let limit = limit.min(MAX_PROVIDER_LIMIT);
     let relationship = normalized_relationship(relationship);
-    let fetch_limit = limit.saturating_mul(3).max(50);
+    let fetch_limit = fetch_limit_for(limit);
 
-    let native = sqlite
-        .list_edges_to(internal_symbol_id, fetch_limit)?
+    let native_edges = match relationship {
+        Some(edge_type) => {
+            sqlite.list_edges_to_by_type(internal_symbol_id, edge_type, fetch_limit)?
+        }
+        None => sqlite.list_edges_to(internal_symbol_id, fetch_limit)?,
+    };
+    let native = native_edges
         .into_iter()
-        .filter(|edge| relationship_matches(relationship, &edge.edge_type))
         .map(|edge| native_reference(sqlite, edge))
         .collect::<Result<Vec<_>>>()?;
 
     let external = sqlite
         .list_external_references_to_internal_symbol(internal_symbol_id, relationship, fetch_limit)?
         .into_iter()
-        .map(|reference| external_reference(internal_symbol_id, reference))
-        .collect::<Vec<_>>();
+        .map(|reference| external_reference(sqlite, internal_symbol_id, reference))
+        .collect::<Result<Vec<_>>>()?;
 
     let mut deduped: HashMap<DedupeKey, MergedReference> = HashMap::new();
     for reference in native.into_iter().chain(external) {
@@ -69,10 +84,17 @@ pub fn merged_references_to_internal_symbol(
         }
     }
 
-    let mut references = deduped.into_values().collect::<Vec<_>>();
+    let mut references = remove_native_overlaid_by_external(deduped.into_values().collect());
     references.sort_by(compare_references);
     references.truncate(limit);
     Ok(references)
+}
+
+fn fetch_limit_for(limit: usize) -> usize {
+    limit
+        .saturating_mul(FETCH_MULTIPLIER)
+        .max(MIN_FETCH_LIMIT)
+        .min(MAX_FETCH_LIMIT)
 }
 
 fn native_reference(sqlite: &SqliteStore, edge: EdgeRow) -> Result<MergedReference> {
@@ -80,11 +102,15 @@ fn native_reference(sqlite: &SqliteStore, edge: EdgeRow) -> Result<MergedReferen
     Ok(MergedReference {
         to_symbol_id: edge.to_symbol_id,
         from_symbol_id: Some(edge.from_symbol_id),
+        from_external_symbol_id: None,
         from_symbol_name: from_symbol.as_ref().map(|symbol| symbol.name.clone()),
         from_symbol_file: from_symbol.map(|symbol| symbol.file_path),
         reference_type: edge.edge_type,
         at_file: edge.at_file,
         at_line: edge.at_line,
+        at_column: None,
+        at_end_line: None,
+        at_end_column: None,
         source: ReferenceSource::Native,
         confidence: edge.confidence,
         external_index_id: None,
@@ -94,23 +120,30 @@ fn native_reference(sqlite: &SqliteStore, edge: EdgeRow) -> Result<MergedReferen
 }
 
 fn external_reference(
+    sqlite: &SqliteStore,
     internal_symbol_id: &str,
     reference: ExternalReferenceRow,
-) -> MergedReference {
-    MergedReference {
+) -> Result<MergedReference> {
+    let from_symbol_id =
+        mapped_internal_symbol_id(sqlite, reference.from_external_symbol_id.as_deref())?;
+    Ok(MergedReference {
         to_symbol_id: internal_symbol_id.to_string(),
-        from_symbol_id: None,
+        from_symbol_id,
+        from_external_symbol_id: reference.from_external_symbol_id,
         from_symbol_name: None,
         from_symbol_file: None,
         reference_type: reference.relationship,
         at_file: Some(reference.file_path),
         at_line: Some(reference.line),
+        at_column: reference.column,
+        at_end_line: reference.end_line,
+        at_end_column: reference.end_column,
         source: ReferenceSource::External,
         confidence: reference.confidence,
         external_index_id: Some(reference.external_index_id),
         provenance: Some(reference.provenance),
         metadata_json: Some(reference.metadata_json),
-    }
+    })
 }
 
 fn normalized_relationship(relationship: Option<&str>) -> Option<&str> {
@@ -120,8 +153,22 @@ fn normalized_relationship(relationship: Option<&str>) -> Option<&str> {
     }
 }
 
-fn relationship_matches(filter: Option<&str>, reference_type: &str) -> bool {
-    filter.is_none_or(|expected| reference_type == expected)
+fn mapped_internal_symbol_id(
+    sqlite: &SqliteStore,
+    external_symbol_id: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(external_symbol_id) = external_symbol_id else {
+        return Ok(None);
+    };
+    let conn = sqlite.read()?;
+    let internal_symbol_id = conn
+        .query_row(
+            "SELECT internal_symbol_id FROM symbol_mappings WHERE external_symbol_id = ?1",
+            [external_symbol_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(internal_symbol_id)
 }
 
 fn prefer_reference(candidate: &MergedReference, existing: &MergedReference) -> bool {
@@ -147,7 +194,31 @@ fn compare_references(left: &MergedReference, right: &MergedReference) -> Orderi
         .then_with(|| left.reference_type.cmp(&right.reference_type))
         .then_with(|| left.to_symbol_id.cmp(&right.to_symbol_id))
         .then_with(|| left.from_symbol_id.cmp(&right.from_symbol_id))
+        .then_with(|| {
+            left.from_external_symbol_id
+                .cmp(&right.from_external_symbol_id)
+        })
+        .then_with(|| left.at_column.cmp(&right.at_column))
+        .then_with(|| left.at_end_line.cmp(&right.at_end_line))
+        .then_with(|| left.at_end_column.cmp(&right.at_end_column))
         .then_with(|| left.external_index_id.cmp(&right.external_index_id))
+}
+
+fn remove_native_overlaid_by_external(references: Vec<MergedReference>) -> Vec<MergedReference> {
+    let external_keys = references
+        .iter()
+        .filter(|reference| reference.source == ReferenceSource::External)
+        .filter_map(NativeOverlayKey::from_reference)
+        .collect::<HashSet<_>>();
+
+    references
+        .into_iter()
+        .filter(|reference| {
+            reference.source == ReferenceSource::External
+                || NativeOverlayKey::from_reference(reference)
+                    .is_none_or(|key| !external_keys.contains(&key))
+        })
+        .collect()
 }
 
 fn source_rank(source: ReferenceSource) -> u8 {
@@ -160,18 +231,49 @@ fn source_rank(source: ReferenceSource) -> u8 {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DedupeKey {
     to_symbol_id: String,
+    from_symbol_id: Option<String>,
+    from_external_symbol_id: Option<String>,
     reference_type: String,
     at_file: Option<String>,
     at_line: Option<u32>,
+    at_column: Option<u32>,
+    at_end_line: Option<u32>,
+    at_end_column: Option<u32>,
 }
 
 impl From<&MergedReference> for DedupeKey {
     fn from(reference: &MergedReference) -> Self {
         Self {
             to_symbol_id: reference.to_symbol_id.clone(),
+            from_symbol_id: reference.from_symbol_id.clone(),
+            from_external_symbol_id: reference.from_external_symbol_id.clone(),
             reference_type: reference.reference_type.clone(),
             at_file: reference.at_file.clone(),
             at_line: reference.at_line,
+            at_column: reference.at_column,
+            at_end_line: reference.at_end_line,
+            at_end_column: reference.at_end_column,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeOverlayKey {
+    to_symbol_id: String,
+    from_symbol_id: String,
+    reference_type: String,
+    at_file: Option<String>,
+    at_line: Option<u32>,
+}
+
+impl NativeOverlayKey {
+    fn from_reference(reference: &MergedReference) -> Option<Self> {
+        Some(Self {
+            to_symbol_id: reference.to_symbol_id.clone(),
+            from_symbol_id: reference.from_symbol_id.clone()?,
+            reference_type: reference.reference_type.clone(),
+            at_file: reference.at_file.clone(),
+            at_line: reference.at_line,
+        })
     }
 }

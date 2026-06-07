@@ -246,6 +246,44 @@ LIMIT ?2
     Ok(out)
 }
 
+pub fn list_edges_to_by_type(
+    conn: &Connection,
+    to_symbol_id: &str,
+    edge_type: &str,
+    limit: usize,
+) -> Result<Vec<EdgeRow>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT
+  from_symbol_id, to_symbol_id, edge_type, at_file, at_line, confidence, evidence_count, resolution
+FROM edges
+WHERE to_symbol_id = ?1 AND edge_type = ?2
+ORDER BY edge_type ASC, from_symbol_id ASC
+LIMIT ?3
+"#,
+        )
+        .context("Failed to prepare list_edges_to_by_type")?;
+
+    let mut rows = stmt.query(params![to_symbol_id, edge_type, limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(EdgeRow {
+            from_symbol_id: row.get(0)?,
+            to_symbol_id: row.get(1)?,
+            edge_type: row.get(2)?,
+            at_file: row.get(3)?,
+            at_line: row
+                .get::<_, Option<i64>>(4)?
+                .and_then(|v| u32::try_from(v).ok()),
+            confidence: row.get::<_, f64>(5)? as f32,
+            evidence_count: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(1),
+            resolution: row.get(7)?,
+        });
+    }
+    Ok(out)
+}
+
 pub fn count_incoming_edges(conn: &Connection, to_symbol_id: &str) -> Result<u64> {
     let count: i64 = conn
         .query_row(
@@ -439,6 +477,50 @@ mod dead_code_tests {
             params![from_id, to_id, edge_type],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_list_edges_to_by_type_filters_before_limit() {
+        let conn = setup_test_db();
+        insert_symbol(
+            &conn,
+            "target",
+            "src/target.rs",
+            "rust",
+            "function",
+            "target",
+            false,
+        );
+        insert_symbol(
+            &conn,
+            "caller",
+            "src/caller.rs",
+            "rust",
+            "function",
+            "caller",
+            false,
+        );
+
+        for index in 0..60 {
+            let from_id = format!("noise_{index:02}");
+            insert_symbol(
+                &conn,
+                &from_id,
+                "src/noise.rs",
+                "rust",
+                "function",
+                &from_id,
+                false,
+            );
+            insert_edge(&conn, &from_id, "target", "aaa_noise");
+        }
+        insert_edge(&conn, "caller", "target", "call");
+
+        let edges = list_edges_to_by_type(&conn, "target", "call", 1).unwrap();
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].from_symbol_id, "caller");
+        assert_eq!(edges[0].edge_type, "call");
     }
 
     #[test]

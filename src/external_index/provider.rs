@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -172,15 +172,15 @@ fn mapped_internal_symbol_id(
 }
 
 fn prefer_reference(candidate: &MergedReference, existing: &MergedReference) -> bool {
-    match candidate
-        .confidence
-        .partial_cmp(&existing.confidence)
-        .unwrap_or(Ordering::Equal)
-    {
+    match compare_confidence(candidate.confidence, existing.confidence) {
         Ordering::Greater => true,
         Ordering::Less => false,
         Ordering::Equal => source_rank(candidate.source) > source_rank(existing.source),
     }
+}
+
+fn compare_confidence(candidate: f32, existing: f32) -> Ordering {
+    candidate.partial_cmp(&existing).unwrap_or(Ordering::Equal)
 }
 
 fn compare_references(left: &MergedReference, right: &MergedReference) -> Ordering {
@@ -205,18 +205,51 @@ fn compare_references(left: &MergedReference, right: &MergedReference) -> Orderi
 }
 
 fn remove_native_overlaid_by_external(references: Vec<MergedReference>) -> Vec<MergedReference> {
-    let external_keys = references
-        .iter()
-        .filter(|reference| reference.source == ReferenceSource::External)
-        .filter_map(NativeOverlayKey::from_reference)
-        .collect::<HashSet<_>>();
+    let mut best_native_by_key = HashMap::new();
+    let mut best_external_by_key = HashMap::new();
+
+    for reference in &references {
+        let Some(key) = NativeOverlayKey::from_reference(reference) else {
+            continue;
+        };
+        let best_by_key = match reference.source {
+            ReferenceSource::Native => &mut best_native_by_key,
+            ReferenceSource::External => &mut best_external_by_key,
+        };
+        best_by_key
+            .entry(key)
+            .and_modify(|best_confidence| {
+                if compare_confidence(reference.confidence, *best_confidence) == Ordering::Greater {
+                    *best_confidence = reference.confidence;
+                }
+            })
+            .or_insert(reference.confidence);
+    }
 
     references
         .into_iter()
         .filter(|reference| {
-            reference.source == ReferenceSource::External
-                || NativeOverlayKey::from_reference(reference)
-                    .is_none_or(|key| !external_keys.contains(&key))
+            let Some(key) = NativeOverlayKey::from_reference(reference) else {
+                return true;
+            };
+            match reference.source {
+                ReferenceSource::Native => {
+                    best_external_by_key
+                        .get(&key)
+                        .is_none_or(|external_confidence| {
+                            compare_confidence(*external_confidence, reference.confidence)
+                                == Ordering::Less
+                        })
+                }
+                ReferenceSource::External => {
+                    best_native_by_key
+                        .get(&key)
+                        .is_none_or(|native_confidence| {
+                            compare_confidence(*native_confidence, reference.confidence)
+                                != Ordering::Greater
+                        })
+                }
+            }
         })
         .collect()
 }

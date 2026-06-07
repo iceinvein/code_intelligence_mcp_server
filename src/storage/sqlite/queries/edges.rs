@@ -3,6 +3,10 @@ use rusqlite::{params, Connection};
 
 use crate::storage::sqlite::schema::{EdgeEvidenceRow, EdgeRow, SymbolRow};
 
+fn sqlite_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
 pub fn upsert_edge(conn: &Connection, edge: &EdgeRow) -> Result<()> {
     let resolution_rank = edge_resolution_rank(edge.resolution.as_str());
     conn.execute(
@@ -265,7 +269,7 @@ LIMIT ?3
         )
         .context("Failed to prepare list_edges_to_by_type")?;
 
-    let mut rows = stmt.query(params![to_symbol_id, edge_type, limit as i64])?;
+    let mut rows = stmt.query(params![to_symbol_id, edge_type, sqlite_limit(limit)])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push(EdgeRow {
@@ -521,6 +525,11 @@ mod dead_code_tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].from_symbol_id, "caller");
         assert_eq!(edges[0].edge_type, "call");
+    }
+
+    #[test]
+    fn test_sqlite_limit_clamps_usize_max_to_non_negative_i64() {
+        assert_eq!(sqlite_limit(usize::MAX), i64::MAX);
     }
 
     #[test]

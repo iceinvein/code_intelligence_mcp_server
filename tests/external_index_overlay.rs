@@ -266,7 +266,7 @@ fn refresh_index_reports_missing_external_toolchain_without_failing_indexing() {
 
     assert_eq!(response["ok"], true);
     assert_eq!(response["external_index"]["ok"], false);
-    assert_eq!(response["external_index"]["status"], "missing_toolchain");
+    assert_eq!(response["external_index"]["status"], "missing_bundle");
     assert_eq!(response["external_index"]["producer"], "rust");
     let stats = app_state
         .sqlite

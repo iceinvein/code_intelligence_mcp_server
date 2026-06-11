@@ -233,10 +233,46 @@ pub struct ResolvedProducerProgram {
     pub source: ProducerCommandSource,
 }
 
+#[cfg(test)]
 fn producer_spec_by_id(id: &str) -> Option<ProducerSpec> {
     PRODUCER_SPECS.iter().copied().find(|spec| spec.id == id)
 }
 
+#[cfg(not(test))]
+fn resolve_producer_program(spec: ProducerSpec) -> Option<ResolvedProducerProgram> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()));
+    if let Ok(program) = std::env::var(spec.command_env) {
+        if !program.trim().is_empty() {
+            return Some(ResolvedProducerProgram {
+                program,
+                source: ProducerCommandSource::Override,
+            });
+        }
+    }
+
+    if let Some(exe_dir) = exe_dir {
+        let bundled = exe_dir.join(spec.default_program);
+        if is_executable(&bundled) {
+            return Some(ResolvedProducerProgram {
+                program: bundled.to_string_lossy().into_owned(),
+                source: ProducerCommandSource::Bundled,
+            });
+        }
+    }
+
+    if path_lookup(spec.default_program) {
+        return Some(ResolvedProducerProgram {
+            program: spec.default_program.to_string(),
+            source: ProducerCommandSource::Path,
+        });
+    }
+
+    None
+}
+
+#[cfg(test)]
 fn resolve_producer_program(spec: ProducerSpec) -> Option<ResolvedProducerProgram> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -244,6 +280,7 @@ fn resolve_producer_program(spec: ProducerSpec) -> Option<ResolvedProducerProgra
     resolve_producer_program_for_dir(spec, exe_dir.as_deref())
 }
 
+#[cfg(test)]
 fn resolve_producer_program_for_dir(
     spec: ProducerSpec,
     exe_dir: Option<&std::path::Path>,
@@ -491,6 +528,7 @@ fn generate_with_spec(
     )
 }
 
+#[cfg(test)]
 fn generate_with_spec_for_exe_dir(
     store: &SqliteStore,
     repo_root: &str,

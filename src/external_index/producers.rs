@@ -320,7 +320,7 @@ fn path_lookup(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn is_executable(path: &std::path::Path) -> bool {
+pub(crate) fn is_executable(path: &std::path::Path) -> bool {
     path.is_file()
         && std::fs::metadata(path)
             .map(|metadata| {

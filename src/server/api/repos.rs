@@ -207,6 +207,8 @@ fn read_repo_stats(db_path: &crate::path::Utf8Path) -> Option<Value> {
     let latest_index_run = sqlite.latest_index_run().ok().flatten();
     let latest_search_run = sqlite.latest_search_run().ok().flatten();
     let external = sqlite.external_overlay_stats().ok();
+    let external_producers =
+        crate::external_index::manifest::producer_availability().unwrap_or_else(|_| Vec::new());
 
     Some(json!({
         "symbols": symbols,
@@ -224,6 +226,7 @@ fn read_repo_stats(db_path: &crate::path::Utf8Path) -> Option<Value> {
                 "mapped_symbol_count": external.mapped_symbol_count,
             })
         }),
+        "external_producers": external_producers,
     }))
 }
 
@@ -489,5 +492,12 @@ mod tests {
         assert_eq!(stats["external_indexes"]["symbol_count"], 0);
         assert_eq!(stats["external_indexes"]["reference_count"], 0);
         assert_eq!(stats["external_indexes"]["mapped_symbol_count"], 0);
+        let rust = stats["external_producers"]
+            .as_array()
+            .expect("external producers")
+            .iter()
+            .find(|producer| producer["id"] == "rust")
+            .expect("rust producer");
+        assert_eq!(rust["availability"], "missing");
     }
 }

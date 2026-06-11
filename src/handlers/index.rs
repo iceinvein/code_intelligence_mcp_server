@@ -124,6 +124,8 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
     let latest_index_run = sqlite.latest_index_run()?;
     let latest_search_run = sqlite.latest_search_run()?;
     let external = sqlite.external_overlay_stats()?;
+    let external_producers =
+        crate::external_index::manifest::producer_availability().unwrap_or_else(|_| Vec::new());
 
     Ok(json!({
         "base_dir": state.config.base_dir,
@@ -140,6 +142,7 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
             "reference_count": external.reference_count,
             "mapped_symbol_count": external.mapped_symbol_count,
         },
+        "external_producers": external_producers,
     }))
 }
 

@@ -95,6 +95,13 @@ export type RepoStats = {
     reference_count: number;
     mapped_symbol_count: number;
   } | null;
+  external_producers: Array<{
+    id: string;
+    language: string;
+    tier: string;
+    executable: string;
+    availability: string;
+  }>;
 };
 
 export type RepoDetail = {

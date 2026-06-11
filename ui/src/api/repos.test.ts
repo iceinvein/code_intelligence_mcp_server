@@ -66,6 +66,15 @@ test("fetchRepoDetail preserves external index stats", async () => {
         reference_count: 5,
         mapped_symbol_count: 3,
       },
+      external_producers: [
+        {
+          id: "rust",
+          language: "rust",
+          tier: "first_class",
+          executable: "/bin/code-intelligence-external-rust",
+          availability: "bundled",
+        },
+      ],
     },
   };
   globalThis.fetch = mock(async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
@@ -74,4 +83,5 @@ test("fetchRepoDetail preserves external index stats", async () => {
 
   expect(result.stats?.external_indexes?.index_count).toBe(1);
   expect(result.stats?.external_indexes?.reference_count).toBe(5);
+  expect(result.stats?.external_producers?.[0]?.availability).toBe("bundled");
 });

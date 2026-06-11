@@ -95,7 +95,7 @@ export type RepoStats = {
     reference_count: number;
     mapped_symbol_count: number;
   } | null;
-  external_producers: Array<{
+  external_producers?: Array<{
     id: string;
     language: string;
     tier: string;

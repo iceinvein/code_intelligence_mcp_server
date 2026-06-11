@@ -124,8 +124,11 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
     let latest_index_run = sqlite.latest_index_run()?;
     let latest_search_run = sqlite.latest_search_run()?;
     let external = sqlite.external_overlay_stats()?;
-    let external_producers =
-        crate::external_index::manifest::producer_availability().unwrap_or_else(|_| Vec::new());
+    let external_producers = crate::external_index::manifest::producer_availability()
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "failed to read external producer availability");
+            Vec::new()
+        });
 
     Ok(json!({
         "base_dir": state.config.base_dir,

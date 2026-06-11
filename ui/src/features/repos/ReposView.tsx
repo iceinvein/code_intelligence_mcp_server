@@ -19,7 +19,7 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
-import type { Repo } from "@/api/types";
+import type { Repo, RepoStats } from "@/api/types";
 
 export function ReposView() {
   const { data, isLoading, isError, error, refetch } = useRepos();
@@ -74,6 +74,11 @@ function repoState(repo: Repo): { state: StatusState; label: string } {
   if (repo.activity.running) return { state: "run", label: "indexing" };
   if (repo.activity.last_updated_unix_s != null) return { state: "ok", label: "indexed" };
   return { state: "idle", label: "never indexed" };
+}
+
+function formatProducerCount(producers: RepoStats["external_producers"]): string {
+  const available = producers ?? [];
+  return `${available.filter((producer) => producer.availability !== "missing").length}/${available.length}`;
 }
 
 function RepoRow({ repo }: { repo: Repo }) {
@@ -156,10 +161,7 @@ function RepoRow({ repo }: { repo: Repo }) {
                   <Field label="mapped external" value={formatCount(detail.data.stats.external_indexes.mapped_symbol_count)} />
                 </>
               ) : null}
-              <Field
-                label="producers"
-                value={`${detail.data.stats.external_producers.filter((producer) => producer.availability !== "missing").length}/${detail.data.stats.external_producers.length}`}
-              />
+              <Field label="producers" value={formatProducerCount(detail.data.stats.external_producers)} />
             </dl>
           ) : (
             <span className="text-xs text-muted-foreground">no stats yet (repo not indexed)</span>

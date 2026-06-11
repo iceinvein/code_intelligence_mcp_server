@@ -160,6 +160,12 @@ fn render_producer_summary(
     )
 }
 
+fn external_index_auto_enabled() -> bool {
+    StandaloneConfig::load(None, None, None)
+        .map(|cfg| cfg.external_index_auto)
+        .unwrap_or(false)
+}
+
 // ---------- plist template ----------
 
 fn xml_escape(value: &str) -> String {
@@ -356,7 +362,10 @@ pub fn handle_install(opts: InstallOpts) -> Result<()> {
     }
 
     let producers = crate::external_index::manifest::producer_availability().unwrap_or_default();
-    println!("{}", render_producer_summary(&producers, false));
+    println!(
+        "{}",
+        render_producer_summary(&producers, external_index_auto_enabled())
+    );
 
     let want_patch = match opts.patch_claude_json {
         Some(b) => b,
@@ -490,10 +499,10 @@ pub fn handle_status() -> Result<()> {
     println!("  data dir:  {}", data_dir()?.display());
     println!("  logs:      {}", logs_dir()?.display());
     let producers = crate::external_index::manifest::producer_availability().unwrap_or_default();
-    let auto_enabled = StandaloneConfig::load(None, None, None)
-        .map(|cfg| cfg.external_index_auto)
-        .unwrap_or(false);
-    println!("{}", render_producer_summary(&producers, auto_enabled));
+    println!(
+        "{}",
+        render_producer_summary(&producers, external_index_auto_enabled())
+    );
     Ok(())
 }
 
@@ -773,6 +782,10 @@ mod tests {
         assert_eq!(
             render_producer_summary(&producers, false),
             "External producers: bundled 1/2, auto indexing disabled"
+        );
+        assert_eq!(
+            render_producer_summary(&producers, true),
+            "External producers: bundled 1/2, auto indexing enabled"
         );
     }
 

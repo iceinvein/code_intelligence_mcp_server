@@ -518,14 +518,7 @@ fn generate_with_spec(
     spec: ProducerSpec,
 ) -> Result<Value> {
     let resolved = resolve_producer_program(spec);
-    generate_with_spec_with_resolved(
-        store,
-        repo_root,
-        repo_data_dir,
-        language,
-        spec,
-        resolved,
-    )
+    generate_with_spec_with_resolved(store, repo_root, repo_data_dir, language, spec, resolved)
 }
 
 #[cfg(test)]
@@ -538,14 +531,7 @@ fn generate_with_spec_for_exe_dir(
     exe_dir: Option<&std::path::Path>,
 ) -> Result<Value> {
     let resolved = resolve_producer_program_for_dir(spec, exe_dir);
-    generate_with_spec_with_resolved(
-        store,
-        repo_root,
-        repo_data_dir,
-        language,
-        spec,
-        resolved,
-    )
+    generate_with_spec_with_resolved(store, repo_root, repo_data_dir, language, spec, resolved)
 }
 
 fn generate_with_spec_with_resolved(
@@ -938,7 +924,8 @@ mod tests {
         let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
         let spec = producer_spec_by_id("rust").expect("rust spec");
 
-        let resolved = resolve_producer_program_for_dir(spec, Some(exe_dir.path())).expect("resolve");
+        let resolved =
+            resolve_producer_program_for_dir(spec, Some(exe_dir.path())).expect("resolve");
 
         assert_eq!(resolved.program, "code-intelligence-external-rust");
         assert_eq!(resolved.source, ProducerCommandSource::Path);
@@ -988,8 +975,11 @@ mod tests {
         let store = SqliteStore::open_in_memory().expect("sqlite");
         store.init().expect("init");
         let repo = tempfile::tempdir().expect("repo");
-        std::fs::write(repo.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n")
-            .expect("write Cargo.toml");
+        std::fs::write(
+            repo.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("write Cargo.toml");
         let repo_data = tempfile::tempdir().expect("repo data");
         let exe_dir = tempfile::tempdir().expect("exe tempdir");
         let spec = producer_spec_by_id("rust").expect("rust spec");

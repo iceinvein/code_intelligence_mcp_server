@@ -480,8 +480,6 @@ fn generate_with_spec(
     language: Option<String>,
     spec: ProducerSpec,
 ) -> Result<Value> {
-    let program =
-        std::env::var(spec.command_env).unwrap_or_else(|_| spec.default_program.to_string());
     let external_dir = repo_data_dir.join("external");
     std::fs::create_dir_all(external_dir.as_std_path()).with_context(|| {
         format!(
@@ -490,7 +488,22 @@ fn generate_with_spec(
         )
     })?;
     let output_path = external_dir.join(spec.output_file);
-    let command = producer_command(&program, repo_root, output_path.as_str());
+    let resolved = match resolve_producer_program(spec) {
+        Some(resolved) => resolved,
+        None => {
+            return Ok(json!({
+                "ok": false,
+                "status": "missing_bundle",
+                "producer": spec.id,
+                "language": language,
+                "program": spec.default_program,
+                "command_source": "missing",
+                "supported_producers": supported_producers(),
+            }));
+        }
+    };
+    let command_source = command_source_str(resolved.source);
+    let command = producer_command(&resolved.program, repo_root, output_path.as_str());
 
     let output = match Command::new(&command.program)
         .args(&command.args)
@@ -501,10 +514,11 @@ fn generate_with_spec(
         Err(err) if err.kind() == ErrorKind::NotFound => {
             return Ok(json!({
                 "ok": false,
-                "status": "missing_toolchain",
+                "status": "missing_bundle",
                 "producer": spec.id,
                 "language": language,
                 "program": command.program,
+                "command_source": command_source,
                 "supported_producers": supported_producers(),
             }));
         }
@@ -515,6 +529,7 @@ fn generate_with_spec(
                 "producer": spec.id,
                 "language": language,
                 "program": command.program,
+                "command_source": command_source,
                 "error": err.to_string(),
                 "supported_producers": supported_producers(),
             }));
@@ -528,6 +543,7 @@ fn generate_with_spec(
             "producer": spec.id,
             "language": language,
             "program": command.program,
+            "command_source": command_source,
             "exit_code": output.status.code(),
             "stderr": truncate_lossy(&output.stderr, 4_000),
             "supported_producers": supported_producers(),
@@ -541,6 +557,7 @@ fn generate_with_spec(
             "producer": spec.id,
             "language": language,
             "program": command.program,
+            "command_source": command_source,
             "artifact_path": output_path,
             "supported_producers": supported_producers(),
         }));
@@ -557,6 +574,7 @@ fn generate_with_spec(
         "producer": spec.id,
         "language": language.unwrap_or_else(|| spec.default_language.to_string()),
         "program": command.program,
+        "command_source": command_source,
         "artifact_path": output_path,
         "index_id": report.index_id,
         "symbols_imported": report.symbols_imported,
@@ -571,6 +589,14 @@ fn truncate_lossy(bytes: &[u8], max_chars: usize) -> String {
         .chars()
         .take(max_chars)
         .collect()
+}
+
+fn command_source_str(source: ProducerCommandSource) -> &'static str {
+    match source {
+        ProducerCommandSource::Override => "override",
+        ProducerCommandSource::Bundled => "bundled",
+        ProducerCommandSource::Path => "path",
+    }
 }
 
 #[cfg(test)]
@@ -651,10 +677,11 @@ mod tests {
         .expect("response");
 
         assert_eq!(response["ok"], false);
-        assert_eq!(response["status"], "missing_toolchain");
+        assert_eq!(response["status"], "missing_bundle");
         assert_eq!(response["producer"], "rust");
         assert_eq!(response["language"], "rust");
         assert_eq!(response["program"], "__missing_rust_external_index__");
+        assert_eq!(response["command_source"], "override");
     }
 
     #[test]
@@ -715,13 +742,14 @@ mod tests {
         .expect("response");
 
         assert_eq!(response["ok"], false);
-        assert_eq!(response["status"], "missing_toolchain");
+        assert_eq!(response["status"], "missing_bundle");
         assert_eq!(response["producer"], "rust");
         assert_eq!(response["language"], "rust");
         assert_eq!(
             response["program"],
             "__missing_detected_rust_external_index__"
         );
+        assert_eq!(response["command_source"], "override");
     }
 
     #[test]
@@ -870,8 +898,38 @@ mod tests {
         .expect("response");
 
         assert_eq!(response["ok"], false);
-        assert_eq!(response["status"], "missing_toolchain");
+        assert_eq!(response["status"], "missing_bundle");
         assert_eq!(response["program"], "__missing_scip_typescript_binary__");
+        assert_eq!(response["command_source"], "override");
+    }
+
+    #[test]
+    fn generate_reports_missing_bundle_when_resolved_command_is_absent() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
+        let path_dir = tempfile::tempdir().expect("path tempdir");
+        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
+        let store = SqliteStore::open_in_memory().expect("sqlite");
+        store.init().expect("init");
+        let repo = tempfile::tempdir().expect("repo");
+        std::fs::write(repo.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n")
+            .expect("write Cargo.toml");
+        let repo_data = tempfile::tempdir().expect("repo data");
+
+        let response = generate_and_import(
+            &store,
+            repo.path().to_str().expect("utf8"),
+            Utf8Path::from_path(repo_data.path()).expect("utf8"),
+            None,
+            None,
+        )
+        .expect("response");
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["status"], "missing_bundle");
+        assert_eq!(response["producer"], "rust");
+        assert_eq!(response["program"], "code-intelligence-external-rust");
+        assert_eq!(response["command_source"], "missing");
     }
 
     struct EnvVarGuard {

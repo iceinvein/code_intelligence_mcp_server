@@ -34,25 +34,23 @@ mod tests {
             .producers
             .iter()
             .map(|producer| producer.id.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<Vec<_>>();
 
         assert_eq!(
             ids,
-            [
-                "c",
-                "cpp",
-                "csharp",
+            vec![
+                "typescript",
+                "rust",
+                "python",
                 "go",
                 "java",
                 "kotlin",
-                "python",
-                "ruby",
-                "rust",
+                "csharp",
                 "swift",
-                "typescript"
+                "c",
+                "cpp",
+                "ruby"
             ]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
         );
     }
 

@@ -8,7 +8,8 @@
 # The formula is intentionally minimal:
 #   * Downloads the prebuilt arm64 binary tarball from the GitHub release
 #     that matches `version`.
-#   * Installs the single binary into the Homebrew prefix.
+#   * Installs the server binary, bundled external producer helpers, and
+#     producer manifest into the Homebrew prefix.
 #   * Declares a service so users can `brew services start
 #     code-intelligence-mcp` and let launchd manage the daemon.
 #
@@ -42,6 +43,8 @@ class CodeIntelligenceMcp < Formula
 
   def install
     bin.install "code-intelligence-mcp-server"
+    bin.install Dir["code-intelligence-external-*"]
+    (bin/"producers").install "producers/manifest.json"
   end
 
   service do
@@ -59,6 +62,8 @@ class CodeIntelligenceMcp < Formula
     # already-running service on the same port and download multi-GB
     # model weights.
     assert_match "code-intelligence-mcp-server", shell_output("#{bin}/code-intelligence-mcp-server --help 2>&1", 0)
+    assert_path_exists bin/"producers/manifest.json"
+    assert_path_exists bin/"code-intelligence-external-rust"
   end
 
   def caveats

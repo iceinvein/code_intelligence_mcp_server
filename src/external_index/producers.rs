@@ -38,7 +38,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
     ProducerSpec {
         id: "typescript",
         default_language: "typescript",
-        default_program: "scip-typescript",
+        default_program: "code-intelligence-external-typescript",
         command_env: "EXTERNAL_INDEX_TYPESCRIPT_COMMAND",
         output_file: "typescript-normalized.json",
     },
@@ -218,6 +218,86 @@ pub struct ProducerCommand {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProducerCommandSource {
+    Override,
+    Bundled,
+    Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedProducerProgram {
+    pub program: String,
+    pub source: ProducerCommandSource,
+}
+
+fn producer_spec_by_id(id: &str) -> Option<ProducerSpec> {
+    PRODUCER_SPECS.iter().copied().find(|spec| spec.id == id)
+}
+
+fn resolve_producer_program(spec: ProducerSpec) -> Option<ResolvedProducerProgram> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()));
+    resolve_producer_program_for_dir(spec, exe_dir.as_deref())
+}
+
+fn resolve_producer_program_for_dir(
+    spec: ProducerSpec,
+    exe_dir: Option<&std::path::Path>,
+) -> Option<ResolvedProducerProgram> {
+    if let Ok(program) = std::env::var(spec.command_env) {
+        if !program.trim().is_empty() {
+            return Some(ResolvedProducerProgram {
+                program,
+                source: ProducerCommandSource::Override,
+            });
+        }
+    }
+
+    if let Some(exe_dir) = exe_dir {
+        let bundled = exe_dir.join(spec.default_program);
+        if is_executable(&bundled) {
+            return Some(ResolvedProducerProgram {
+                program: bundled.to_string_lossy().into_owned(),
+                source: ProducerCommandSource::Bundled,
+            });
+        }
+    }
+
+    if path_lookup(spec.default_program) {
+        return Some(ResolvedProducerProgram {
+            program: spec.default_program.to_string(),
+            source: ProducerCommandSource::Path,
+        });
+    }
+
+    None
+}
+
+fn path_lookup(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program))))
+        .unwrap_or(false)
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
+        && std::fs::metadata(path)
+            .map(|metadata| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    metadata.permissions().mode() & 0o111 != 0
+                }
+                #[cfg(not(unix))]
+                {
+                    !metadata.permissions().readonly()
+                }
+            })
+            .unwrap_or(false)
 }
 
 pub fn typescript_command(program: &str, repo: &str, output: &str) -> ProducerCommand {
@@ -689,6 +769,58 @@ mod tests {
         assert!(cmd
             .args
             .contains(&"/repo/.code-intelligence/external/typescript.json".to_string()));
+    }
+
+    #[test]
+    fn producer_resolution_prefers_env_override() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _env = EnvVarGuard::set(
+            "EXTERNAL_INDEX_RUST_COMMAND",
+            "/custom/code-intelligence-external-rust",
+        );
+        let temp = tempfile::tempdir().expect("tempdir");
+        let spec = producer_spec_by_id("rust").expect("rust spec");
+
+        let resolved = resolve_producer_program_for_dir(spec, Some(temp.path())).expect("resolve");
+
+        assert_eq!(resolved.program, "/custom/code-intelligence-external-rust");
+        assert_eq!(resolved.source, ProducerCommandSource::Override);
+    }
+
+    #[test]
+    fn producer_resolution_uses_bundled_executable_before_path() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundled = temp.path().join("code-intelligence-external-rust");
+        std::fs::write(&bundled, "#!/bin/sh\nexit 0\n").expect("write bundled producer");
+        make_executable(&bundled);
+        let spec = producer_spec_by_id("rust").expect("rust spec");
+
+        let resolved = resolve_producer_program_for_dir(spec, Some(temp.path())).expect("resolve");
+
+        assert_eq!(resolved.program, bundled.to_string_lossy());
+        assert_eq!(resolved.source, ProducerCommandSource::Bundled);
+    }
+
+    #[test]
+    fn producer_resolution_reports_missing_when_not_overridden_or_bundled() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let spec = producer_spec_by_id("rust").expect("rust spec");
+
+        let resolved = resolve_producer_program_for_dir(spec, Some(temp.path()));
+
+        assert!(resolved.is_none());
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod");
     }
 
     #[test]

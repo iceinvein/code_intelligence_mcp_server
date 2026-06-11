@@ -795,6 +795,11 @@ mod tests {
         let bundled = temp.path().join("code-intelligence-external-rust");
         std::fs::write(&bundled, "#!/bin/sh\nexit 0\n").expect("write bundled producer");
         make_executable(&bundled);
+        let path_dir = tempfile::tempdir().expect("path tempdir");
+        let path_program = path_dir.path().join("code-intelligence-external-rust");
+        std::fs::write(&path_program, "#!/bin/sh\nexit 0\n").expect("write path producer");
+        make_executable(&path_program);
+        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
         let spec = producer_spec_by_id("rust").expect("rust spec");
 
         let resolved = resolve_producer_program_for_dir(spec, Some(temp.path())).expect("resolve");
@@ -808,11 +813,31 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
         let temp = tempfile::tempdir().expect("tempdir");
+        let path_dir = tempfile::tempdir().expect("path tempdir");
+        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
         let spec = producer_spec_by_id("rust").expect("rust spec");
 
         let resolved = resolve_producer_program_for_dir(spec, Some(temp.path()));
 
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn producer_resolution_falls_back_to_path_when_no_bundle_exists() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
+        let exe_dir = tempfile::tempdir().expect("exe tempdir");
+        let path_dir = tempfile::tempdir().expect("path tempdir");
+        let path_program = path_dir.path().join("code-intelligence-external-rust");
+        std::fs::write(&path_program, "#!/bin/sh\nexit 0\n").expect("write path producer");
+        make_executable(&path_program);
+        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
+        let spec = producer_spec_by_id("rust").expect("rust spec");
+
+        let resolved = resolve_producer_program_for_dir(spec, Some(exe_dir.path())).expect("resolve");
+
+        assert_eq!(resolved.program, "code-intelligence-external-rust");
+        assert_eq!(resolved.source, ProducerCommandSource::Path);
     }
 
     #[cfg(unix)]

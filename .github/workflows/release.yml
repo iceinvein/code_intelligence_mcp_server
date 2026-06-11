@@ -105,11 +105,15 @@ jobs:
       - name: Build Binary
         run: cargo build --release --target aarch64-apple-darwin
 
-      - name: Archive Binary
+      - name: Archive Binary Bundle
         shell: bash
         run: |
-          cd target/aarch64-apple-darwin/release
-          tar czf ../../../code-intelligence-mcp-server-aarch64-apple-darwin.tar.gz code-intelligence-mcp-server
+          mkdir -p bundle/producers
+          cp target/aarch64-apple-darwin/release/code-intelligence-mcp-server bundle/
+          cp producers/manifest.json bundle/producers/manifest.json
+          cp producers/bin/code-intelligence-external-* bundle/
+          chmod 755 bundle/code-intelligence-mcp-server bundle/code-intelligence-external-*
+          tar czf code-intelligence-mcp-server-aarch64-apple-darwin.tar.gz -C bundle .
 
       - name: Compute tarball SHA256
         id: sha

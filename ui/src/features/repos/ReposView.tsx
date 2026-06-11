@@ -149,6 +149,13 @@ function RepoRow({ repo }: { repo: Repo }) {
               <Field label="edges" value={formatCount(detail.data.stats.edges)} />
               <Field label="descriptions" value={formatCount(detail.data.stats.descriptions)} />
               <Field label="undescribed" value={formatCount(detail.data.stats.undescribed_symbols)} />
+              {detail.data.stats.external_indexes ? (
+                <>
+                  <Field label="external indexes" value={formatCount(detail.data.stats.external_indexes.index_count)} />
+                  <Field label="external refs" value={formatCount(detail.data.stats.external_indexes.reference_count)} />
+                  <Field label="mapped external" value={formatCount(detail.data.stats.external_indexes.mapped_symbol_count)} />
+                </>
+              ) : null}
             </dl>
           ) : (
             <span className="text-xs text-muted-foreground">no stats yet (repo not indexed)</span>

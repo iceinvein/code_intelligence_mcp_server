@@ -104,6 +104,7 @@ pub struct IndexPipeline {
     /// `repo_id` exposed by `/api/repos`. Empty when no `job_registry`
     /// is wired (e.g. test pipelines).
     repo_id: String,
+    external_index_last_run: Arc<tokio::sync::Mutex<Option<Instant>>>,
 }
 
 impl IndexPipeline {
@@ -166,6 +167,7 @@ impl IndexPipeline {
             embedding_generation_lock: Arc::new(tokio::sync::Mutex::new(())),
             job_registry,
             repo_id,
+            external_index_last_run: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -397,6 +399,15 @@ impl IndexPipeline {
             return None;
         }
 
+        if self.external_index_in_cooldown(trigger).await {
+            return Some(json!({
+                "ok": false,
+                "status": "skipped_cooldown",
+                "trigger": "watch",
+                "min_interval_ms": self.config.external_index_min_interval_ms,
+            }));
+        }
+
         let db_path = self.db_path.clone();
         let base_dir = self.config.base_dir.clone();
         let repo_data_dir = self
@@ -433,6 +444,36 @@ impl IndexPipeline {
                 }),
             },
         )
+    }
+
+    async fn external_index_in_cooldown(&self, trigger: ExternalIndexTrigger) -> bool {
+        if trigger != ExternalIndexTrigger::Watch || self.config.external_index_min_interval_ms == 0
+        {
+            return false;
+        }
+
+        let now = Instant::now();
+        let mut last_run = self.external_index_last_run.lock().await;
+        if Self::should_skip_external_index_for_cooldown(
+            *last_run,
+            now,
+            Duration::from_millis(self.config.external_index_min_interval_ms),
+        ) {
+            return true;
+        }
+
+        *last_run = Some(now);
+        false
+    }
+
+    fn should_skip_external_index_for_cooldown(
+        last_run: Option<Instant>,
+        now: Instant,
+        min_interval: Duration,
+    ) -> bool {
+        last_run
+            .map(|last_run| now.duration_since(last_run) < min_interval)
+            .unwrap_or(false)
     }
 
     fn should_run_external_index(config: &Config, trigger: ExternalIndexTrigger) -> bool {
@@ -1235,6 +1276,7 @@ mod tests {
     use super::{should_generate_embedding, ExternalIndexTrigger, IndexPipeline};
     use crate::config::StandaloneConfig;
     use crate::path::Utf8PathBuf;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn skips_file_kind() {
@@ -1368,6 +1410,33 @@ mod tests {
         assert!(IndexPipeline::should_run_external_index(
             &cfg,
             ExternalIndexTrigger::Watch
+        ));
+    }
+
+    #[test]
+    fn external_index_watch_cooldown_skips_runs_inside_interval() {
+        let now = Instant::now();
+
+        assert!(IndexPipeline::should_skip_external_index_for_cooldown(
+            Some(now - Duration::from_millis(500)),
+            now,
+            Duration::from_millis(1_000)
+        ));
+    }
+
+    #[test]
+    fn external_index_watch_cooldown_allows_runs_after_interval() {
+        let now = Instant::now();
+
+        assert!(!IndexPipeline::should_skip_external_index_for_cooldown(
+            Some(now - Duration::from_millis(1_500)),
+            now,
+            Duration::from_millis(1_000)
+        ));
+        assert!(!IndexPipeline::should_skip_external_index_for_cooldown(
+            None,
+            now,
+            Duration::from_millis(1_000)
         ));
     }
 }

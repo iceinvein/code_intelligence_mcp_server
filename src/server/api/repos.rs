@@ -206,6 +206,7 @@ fn read_repo_stats(db_path: &crate::path::Utf8Path) -> Option<Value> {
 
     let latest_index_run = sqlite.latest_index_run().ok().flatten();
     let latest_search_run = sqlite.latest_search_run().ok().flatten();
+    let external = sqlite.external_overlay_stats().ok();
 
     Some(json!({
         "symbols": symbols,
@@ -215,6 +216,14 @@ fn read_repo_stats(db_path: &crate::path::Utf8Path) -> Option<Value> {
         "last_updated_unix_s": last_updated,
         "latest_index_run": latest_index_run,
         "latest_search_run": latest_search_run,
+        "external_indexes": external.map(|external| {
+            json!({
+                "index_count": external.index_count,
+                "symbol_count": external.symbol_count,
+                "reference_count": external.reference_count,
+                "mapped_symbol_count": external.mapped_symbol_count,
+            })
+        }),
     }))
 }
 
@@ -449,5 +458,36 @@ mod tests {
 
         assert_eq!(activity["running"], false);
         assert_eq!(activity["latest_index_run"]["started_at_unix_s"], 456);
+    }
+
+    #[test]
+    fn read_repo_stats_includes_external_overlay_counts() {
+        let tmp = tempdir().expect("tempdir");
+        let data_dir = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 path");
+        let db_path = data_dir.join("code-intelligence.db");
+        let sqlite = SqliteStore::open(&db_path).expect("open sqlite");
+        sqlite.init().expect("init sqlite");
+        sqlite
+            .upsert_external_index(
+                &crate::storage::sqlite::queries::external::ExternalIndexInsert {
+                    id: "external:test",
+                    source_kind: "normalized_json",
+                    producer: "test",
+                    language: "rust",
+                    root_path: "/repo",
+                    artifact_path: "/repo/external.json",
+                    artifact_hash: "hash",
+                    status: "ready",
+                    diagnostics_json: "{}",
+                },
+            )
+            .expect("upsert external index");
+
+        let stats = read_repo_stats(&db_path).expect("stats");
+
+        assert_eq!(stats["external_indexes"]["index_count"], 1);
+        assert_eq!(stats["external_indexes"]["symbol_count"], 0);
+        assert_eq!(stats["external_indexes"]["reference_count"], 0);
+        assert_eq!(stats["external_indexes"]["mapped_symbol_count"], 0);
     }
 }

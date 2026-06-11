@@ -133,6 +133,7 @@ struct ServerTomlExternalIndex {
     auto: Option<bool>,
     producer: Option<String>,
     on_refresh: Option<String>,
+    min_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,6 +219,7 @@ pub struct StandaloneConfig {
     pub external_index_auto: bool,
     pub external_index_producer: Option<String>,
     pub external_index_on_refresh: String,
+    pub external_index_min_interval_ms: u64,
 }
 
 impl Default for StandaloneConfig {
@@ -285,6 +287,7 @@ impl Default for StandaloneConfig {
             external_index_auto: false,
             external_index_producer: None,
             external_index_on_refresh: "disabled".to_string(),
+            external_index_min_interval_ms: 60_000,
         }
     }
 }
@@ -438,6 +441,9 @@ impl StandaloneConfig {
             if let Some(v) = external_index.on_refresh {
                 config.external_index_on_refresh = v;
             }
+            if let Some(v) = external_index.min_interval_ms {
+                config.external_index_min_interval_ms = v;
+            }
         }
 
         validate_loopback_host(&config.host)?;
@@ -550,6 +556,13 @@ impl StandaloneConfig {
         if let Some(on_refresh) = optional_env("EXTERNAL_INDEX_ON_REFRESH") {
             config.external_index_on_refresh = on_refresh;
         }
+        if let Some(min_interval_ms) = optional_env("EXTERNAL_INDEX_MIN_INTERVAL_MS")
+            .as_deref()
+            .map(parse_u64)
+            .transpose()?
+        {
+            config.external_index_min_interval_ms = min_interval_ms;
+        }
 
         // Apply CLI overrides (highest priority)
         if let Some(host) = cli_host {
@@ -637,6 +650,7 @@ impl StandaloneConfig {
             external_index_auto: self.external_index_auto,
             external_index_producer: self.external_index_producer.clone(),
             external_index_on_refresh: self.external_index_on_refresh.clone(),
+            external_index_min_interval_ms: self.external_index_min_interval_ms,
             llm_enabled: true,
             llm_device: EmbeddingsDevice::Cpu,
             llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
@@ -735,6 +749,7 @@ pub struct Config {
     pub external_index_auto: bool,
     pub external_index_producer: Option<String>,
     pub external_index_on_refresh: String,
+    pub external_index_min_interval_ms: u64,
 
     // LLM description generation config
     pub llm_enabled: bool,
@@ -1223,6 +1238,11 @@ impl Config {
         let external_index_producer = optional_env("EXTERNAL_INDEX_PRODUCER");
         let external_index_on_refresh =
             optional_env("EXTERNAL_INDEX_ON_REFRESH").unwrap_or_else(|| "disabled".to_string());
+        let external_index_min_interval_ms = optional_env("EXTERNAL_INDEX_MIN_INTERVAL_MS")
+            .as_deref()
+            .map(parse_u64)
+            .transpose()?
+            .unwrap_or(60_000);
 
         Ok(Self {
             base_dir,
@@ -1304,6 +1324,7 @@ impl Config {
             external_index_auto,
             external_index_producer,
             external_index_on_refresh,
+            external_index_min_interval_ms,
 
             // LLM description generation
             llm_enabled,
@@ -1546,6 +1567,7 @@ mod tests {
             "EXTERNAL_INDEX_AUTO",
             "EXTERNAL_INDEX_PRODUCER",
             "EXTERNAL_INDEX_ON_REFRESH",
+            "EXTERNAL_INDEX_MIN_INTERVAL_MS",
             "EXTERNAL_INDEX_TYPESCRIPT_COMMAND",
             "EXTERNAL_INDEX_RUST_COMMAND",
             "EXTERNAL_INDEX_PYTHON_COMMAND",
@@ -1833,6 +1855,7 @@ mod tests {
         assert!(!cfg.external_index_auto);
         assert!(cfg.external_index_producer.is_none());
         assert_eq!(cfg.external_index_on_refresh, "disabled");
+        assert_eq!(cfg.external_index_min_interval_ms, 60_000);
     }
 
     #[test]
@@ -1893,6 +1916,10 @@ host = "0.0.0.0"
         assert_eq!(
             cfg.external_index_on_refresh,
             standalone.external_index_on_refresh
+        );
+        assert_eq!(
+            cfg.external_index_min_interval_ms,
+            standalone.external_index_min_interval_ms
         );
     }
 
@@ -1960,11 +1987,13 @@ enabled = true
 auto = true
 producer = "typescript"
 on_refresh = "explicit"
+min_interval_ms = 12345
 "#;
         let cfg = StandaloneConfig::from_toml_str(toml_str).unwrap();
         assert!(cfg.external_index_auto);
         assert_eq!(cfg.external_index_producer.as_deref(), Some("typescript"));
         assert_eq!(cfg.external_index_on_refresh, "explicit");
+        assert_eq!(cfg.external_index_min_interval_ms, 12345);
     }
 
     #[test]
@@ -1974,15 +2003,18 @@ on_refresh = "explicit"
         std::env::set_var("EXTERNAL_INDEX_AUTO", "1");
         std::env::set_var("EXTERNAL_INDEX_PRODUCER", "typescript");
         std::env::set_var("EXTERNAL_INDEX_ON_REFRESH", "watch");
+        std::env::set_var("EXTERNAL_INDEX_MIN_INTERVAL_MS", "2500");
 
         let cfg = StandaloneConfig::load(None, None, None).unwrap();
 
         std::env::remove_var("EXTERNAL_INDEX_AUTO");
         std::env::remove_var("EXTERNAL_INDEX_PRODUCER");
         std::env::remove_var("EXTERNAL_INDEX_ON_REFRESH");
+        std::env::remove_var("EXTERNAL_INDEX_MIN_INTERVAL_MS");
         assert!(cfg.external_index_auto);
         assert_eq!(cfg.external_index_producer.as_deref(), Some("typescript"));
         assert_eq!(cfg.external_index_on_refresh, "watch");
+        assert_eq!(cfg.external_index_min_interval_ms, 2500);
     }
 
     #[test]

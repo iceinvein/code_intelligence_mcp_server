@@ -1316,6 +1316,7 @@ fn test_app_state_with_external_index(
         external_index_auto,
         external_index_producer,
         external_index_on_refresh: external_index_on_refresh.to_string(),
+        external_index_min_interval_ms: 60_000,
         llm_enabled: false,
         descriptions_enabled: false,
         llm_device: EmbeddingsDevice::Cpu,

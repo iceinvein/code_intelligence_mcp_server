@@ -1,6 +1,7 @@
 //! External index producer registry and support tiers.
 
 use std::io::ErrorKind;
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -244,7 +245,15 @@ pub fn generate_and_import(
 ) -> Result<Value> {
     let requested_producer = producer
         .or_else(|| producer_for_language(language.as_deref()).map(str::to_string))
-        .unwrap_or_else(|| "typescript".to_string());
+        .or_else(|| detect_producer_for_repo(Utf8Path::new(repo_root)).map(str::to_string));
+    let Some(requested_producer) = requested_producer else {
+        return Ok(json!({
+            "ok": false,
+            "status": "no_supported_producer_detected",
+            "language": language,
+            "supported_producers": supported_producers(),
+        }));
+    };
     let supported_producers = supported_producers();
     if !supported_producers
         .iter()
@@ -263,7 +272,8 @@ pub fn generate_and_import(
         .iter()
         .find(|spec| spec.id == requested_producer)
         .expect("supported producer must have a spec");
-    generate_with_spec(store, repo_root, repo_data_dir, language, *spec)
+    let resolved_language = language.or_else(|| Some(spec.default_language.to_string()));
+    generate_with_spec(store, repo_root, repo_data_dir, resolved_language, *spec)
 }
 
 fn producer_for_language(language: Option<&str>) -> Option<&'static str> {
@@ -272,6 +282,115 @@ fn producer_for_language(language: Option<&str>) -> Option<&'static str> {
         .into_iter()
         .find(|support| support.language == language)
         .and_then(|support| support.producer)
+}
+
+pub fn detect_producer_for_repo(repo_root: &Utf8Path) -> Option<&'static str> {
+    let root = repo_root.as_std_path();
+    let manifest_candidates = [
+        ("typescript", ["package.json", "tsconfig.json"].as_slice()),
+        ("rust", ["Cargo.toml"].as_slice()),
+        ("go", ["go.mod"].as_slice()),
+        (
+            "python",
+            ["pyproject.toml", "setup.py", "requirements.txt"].as_slice(),
+        ),
+        (
+            "java",
+            ["pom.xml", "build.gradle", "settings.gradle"].as_slice(),
+        ),
+        ("swift", ["Package.swift"].as_slice()),
+        ("ruby", ["Gemfile"].as_slice()),
+    ];
+
+    for (producer, files) in manifest_candidates {
+        if files.iter().any(|file| root.join(file).exists()) {
+            return Some(producer);
+        }
+    }
+
+    detect_producer_from_files(root)
+}
+
+fn detect_producer_from_files(root: &Path) -> Option<&'static str> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut counts = [0usize; FILE_PRODUCER_PRIORITY.len()];
+
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == ".git"
+                || name == "target"
+                || name == "node_modules"
+                || name == "dist"
+                || name == "build"
+                || name == ".code-intelligence"
+            {
+                continue;
+            }
+
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+                continue;
+            };
+            if let Some(candidate) = producer_for_extension(ext) {
+                if let Some(index) = FILE_PRODUCER_PRIORITY
+                    .iter()
+                    .position(|producer| *producer == candidate)
+                {
+                    counts[index] += 1;
+                }
+            }
+        }
+    }
+
+    FILE_PRODUCER_PRIORITY
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| counts[*index] > 0)
+        .max_by_key(|(index, _)| (counts[*index], FILE_PRODUCER_PRIORITY.len() - index))
+        .map(|(_, producer)| *producer)
+}
+
+const FILE_PRODUCER_PRIORITY: [&str; 11] = [
+    "typescript",
+    "rust",
+    "go",
+    "python",
+    "java",
+    "kotlin",
+    "csharp",
+    "swift",
+    "cpp",
+    "c",
+    "ruby",
+];
+
+fn producer_for_extension(ext: &str) -> Option<&'static str> {
+    match ext {
+        "ts" | "tsx" | "js" | "jsx" => Some("typescript"),
+        "rs" => Some("rust"),
+        "go" => Some("go"),
+        "py" => Some("python"),
+        "java" => Some("java"),
+        "kt" | "kts" => Some("kotlin"),
+        "cs" => Some("csharp"),
+        "swift" => Some("swift"),
+        "cpp" | "cc" | "cxx" | "hpp" => Some("cpp"),
+        "c" | "h" => Some("c"),
+        "rb" => Some("ruby"),
+        _ => None,
+    }
 }
 
 fn generate_with_spec(
@@ -377,6 +496,9 @@ fn truncate_lossy(bytes: &[u8], max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn language_tiers_cover_existing_indexed_languages() {
@@ -429,11 +551,12 @@ mod tests {
 
     #[test]
     fn language_selection_reports_missing_toolchain_for_non_typescript_producers() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let store = SqliteStore::open_in_memory().expect("sqlite");
         store.init().expect("init");
         let repo = tempfile::tempdir().expect("repo");
         let repo_data = tempfile::tempdir().expect("repo data");
-        std::env::set_var(
+        let _env = EnvVarGuard::set(
             "EXTERNAL_INDEX_RUST_COMMAND",
             "__missing_rust_external_index__",
         );
@@ -447,7 +570,6 @@ mod tests {
         )
         .expect("response");
 
-        std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
         assert_eq!(response["ok"], false);
         assert_eq!(response["status"], "missing_toolchain");
         assert_eq!(response["producer"], "rust");
@@ -487,6 +609,73 @@ mod tests {
     }
 
     #[test]
+    fn detects_rust_producer_from_manifest_when_no_producer_is_requested() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let store = SqliteStore::open_in_memory().expect("sqlite");
+        store.init().expect("init");
+        let repo = tempfile::tempdir().expect("repo");
+        let repo_data = tempfile::tempdir().expect("repo data");
+        std::fs::write(
+            repo.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("write Cargo.toml");
+        let _env = EnvVarGuard::set(
+            "EXTERNAL_INDEX_RUST_COMMAND",
+            "__missing_detected_rust_external_index__",
+        );
+
+        let response = generate_and_import(
+            &store,
+            repo.path().to_str().expect("utf8"),
+            Utf8Path::from_path(repo_data.path()).expect("utf8"),
+            None,
+            None,
+        )
+        .expect("response");
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["status"], "missing_toolchain");
+        assert_eq!(response["producer"], "rust");
+        assert_eq!(response["language"], "rust");
+        assert_eq!(
+            response["program"],
+            "__missing_detected_rust_external_index__"
+        );
+    }
+
+    #[test]
+    fn detects_typescript_producer_from_package_manifest() {
+        let repo = tempfile::tempdir().expect("repo");
+        std::fs::write(repo.path().join("package.json"), "{}").expect("write package.json");
+
+        let detected =
+            detect_producer_for_repo(Utf8Path::from_path(repo.path()).expect("utf8 repo"));
+
+        assert_eq!(detected, Some("typescript"));
+    }
+
+    #[test]
+    fn reports_no_supported_producer_when_repo_has_no_known_signal() {
+        let store = SqliteStore::open_in_memory().expect("sqlite");
+        store.init().expect("init");
+        let repo = tempfile::tempdir().expect("repo");
+        let repo_data = tempfile::tempdir().expect("repo data");
+
+        let response = generate_and_import(
+            &store,
+            repo.path().to_str().expect("utf8"),
+            Utf8Path::from_path(repo_data.path()).expect("utf8"),
+            None,
+            None,
+        )
+        .expect("response");
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["status"], "no_supported_producer_detected");
+    }
+
+    #[test]
     fn typescript_producer_uses_configured_command() {
         let cmd = typescript_command(
             "custom-scip-typescript",
@@ -504,11 +693,12 @@ mod tests {
 
     #[test]
     fn generate_typescript_reports_missing_toolchain_cleanly() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let store = SqliteStore::open_in_memory().expect("sqlite");
         store.init().expect("init");
         let repo = tempfile::tempdir().expect("repo");
         let repo_data = tempfile::tempdir().expect("repo data");
-        std::env::set_var(
+        let _env = EnvVarGuard::set(
             "EXTERNAL_INDEX_TYPESCRIPT_COMMAND",
             "__missing_scip_typescript_binary__",
         );
@@ -522,9 +712,31 @@ mod tests {
         )
         .expect("response");
 
-        std::env::remove_var("EXTERNAL_INDEX_TYPESCRIPT_COMMAND");
         assert_eq!(response["ok"], false);
         assert_eq!(response["status"], "missing_toolchain");
         assert_eq!(response["program"], "__missing_scip_typescript_binary__");
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
     }
 }

@@ -133,6 +133,7 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
             external_index_auto: false,
             external_index_producer: None,
             external_index_on_refresh: "disabled".to_string(),
+            external_index_min_interval_ms: 60_000,
         llm_enabled: false,
         llm_device: EmbeddingsDevice::Cpu,
         llm_model_dir: None,

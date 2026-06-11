@@ -89,6 +89,12 @@ export type RepoStats = {
   last_updated_unix_s: number | null;
   latest_index_run: unknown | null;
   latest_search_run: unknown | null;
+  external_indexes: {
+    index_count: number;
+    symbol_count: number;
+    reference_count: number;
+    mapped_symbol_count: number;
+  } | null;
 };
 
 export type RepoDetail = {

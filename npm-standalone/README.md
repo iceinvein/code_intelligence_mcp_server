@@ -22,6 +22,19 @@ npx -y @iceinvein/code-intelligence-mcp migrate
 
 Then update any explicit dependency on `@iceinvein/code-intelligence-mcp-standalone` to `@iceinvein/code-intelligence-mcp`. The default port moved from `3333` (v3) to `17800` (v4); pass `--port 3333` to `install` if you need to keep the old port for compatibility.
 
+### Bundled External Producers
+
+Code Intelligence installs external producer entrypoints with the server binary. These helpers are resolved from the installed binary directory first, then from `PATH`, with `EXTERNAL_INDEX_<LANG>_COMMAND` still available as an explicit override.
+
+Bundled producers do not make external indexing automatic. The default remains native Tree-sitter indexing:
+
+```bash
+EXTERNAL_INDEX_AUTO=false
+EXTERNAL_INDEX_ON_REFRESH=disabled
+```
+
+Use `generate_external_index` or opt-in refresh configuration to run producers before benchmark-proven defaults are enabled.
+
 ## What changed in v4
 
 | | v3 (this package) | v4 (unified) |

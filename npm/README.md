@@ -119,6 +119,19 @@ Project-scope targets write only a marked block that can be safely replaced or r
 
 > First-time `install` downloads one model by default: the embedding model (Jina Code 1.5b, ~1.5 GB). Two more are off by default and download only when opted into: the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB) when `DESCRIPTIONS_ENABLED=1`, and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB) when `RERANKER_ENABLED=1`. Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
 
+### Bundled External Producers
+
+Code Intelligence installs external producer entrypoints with the server binary. These helpers are resolved from the installed binary directory first, then from `PATH`, with `EXTERNAL_INDEX_<LANG>_COMMAND` still available as an explicit override.
+
+Bundled producers do not make external indexing automatic. The default remains native Tree-sitter indexing:
+
+```bash
+EXTERNAL_INDEX_AUTO=false
+EXTERNAL_INDEX_ON_REFRESH=disabled
+```
+
+Use `generate_external_index` or opt-in refresh configuration to run producers before benchmark-proven defaults are enabled.
+
 ### Dashboard
 
 ![Dashboard](docs/dashboard.png)

@@ -54,3 +54,17 @@ test("validateBundle reports missing producer executables", () => {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("validateBundle reports malformed manifests", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-bundle-"));
+	try {
+		fs.writeFileSync(path.join(dir, "code-intelligence-mcp-server"), "");
+		fs.chmodSync(path.join(dir, "code-intelligence-mcp-server"), 0o755);
+		fs.mkdirSync(path.join(dir, "producers"));
+		fs.writeFileSync(path.join(dir, "producers", "manifest.json"), "{}");
+
+		assert.deepEqual(validateBundle(dir).missing, ["producers/manifest.json"]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

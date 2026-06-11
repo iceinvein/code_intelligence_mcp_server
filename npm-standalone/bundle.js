@@ -26,8 +26,20 @@ function validateBundle(binDir) {
 		missing.push(SERVER_BINARY);
 	}
 
-	const manifest = readManifest(binDir);
-	for (const producer of manifest.producers || []) {
+	let manifest;
+	try {
+		manifest = readManifest(binDir);
+	} catch {
+		missing.push("producers/manifest.json");
+		return { missing };
+	}
+
+	if (!Array.isArray(manifest.producers) || manifest.producers.length === 0) {
+		missing.push("producers/manifest.json");
+		return { missing };
+	}
+
+	for (const producer of manifest.producers) {
 		if (!isExecutable(path.join(binDir, producer.executable))) {
 			missing.push(producer.executable);
 		}

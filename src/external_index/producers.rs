@@ -480,6 +480,44 @@ fn generate_with_spec(
     language: Option<String>,
     spec: ProducerSpec,
 ) -> Result<Value> {
+    let resolved = resolve_producer_program(spec);
+    generate_with_spec_with_resolved(
+        store,
+        repo_root,
+        repo_data_dir,
+        language,
+        spec,
+        resolved,
+    )
+}
+
+fn generate_with_spec_for_exe_dir(
+    store: &SqliteStore,
+    repo_root: &str,
+    repo_data_dir: &Utf8Path,
+    language: Option<String>,
+    spec: ProducerSpec,
+    exe_dir: Option<&std::path::Path>,
+) -> Result<Value> {
+    let resolved = resolve_producer_program_for_dir(spec, exe_dir);
+    generate_with_spec_with_resolved(
+        store,
+        repo_root,
+        repo_data_dir,
+        language,
+        spec,
+        resolved,
+    )
+}
+
+fn generate_with_spec_with_resolved(
+    store: &SqliteStore,
+    repo_root: &str,
+    repo_data_dir: &Utf8Path,
+    language: Option<String>,
+    spec: ProducerSpec,
+    resolved: Option<ResolvedProducerProgram>,
+) -> Result<Value> {
     let external_dir = repo_data_dir.join("external");
     std::fs::create_dir_all(external_dir.as_std_path()).with_context(|| {
         format!(
@@ -488,7 +526,7 @@ fn generate_with_spec(
         )
     })?;
     let output_path = external_dir.join(spec.output_file);
-    let resolved = match resolve_producer_program(spec) {
+    let resolved = match resolved {
         Some(resolved) => resolved,
         None => {
             return Ok(json!({
@@ -656,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn language_selection_reports_missing_toolchain_for_non_typescript_producers() {
+    fn language_selection_reports_missing_bundle_for_non_typescript_producers() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let store = SqliteStore::open_in_memory().expect("sqlite");
         store.init().expect("init");
@@ -877,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_typescript_reports_missing_toolchain_cleanly() {
+    fn generate_typescript_reports_missing_bundle_cleanly() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let store = SqliteStore::open_in_memory().expect("sqlite");
         store.init().expect("init");
@@ -915,13 +953,16 @@ mod tests {
         std::fs::write(repo.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n")
             .expect("write Cargo.toml");
         let repo_data = tempfile::tempdir().expect("repo data");
+        let exe_dir = tempfile::tempdir().expect("exe tempdir");
+        let spec = producer_spec_by_id("rust").expect("rust spec");
 
-        let response = generate_and_import(
+        let response = generate_with_spec_for_exe_dir(
             &store,
             repo.path().to_str().expect("utf8"),
             Utf8Path::from_path(repo_data.path()).expect("utf8"),
             None,
-            None,
+            spec,
+            Some(exe_dir.path()),
         )
         .expect("response");
 

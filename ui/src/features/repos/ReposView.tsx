@@ -154,12 +154,12 @@ function RepoRow({ repo }: { repo: Repo }) {
                   <Field label="external indexes" value={formatCount(detail.data.stats.external_indexes.index_count)} />
                   <Field label="external refs" value={formatCount(detail.data.stats.external_indexes.reference_count)} />
                   <Field label="mapped external" value={formatCount(detail.data.stats.external_indexes.mapped_symbol_count)} />
-                  <Field
-                    label="producers"
-                    value={`${detail.data.stats.external_producers.filter((producer) => producer.availability !== "missing").length}/${detail.data.stats.external_producers.length}`}
-                  />
                 </>
               ) : null}
+              <Field
+                label="producers"
+                value={`${detail.data.stats.external_producers.filter((producer) => producer.availability !== "missing").length}/${detail.data.stats.external_producers.length}`}
+              />
             </dl>
           ) : (
             <span className="text-xs text-muted-foreground">no stats yet (repo not indexed)</span>

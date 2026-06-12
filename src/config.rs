@@ -78,6 +78,7 @@ struct ServerToml {
     ranking: Option<ServerTomlRanking>,
     rrf: Option<ServerTomlRrf>,
     learning: Option<ServerTomlLearning>,
+    external_index: Option<ServerTomlExternalIndex>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +126,14 @@ struct ServerTomlLearning {
     enabled: Option<bool>,
     selection_boost: Option<f32>,
     file_affinity_boost: Option<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlExternalIndex {
+    auto: Option<bool>,
+    producer: Option<String>,
+    on_refresh: Option<String>,
+    min_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +216,10 @@ pub struct StandaloneConfig {
     pub learning_enabled: bool,
     pub learning_selection_boost: f32,
     pub learning_file_affinity_boost: f32,
+    pub external_index_auto: bool,
+    pub external_index_producer: Option<String>,
+    pub external_index_on_refresh: String,
+    pub external_index_min_interval_ms: u64,
 }
 
 impl Default for StandaloneConfig {
@@ -271,6 +284,10 @@ impl Default for StandaloneConfig {
             learning_enabled: true,
             learning_selection_boost: 0.1,
             learning_file_affinity_boost: 0.05,
+            external_index_auto: false,
+            external_index_producer: None,
+            external_index_on_refresh: "disabled".to_string(),
+            external_index_min_interval_ms: 60_000,
         }
     }
 }
@@ -414,6 +431,21 @@ impl StandaloneConfig {
             }
         }
 
+        if let Some(external_index) = parsed.external_index {
+            if let Some(v) = external_index.auto {
+                config.external_index_auto = v;
+            }
+            if let Some(v) = external_index.producer {
+                config.external_index_producer = Some(v);
+            }
+            if let Some(v) = external_index.on_refresh {
+                config.external_index_on_refresh = v;
+            }
+            if let Some(v) = external_index.min_interval_ms {
+                config.external_index_min_interval_ms = v;
+            }
+        }
+
         validate_loopback_host(&config.host)?;
         Ok(config)
     }
@@ -511,6 +543,27 @@ impl StandaloneConfig {
             config.default_watch_mode = watch;
         }
 
+        if let Some(enabled) = optional_env("EXTERNAL_INDEX_AUTO")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+        {
+            config.external_index_auto = enabled;
+        }
+        if let Some(producer) = optional_env("EXTERNAL_INDEX_PRODUCER") {
+            config.external_index_producer = Some(producer);
+        }
+        if let Some(on_refresh) = optional_env("EXTERNAL_INDEX_ON_REFRESH") {
+            config.external_index_on_refresh = on_refresh;
+        }
+        if let Some(min_interval_ms) = optional_env("EXTERNAL_INDEX_MIN_INTERVAL_MS")
+            .as_deref()
+            .map(parse_u64)
+            .transpose()?
+        {
+            config.external_index_min_interval_ms = min_interval_ms;
+        }
+
         // Apply CLI overrides (highest priority)
         if let Some(host) = cli_host {
             config.host = host.to_string();
@@ -594,6 +647,10 @@ impl StandaloneConfig {
             metrics_enabled: true,
             metrics_port: 9090,
             package_detection_enabled: true,
+            external_index_auto: self.external_index_auto,
+            external_index_producer: self.external_index_producer.clone(),
+            external_index_on_refresh: self.external_index_on_refresh.clone(),
+            external_index_min_interval_ms: self.external_index_min_interval_ms,
             llm_enabled: true,
             llm_device: EmbeddingsDevice::Cpu,
             llm_model_dir: Some(global_dir.join("models/qwen2.5-coder-1.5b-gguf")),
@@ -687,6 +744,12 @@ pub struct Config {
 
     // Package detection config (09-04)
     pub package_detection_enabled: bool,
+
+    // External index producer config
+    pub external_index_auto: bool,
+    pub external_index_producer: Option<String>,
+    pub external_index_on_refresh: String,
+    pub external_index_min_interval_ms: u64,
 
     // LLM description generation config
     pub llm_enabled: bool,
@@ -1167,6 +1230,20 @@ impl Config {
             .map(parse_usize)
             .transpose()?;
 
+        let external_index_auto = optional_env("EXTERNAL_INDEX_AUTO")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(false);
+        let external_index_producer = optional_env("EXTERNAL_INDEX_PRODUCER");
+        let external_index_on_refresh =
+            optional_env("EXTERNAL_INDEX_ON_REFRESH").unwrap_or_else(|| "disabled".to_string());
+        let external_index_min_interval_ms = optional_env("EXTERNAL_INDEX_MIN_INTERVAL_MS")
+            .as_deref()
+            .map(parse_u64)
+            .transpose()?
+            .unwrap_or(60_000);
+
         Ok(Self {
             base_dir,
             db_path,
@@ -1242,6 +1319,12 @@ impl Config {
 
             // Package detection config (09-04)
             package_detection_enabled,
+
+            // External index producer config
+            external_index_auto,
+            external_index_producer,
+            external_index_on_refresh,
+            external_index_min_interval_ms,
 
             // LLM description generation
             llm_enabled,
@@ -1481,6 +1564,21 @@ mod tests {
             "RERANKER_ENABLED",
             "DESCRIPTIONS_ENABLED",
             "INDEX_CONSENT_REQUIRED",
+            "EXTERNAL_INDEX_AUTO",
+            "EXTERNAL_INDEX_PRODUCER",
+            "EXTERNAL_INDEX_ON_REFRESH",
+            "EXTERNAL_INDEX_MIN_INTERVAL_MS",
+            "EXTERNAL_INDEX_TYPESCRIPT_COMMAND",
+            "EXTERNAL_INDEX_RUST_COMMAND",
+            "EXTERNAL_INDEX_PYTHON_COMMAND",
+            "EXTERNAL_INDEX_GO_COMMAND",
+            "EXTERNAL_INDEX_JAVA_COMMAND",
+            "EXTERNAL_INDEX_KOTLIN_COMMAND",
+            "EXTERNAL_INDEX_CSHARP_COMMAND",
+            "EXTERNAL_INDEX_SWIFT_COMMAND",
+            "EXTERNAL_INDEX_C_COMMAND",
+            "EXTERNAL_INDEX_CPP_COMMAND",
+            "EXTERNAL_INDEX_RUBY_COMMAND",
             "RERANKER_MODEL_PATH",
             "RERANKER_TOP_K",
             "RERANKER_CACHE_DIR",
@@ -1754,6 +1852,10 @@ mod tests {
         assert_eq!(cfg.port, 17800);
         assert_eq!(cfg.warm_ttl_seconds, 300);
         assert!(cfg.data_dir.to_string().contains("code-intelligence"));
+        assert!(!cfg.external_index_auto);
+        assert!(cfg.external_index_producer.is_none());
+        assert_eq!(cfg.external_index_on_refresh, "disabled");
+        assert_eq!(cfg.external_index_min_interval_ms, 60_000);
     }
 
     #[test]
@@ -1806,6 +1908,19 @@ host = "0.0.0.0"
         assert_eq!(cfg.reranker_enabled, standalone.reranker_enabled);
         // Same for the descriptions toggle.
         assert_eq!(cfg.descriptions_enabled, standalone.descriptions_enabled);
+        assert_eq!(cfg.external_index_auto, standalone.external_index_auto);
+        assert_eq!(
+            cfg.external_index_producer,
+            standalone.external_index_producer
+        );
+        assert_eq!(
+            cfg.external_index_on_refresh,
+            standalone.external_index_on_refresh
+        );
+        assert_eq!(
+            cfg.external_index_min_interval_ms,
+            standalone.external_index_min_interval_ms
+        );
     }
 
     #[test]
@@ -1863,6 +1978,43 @@ enabled = true
             cfg.descriptions_enabled,
             "DESCRIPTIONS_ENABLED=1 should enable descriptions in standalone load()"
         );
+    }
+
+    #[test]
+    fn standalone_config_external_index_from_toml() {
+        let toml_str = r#"
+[external_index]
+auto = true
+producer = "typescript"
+on_refresh = "explicit"
+min_interval_ms = 12345
+"#;
+        let cfg = StandaloneConfig::from_toml_str(toml_str).unwrap();
+        assert!(cfg.external_index_auto);
+        assert_eq!(cfg.external_index_producer.as_deref(), Some("typescript"));
+        assert_eq!(cfg.external_index_on_refresh, "explicit");
+        assert_eq!(cfg.external_index_min_interval_ms, 12345);
+    }
+
+    #[test]
+    fn standalone_config_load_external_index_from_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        std::env::set_var("EXTERNAL_INDEX_AUTO", "1");
+        std::env::set_var("EXTERNAL_INDEX_PRODUCER", "typescript");
+        std::env::set_var("EXTERNAL_INDEX_ON_REFRESH", "watch");
+        std::env::set_var("EXTERNAL_INDEX_MIN_INTERVAL_MS", "2500");
+
+        let cfg = StandaloneConfig::load(None, None, None).unwrap();
+
+        std::env::remove_var("EXTERNAL_INDEX_AUTO");
+        std::env::remove_var("EXTERNAL_INDEX_PRODUCER");
+        std::env::remove_var("EXTERNAL_INDEX_ON_REFRESH");
+        std::env::remove_var("EXTERNAL_INDEX_MIN_INTERVAL_MS");
+        assert!(cfg.external_index_auto);
+        assert_eq!(cfg.external_index_producer.as_deref(), Some("typescript"));
+        assert_eq!(cfg.external_index_on_refresh, "watch");
+        assert_eq!(cfg.external_index_min_interval_ms, 2500);
     }
 
     #[test]

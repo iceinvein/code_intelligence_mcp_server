@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 use serde_json::json;
 
+use crate::external_index::provider::{merged_references_to_internal_symbol, MergedReference};
 use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
 use crate::retrieval::assembler::FormatMode;
 use crate::storage::sqlite::{SqliteStore, SymbolRow};
@@ -81,6 +82,304 @@ mod usage_examples_tests {
         // Unscoped (None): both callers surface.
         let all = collect_usage_examples(&store, "foo", None, 20).unwrap();
         assert_eq!(all.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod find_references_tests {
+    use super::*;
+    use std::path::Path;
+
+    use crate::external_index::importer::import_external_index;
+    use crate::external_index::provider::{MergedReference, ReferenceSource};
+    use crate::storage::sqlite::{EdgeRow, SqliteStore, SymbolRow};
+
+    fn merged_reference(source: ReferenceSource) -> MergedReference {
+        MergedReference {
+            to_symbol_id: "target_internal".to_string(),
+            from_symbol_id: Some("caller_internal".to_string()),
+            from_external_symbol_id: match source {
+                ReferenceSource::Native => None,
+                ReferenceSource::External => Some("external-caller".to_string()),
+            },
+            from_symbol_name: match source {
+                ReferenceSource::Native => Some("caller".to_string()),
+                ReferenceSource::External => None,
+            },
+            from_symbol_file: match source {
+                ReferenceSource::Native => Some("src/caller.ts".to_string()),
+                ReferenceSource::External => None,
+            },
+            reference_type: "call".to_string(),
+            at_file: Some("src/caller.ts".to_string()),
+            at_line: Some(2),
+            at_column: match source {
+                ReferenceSource::Native => None,
+                ReferenceSource::External => Some(12),
+            },
+            at_end_line: match source {
+                ReferenceSource::Native => None,
+                ReferenceSource::External => Some(2),
+            },
+            at_end_column: match source {
+                ReferenceSource::Native => None,
+                ReferenceSource::External => Some(20),
+            },
+            source,
+            confidence: match source {
+                ReferenceSource::Native => 0.75,
+                ReferenceSource::External => 1.0,
+            },
+            external_index_id: match source {
+                ReferenceSource::Native => None,
+                ReferenceSource::External => Some("external:fixture".to_string()),
+            },
+            provenance: match source {
+                ReferenceSource::Native => None,
+                ReferenceSource::External => Some("fixture".to_string()),
+            },
+            metadata_json: match source {
+                ReferenceSource::Native => None,
+                ReferenceSource::External => Some("{}".to_string()),
+            },
+        }
+    }
+
+    fn store_with_symbols() -> SqliteStore {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+        store.init().expect("init sqlite");
+        insert_symbol(&store, "target_internal", "src/app.ts", "target", 1, 3);
+        insert_symbol(&store, "caller_internal", "src/caller.ts", "caller", 1, 4);
+        store
+    }
+
+    fn insert_symbol(
+        store: &SqliteStore,
+        id: &str,
+        file_path: &str,
+        name: &str,
+        start_line: u32,
+        end_line: u32,
+    ) {
+        store
+            .upsert_symbol(&SymbolRow {
+                id: id.to_string(),
+                file_path: file_path.to_string(),
+                language: "typescript".to_string(),
+                kind: "function".to_string(),
+                name: name.to_string(),
+                exported: false,
+                start_byte: 0,
+                end_byte: 60,
+                start_line,
+                end_line,
+                text: format!("function {name}() {{}}"),
+            })
+            .expect("insert symbol");
+    }
+
+    fn insert_edge(
+        store: &SqliteStore,
+        from_symbol_id: &str,
+        to_symbol_id: &str,
+        edge_type: &str,
+        at_file: &str,
+        at_line: u32,
+        confidence: f32,
+    ) {
+        store
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: from_symbol_id.to_string(),
+                to_symbol_id: to_symbol_id.to_string(),
+                edge_type: edge_type.to_string(),
+                at_file: Some(at_file.to_string()),
+                at_line: Some(at_line),
+                confidence,
+                evidence_count: 1,
+                resolution: "resolved".to_string(),
+            })
+            .expect("insert edge");
+    }
+
+    #[test]
+    fn response_includes_imported_external_reference_provenance() {
+        let store = store_with_symbols();
+        let report = import_external_index(
+            &store,
+            "/fixture/repo",
+            Path::new("tests/fixtures/external_index/typescript-normalized.json"),
+        )
+        .expect("import external index");
+
+        let response = collect_find_references_response(
+            &store,
+            "target".to_string(),
+            None,
+            Some("call".to_string()),
+            Some(20),
+        )
+        .expect("find references response");
+
+        assert_eq!(response["symbol_name"], "target");
+        assert_eq!(response["reference_type"], "call");
+        assert_eq!(response["count"], 1);
+        let reference = &response["references"][0];
+        assert_eq!(reference["to_symbol_id"], "target_internal");
+        assert_eq!(reference["reference_type"], "call");
+        assert_eq!(reference["at_file"], "src/caller.ts");
+        assert_eq!(reference["at_line"], 2);
+        assert_eq!(reference["source"], "external");
+        assert_eq!(reference["confidence"], 1.0);
+        assert_eq!(reference["external_index_id"], report.index_id);
+        assert_eq!(reference["provenance"], "fixture");
+        assert_eq!(reference["metadata_json"], "{}");
+    }
+
+    #[test]
+    fn response_keeps_native_fallback_old_fields_with_source() {
+        let store = store_with_symbols();
+        insert_edge(
+            &store,
+            "caller_internal",
+            "target_internal",
+            "call",
+            "src/caller.ts",
+            2,
+            0.75,
+        );
+
+        let response = collect_find_references_response(
+            &store,
+            "target".to_string(),
+            None,
+            Some("call".to_string()),
+            Some(20),
+        )
+        .expect("find references response");
+
+        assert_eq!(response["count"], 1);
+        let reference = &response["references"][0];
+        assert_eq!(reference["to_symbol_id"], "target_internal");
+        assert_eq!(reference["from_symbol_id"], "caller_internal");
+        assert_eq!(reference["from_symbol_name"], "caller");
+        assert_eq!(reference["from_symbol_file"], "src/caller.ts");
+        assert_eq!(reference["reference_type"], "call");
+        assert_eq!(reference["at_file"], "src/caller.ts");
+        assert_eq!(reference["at_line"], 2);
+        assert_eq!(reference["source"], "native");
+        assert_eq!(reference["confidence"], 0.75);
+        assert!(reference["external_index_id"].is_null());
+        assert!(reference["provenance"].is_null());
+        assert!(reference["metadata_json"].is_null());
+    }
+
+    #[test]
+    fn response_preserves_targets_and_disambiguation_for_same_name_roots() {
+        let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+        store.init().expect("init sqlite");
+        insert_symbol(&store, "target_a", "src/a.ts", "target", 1, 3);
+        insert_symbol(&store, "target_b", "src/b.ts", "target", 1, 3);
+        insert_symbol(&store, "caller_a", "src/caller_a.ts", "callerA", 1, 4);
+        insert_symbol(&store, "caller_b", "src/caller_b.ts", "callerB", 1, 4);
+        insert_edge(
+            &store,
+            "caller_a",
+            "target_a",
+            "call",
+            "src/caller_a.ts",
+            2,
+            1.0,
+        );
+        insert_edge(
+            &store,
+            "caller_b",
+            "target_b",
+            "call",
+            "src/caller_b.ts",
+            2,
+            1.0,
+        );
+
+        let response = collect_find_references_response(
+            &store,
+            "target".to_string(),
+            None,
+            Some("call".to_string()),
+            Some(20),
+        )
+        .expect("find references response");
+
+        assert_eq!(response["count"], 2);
+        assert_eq!(response["targets"].as_array().expect("targets").len(), 2);
+        assert!(response["disambiguation"].is_object());
+        assert_eq!(
+            response["disambiguation"]["available_files"]
+                .as_array()
+                .expect("available files")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn formats_external_reference_with_provenance_overlay_fields() {
+        let value = format_find_reference(merged_reference(ReferenceSource::External));
+
+        assert_eq!(value["to_symbol_id"], "target_internal");
+        assert_eq!(value["from_symbol_id"], "caller_internal");
+        assert_eq!(value["from_symbol_name"], "");
+        assert_eq!(value["from_symbol_file"], "");
+        assert_eq!(value["reference_type"], "call");
+        assert_eq!(value["at_file"], "src/caller.ts");
+        assert_eq!(value["at_line"], 2);
+        assert_eq!(value["source"], "external");
+        assert_eq!(value["confidence"], 1.0);
+        assert_eq!(value["external_index_id"], "external:fixture");
+        assert_eq!(value["provenance"], "fixture");
+        assert_eq!(value["metadata_json"], "{}");
+        assert_eq!(value["from_external_symbol_id"], "external-caller");
+        assert_eq!(value["at_column"], 12);
+        assert_eq!(value["at_end_line"], 2);
+        assert_eq!(value["at_end_column"], 20);
+    }
+
+    #[test]
+    fn formats_external_reference_without_internal_caller_with_legacy_string_fallback() {
+        let mut reference = merged_reference(ReferenceSource::External);
+        reference.from_symbol_id = None;
+
+        let value = format_find_reference(reference);
+
+        assert_eq!(value["from_symbol_id"], "");
+        assert_eq!(value["from_symbol_name"], "");
+        assert_eq!(value["from_symbol_file"], "");
+        assert_eq!(value["source"], "external");
+        assert_eq!(value["external_index_id"], "external:fixture");
+        assert_eq!(value["provenance"], "fixture");
+        assert_eq!(value["metadata_json"], "{}");
+        assert_eq!(value["from_external_symbol_id"], "external-caller");
+    }
+
+    #[test]
+    fn formats_native_reference_with_backward_compatible_old_fields() {
+        let value = format_find_reference(merged_reference(ReferenceSource::Native));
+
+        assert_eq!(value["to_symbol_id"], "target_internal");
+        assert_eq!(value["from_symbol_id"], "caller_internal");
+        assert_eq!(value["from_symbol_name"], "caller");
+        assert_eq!(value["from_symbol_file"], "src/caller.ts");
+        assert_eq!(value["reference_type"], "call");
+        assert_eq!(value["at_file"], "src/caller.ts");
+        assert_eq!(value["at_line"], 2);
+        assert_eq!(value["source"], "native");
+        assert_eq!(value["confidence"], 0.75);
+        assert!(value["external_index_id"].is_null());
+        assert!(value["provenance"].is_null());
+        assert!(value["metadata_json"].is_null());
+        assert!(value["from_external_symbol_id"].is_null());
+        assert!(value["at_column"].is_null());
+        assert!(value["at_end_line"].is_null());
+        assert!(value["at_end_column"].is_null());
     }
 }
 
@@ -264,17 +563,30 @@ pub fn handle_find_references(
     state: &AppState,
     tool: FindReferencesTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = clamp_limit(tool.limit, 200, 500);
-    let reference_type = tool.reference_type.unwrap_or_else(|| "all".to_string());
+    collect_find_references_response(
+        state.sqlite.as_ref(),
+        tool.symbol_name,
+        tool.file,
+        tool.reference_type,
+        tool.limit,
+    )
+}
 
-    let sqlite = &state.sqlite;
-
+fn collect_find_references_response(
+    sqlite: &SqliteStore,
+    symbol_name: String,
+    file: Option<String>,
+    requested_reference_type: Option<String>,
+    requested_limit: Option<u32>,
+) -> Result<serde_json::Value, anyhow::Error> {
+    let limit = clamp_limit(requested_limit, 200, 500);
+    let reference_type = requested_reference_type.unwrap_or_else(|| "all".to_string());
     // Use file parameter for disambiguation if provided
-    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file.as_deref(), 20)?;
+    let roots = sqlite.search_symbols_by_exact_name(&symbol_name, file.as_deref(), 20)?;
 
     // Check for disambiguation needs
     let unique_files: HashSet<&str> = roots.iter().map(|r| r.file_path.as_str()).collect();
-    let needs_disambiguation = unique_files.len() > 1 && tool.file.is_none();
+    let needs_disambiguation = unique_files.len() > 1 && file.is_none();
 
     let mut out = Vec::new();
     let mut targets: Vec<serde_json::Value> = Vec::new();
@@ -290,30 +602,26 @@ pub fn handle_find_references(
                 "file_path": root.file_path,
             }));
         }
-        let edges = sqlite.list_edges_to(&root.id, limit * 3)?;
-        for e in edges {
-            if out.len() >= limit {
-                break;
-            }
-            if reference_type != "all" && reference_type != e.edge_type {
-                continue;
-            }
-            let from = sqlite.get_symbol_by_id(&e.from_symbol_id)?;
-            out.push(json!({
-                "to_symbol_id": e.to_symbol_id,
-                "from_symbol_id": e.from_symbol_id,
-                "from_symbol_name": from.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
-                "from_symbol_file": from.as_ref().map(|s| s.file_path.clone()).unwrap_or_default(),
-                "reference_type": e.edge_type,
-                "at_file": e.at_file,
-                "at_line": e.at_line,
-            }));
+        let remaining_limit = limit.saturating_sub(out.len());
+        let relationship_filter = if reference_type.eq_ignore_ascii_case("all") {
+            None
+        } else {
+            Some(reference_type.as_str())
+        };
+        let references = merged_references_to_internal_symbol(
+            sqlite,
+            &root.id,
+            relationship_filter,
+            remaining_limit,
+        )?;
+        for reference in references {
+            out.push(format_find_reference(reference));
         }
     }
 
     let budgeted_references = budget_array(out, limit);
     let mut response = json!({
-        "symbol_name": tool.symbol_name,
+        "symbol_name": symbol_name,
         "reference_type": reference_type,
         "count": budgeted_references.returned_count,
         "targets": targets,
@@ -326,7 +634,7 @@ pub fn handle_find_references(
         response["disambiguation"] = json!({
             "hint": format!(
                 "Multiple '{}' symbols found in {} files. Results include references to all. Use 'file' parameter to filter to a specific symbol.",
-                tool.symbol_name,
+                symbol_name,
                 file_paths.len()
             ),
             "available_files": file_paths,
@@ -334,6 +642,27 @@ pub fn handle_find_references(
     }
 
     Ok(response)
+}
+
+fn format_find_reference(reference: MergedReference) -> serde_json::Value {
+    json!({
+        "to_symbol_id": reference.to_symbol_id,
+        "from_symbol_id": reference.from_symbol_id.unwrap_or_default(),
+        "from_symbol_name": reference.from_symbol_name.unwrap_or_default(),
+        "from_symbol_file": reference.from_symbol_file.unwrap_or_default(),
+        "reference_type": reference.reference_type,
+        "at_file": reference.at_file,
+        "at_line": reference.at_line,
+        "source": reference.source,
+        "confidence": reference.confidence,
+        "external_index_id": reference.external_index_id,
+        "provenance": reference.provenance,
+        "metadata_json": reference.metadata_json,
+        "from_external_symbol_id": reference.from_external_symbol_id,
+        "at_column": reference.at_column,
+        "at_end_line": reference.at_end_line,
+        "at_end_column": reference.at_end_column,
+    })
 }
 
 /// Handle get_usage_examples tool

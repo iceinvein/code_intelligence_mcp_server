@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+name=$(basename "$0")
+language=${name#code-intelligence-external-}
+
+if [ "${1:-}" != "index" ]; then
+  echo "usage: $name index --output <normalized-json>" >&2
+  exit 64
+fi
+
+echo "$name is bundled but no $language generator is enabled yet" >&2
+exit 69

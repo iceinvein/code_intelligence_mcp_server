@@ -214,11 +214,11 @@ Tier 3: compile-database producers.
 
 These require `compile_commands.json` or equivalent. Without it, the tool reports precise coverage unavailable and falls back to Tree-sitter.
 
-Tier 4: fallback-only initially.
+Tier 4: fallback wrapper.
 
 - Ruby.
 
-Ruby remains covered by existing Tree-sitter extraction unless a reliable external producer is later selected.
+Ruby has the same normalized-artifact producer wrapper contract as the other supported languages, but Tree-sitter remains the practical fallback unless a reliable configured command is available.
 
 ## Error Handling
 

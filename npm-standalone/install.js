@@ -4,6 +4,7 @@ const axios = require("axios");
 const tar = require("tar");
 const os = require("os");
 const crypto = require("crypto");
+const { validateBundle } = require("./bundle");
 
 const REPO = "iceinvein/code_intelligence_mcp_server";
 const BINARY_NAME = "code-intelligence-mcp-server";
@@ -94,14 +95,13 @@ async function install() {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
 
-		// Verify the binary exists
-		if (fs.existsSync(destBinary)) {
+		const validation = validateBundle(binDir);
+		if (validation.missing.length === 0) {
 			fs.chmodSync(destBinary, 0o755);
 			console.log(`Successfully installed to ${destBinary}`);
 		} else {
-			console.error("Extraction failed: Binary not found after unpacking.");
-			console.error(`Expected location: ${destBinary}`);
-			// List contents of binDir to help debug
+			console.error("Extraction failed: bundle is incomplete.");
+			console.error(`Missing: ${validation.missing.join(", ")}`);
 			console.log("Contents of bin directory:", fs.readdirSync(binDir));
 			process.exit(1);
 		}

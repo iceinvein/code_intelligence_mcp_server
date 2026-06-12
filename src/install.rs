@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::cli::{InstallOpts, MigrateOpts};
+use crate::config::StandaloneConfig;
 
 pub const LABEL: &str = "com.iceinvein.code-intelligence";
 pub const DEFAULT_PORT: u16 = 17800;
@@ -138,6 +139,31 @@ fn determine_daemon_state(label_running: bool, port_in_use: bool) -> DaemonState
     } else {
         DaemonState::Stopped
     }
+}
+
+fn render_producer_summary(
+    producers: &[crate::external_index::manifest::ProducerAvailability],
+    auto_enabled: bool,
+) -> String {
+    let available = producers
+        .iter()
+        .filter(|producer| producer.availability != "missing")
+        .count();
+    let policy = if auto_enabled {
+        "auto indexing enabled"
+    } else {
+        "auto indexing disabled"
+    };
+    format!(
+        "External producers: bundled {available}/{}, {policy}",
+        producers.len()
+    )
+}
+
+fn external_index_auto_enabled() -> bool {
+    StandaloneConfig::load(None, None, None)
+        .map(|cfg| cfg.external_index_auto)
+        .unwrap_or(false)
 }
 
 // ---------- plist template ----------
@@ -335,6 +361,12 @@ pub fn handle_install(opts: InstallOpts) -> Result<()> {
         println!("Daemon registered with launchd (label: {LABEL}, port: {port})");
     }
 
+    let producers = crate::external_index::manifest::producer_availability().unwrap_or_default();
+    println!(
+        "{}",
+        render_producer_summary(&producers, external_index_auto_enabled())
+    );
+
     let want_patch = match opts.patch_claude_json {
         Some(b) => b,
         None => prompt_yes_no(
@@ -466,6 +498,11 @@ pub fn handle_status() -> Result<()> {
 
     println!("  data dir:  {}", data_dir()?.display());
     println!("  logs:      {}", logs_dir()?.display());
+    let producers = crate::external_index::manifest::producer_availability().unwrap_or_default();
+    println!(
+        "{}",
+        render_producer_summary(&producers, external_index_auto_enabled())
+    );
     Ok(())
 }
 
@@ -721,6 +758,35 @@ mod tests {
     fn render_plist_respects_no_autostart() {
         let plist = render_plist(Path::new("/x"), 18000, false, Path::new("/Users/test"));
         assert!(plist.contains("<key>RunAtLoad</key>\n  <false/>"));
+    }
+
+    #[test]
+    fn producer_summary_counts_available_and_missing() {
+        let producers = vec![
+            crate::external_index::manifest::ProducerAvailability {
+                id: "rust".to_string(),
+                language: "rust".to_string(),
+                tier: "first_class".to_string(),
+                executable: "/bin/code-intelligence-external-rust".to_string(),
+                availability: "bundled".to_string(),
+            },
+            crate::external_index::manifest::ProducerAvailability {
+                id: "python".to_string(),
+                language: "python".to_string(),
+                tier: "first_class".to_string(),
+                executable: "code-intelligence-external-python".to_string(),
+                availability: "missing".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            render_producer_summary(&producers, false),
+            "External producers: bundled 1/2, auto indexing disabled"
+        );
+        assert_eq!(
+            render_producer_summary(&producers, true),
+            "External producers: bundled 1/2, auto indexing enabled"
+        );
     }
 
     #[test]

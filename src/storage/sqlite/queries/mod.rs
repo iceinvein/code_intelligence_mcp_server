@@ -6,6 +6,7 @@ pub mod decorators;
 pub mod descriptions;
 pub mod docstrings;
 pub mod edges;
+pub mod external;
 pub mod files;
 pub mod framework;
 pub mod metrics;

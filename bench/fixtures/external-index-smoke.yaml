@@ -1,0 +1,72 @@
+meta:
+  repo: external-index-smoke
+  upstream_url: "."
+  upstream_sha: "HEAD"
+  authored_at: "2026-06-07"
+  authored_against_schema_version: 22
+
+questions:
+  - id: external-index-symbol-01
+    task_type: symbol_lookup
+    difficulty: easy
+    question: "In the external index smoke fixture, where is `target` defined?"
+    rubric: |
+      Must identify the normalized external symbol for target in
+      tests/fixtures/external_index/typescript-normalized.json. Correct answers
+      should mention that the producer maps target to src/app.ts lines 1-3.
+      Penalize: claiming the fixture defines target in src/caller.ts.
+    expected:
+      citations:
+        - { file: "tests/fixtures/external_index/typescript-normalized.json", line_range: [7, 16], symbol: "target" }
+      files:
+        - "tests/fixtures/external_index/typescript-normalized.json"
+      facts:
+        - "target"
+        - "src/app.ts"
+        - ["line 1", "lines 1-3", "1-3"]
+      forbidden:
+        - "src/caller.ts target"
+      forbidden_strict: false
+
+  - id: external-index-callsite-01
+    task_type: multi_hop
+    difficulty: medium
+    question: "Which fixture callsite calls `target`, and what provenance should be reported?"
+    rubric: |
+      Must cite the reference row in tests/fixtures/external_index/typescript-normalized.json
+      showing caller -> target at src/caller.ts line 2 with provenance fixture.
+      Correct answers should distinguish the callsite from the target definition.
+      Penalize: omitting provenance or saying the call is only a Tree-sitter fallback.
+    expected:
+      citations:
+        - { file: "tests/fixtures/external_index/typescript-normalized.json", line_range: [28, 40], symbol: "caller -> target" }
+      files:
+        - "tests/fixtures/external_index/typescript-normalized.json"
+      facts:
+        - "src/caller.ts"
+        - ["line 2", "at_line 2"]
+        - "fixture"
+      forbidden:
+        - "fallback only"
+      forbidden_strict: false
+
+  - id: external-index-impact-01
+    task_type: impact
+    difficulty: medium
+    question: "If `target` changes in the external index smoke fixture, what caller is affected?"
+    rubric: |
+      Must cite the normalized call reference showing caller depends on target.
+      Correct answers should name caller, src/caller.ts, and the fixture provenance.
+      Penalize: reporting no affected code or inventing an unmapped caller.
+    expected:
+      citations:
+        - { file: "tests/fixtures/external_index/typescript-normalized.json", line_range: [28, 40], symbol: "caller -> target" }
+      files:
+        - "tests/fixtures/external_index/typescript-normalized.json"
+      facts:
+        - "caller"
+        - "src/caller.ts"
+        - "fixture"
+      forbidden:
+        - "no affected code"
+      forbidden_strict: false

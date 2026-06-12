@@ -147,6 +147,16 @@ impl SqliteStore {
         queries::edges::list_edges_to(&conn, to_symbol_id, limit)
     }
 
+    pub fn list_edges_to_by_type(
+        &self,
+        to_symbol_id: &str,
+        edge_type: &str,
+        limit: usize,
+    ) -> Result<Vec<EdgeRow>> {
+        let conn = self.read()?;
+        queries::edges::list_edges_to_by_type(&conn, to_symbol_id, edge_type, limit)
+    }
+
     pub fn count_incoming_edges(&self, to_symbol_id: &str) -> Result<u64> {
         let conn = self.read()?;
         queries::edges::count_incoming_edges(&conn, to_symbol_id)
@@ -167,6 +177,83 @@ impl SqliteStore {
     ) -> Result<Vec<SymbolRow>> {
         let conn = self.read()?;
         queries::edges::find_dead_symbols(&conn, file_path, language, kind, include_tests, limit)
+    }
+
+    pub fn upsert_external_index(
+        &self,
+        index: &queries::external::ExternalIndexInsert<'_>,
+    ) -> Result<()> {
+        let conn = self.write()?;
+        queries::external::upsert_external_index(&conn, index)
+    }
+
+    pub fn upsert_external_symbol(
+        &self,
+        symbol: &queries::external::ExternalSymbolInsert<'_>,
+    ) -> Result<()> {
+        let conn = self.write()?;
+        queries::external::upsert_external_symbol(&conn, symbol)
+    }
+
+    pub fn upsert_external_reference(
+        &self,
+        reference: &queries::external::ExternalReferenceInsert<'_>,
+    ) -> Result<i64> {
+        let conn = self.write()?;
+        queries::external::upsert_external_reference(&conn, reference)
+    }
+
+    pub fn upsert_symbol_mapping(
+        &self,
+        mapping: &queries::external::SymbolMappingInsert<'_>,
+    ) -> Result<()> {
+        let conn = self.write()?;
+        queries::external::upsert_symbol_mapping(&conn, mapping)
+    }
+
+    pub fn list_external_symbols_for_index(
+        &self,
+        external_index_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ExternalSymbolRow>> {
+        let conn = self.read()?;
+        queries::external::list_external_symbols_for_index(&conn, external_index_id, limit)
+    }
+
+    pub fn list_external_references_to_internal_symbol(
+        &self,
+        internal_symbol_id: &str,
+        relationship: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ExternalReferenceRow>> {
+        let conn = self.read()?;
+        queries::external::list_external_references_to_internal_symbol(
+            &conn,
+            internal_symbol_id,
+            relationship,
+            limit,
+        )
+    }
+
+    pub fn has_external_mapping_for_internal_symbol(
+        &self,
+        internal_symbol_id: &str,
+    ) -> Result<bool> {
+        let conn = self.read()?;
+        queries::external::has_external_mapping_for_internal_symbol(&conn, internal_symbol_id)
+    }
+
+    pub fn external_index_stats(
+        &self,
+        external_index_id: &str,
+    ) -> Result<queries::external::ExternalIndexStats> {
+        let conn = self.read()?;
+        queries::external::external_index_stats(&conn, external_index_id)
+    }
+
+    pub fn external_overlay_stats(&self) -> Result<queries::external::ExternalOverlayStats> {
+        let conn = self.read()?;
+        queries::external::external_overlay_stats(&conn)
     }
 
     pub fn count_descriptions(&self) -> Result<usize> {

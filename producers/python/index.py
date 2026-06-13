@@ -166,6 +166,26 @@ def register_module(
     qualified_by_symbol[external] = module_name
 
 
+def return_values_without_nested_defs(body: list[ast.stmt]):
+    for statement in body:
+        yield from return_values_in_statement(statement)
+
+
+def return_values_in_statement(statement: ast.stmt):
+    if isinstance(statement, ast.Return):
+        yield statement.value
+        return
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return
+    for child in ast.iter_child_nodes(statement):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(child, ast.Return):
+            yield child.value
+        elif isinstance(child, ast.stmt):
+            yield from return_values_in_statement(child)
+
+
 def infer_function_returns(
     tree: ast.Module,
     module_name: str,
@@ -183,13 +203,12 @@ def infer_function_returns(
                 continue
 
             qualified = ".".join([module_name, *scope, node.name])
-            for child in ast.walk(node):
+            for value in return_values_without_nested_defs(node.body):
                 if (
-                    isinstance(child, ast.Return)
-                    and isinstance(child.value, ast.Call)
-                    and isinstance(child.value.func, ast.Name)
+                    isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
                 ):
-                    class_name = child.value.func.id
+                    class_name = value.func.id
                     candidates = [f"{module_name}.{class_name}"]
                     for candidate in candidates:
                         target = known.get(candidate)
@@ -534,8 +553,14 @@ def collect(root: Path) -> Artifact:
     return Artifact("python_ast", PRODUCER, "python", str(root), symbols, references)
 
 
+class UsageArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(64, f"{self.prog}: error: {message}\n")
+
+
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog=PRODUCER)
+    parser = UsageArgumentParser(prog=PRODUCER)
     parser.add_argument("command", choices=["index"])
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)

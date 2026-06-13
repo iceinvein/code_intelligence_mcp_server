@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "producers" / "tests" / "fixtures" / "python"
 PRODUCER = ROOT / "producers" / "python" / "index.py"
+WRAPPER = ROOT / "producers" / "bin" / "code-intelligence-external-python"
 
 
 class PythonProducerTests(unittest.TestCase):
@@ -216,6 +217,50 @@ class PythonProducerTests(unittest.TestCase):
                 for item in payload["references"]
             )
         )
+
+    def test_nested_function_return_does_not_infer_outer_return_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/views.py": (
+                        "class UserService:\n"
+                        "    def load(self, user_id):\n"
+                        "        return user_id\n"
+                        "\n"
+                        "def factory():\n"
+                        "    def inner():\n"
+                        "        return UserService()\n"
+                        "    return None\n"
+                        "\n"
+                        "def render(user_id):\n"
+                        "    service = factory()\n"
+                        "    return service.load(user_id)\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["UserService.load"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
+    def test_wrapper_missing_output_exits_usage(self):
+        result = subprocess.run(
+            [str(WRAPPER), "index"],
+            cwd=FIXTURE,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(result.returncode, 64, result.stderr)
+        self.assertIn("usage:", result.stderr)
 
     def test_src_layout_imports_use_source_root_module_names(self):
         with tempfile.TemporaryDirectory() as tmp:

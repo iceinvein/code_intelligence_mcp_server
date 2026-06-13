@@ -282,6 +282,37 @@ class PythonProducerTests(unittest.TestCase):
             )
         )
 
+    def test_root_shadow_blocks_dotted_plain_import_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "def make_service():\n"
+                        "    return object()\n"
+                    ),
+                    "pkg/views.py": (
+                        "import pkg.services\n"
+                        "\n"
+                        "def render():\n"
+                        "    first = pkg.services.make_service()\n"
+                        "    pkg = object()\n"
+                        "    return first\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["make_service"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_reassignment_clears_inferred_type_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -328,6 +359,36 @@ class PythonProducerTests(unittest.TestCase):
             any(
                 item["relationship"] == "call"
                 and item["to_external_symbol"] == symbols["UserService.load"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
+    def test_nested_function_self_does_not_resolve_to_outer_method_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "class Service:\n"
+                        "    def load(self):\n"
+                        "        return None\n"
+                        "\n"
+                        "    def outer(self):\n"
+                        "        def inner(self):\n"
+                        "            return self.load()\n"
+                        "        return inner\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["Service.load"]["external_symbol"]
+                and item["from_external_symbol"] == symbols["Service.outer.inner"]["external_symbol"]
                 for item in payload["references"]
             )
         )

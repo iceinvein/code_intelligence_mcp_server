@@ -345,6 +345,7 @@ class PythonCollector(ast.NodeVisitor):
         self.import_scopes: list[dict[str, str]] = [{}]
         self.assigned_type_scopes: list[dict[str, str]] = [{}]
         self.local_binding_scopes: list[set[str]] = [set()]
+        self.direct_method_scopes: list[bool] = [False]
         self.enclosing_symbols: list[str] = []
 
     def symbol_id(self, kind: str, qualified: str, node: ast.AST) -> str:
@@ -429,6 +430,12 @@ class PythonCollector(ast.NodeVisitor):
             if local in self.local_binding_scopes[index]:
                 return None
         return None
+
+    def is_shadowed_in_nearer_scope(self, local: str, import_scope_index: int) -> bool:
+        for index in range(len(self.local_binding_scopes) - 1, import_scope_index, -1):
+            if local in self.local_binding_scopes[index]:
+                return True
+        return False
 
     def bind_local(self, local: str) -> None:
         self.local_binding_scopes[-1].add(local)
@@ -530,9 +537,13 @@ class PythonCollector(ast.NodeVisitor):
         self.import_scopes.append({})
         self.assigned_type_scopes.append({})
         self.local_binding_scopes.append(collect_function_bindings(node))
+        self.direct_method_scopes.append(
+            self.class_depth > 0 and len(self.scope) == len(self.class_stack) + 1
+        )
         self.enclosing_symbols.append(external)
         self.generic_visit(node)
         self.enclosing_symbols.pop()
+        self.direct_method_scopes.pop()
         self.local_binding_scopes.pop()
         self.assigned_type_scopes.pop()
         self.import_scopes.pop()
@@ -606,7 +617,12 @@ class PythonCollector(ast.NodeVisitor):
             )
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             owner = self.lookup_assigned_type(func.value.id)
-            if owner is None and func.value.id in {"self", "cls"} and self.class_stack:
+            if (
+                owner is None
+                and func.value.id in {"self", "cls"}
+                and self.class_stack
+                and self.direct_method_scopes[-1]
+            ):
                 owner = ".".join([self.module_name, *self.class_stack])
             if owner:
                 key = f"{owner}.{func.attr}"
@@ -624,12 +640,18 @@ class PythonCollector(ast.NodeVisitor):
         parts = name.split(".")
         for index in range(len(parts) - 1, 0, -1):
             prefix = ".".join(parts[:index])
-            imported = self.lookup_import(prefix)
-            if imported is None:
-                continue
-            candidate = ".".join([imported, *parts[index:]])
-            if candidate in self.known:
-                return candidate
+            for scope_index in range(len(self.import_scopes) - 1, -1, -1):
+                if prefix in self.import_scopes[scope_index]:
+                    root = prefix.split(".", 1)[0]
+                    if self.is_shadowed_in_nearer_scope(root, scope_index):
+                        return None
+                    imported = self.import_scopes[scope_index][prefix]
+                    candidate = ".".join([imported, *parts[index:]])
+                    if candidate in self.known:
+                        return candidate
+                    break
+                if prefix in self.local_binding_scopes[scope_index]:
+                    return None
         return None
 
     def resolve_call(self, node: ast.Call) -> str | None:

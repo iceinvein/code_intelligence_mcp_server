@@ -48,20 +48,23 @@ class PythonProducerTests(unittest.TestCase):
             (item["relationship"], item["to_external_symbol"])
             for item in references
         }
+        self.assertTrue(
+            all(item["relationship"] in {"call", "import"} for item in references)
+        )
         target_ids = {
             item["display_name"]: item["external_symbol"]
             for item in payload["symbols"]
         }
-        self.assertIn(("imports", target_ids["pkg.services"]), relationships)
-        self.assertIn(("imports", target_ids["make_service"]), relationships)
-        self.assertIn(("calls", target_ids["make_service"]), relationships)
-        self.assertIn(("calls", target_ids["UserService.load"]), relationships)
+        self.assertIn(("import", target_ids["pkg.services"]), relationships)
+        self.assertIn(("import", target_ids["make_service"]), relationships)
+        self.assertIn(("call", target_ids["make_service"]), relationships)
+        self.assertIn(("call", target_ids["UserService.load"]), relationships)
         self.assertTrue(
             all(item["from_external_symbol"] is not None for item in references)
         )
         self.assertTrue(
             any(
-                item["relationship"] == "calls"
+                item["relationship"] == "call"
                 and item["to_external_symbol"] == target_ids["make_service"]
                 and item["from_external_symbol"] == target_ids["render_alias_user"]
                 for item in references
@@ -69,7 +72,7 @@ class PythonProducerTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                item["relationship"] == "calls"
+                item["relationship"] == "call"
                 and item["to_external_symbol"] == target_ids["make_service"]
                 and item["from_external_symbol"] == target_ids["render_module_user"]
                 for item in references
@@ -77,12 +80,40 @@ class PythonProducerTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                item["relationship"] == "calls"
+                item["relationship"] == "call"
                 and item["to_external_symbol"] == target_ids["UserService.load"]
                 and item["file_path"] == "pkg/services.py"
                 for item in references
             )
         )
+        self.assertTrue(
+            any(
+                item["relationship"] == "import"
+                and item["to_external_symbol"] == target_ids["pkg.services"]
+                and item["file_path"] == "pkg/views.py"
+                and item["line"] == 1
+                and item["column"] == 1
+                for item in references
+            )
+        )
+        self.assertTrue(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == target_ids["make_service"]
+                and item["from_external_symbol"] == target_ids["render_user"]
+                and item["column"] == 15
+                for item in references
+            )
+        )
+        services_source = (FIXTURE / "pkg" / "services.py").read_text(encoding="utf-8")
+        expected_make_service_start = len(
+            services_source[: services_source.index("def make_service")].encode("utf-8")
+        )
+        self.assertEqual(
+            symbols["make_service"]["start_byte"],
+            expected_make_service_start,
+        )
+        self.assertGreater(symbols["make_service"]["start_byte"], 0)
 
     def test_output_is_deterministic(self):
         self.assertEqual(self.run_producer(), self.run_producer())
@@ -108,7 +139,7 @@ class PythonProducerTests(unittest.TestCase):
         }
         self.assertFalse(
             any(
-                item["relationship"] == "calls"
+                item["relationship"] == "call"
                 and item["to_external_symbol"] in false_targets
                 for item in payload["references"]
             )
@@ -146,7 +177,7 @@ class PythonProducerTests(unittest.TestCase):
         calls_to_load = [
             item
             for item in payload["references"]
-            if item["relationship"] == "calls"
+            if item["relationship"] == "call"
             and item["to_external_symbol"] == symbols["UserService.load"]["external_symbol"]
         ]
         self.assertEqual(
@@ -180,7 +211,7 @@ class PythonProducerTests(unittest.TestCase):
         symbols = {item["display_name"]: item for item in payload["symbols"]}
         self.assertFalse(
             any(
-                item["relationship"] == "calls"
+                item["relationship"] == "call"
                 and item["to_external_symbol"] == symbols["UserService.load"]["external_symbol"]
                 for item in payload["references"]
             )
@@ -213,8 +244,8 @@ class PythonProducerTests(unittest.TestCase):
         }
         self.assertIn("accounts.models", symbols)
         self.assertNotIn("src.accounts.models", symbols)
-        self.assertIn(("imports", symbols["accounts.models"]["external_symbol"]), relationships)
-        self.assertIn(("calls", symbols["build_user"]["external_symbol"]), relationships)
+        self.assertIn(("import", symbols["accounts.models"]["external_symbol"]), relationships)
+        self.assertIn(("call", symbols["build_user"]["external_symbol"]), relationships)
 
 
 if __name__ == "__main__":

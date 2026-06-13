@@ -16,25 +16,58 @@ from producers.lib.normalized import (  # noqa: E402
     Reference,
     Symbol,
     discover_files,
+    line_index,
     stable_symbol_id,
     write_artifact,
 )
 
 
 PRODUCER = "code-intelligence-external-python"
+COMMON_SOURCE_ROOTS = {"lib", "src"}
 
 
-def module_name_for_path(path: Path) -> str:
+def module_name_for_path(path: Path, source_roots: set[str] | None = None) -> str:
     parts = list(path.with_suffix("").parts)
-    if parts and parts[0] == "src":
+    if parts and source_roots and parts[0] in source_roots:
         parts = parts[1:]
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
     return ".".join(parts)
 
 
+def detect_source_roots(root: Path, files: list[Path]) -> set[str]:
+    roots: set[str] = set()
+    project_markers = ("pyproject.toml", "setup.cfg", "setup.py")
+    has_project_marker = any((root / marker).exists() for marker in project_markers)
+    for candidate in COMMON_SOURCE_ROOTS:
+        has_python_files = any(
+            len(rel.parts) > 1 and rel.parts[0] == candidate for rel in files
+        )
+        if has_python_files and (candidate == "src" or has_project_marker):
+            roots.add(candidate)
+    return roots
+
+
 def display_name(scope: list[str], name: str) -> str:
     return ".".join([*scope, name]) if scope else name
+
+
+def absolute_byte(
+    starts: list[int],
+    line: int | None,
+    column: int | None,
+) -> int | None:
+    if line is None or column is None:
+        return None
+    if line <= 0 or line > len(starts):
+        return None
+    return starts[line - 1] + column
+
+
+def one_based_column(column: int | None) -> int | None:
+    if column is None:
+        return None
+    return column + 1
 
 
 def stable_python_id(
@@ -42,14 +75,18 @@ def stable_python_id(
     kind: str,
     qualified: str,
     node: ast.AST,
+    starts: list[int] | None = None,
 ) -> str:
+    start_byte = getattr(node, "col_offset", None)
+    if starts is not None:
+        start_byte = absolute_byte(starts, getattr(node, "lineno", None), start_byte)
     return stable_symbol_id(
         "python",
         rel_path,
         kind,
         qualified,
         getattr(node, "lineno", None),
-        getattr(node, "col_offset", None),
+        start_byte,
     )
 
 
@@ -85,16 +122,19 @@ def register_definitions(
     tree: ast.Module,
     module_name: str,
     rel_path: str,
+    source: str,
     known: dict[str, str],
     qualified_by_symbol: dict[str, str],
     class_qualified: set[str],
 ) -> None:
+    starts = line_index(source)
+
     def visit_body(body: list[ast.stmt], scope: list[str], class_depth: int) -> None:
         for node in body:
             if isinstance(node, ast.ClassDef):
                 qualified = ".".join([module_name, *scope, node.name])
                 display = display_name(scope, node.name)
-                external = stable_python_id(rel_path, "class", qualified, node)
+                external = stable_python_id(rel_path, "class", qualified, node, starts)
                 known[qualified] = external
                 known[display] = external
                 known[node.name] = external
@@ -105,7 +145,7 @@ def register_definitions(
                 qualified = ".".join([module_name, *scope, node.name])
                 display = display_name(scope, node.name)
                 kind = "method" if class_depth else "function"
-                external = stable_python_id(rel_path, kind, qualified, node)
+                external = stable_python_id(rel_path, kind, qualified, node, starts)
                 known[qualified] = external
                 known[display] = external
                 known[node.name] = external
@@ -187,6 +227,7 @@ class PythonCollector(ast.NodeVisitor):
         self.rel_path = rel_path
         self.module_name = module_name
         self.source = source
+        self.line_starts = line_index(source)
         self.known = known
         self.qualified_by_symbol = qualified_by_symbol
         self.class_qualified = class_qualified
@@ -201,7 +242,7 @@ class PythonCollector(ast.NodeVisitor):
         self.enclosing_symbols: list[str] = []
 
     def symbol_id(self, kind: str, qualified: str, node: ast.AST) -> str:
-        return stable_python_id(self.rel_path, kind, qualified, node)
+        return stable_python_id(self.rel_path, kind, qualified, node, self.line_starts)
 
     def add_symbol(
         self,
@@ -212,8 +253,16 @@ class PythonCollector(ast.NodeVisitor):
     ) -> str:
         start_line = getattr(node, "lineno", None)
         end_line = getattr(node, "end_lineno", start_line)
-        start_byte = getattr(node, "col_offset", None)
-        end_byte = getattr(node, "end_col_offset", start_byte)
+        start_byte = absolute_byte(
+            self.line_starts,
+            start_line,
+            getattr(node, "col_offset", None),
+        )
+        end_byte = absolute_byte(
+            self.line_starts,
+            end_line,
+            getattr(node, "end_col_offset", None),
+        )
         external = self.symbol_id(kind, qualified, node)
         self.symbols.append(
             Symbol(
@@ -251,9 +300,9 @@ class PythonCollector(ast.NodeVisitor):
                 relationship,
                 self.rel_path,
                 getattr(node, "lineno", 1),
-                getattr(node, "col_offset", None),
+                one_based_column(getattr(node, "col_offset", None)),
                 getattr(node, "end_lineno", None),
-                getattr(node, "end_col_offset", None),
+                one_based_column(getattr(node, "end_col_offset", None)),
                 confidence,
                 "python_ast",
             )
@@ -311,7 +360,7 @@ class PythonCollector(ast.NodeVisitor):
                     root = alias.name.split(".", 1)[0]
                     if root in self.known:
                         self.bind_import(root, root)
-                self.add_reference("imports", self.known[alias.name], node)
+                self.add_reference("import", self.known[alias.name], node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = import_module_name(self.module_name, Path(self.rel_path), node)
@@ -320,7 +369,7 @@ class PythonCollector(ast.NodeVisitor):
             if qualified in self.known:
                 local = alias.asname or alias.name
                 self.bind_import(local, qualified)
-                self.add_reference("imports", self.known[qualified], node)
+                self.add_reference("import", self.known[qualified], node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualified = ".".join([self.module_name, *self.scope, node.name])
@@ -367,7 +416,7 @@ class PythonCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        self.add_reference("calls", self.resolve_call(node), node, 0.85)
+        self.add_reference("call", self.resolve_call(node), node, 0.85)
         self.generic_visit(node)
 
     def resolve_call_key(self, node: ast.Call) -> str | None:
@@ -426,6 +475,7 @@ class PythonCollector(ast.NodeVisitor):
 
 def collect(root: Path) -> Artifact:
     files = discover_files(root, {".py"})
+    source_roots = detect_source_roots(root, files)
     known: dict[str, str] = {}
     qualified_by_symbol: dict[str, str] = {}
     class_qualified: set[str] = set()
@@ -437,17 +487,18 @@ def collect(root: Path) -> Artifact:
 
     for rel, _source, _tree in modules:
         register_module(
-            module_name_for_path(rel),
+            module_name_for_path(rel, source_roots),
             rel.as_posix(),
             known,
             qualified_by_symbol,
         )
 
-    for rel, _source, tree in modules:
+    for rel, source, tree in modules:
         register_definitions(
             tree,
-            module_name_for_path(rel),
+            module_name_for_path(rel, source_roots),
             rel.as_posix(),
+            source,
             known,
             qualified_by_symbol,
             class_qualified,
@@ -456,7 +507,12 @@ def collect(root: Path) -> Artifact:
     function_returns: dict[str, str] = {}
     for rel, _source, tree in modules:
         function_returns.update(
-            infer_function_returns(tree, module_name_for_path(rel), known, class_qualified)
+            infer_function_returns(
+                tree,
+                module_name_for_path(rel, source_roots),
+                known,
+                class_qualified,
+            )
         )
 
     symbols: list[Symbol] = []
@@ -464,7 +520,7 @@ def collect(root: Path) -> Artifact:
     for rel, source, tree in modules:
         collector = PythonCollector(
             rel.as_posix(),
-            module_name_for_path(rel),
+            module_name_for_path(rel, source_roots),
             source,
             known,
             qualified_by_symbol,

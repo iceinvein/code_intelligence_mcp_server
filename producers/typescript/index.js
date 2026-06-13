@@ -69,6 +69,73 @@ function utf8ByteOffset(source, charOffset) {
 	return Buffer.byteLength(source.slice(0, charOffset), "utf8");
 }
 
+function maskCommentsAndStrings(source) {
+	const chars = source.split("");
+	let index = 0;
+	while (index < chars.length) {
+		const char = chars[index];
+		const next = chars[index + 1];
+		if (char === "/" && next === "/") {
+			chars[index] = " ";
+			chars[index + 1] = " ";
+			index += 2;
+			while (index < chars.length && chars[index] !== "\n") {
+				chars[index] = " ";
+				index += 1;
+			}
+			continue;
+		}
+		if (char === "/" && next === "*") {
+			chars[index] = " ";
+			chars[index + 1] = " ";
+			index += 2;
+			while (index < chars.length) {
+				if (chars[index] === "*" && chars[index + 1] === "/") {
+					chars[index] = " ";
+					chars[index + 1] = " ";
+					index += 2;
+					break;
+				}
+				if (chars[index] !== "\n") chars[index] = " ";
+				index += 1;
+			}
+			continue;
+		}
+		if (char === "\"" || char === "'" || char === "`") {
+			const quote = char;
+			chars[index] = " ";
+			index += 1;
+			while (index < chars.length) {
+				if (chars[index] === "\\") {
+					chars[index] = " ";
+					if (chars[index + 1] && chars[index + 1] !== "\n") chars[index + 1] = " ";
+					index += 2;
+					continue;
+				}
+				if (chars[index] === quote) {
+					chars[index] = " ";
+					index += 1;
+					break;
+				}
+				if (chars[index] !== "\n") chars[index] = " ";
+				index += 1;
+			}
+			continue;
+		}
+		index += 1;
+	}
+	return chars.join("");
+}
+
+function braceDepthBefore(source, offset) {
+	let depth = 0;
+	for (let index = 0; index < offset; index += 1) {
+		if (source[index] === "{") depth += 1;
+		if (source[index] === "}") depth -= 1;
+	}
+	return depth;
+}
+
 function projectFilesFromTsconfig(root, ts) {
 	const configPath = path.join(root, "tsconfig.json");
 	const packagePath = path.join(root, "package.json");
@@ -276,6 +343,7 @@ function collectSymbols(root, files) {
 	for (const filePath of files) {
 		const absolute = path.join(root, filePath);
 		const source = fs.readFileSync(absolute, "utf8");
+		const codeSource = maskCommentsAndStrings(source);
 		const starts = lineStarts(source);
 		const moduleName = moduleNameForPath(filePath);
 		const moduleSymbol = makeSymbol("typescript", filePath, "module", moduleName, moduleName, 0, Math.max(0, source.length - 1), starts, source);
@@ -307,11 +375,12 @@ function collectSymbols(root, files) {
 
 			if (!body) continue;
 			const methodRe = /\b([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/g;
-			const bodySource = source.slice(body.open + 1, body.close);
+			const bodySource = codeSource.slice(body.open + 1, body.close);
 			let methodMatch;
 			while ((methodMatch = methodRe.exec(bodySource)) !== null) {
 				const methodName = methodMatch[1];
 				if (CALL_KEYWORDS.has(methodName)) continue;
+				if (braceDepthBefore(bodySource, methodMatch.index) !== 0) continue;
 				const methodOffset = body.open + 1 + methodMatch.index;
 				declarations.add(methodOffset);
 				const methodOpen = body.open + 1 + methodRe.lastIndex - 1;
@@ -358,7 +427,7 @@ function collectSymbols(root, files) {
 			}
 		}
 
-		fileData.set(filePath, { source, starts, scopes, declarations, functionBodies });
+		fileData.set(filePath, { source, codeSource, starts, scopes, declarations, functionBodies });
 	}
 
 	return { symbols, fileData, knownByDisplay, knownByFileAndDisplay };
@@ -407,7 +476,7 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 	}
 
 	for (const filePath of files) {
-		const { source, starts, scopes, declarations } = fileData.get(filePath);
+		const { source, codeSource, starts, scopes, declarations } = fileData.get(filePath);
 		const localImports = importsByFile.get(filePath) || new Map();
 		for (const scope of scopes) {
 			scope.variableTypes = collectVariableTypes(source.slice(scope.bodyStart, scope.bodyEnd), scope.localBindings, localImports, functionReturnClass);
@@ -415,7 +484,7 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 
 		const memberCallRe = /\b([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*\(/g;
 		let match;
-		while ((match = memberCallRe.exec(source)) !== null) {
+		while ((match = memberCallRe.exec(codeSource)) !== null) {
 			const receiver = match[1];
 			const method = match[2];
 			const methodOffset = match.index + match[0].lastIndexOf(method);
@@ -439,14 +508,14 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 		}
 
 		const callRe = /\b([A-Za-z_$][\w$]*)\s*\(/g;
-		while ((match = callRe.exec(source)) !== null) {
+		while ((match = callRe.exec(codeSource)) !== null) {
 			const name = match[1];
 			if (CALL_KEYWORDS.has(name)) continue;
 			const nameOffset = match.index;
 			if (declarations.has(nameOffset)) continue;
-			if (nameOffset > 0 && source[nameOffset - 1] === ".") continue;
-			if (nameOffset > 0 && /[A-Za-z_$\w$]/.test(source[nameOffset - 1])) continue;
-			const before = source.slice(Math.max(0, nameOffset - 16), nameOffset);
+			if (nameOffset > 0 && codeSource[nameOffset - 1] === ".") continue;
+			if (nameOffset > 0 && /[A-Za-z_$\w$]/.test(codeSource[nameOffset - 1])) continue;
+			const before = codeSource.slice(Math.max(0, nameOffset - 16), nameOffset);
 			if (/\b(new|function|class)\s+$/.test(before)) {
 				if (!/\bnew\s+$/.test(before)) continue;
 			}

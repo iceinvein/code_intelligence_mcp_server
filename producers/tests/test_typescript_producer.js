@@ -139,6 +139,72 @@ test("symbol byte spans use UTF-8 offsets", () => {
   assert.ok(marker.end_byte > marker.start_byte);
 });
 
+// Task 7 owns packaging support-file copying checks; Task 3 stays focused on source producer behavior.
+test("calls inside comments and strings are ignored", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-masked-calls-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/app.ts": [
+      "export function target() {",
+      "  return 1;",
+      "}",
+      "",
+      "export function references() {",
+      "  // target();",
+      "  /* target(); */",
+      "  const single = 'target()';",
+      "  const double = \"target()\";",
+      "  const templated = `target()`;",
+      "  return single + double + templated;",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  const symbols = new Map(payload.symbols.map((item) => [item.display_name, item]));
+  assert.ok(!payload.references.some(
+    (item) =>
+      item.relationship === "call" &&
+      item.to_external_symbol === symbols.get("target").external_symbol,
+  ));
+});
+
+test("class method extraction ignores nested method-shaped declarations", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-class-depth-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/service.ts": [
+      "export class Container {",
+      "  run() {",
+      "    const helper = {",
+      "      fake() {",
+      "        return 1;",
+      "      }",
+      "    };",
+      "    function nested() {",
+      "      return helper.fake();",
+      "    }",
+      "    return nested();",
+      "  }",
+      "",
+      "  top() {",
+      "    return 2;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  const displayNames = payload.symbols.map((item) => item.display_name);
+  assert.ok(displayNames.includes("Container"));
+  assert.ok(displayNames.includes("Container.run"));
+  assert.ok(displayNames.includes("Container.top"));
+  assert.ok(!displayNames.includes("Container.fake"));
+  assert.ok(!displayNames.includes("Container.nested"));
+});
+
 test("wrapper usage and missing output errors exit 64", () => {
   const wrongCommand = spawnSync(WRAPPER, ["wrong"], { cwd: FIXTURE, encoding: "utf8" });
   assert.equal(wrongCommand.status, 64);

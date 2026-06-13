@@ -313,6 +313,50 @@ class PythonProducerTests(unittest.TestCase):
             )
         )
 
+    def test_same_module_bare_fallback_respects_local_shadows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/views.py": (
+                        "def helper():\n"
+                        "    return 1\n"
+                        "\n"
+                        "def caller(helper):\n"
+                        "    return helper()\n"
+                        "\n"
+                        "class Service:\n"
+                        "    def load(self):\n"
+                        "        return None\n"
+                        "\n"
+                        "def factory(Service):\n"
+                        "    return Service()\n"
+                        "\n"
+                        "def render(Service):\n"
+                        "    service = factory(Service)\n"
+                        "    return service.load()\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["helper"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["Service.load"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_reassignment_clears_inferred_type_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

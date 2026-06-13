@@ -431,6 +431,9 @@ class PythonCollector(ast.NodeVisitor):
                 return None
         return None
 
+    def is_shadowed(self, local: str) -> bool:
+        return any(local in scope for scope in reversed(self.local_binding_scopes))
+
     def is_shadowed_in_nearer_scope(self, local: str, import_scope_index: int) -> bool:
         for index in range(len(self.local_binding_scopes) - 1, import_scope_index, -1):
             if local in self.local_binding_scopes[index]:
@@ -600,6 +603,12 @@ class PythonCollector(ast.NodeVisitor):
             self.clear_assigned_type(node.name)
         self.generic_visit(node)
 
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            for name in target_names(target):
+                self.clear_assigned_type(name)
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
         self.add_reference("call", self.resolve_call(node), node, 0.85)
         self.generic_visit(node)
@@ -607,14 +616,15 @@ class PythonCollector(ast.NodeVisitor):
     def resolve_call_key(self, node: ast.Call) -> str | None:
         func = node.func
         if isinstance(func, ast.Name):
-            return (
-                self.lookup_import(func.id)
-                or (
-                    f"{self.module_name}.{func.id}"
-                    if f"{self.module_name}.{func.id}" in self.known
-                    else None
-                )
-            )
+            imported = self.lookup_import(func.id)
+            if imported is not None:
+                return imported
+            if self.is_shadowed(func.id):
+                return None
+            same_module = f"{self.module_name}.{func.id}"
+            if same_module in self.known:
+                return same_module
+            return None
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             owner = self.lookup_assigned_type(func.value.id)
             if (

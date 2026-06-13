@@ -103,7 +103,6 @@ function maskCommentsAndStrings(source) {
 		}
 		if (char === "\"" || char === "'" || char === "`") {
 			const quote = char;
-			chars[index] = " ";
 			index += 1;
 			while (index < chars.length) {
 				if (chars[index] === "\\") {
@@ -113,7 +112,6 @@ function maskCommentsAndStrings(source) {
 					continue;
 				}
 				if (chars[index] === quote) {
-					chars[index] = " ";
 					index += 1;
 					break;
 				}
@@ -363,11 +361,11 @@ function collectSymbols(root, files) {
 
 		const classRe = /\b(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/g;
 		let match;
-		while ((match = classRe.exec(source)) !== null) {
+		while ((match = classRe.exec(codeSource)) !== null) {
 			const name = match[1];
 			const nameOffset = match.index + match[0].lastIndexOf(name);
 			declarations.add(nameOffset);
-			const body = findFunctionBody(source, classRe.lastIndex);
+			const body = findFunctionBody(codeSource, classRe.lastIndex);
 			const endByte = body ? body.close + 1 : classRe.lastIndex;
 			const symbol = makeSymbol("typescript", filePath, "class", name, `${moduleName}.${name}`, match.index, endByte, starts, source);
 			symbols.push(symbol);
@@ -384,12 +382,12 @@ function collectSymbols(root, files) {
 				const methodOffset = body.open + 1 + methodMatch.index;
 				declarations.add(methodOffset);
 				const methodOpen = body.open + 1 + methodRe.lastIndex - 1;
-				const methodClose = findMatchingBrace(source, methodOpen);
+				const methodClose = findMatchingBrace(codeSource, methodOpen);
 				const displayName = `${name}.${methodName}`;
 				const methodSymbol = makeSymbol("typescript", filePath, "method", displayName, `${moduleName}.${displayName}`, methodOffset, methodClose + 1, starts, source);
 				symbols.push(methodSymbol);
 				addKnown(knownByDisplay, knownByFileAndDisplay, methodSymbol);
-				const scopeBody = source.slice(methodOffset, methodClose + 1);
+				const scopeBody = codeSource.slice(methodOffset, methodClose + 1);
 				const localBindings = collectLocalBindings(scopeBody);
 				scopes.push({
 					external_symbol: methodSymbol.external_symbol,
@@ -403,17 +401,18 @@ function collectSymbols(root, files) {
 		}
 
 		const functionRe = /\b(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g;
-		while ((match = functionRe.exec(source)) !== null) {
+		while ((match = functionRe.exec(codeSource)) !== null) {
+			if (braceDepthBefore(codeSource, match.index) !== 0) continue;
 			const name = match[1];
 			const nameOffset = match.index + match[0].lastIndexOf(name);
 			declarations.add(nameOffset);
-			const body = findFunctionBody(source, functionRe.lastIndex);
+			const body = findFunctionBody(codeSource, functionRe.lastIndex);
 			const endByte = body ? body.close + 1 : functionRe.lastIndex;
 			const symbol = makeSymbol("typescript", filePath, "function", name, `${moduleName}.${name}`, match.index, endByte, starts, source);
 			symbols.push(symbol);
 			addKnown(knownByDisplay, knownByFileAndDisplay, symbol);
 			if (body) {
-				const scopeBody = source.slice(match.index, body.close + 1);
+				const scopeBody = codeSource.slice(match.index, body.close + 1);
 				const localBindings = collectLocalBindings(scopeBody);
 				scopes.push({
 					external_symbol: symbol.external_symbol,
@@ -423,7 +422,7 @@ function collectSymbols(root, files) {
 					localBindings,
 					variableTypes: new Map(),
 				});
-				functionBodies.push({ symbol, bodySource: source.slice(body.open + 1, body.close) });
+				functionBodies.push({ symbol, bodySource: codeSource.slice(body.open + 1, body.close) });
 			}
 		}
 
@@ -457,13 +456,16 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 	const importsByFile = new Map();
 
 	for (const filePath of files) {
-		const { source, starts, scopes } = fileData.get(filePath);
+		const { source, codeSource, starts, scopes } = fileData.get(filePath);
 		const moduleScope = scopes[0];
 		const localImports = new Map();
 		const importRe = /import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']/g;
 		let match;
-		while ((match = importRe.exec(source)) !== null) {
-			const moduleFile = resolveRelativeModule(filePath, match[2], fileSet);
+		while ((match = importRe.exec(codeSource)) !== null) {
+			const rawImport = source.slice(match.index, importRe.lastIndex);
+			const specifier = rawImport.match(/from\s+["']([^"']+)["']/);
+			if (!specifier) continue;
+			const moduleFile = resolveRelativeModule(filePath, specifier[1], fileSet);
 			if (!moduleFile) continue;
 			for (const { imported, local } of parseImportNames(match[1])) {
 				const target = knownByFileAndDisplay.get(`${moduleFile}:${imported}`);
@@ -479,7 +481,7 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 		const { source, codeSource, starts, scopes, declarations } = fileData.get(filePath);
 		const localImports = importsByFile.get(filePath) || new Map();
 		for (const scope of scopes) {
-			scope.variableTypes = collectVariableTypes(source.slice(scope.bodyStart, scope.bodyEnd), scope.localBindings, localImports, functionReturnClass);
+			scope.variableTypes = collectVariableTypes(codeSource.slice(scope.bodyStart, scope.bodyEnd), scope.localBindings, localImports, functionReturnClass);
 		}
 
 		const memberCallRe = /\b([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*\(/g;

@@ -170,6 +170,100 @@ test("calls inside comments and strings are ignored", () => {
   ));
 });
 
+test("imports inside comments do not create import edges", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-commented-import-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/service.ts": "export function makeService() {\n  return {};\n}\n",
+    "src/app.ts": [
+      "// import { makeService } from \"./service\";",
+      "export function renderUser() {",
+      "  return 1;",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  assert.ok(!payload.references.some((item) => item.relationship === "import"));
+});
+
+test("function declarations inside comments and strings are ignored", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-masked-declarations-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/app.ts": [
+      "// export function ghost() { return 1; }",
+      "const source = 'export function stringGhost() { return 2; }';",
+      "export function real() {",
+      "  return source;",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  const displayNames = payload.symbols.map((item) => item.display_name);
+  assert.ok(displayNames.includes("real"));
+  assert.ok(!displayNames.includes("ghost"));
+  assert.ok(!displayNames.includes("stringGhost"));
+});
+
+test("nested function declarations are not emitted as module-level symbols", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-nested-functions-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/app.ts": [
+      "export function outer() {",
+      "  function inner() {",
+      "    return 1;",
+      "  }",
+      "  return inner();",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  const displayNames = payload.symbols.map((item) => item.display_name);
+  assert.ok(displayNames.includes("outer"));
+  assert.ok(!displayNames.includes("inner"));
+});
+
+test("return-new inference ignores comments and strings", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-masked-return-new-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/service.ts": [
+      "export class UserService {",
+      "  load() {",
+      "    return 1;",
+      "  }",
+      "}",
+      "",
+      "export function makeService() {",
+      "  // return new UserService();",
+      "  const note = 'return new UserService()';",
+      "  return {};",
+      "}",
+      "",
+      "export function renderUser() {",
+      "  const service = makeService();",
+      "  return service.load();",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  const symbols = new Map(payload.symbols.map((item) => [item.display_name, item]));
+  assert.ok(!payload.references.some(
+    (item) =>
+      item.relationship === "call" &&
+      item.to_external_symbol === symbols.get("UserService.load").external_symbol,
+  ));
+});
+
 test("class method extraction ignores nested method-shaped declarations", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-class-depth-"));
   writeFixture(root, {

@@ -211,6 +211,40 @@ class PythonProducerTests(unittest.TestCase):
             [symbols["prepare"]["external_symbol"]],
         )
 
+    def test_local_bindings_shadow_imported_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "def make_service():\n"
+                        "    return object()\n"
+                    ),
+                    "pkg/views.py": (
+                        "import pkg.services as services\n"
+                        "from pkg.services import make_service\n"
+                        "\n"
+                        "def render(make_service):\n"
+                        "    return make_service()\n"
+                        "\n"
+                        "def render_alias():\n"
+                        "    services = object()\n"
+                        "    return services.make_service()\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["make_service"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_reassignment_clears_inferred_type_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -241,6 +275,11 @@ class PythonProducerTests(unittest.TestCase):
                         "def render_augmented(user_id):\n"
                         "    service = make_service()\n"
                         "    service += None\n"
+                        "    return service.load(user_id)\n"
+                        "\n"
+                        "def render_destructured(user_id):\n"
+                        "    service = make_service()\n"
+                        "    service, other = (None, None)\n"
                         "    return service.load(user_id)\n"
                     ),
                 },

@@ -100,6 +100,34 @@ def dotted_name(node: ast.AST) -> str | None:
     return None
 
 
+def target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for item in target.elts:
+            names.extend(target_names(item))
+        return names
+    if isinstance(target, ast.Starred):
+        return target_names(target.value)
+    return []
+
+
+def argument_names(arguments: ast.arguments) -> list[str]:
+    names: list[str] = []
+    for arg in [
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+    ]:
+        names.append(arg.arg)
+    if arguments.vararg is not None:
+        names.append(arguments.vararg.arg)
+    if arguments.kwarg is not None:
+        names.append(arguments.kwarg.arg)
+    return names
+
+
 def import_module_name(current_module: str, rel_path: Path, node: ast.ImportFrom) -> str:
     if node.level == 0:
         return node.module or ""
@@ -260,6 +288,7 @@ class PythonCollector(ast.NodeVisitor):
         self.class_depth = 0
         self.import_scopes: list[dict[str, str]] = [{}]
         self.assigned_type_scopes: list[dict[str, str]] = [{}]
+        self.local_binding_scopes: list[set[str]] = [set()]
         self.enclosing_symbols: list[str] = []
 
     def symbol_id(self, kind: str, qualified: str, node: ast.AST) -> str:
@@ -338,21 +367,32 @@ class PythonCollector(ast.NodeVisitor):
         self.import_scopes[-1][local] = qualified
 
     def lookup_import(self, local: str) -> str | None:
-        for scope in reversed(self.import_scopes):
-            if local in scope:
-                return scope[local]
+        for index in range(len(self.import_scopes) - 1, -1, -1):
+            if local in self.import_scopes[index]:
+                return self.import_scopes[index][local]
+            if local in self.local_binding_scopes[index]:
+                return None
         return None
 
+    def bind_local(self, local: str) -> None:
+        self.local_binding_scopes[-1].add(local)
+
     def bind_assigned_type(self, local: str, qualified_class: str) -> None:
+        self.import_scopes[-1].pop(local, None)
+        self.bind_local(local)
         self.assigned_type_scopes[-1][local] = qualified_class
 
     def clear_assigned_type(self, local: str) -> None:
+        self.import_scopes[-1].pop(local, None)
+        self.bind_local(local)
         self.assigned_type_scopes[-1].pop(local, None)
 
     def lookup_assigned_type(self, local: str) -> str | None:
-        for scope in reversed(self.assigned_type_scopes):
-            if local in scope:
-                return scope[local]
+        for index in range(len(self.assigned_type_scopes) - 1, -1, -1):
+            if local in self.assigned_type_scopes[index]:
+                return self.assigned_type_scopes[index][local]
+            if local in self.local_binding_scopes[index]:
+                return None
         return None
 
     def visit_Module(self, node: ast.Module) -> None:
@@ -375,8 +415,8 @@ class PythonCollector(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            local = alias.asname or alias.name
             if alias.name in self.module_names:
-                local = alias.asname or alias.name
                 self.bind_import(local, alias.name)
                 if alias.asname:
                     self.bind_import(alias.asname, alias.name)
@@ -385,17 +425,23 @@ class PythonCollector(ast.NodeVisitor):
                     if root in self.module_names:
                         self.bind_import(root, root)
                 self.add_reference("import", self.known[alias.name], node)
+            else:
+                self.bind_local(alias.asname or alias.name.split(".", 1)[0])
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = import_module_name(self.module_name, Path(self.rel_path), node)
         for alias in node.names:
             qualified = f"{module}.{alias.name}" if module else alias.name
+            local = alias.asname or alias.name
             if qualified in self.known:
-                local = alias.asname or alias.name
                 self.bind_import(local, qualified)
                 self.add_reference("import", self.known[qualified], node)
+            else:
+                self.bind_local(local)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        if self.scope:
+            self.bind_local(node.name)
         qualified = ".".join([self.module_name, *self.scope, node.name])
         display = display_name(self.scope, node.name)
         external = self.add_symbol("class", display, qualified, node)
@@ -410,9 +456,13 @@ class PythonCollector(ast.NodeVisitor):
         self.scope.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if self.scope:
+            self.bind_local(node.name)
         self._visit_function(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if self.scope:
+            self.bind_local(node.name)
         self._visit_function(node)
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -423,9 +473,11 @@ class PythonCollector(ast.NodeVisitor):
         self.scope.append(node.name)
         self.import_scopes.append({})
         self.assigned_type_scopes.append({})
+        self.local_binding_scopes.append(set(argument_names(node.args)))
         self.enclosing_symbols.append(external)
         self.generic_visit(node)
         self.enclosing_symbols.pop()
+        self.local_binding_scopes.pop()
         self.assigned_type_scopes.pop()
         self.import_scopes.pop()
         self.scope.pop()
@@ -435,27 +487,50 @@ class PythonCollector(ast.NodeVisitor):
         if isinstance(node.value, ast.Call):
             class_name = self.resolve_call_return_type(node.value)
         for target in node.targets:
-            if isinstance(target, ast.Name):
+            for name in target_names(target):
                 if class_name is not None:
-                        self.bind_assigned_type(target.id, class_name)
+                    self.bind_assigned_type(name, class_name)
                 else:
-                    self.clear_assigned_type(target.id)
+                    self.clear_assigned_type(name)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if isinstance(node.target, ast.Name):
-            class_name = None
-            if isinstance(node.value, ast.Call):
-                class_name = self.resolve_call_return_type(node.value)
+        class_name = None
+        if isinstance(node.value, ast.Call):
+            class_name = self.resolve_call_return_type(node.value)
+        for name in target_names(node.target):
             if class_name is not None:
-                self.bind_assigned_type(node.target.id, class_name)
+                self.bind_assigned_type(name, class_name)
             else:
-                self.clear_assigned_type(node.target.id)
+                self.clear_assigned_type(name)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        if isinstance(node.target, ast.Name):
-            self.clear_assigned_type(node.target.id)
+        for name in target_names(node.target):
+            self.clear_assigned_type(name)
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> None:
+        for name in target_names(node.target):
+            self.clear_assigned_type(name)
+        self.generic_visit(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit_For(node)
+
+    def visit_With(self, node: ast.With) -> None:
+        for item in node.items:
+            if item.optional_vars is not None:
+                for name in target_names(item.optional_vars):
+                    self.clear_assigned_type(name)
+        self.generic_visit(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self.visit_With(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self.clear_assigned_type(node.name)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:

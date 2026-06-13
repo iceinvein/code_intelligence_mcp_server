@@ -150,10 +150,7 @@ def infer_function_returns(
                     and isinstance(child.value.func, ast.Name)
                 ):
                     class_name = child.value.func.id
-                    candidates = [
-                        f"{module_name}.{class_name}",
-                        class_name,
-                    ]
+                    candidates = [f"{module_name}.{class_name}"]
                     for candidate in candidates:
                         target = known.get(candidate)
                         if target is not None:

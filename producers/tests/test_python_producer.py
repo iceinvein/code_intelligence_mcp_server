@@ -154,6 +154,38 @@ class PythonProducerTests(unittest.TestCase):
             [symbols["prepare"]["external_symbol"]],
         )
 
+    def test_return_type_inference_ignores_unimported_class_name_collision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "class UserService:\n"
+                        "    def load(self, user_id):\n"
+                        "        return user_id\n"
+                    ),
+                    "pkg/views.py": (
+                        "def make_service():\n"
+                        "    return UserService()\n"
+                        "\n"
+                        "def render(user_id):\n"
+                        "    service = make_service()\n"
+                        "    return service.load(user_id)\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "calls"
+                and item["to_external_symbol"] == symbols["UserService.load"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_src_layout_imports_use_source_root_module_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

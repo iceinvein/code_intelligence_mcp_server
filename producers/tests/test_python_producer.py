@@ -407,6 +407,155 @@ class PythonProducerTests(unittest.TestCase):
             )
         )
 
+    def test_reassignment_uses_previous_type_while_visiting_rhs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/views.py": (
+                        "class A:\n"
+                        "    def load(self):\n"
+                        "        return None\n"
+                        "\n"
+                        "class B:\n"
+                        "    def load(self):\n"
+                        "        return None\n"
+                        "\n"
+                        "def make_a():\n"
+                        "    return A()\n"
+                        "\n"
+                        "def make_b(value):\n"
+                        "    return B()\n"
+                        "\n"
+                        "def render_assign():\n"
+                        "    service = make_a()\n"
+                        "    service = make_b(service.load())\n"
+                        "    return service\n"
+                        "\n"
+                        "def render_annotated():\n"
+                        "    service = make_a()\n"
+                        "    service: object = make_b(service.load())\n"
+                        "    return service\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        calls_to_a_load = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == symbols["A.load"]["external_symbol"]
+        ]
+        self.assertEqual(
+            {
+                symbols["render_assign"]["external_symbol"],
+                symbols["render_annotated"]["external_symbol"],
+            },
+            {item["from_external_symbol"] for item in calls_to_a_load},
+        )
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["B.load"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
+    def test_top_level_definition_shadows_prior_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "def make_service():\n"
+                        "    return object()\n"
+                    ),
+                    "pkg/views.py": (
+                        "from pkg.services import make_service\n"
+                        "\n"
+                        "def make_service():\n"
+                        "    return object()\n"
+                        "\n"
+                        "def caller():\n"
+                        "    return make_service()\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        imported = next(
+            item
+            for item in payload["symbols"]
+            if item["file_path"] == "pkg/services.py"
+            and item["display_name"] == "make_service"
+        )
+        caller = next(
+            item
+            for item in payload["symbols"]
+            if item["file_path"] == "pkg/views.py" and item["display_name"] == "caller"
+        )
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["from_external_symbol"] == caller["external_symbol"]
+                and item["to_external_symbol"] == imported["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
+    def test_class_body_bindings_do_not_leak_to_module_functions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "class Service:\n"
+                        "    def load(self):\n"
+                        "        return None\n"
+                        "\n"
+                        "def make_service():\n"
+                        "    return Service()\n"
+                    ),
+                    "pkg/views.py": (
+                        "class Holder:\n"
+                        "    from pkg.services import make_service\n"
+                        "    service = make_service()\n"
+                        "\n"
+                        "def caller():\n"
+                        "    return make_service()\n"
+                        "\n"
+                        "def leak():\n"
+                        "    return service.load()\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        caller = symbols["caller"]["external_symbol"]
+        leak = symbols["leak"]["external_symbol"]
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["from_external_symbol"] == caller
+                and item["to_external_symbol"] == symbols["make_service"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["from_external_symbol"] == leak
+                and item["to_external_symbol"] == symbols["Service.load"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_nested_function_self_does_not_resolve_to_outer_method_class(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

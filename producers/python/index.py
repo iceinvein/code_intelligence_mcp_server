@@ -345,6 +345,7 @@ class PythonCollector(ast.NodeVisitor):
         self.import_scopes: list[dict[str, str]] = [{}]
         self.assigned_type_scopes: list[dict[str, str]] = [{}]
         self.local_binding_scopes: list[set[str]] = [set()]
+        self.scope_kinds: list[str] = ["module"]
         self.direct_method_scopes: list[bool] = [False]
         self.enclosing_symbols: list[str] = []
 
@@ -425,6 +426,8 @@ class PythonCollector(ast.NodeVisitor):
 
     def lookup_import(self, local: str) -> str | None:
         for index in range(len(self.import_scopes) - 1, -1, -1):
+            if self.scope_is_hidden_from_function(index):
+                continue
             if local in self.import_scopes[index]:
                 return self.import_scopes[index][local]
             if local in self.local_binding_scopes[index]:
@@ -432,16 +435,27 @@ class PythonCollector(ast.NodeVisitor):
         return None
 
     def is_shadowed(self, local: str) -> bool:
-        return any(local in scope for scope in reversed(self.local_binding_scopes))
+        return any(
+            local in self.local_binding_scopes[index]
+            for index in range(len(self.local_binding_scopes) - 1, -1, -1)
+            if not self.scope_is_hidden_from_function(index)
+        )
 
     def is_shadowed_in_nearer_scope(self, local: str, import_scope_index: int) -> bool:
         for index in range(len(self.local_binding_scopes) - 1, import_scope_index, -1):
+            if self.scope_is_hidden_from_function(index):
+                continue
             if local in self.local_binding_scopes[index]:
                 return True
         return False
 
     def bind_local(self, local: str) -> None:
         self.local_binding_scopes[-1].add(local)
+
+    def scope_is_hidden_from_function(self, index: int) -> bool:
+        return self.scope_kinds[index] == "class" and any(
+            kind == "function" for kind in self.scope_kinds[index + 1 :]
+        )
 
     def bind_assigned_type(self, local: str, qualified_class: str) -> None:
         self.import_scopes[-1].pop(local, None)
@@ -453,8 +467,14 @@ class PythonCollector(ast.NodeVisitor):
         self.bind_local(local)
         self.assigned_type_scopes[-1].pop(local, None)
 
+    def clear_same_scope_import(self, local: str) -> None:
+        self.import_scopes[-1].pop(local, None)
+        self.assigned_type_scopes[-1].pop(local, None)
+
     def lookup_assigned_type(self, local: str) -> str | None:
         for index in range(len(self.assigned_type_scopes) - 1, -1, -1):
+            if self.scope_is_hidden_from_function(index):
+                continue
             if local in self.assigned_type_scopes[index]:
                 return self.assigned_type_scopes[index][local]
             if local in self.local_binding_scopes[index]:
@@ -507,7 +527,9 @@ class PythonCollector(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         if self.scope:
-            self.bind_local(node.name)
+            self.clear_assigned_type(node.name)
+        else:
+            self.clear_same_scope_import(node.name)
         qualified = ".".join([self.module_name, *self.scope, node.name])
         display = display_name(self.scope, node.name)
         external = self.add_symbol("class", display, qualified, node)
@@ -515,7 +537,18 @@ class PythonCollector(ast.NodeVisitor):
         self.class_stack.append(node.name)
         self.class_depth += 1
         self.enclosing_symbols.append(external)
-        self.generic_visit(node)
+        for item in [*node.decorator_list, *node.bases, *node.keywords]:
+            self.visit(item)
+        self.import_scopes.append({})
+        self.assigned_type_scopes.append({})
+        self.local_binding_scopes.append(set())
+        self.scope_kinds.append("class")
+        for statement in node.body:
+            self.visit(statement)
+        self.scope_kinds.pop()
+        self.local_binding_scopes.pop()
+        self.assigned_type_scopes.pop()
+        self.import_scopes.pop()
         self.enclosing_symbols.pop()
         self.class_depth -= 1
         self.class_stack.pop()
@@ -523,12 +556,16 @@ class PythonCollector(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if self.scope:
-            self.bind_local(node.name)
+            self.clear_assigned_type(node.name)
+        else:
+            self.clear_same_scope_import(node.name)
         self._visit_function(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         if self.scope:
-            self.bind_local(node.name)
+            self.clear_assigned_type(node.name)
+        else:
+            self.clear_same_scope_import(node.name)
         self._visit_function(node)
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -540,6 +577,7 @@ class PythonCollector(ast.NodeVisitor):
         self.import_scopes.append({})
         self.assigned_type_scopes.append({})
         self.local_binding_scopes.append(collect_function_bindings(node))
+        self.scope_kinds.append("function")
         self.direct_method_scopes.append(
             self.class_depth > 0 and len(self.scope) == len(self.class_stack) + 1
         )
@@ -547,12 +585,14 @@ class PythonCollector(ast.NodeVisitor):
         self.generic_visit(node)
         self.enclosing_symbols.pop()
         self.direct_method_scopes.pop()
+        self.scope_kinds.pop()
         self.local_binding_scopes.pop()
         self.assigned_type_scopes.pop()
         self.import_scopes.pop()
         self.scope.pop()
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
         class_name = None
         if isinstance(node.value, ast.Call):
             class_name = self.resolve_call_return_type(node.value)
@@ -562,9 +602,13 @@ class PythonCollector(ast.NodeVisitor):
                     self.bind_assigned_type(name, class_name)
                 else:
                     self.clear_assigned_type(name)
-        self.generic_visit(node)
+        for target in node.targets:
+            self.visit(target)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
         class_name = None
         if isinstance(node.value, ast.Call):
             class_name = self.resolve_call_return_type(node.value)
@@ -573,7 +617,7 @@ class PythonCollector(ast.NodeVisitor):
                 self.bind_assigned_type(name, class_name)
             else:
                 self.clear_assigned_type(name)
-        self.generic_visit(node)
+        self.visit(node.target)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         for name in target_names(node.target):
@@ -651,6 +695,8 @@ class PythonCollector(ast.NodeVisitor):
         for index in range(len(parts) - 1, 0, -1):
             prefix = ".".join(parts[:index])
             for scope_index in range(len(self.import_scopes) - 1, -1, -1):
+                if self.scope_is_hidden_from_function(scope_index):
+                    continue
                 if prefix in self.import_scopes[scope_index]:
                     root = prefix.split(".", 1)[0]
                     if self.is_shadowed_in_nearer_scope(root, scope_index):

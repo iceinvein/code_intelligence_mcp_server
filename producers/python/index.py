@@ -26,7 +26,9 @@ PRODUCER = "code-intelligence-external-python"
 
 def module_name_for_path(path: Path) -> str:
     parts = list(path.with_suffix("").parts)
-    if parts[-1] == "__init__":
+    if parts and parts[0] == "src":
+        parts = parts[1:]
+    if parts and parts[-1] == "__init__":
         parts = parts[:-1]
     return ".".join(parts)
 
@@ -49,6 +51,16 @@ def stable_python_id(
         getattr(node, "lineno", None),
         getattr(node, "col_offset", None),
     )
+
+
+def dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = dotted_name(node.value)
+        if parent is not None:
+            return f"{parent}.{node.attr}"
+    return None
 
 
 def import_module_name(current_module: str, rel_path: Path, node: ast.ImportFrom) -> str:
@@ -187,8 +199,9 @@ class PythonCollector(ast.NodeVisitor):
         self.scope: list[str] = []
         self.class_stack: list[str] = []
         self.class_depth = 0
-        self.imported: dict[str, str] = {}
-        self.assigned_types: dict[str, str] = {}
+        self.import_scopes: list[dict[str, str]] = [{}]
+        self.assigned_type_scopes: list[dict[str, str]] = [{}]
+        self.enclosing_symbols: list[str] = []
 
     def symbol_id(self, kind: str, qualified: str, node: ast.AST) -> str:
         return stable_python_id(self.rel_path, kind, qualified, node)
@@ -236,7 +249,7 @@ class PythonCollector(ast.NodeVisitor):
             return
         self.references.append(
             Reference(
-                None,
+                self.current_from_symbol(),
                 target,
                 relationship,
                 self.rel_path,
@@ -248,6 +261,29 @@ class PythonCollector(ast.NodeVisitor):
                 "python_ast",
             )
         )
+
+    def current_from_symbol(self) -> str | None:
+        if self.enclosing_symbols:
+            return self.enclosing_symbols[-1]
+        return self.known.get(self.module_name)
+
+    def bind_import(self, local: str, qualified: str) -> None:
+        self.import_scopes[-1][local] = qualified
+
+    def lookup_import(self, local: str) -> str | None:
+        for scope in reversed(self.import_scopes):
+            if local in scope:
+                return scope[local]
+        return None
+
+    def bind_assigned_type(self, local: str, qualified_class: str) -> None:
+        self.assigned_type_scopes[-1][local] = qualified_class
+
+    def lookup_assigned_type(self, local: str) -> str | None:
+        for scope in reversed(self.assigned_type_scopes):
+            if local in scope:
+                return scope[local]
+        return None
 
     def visit_Module(self, node: ast.Module) -> None:
         module_symbol = stable_symbol_id(
@@ -263,15 +299,21 @@ class PythonCollector(ast.NodeVisitor):
         )
         self.known[self.module_name] = module_symbol
         self.qualified_by_symbol[module_symbol] = self.module_name
+        self.enclosing_symbols.append(module_symbol)
         self.generic_visit(node)
+        self.enclosing_symbols.pop()
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if alias.name in self.known:
-                local = alias.asname or alias.name.split(".", 1)[0]
-                self.imported[local] = alias.name
+                local = alias.asname or alias.name
+                self.bind_import(local, alias.name)
                 if alias.asname:
-                    self.imported[alias.asname] = alias.name
+                    self.bind_import(alias.asname, alias.name)
+                else:
+                    root = alias.name.split(".", 1)[0]
+                    if root in self.known:
+                        self.bind_import(root, root)
                 self.add_reference("imports", self.known[alias.name], node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -280,17 +322,19 @@ class PythonCollector(ast.NodeVisitor):
             qualified = f"{module}.{alias.name}" if module else alias.name
             if qualified in self.known:
                 local = alias.asname or alias.name
-                self.imported[local] = qualified
+                self.bind_import(local, qualified)
                 self.add_reference("imports", self.known[qualified], node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualified = ".".join([self.module_name, *self.scope, node.name])
         display = display_name(self.scope, node.name)
-        self.add_symbol("class", display, qualified, node)
+        external = self.add_symbol("class", display, qualified, node)
         self.scope.append(node.name)
         self.class_stack.append(node.name)
         self.class_depth += 1
+        self.enclosing_symbols.append(external)
         self.generic_visit(node)
+        self.enclosing_symbols.pop()
         self.class_depth -= 1
         self.class_stack.pop()
         self.scope.pop()
@@ -305,9 +349,15 @@ class PythonCollector(ast.NodeVisitor):
         qualified = ".".join([self.module_name, *self.scope, node.name])
         display = display_name(self.scope, node.name)
         kind = "method" if self.class_depth else "function"
-        self.add_symbol(kind, display, qualified, node)
+        external = self.add_symbol(kind, display, qualified, node)
         self.scope.append(node.name)
+        self.import_scopes.append({})
+        self.assigned_type_scopes.append({})
+        self.enclosing_symbols.append(external)
         self.generic_visit(node)
+        self.enclosing_symbols.pop()
+        self.assigned_type_scopes.pop()
+        self.import_scopes.pop()
         self.scope.pop()
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -316,7 +366,7 @@ class PythonCollector(ast.NodeVisitor):
             if class_name is not None:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        self.assigned_types[target.id] = class_name
+                        self.bind_assigned_type(target.id, class_name)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -327,22 +377,39 @@ class PythonCollector(ast.NodeVisitor):
         func = node.func
         if isinstance(func, ast.Name):
             return (
-                self.imported.get(func.id)
+                self.lookup_import(func.id)
                 or (
                     f"{self.module_name}.{func.id}"
                     if f"{self.module_name}.{func.id}" in self.known
                     else None
                 )
-                or (func.id if func.id in self.known else None)
             )
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            owner = self.assigned_types.get(func.value.id)
+            owner = self.lookup_assigned_type(func.value.id)
             if owner is None and func.value.id in {"self", "cls"} and self.class_stack:
                 owner = ".".join([self.module_name, *self.class_stack])
             if owner:
                 key = f"{owner}.{func.attr}"
                 if key in self.known:
                     return key
+        if isinstance(func, ast.Attribute):
+            resolved = self.resolve_dotted_call(dotted_name(func))
+            if resolved is not None:
+                return resolved
+        return None
+
+    def resolve_dotted_call(self, name: str | None) -> str | None:
+        if name is None:
+            return None
+        parts = name.split(".")
+        for index in range(len(parts) - 1, 0, -1):
+            prefix = ".".join(parts[:index])
+            imported = self.lookup_import(prefix)
+            if imported is None:
+                continue
+            candidate = ".".join([imported, *parts[index:]])
+            if candidate in self.known:
+                return candidate
         return None
 
     def resolve_call(self, node: ast.Call) -> str | None:

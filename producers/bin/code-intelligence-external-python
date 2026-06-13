@@ -2,12 +2,12 @@
 set -eu
 
 name=$(basename "$0")
-language=${name#code-intelligence-external-}
 
 if [ "${1:-}" != "index" ]; then
   echo "usage: $name index --output <normalized-json>" >&2
   exit 64
 fi
 
-echo "$name is bundled but no $language generator is enabled yet" >&2
-exit 69
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+producer_root=$(dirname "$script_dir")
+exec python3 "$producer_root/python/index.py" "$@"

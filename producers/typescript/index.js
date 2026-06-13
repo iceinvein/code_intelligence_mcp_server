@@ -6,7 +6,7 @@ const path = require("node:path");
 
 const PRODUCER = "code-intelligence-external-typescript";
 const EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", "target", "vendor", ".next", "coverage"]);
+const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", "target", "vendor", ".next", "coverage", "generated"]);
 const CALL_KEYWORDS = new Set(["if", "for", "while", "switch", "function", "constructor"]);
 const BINDING_WORDS = new Set(["const", "let", "var", "function", "class"]);
 
@@ -35,11 +35,17 @@ function discoverFiles(root) {
 			const full = path.join(dir, name);
 			const stat = fs.statSync(full);
 			if (stat.isDirectory()) walk(full);
-			if (stat.isFile() && EXTENSIONS.has(path.extname(name))) found.push(path.relative(root, full).split(path.sep).join("/"));
+			const relative = path.relative(root, full).split(path.sep).join("/");
+			if (stat.isFile() && shouldIndexFile(relative)) found.push(relative);
 		}
 	}
 	walk(root);
 	return found;
+}
+
+function shouldIndexFile(filePath) {
+	const parts = filePath.split("/");
+	return EXTENSIONS.has(path.posix.extname(filePath)) && !parts.some((part) => SKIP_DIRS.has(part));
 }
 
 function lineStarts(source) {
@@ -59,6 +65,10 @@ function positionForOffset(starts, offset) {
 	return { line, column: offset - starts[line - 1] + 1 };
 }
 
+function utf8ByteOffset(source, charOffset) {
+	return Buffer.byteLength(source.slice(0, charOffset), "utf8");
+}
+
 function projectFilesFromTsconfig(root, ts) {
 	const configPath = path.join(root, "tsconfig.json");
 	const packagePath = path.join(root, "package.json");
@@ -69,7 +79,7 @@ function projectFilesFromTsconfig(root, ts) {
 		const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, root);
 		return parsed.fileNames
 			.map((file) => path.relative(root, file).split(path.sep).join("/"))
-			.filter((file) => EXTENSIONS.has(path.extname(file)))
+			.filter(shouldIndexFile)
 			.sort();
 	} catch {
 		return null;
@@ -139,9 +149,11 @@ function findFunctionBody(source, declarationEnd) {
 	return { open, close: findMatchingBrace(source, open) };
 }
 
-function makeSymbol(language, filePath, kind, displayName, qualifiedName, startByte, endByte, starts) {
-	const start = positionForOffset(starts, startByte);
-	const end = positionForOffset(starts, Math.max(startByte, endByte));
+function makeSymbol(language, filePath, kind, displayName, qualifiedName, startOffset, endOffset, starts, source) {
+	const start = positionForOffset(starts, startOffset);
+	const end = positionForOffset(starts, Math.max(startOffset, endOffset));
+	const startByte = utf8ByteOffset(source, startOffset);
+	const endByte = utf8ByteOffset(source, endOffset);
 	return {
 		external_symbol: stableId(language, filePath, kind, qualifiedName, start.line, startByte),
 		display_name: displayName,
@@ -266,7 +278,7 @@ function collectSymbols(root, files) {
 		const source = fs.readFileSync(absolute, "utf8");
 		const starts = lineStarts(source);
 		const moduleName = moduleNameForPath(filePath);
-		const moduleSymbol = makeSymbol("typescript", filePath, "module", moduleName, moduleName, 0, Math.max(0, source.length - 1), starts);
+		const moduleSymbol = makeSymbol("typescript", filePath, "module", moduleName, moduleName, 0, Math.max(0, source.length - 1), starts, source);
 		const scopes = [{
 			external_symbol: moduleSymbol.external_symbol,
 			display_name: moduleSymbol.display_name,
@@ -289,7 +301,7 @@ function collectSymbols(root, files) {
 			declarations.add(nameOffset);
 			const body = findFunctionBody(source, classRe.lastIndex);
 			const endByte = body ? body.close + 1 : classRe.lastIndex;
-			const symbol = makeSymbol("typescript", filePath, "class", name, `${moduleName}.${name}`, match.index, endByte, starts);
+			const symbol = makeSymbol("typescript", filePath, "class", name, `${moduleName}.${name}`, match.index, endByte, starts, source);
 			symbols.push(symbol);
 			addKnown(knownByDisplay, knownByFileAndDisplay, symbol);
 
@@ -305,7 +317,7 @@ function collectSymbols(root, files) {
 				const methodOpen = body.open + 1 + methodRe.lastIndex - 1;
 				const methodClose = findMatchingBrace(source, methodOpen);
 				const displayName = `${name}.${methodName}`;
-				const methodSymbol = makeSymbol("typescript", filePath, "method", displayName, `${moduleName}.${displayName}`, methodOffset, methodClose + 1, starts);
+				const methodSymbol = makeSymbol("typescript", filePath, "method", displayName, `${moduleName}.${displayName}`, methodOffset, methodClose + 1, starts, source);
 				symbols.push(methodSymbol);
 				addKnown(knownByDisplay, knownByFileAndDisplay, methodSymbol);
 				const scopeBody = source.slice(methodOffset, methodClose + 1);
@@ -328,7 +340,7 @@ function collectSymbols(root, files) {
 			declarations.add(nameOffset);
 			const body = findFunctionBody(source, functionRe.lastIndex);
 			const endByte = body ? body.close + 1 : functionRe.lastIndex;
-			const symbol = makeSymbol("typescript", filePath, "function", name, `${moduleName}.${name}`, match.index, endByte, starts);
+			const symbol = makeSymbol("typescript", filePath, "function", name, `${moduleName}.${name}`, match.index, endByte, starts, source);
 			symbols.push(symbol);
 			addKnown(knownByDisplay, knownByFileAndDisplay, symbol);
 			if (body) {

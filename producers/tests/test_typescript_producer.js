@@ -110,6 +110,35 @@ test("local bindings shadow imported names inside the same function", () => {
   ));
 });
 
+test("generated directories are not indexed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-generated-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/app.ts": "export function kept() {\n  return 1;\n}\n",
+    "generated/generated.ts": "export function generatedOnly() {\n  return 2;\n}\n",
+  });
+
+  const payload = runProducer(root);
+  const displayNames = payload.symbols.map((item) => item.display_name);
+  assert.ok(displayNames.includes("kept"));
+  assert.ok(!displayNames.includes("generatedOnly"));
+  assert.ok(!payload.symbols.some((item) => item.file_path.startsWith("generated/")));
+});
+
+test("symbol byte spans use UTF-8 offsets", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-utf8-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/utf8.ts": "// éé\nexport function marker() {}\n",
+  });
+
+  const payload = runProducer(root);
+  const marker = payload.symbols.find((item) => item.display_name === "marker");
+  assert.equal(marker.start_byte, 8);
+  assert.equal(marker.external_symbol, "typescript:src/utf8.ts:function:utf8.marker:2:8");
+  assert.ok(marker.end_byte > marker.start_byte);
+});
+
 test("wrapper usage and missing output errors exit 64", () => {
   const wrongCommand = spawnSync(WRAPPER, ["wrong"], { cwd: FIXTURE, encoding: "utf8" });
   assert.equal(wrongCommand.status, 64);

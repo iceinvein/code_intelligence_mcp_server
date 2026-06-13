@@ -31,19 +31,30 @@ class PythonProducerTests(unittest.TestCase):
         self.assertEqual(payload["language"], "python")
         self.assertIn("UserService", symbols)
         self.assertIn("UserService.load", symbols)
+        self.assertIn("UserService.render", symbols)
         self.assertIn("make_service", symbols)
         self.assertIn("render_user", symbols)
+        references = payload["references"]
         relationships = {
             (item["relationship"], item["to_external_symbol"])
-            for item in payload["references"]
+            for item in references
         }
         target_ids = {
             item["display_name"]: item["external_symbol"]
             for item in payload["symbols"]
         }
+        self.assertIn(("imports", target_ids["pkg.services"]), relationships)
         self.assertIn(("imports", target_ids["make_service"]), relationships)
         self.assertIn(("calls", target_ids["make_service"]), relationships)
         self.assertIn(("calls", target_ids["UserService.load"]), relationships)
+        self.assertTrue(
+            any(
+                item["relationship"] == "calls"
+                and item["to_external_symbol"] == target_ids["UserService.load"]
+                and item["file_path"] == "pkg/services.py"
+                for item in references
+            )
+        )
 
     def test_output_is_deterministic(self):
         self.assertEqual(self.run_producer(), self.run_producer())

@@ -1,3 +1,4 @@
+import pkg.services
 from pkg.services import UserService, make_service
 
 

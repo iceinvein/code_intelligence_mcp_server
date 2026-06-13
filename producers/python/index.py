@@ -103,6 +103,17 @@ def register_definitions(
     visit_body(tree.body, [], 0)
 
 
+def register_module(
+    module_name: str,
+    rel_path: str,
+    known: dict[str, str],
+    qualified_by_symbol: dict[str, str],
+) -> None:
+    external = stable_symbol_id("python", rel_path, "module", module_name, 1, 0)
+    known[module_name] = external
+    qualified_by_symbol[external] = module_name
+
+
 def infer_function_returns(
     tree: ast.Module,
     module_name: str,
@@ -174,6 +185,7 @@ class PythonCollector(ast.NodeVisitor):
         self.symbols: list[Symbol] = []
         self.references: list[Reference] = []
         self.scope: list[str] = []
+        self.class_stack: list[str] = []
         self.class_depth = 0
         self.imported: dict[str, str] = {}
         self.assigned_types: dict[str, str] = {}
@@ -253,6 +265,15 @@ class PythonCollector(ast.NodeVisitor):
         self.qualified_by_symbol[module_symbol] = self.module_name
         self.generic_visit(node)
 
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name in self.known:
+                local = alias.asname or alias.name.split(".", 1)[0]
+                self.imported[local] = alias.name
+                if alias.asname:
+                    self.imported[alias.asname] = alias.name
+                self.add_reference("imports", self.known[alias.name], node)
+
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = import_module_name(self.module_name, Path(self.rel_path), node)
         for alias in node.names:
@@ -267,9 +288,11 @@ class PythonCollector(ast.NodeVisitor):
         display = display_name(self.scope, node.name)
         self.add_symbol("class", display, qualified, node)
         self.scope.append(node.name)
+        self.class_stack.append(node.name)
         self.class_depth += 1
         self.generic_visit(node)
         self.class_depth -= 1
+        self.class_stack.pop()
         self.scope.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -314,6 +337,8 @@ class PythonCollector(ast.NodeVisitor):
             )
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             owner = self.assigned_types.get(func.value.id)
+            if owner is None and func.value.id in {"self", "cls"} and self.class_stack:
+                owner = ".".join([self.module_name, *self.class_stack])
             if owner:
                 key = f"{owner}.{func.attr}"
                 if key in self.known:
@@ -345,6 +370,14 @@ def collect(root: Path) -> Artifact:
     for rel in files:
         source = (root / rel).read_text(encoding="utf-8")
         modules.append((rel, source, ast.parse(source, filename=rel.as_posix())))
+
+    for rel, _source, _tree in modules:
+        register_module(
+            module_name_for_path(rel),
+            rel.as_posix(),
+            known,
+            qualified_by_symbol,
+        )
 
     for rel, _source, tree in modules:
         register_definitions(

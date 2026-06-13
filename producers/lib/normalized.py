@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import asdict, dataclass
 import json
+import os
 from pathlib import Path
+from typing import Sequence
 
 
 SKIP_DIRS = {
@@ -54,8 +57,18 @@ class Artifact:
     producer: str
     language: str
     root_path: str
-    symbols: list[Symbol]
-    references: list[Reference]
+    symbols: Sequence[Symbol]
+    references: Sequence[Reference]
+
+
+def _escape_id_field(value: str) -> str:
+    return value.replace("%", "%25").replace(":", "%3A")
+
+
+def _encode_optional_int(value: int | None) -> str:
+    if value is None:
+        return "~"
+    return str(value)
 
 
 def stable_symbol_id(
@@ -66,44 +79,63 @@ def stable_symbol_id(
     start_line: int | None,
     start_byte: int | None,
 ) -> str:
-    return f"{language}:{file_path}:{kind}:{qualified_name}:{start_line or 0}:{start_byte or 0}"
+    fields = [
+        _escape_id_field(language),
+        _escape_id_field(file_path),
+        _escape_id_field(kind),
+        _escape_id_field(qualified_name),
+        _encode_optional_int(start_line),
+        _encode_optional_int(start_byte),
+    ]
+    return ":".join(fields)
 
 
 def line_index(source: str) -> list[int]:
+    """Return UTF-8 byte line starts plus an EOF sentinel byte offset."""
+    encoded = source.encode("utf-8")
     starts = [0]
-    for index, char in enumerate(source):
-        if char == "\n":
+    for index, byte in enumerate(encoded):
+        if byte == 0x0A:
             starts.append(index + 1)
+    if starts[-1] != len(encoded):
+        starts.append(len(encoded))
     return starts
 
 
 def position_for_offset(starts: list[int], offset: int) -> tuple[int, int]:
-    line = 1
-    for index, start in enumerate(starts):
-        if start > offset:
-            break
-        line = index + 1
+    """Convert a UTF-8 byte offset to a one-based line and byte column."""
+    if not starts:
+        raise ValueError("line index cannot be empty")
+    if offset < 0:
+        raise ValueError(f"offset must be non-negative: {offset}")
+    if offset >= starts[-1]:
+        raise ValueError(f"offset {offset} is outside indexed source length {starts[-1]}")
+
+    line = bisect_right(starts, offset)
     column = offset - starts[line - 1] + 1
     return line, column
 
 
 def discover_files(root: Path, extensions: set[str]) -> list[Path]:
     found: list[Path] = []
-    for path in root.rglob("*"):
-        rel_parts = path.relative_to(root).parts
-        if any(part in SKIP_DIRS for part in rel_parts):
-            continue
-        if path.is_file() and path.suffix in extensions:
-            found.append(path.relative_to(root))
+    root = Path(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(dirname for dirname in dirnames if dirname not in SKIP_DIRS)
+        current = Path(dirpath)
+        for filename in filenames:
+            path = current / filename
+            if path.suffix in extensions:
+                found.append(path.relative_to(root))
     return sorted(found, key=lambda item: item.as_posix())
 
 
+def _canonical_json(value: object) -> str:
+    return json.dumps(asdict(value), sort_keys=True, separators=(",", ":"))
+
+
 def write_artifact(output: Path, artifact: Artifact) -> None:
-    symbols = sorted(artifact.symbols, key=lambda item: (item.file_path or "", item.start_line or 0, item.external_symbol))
-    references = sorted(
-        artifact.references,
-        key=lambda item: (item.file_path, item.line, item.column or 0, item.relationship, item.to_external_symbol or ""),
-    )
+    symbols = sorted(artifact.symbols, key=_canonical_json)
+    references = sorted(artifact.references, key=_canonical_json)
     payload = {
         "source_kind": artifact.source_kind,
         "producer": artifact.producer,

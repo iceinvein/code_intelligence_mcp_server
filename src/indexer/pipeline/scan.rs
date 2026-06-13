@@ -37,14 +37,14 @@ pub fn scan_files(config: &Config, root: &Path) -> Result<Vec<PathBuf>> {
             };
 
             if file_type.is_dir() {
-                if should_skip_dir(config, &path) {
+                if should_skip_dir(config, root, &path) {
                     continue;
                 }
                 stack.push(path);
                 continue;
             }
 
-            if file_type.is_file() && should_index_file(config, &path) {
+            if file_type.is_file() && should_index_file(config, root, &path) {
                 out.push(path);
             }
         }
@@ -52,7 +52,20 @@ pub fn scan_files(config: &Config, root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-pub fn should_skip_dir(config: &Config, path: &Path) -> bool {
+/// Path used for glob matching: relative to the repo root, with a leading slash.
+///
+/// Matching the repo-root-relative path (rather than the absolute path) means a
+/// pattern like `**/bench/state/repos/**` excludes that directory only when it is
+/// a subdirectory WITHIN the indexed repo. It no longer fires when the repo root
+/// itself lives under such a path (e.g. a bench fixture checked out at
+/// `bench/state/repos/<repo>`), which previously zeroed the whole index.
+fn rel_match_path(root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let s = rel.to_string_lossy().replace('\\', "/");
+    format!("/{}", s.trim_start_matches('/'))
+}
+
+pub fn should_skip_dir(config: &Config, root: &Path, path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
@@ -73,8 +86,8 @@ pub fn should_skip_dir(config: &Config, path: &Path) -> bool {
         "node_modules" if !config.index_node_modules => return true,
         _ => {}
     }
-    // Check user-configured exclude patterns against the full path
-    let s = path.to_string_lossy().replace('\\', "/");
+    // Check user-configured exclude patterns against the repo-root-relative path.
+    let s = rel_match_path(root, path);
     for pat in &config.exclude_patterns {
         if pattern_matches_dir(&s, pat) {
             return true;
@@ -100,8 +113,8 @@ fn pattern_matches_dir(path: &str, pattern: &str) -> bool {
     false
 }
 
-pub fn should_index_file(config: &Config, path: &Path) -> bool {
-    if is_excluded(config, path) {
+pub fn should_index_file(config: &Config, root: &Path, path: &Path) -> bool {
+    if is_excluded(config, root, path) {
         return false;
     }
     if !matches!(
@@ -125,15 +138,15 @@ pub fn should_index_file(config: &Config, path: &Path) -> bool {
         return false;
     }
 
-    let s = path.to_string_lossy().replace('\\', "/");
+    let s = rel_match_path(root, path);
     config
         .index_patterns
         .iter()
         .any(|pat| pattern_matches_file(&s, pat))
 }
 
-fn is_excluded(config: &Config, path: &Path) -> bool {
-    let s = path.to_string_lossy().replace('\\', "/");
+fn is_excluded(config: &Config, root: &Path, path: &Path) -> bool {
+    let s = rel_match_path(root, path);
     for pat in &config.exclude_patterns {
         if pattern_matches_file(&s, pat) {
             return true;
@@ -208,14 +221,63 @@ mod tests {
     fn should_index_file_respects_index_patterns() {
         let mut config = test_config();
         config.index_patterns = vec!["**/*.rs".to_string()];
+        let root = Path::new("/tmp/repo");
 
         assert!(should_index_file(
             &config,
+            root,
             Path::new("/tmp/repo/src/lib.rs")
         ));
         assert!(!should_index_file(
             &config,
+            root,
             Path::new("/tmp/repo/src/app.py")
+        ));
+    }
+
+    #[test]
+    fn exclude_patterns_are_relative_to_repo_root() {
+        // Regression: a repo checked out UNDER a path matching an exclude pattern
+        // (e.g. a bench fixture at bench/state/repos/<repo>) must still index its
+        // own files. Previously the absolute path matched **/bench/state/repos/**
+        // and zeroed the whole index.
+        let mut config = test_config();
+        config.index_patterns = vec!["**/*.py".to_string()];
+        config.exclude_patterns = vec!["**/bench/state/repos/**".to_string()];
+
+        let fixture_root = Path::new("/home/u/proj/bench/state/repos/django");
+        assert!(
+            should_index_file(
+                &config,
+                fixture_root,
+                Path::new("/home/u/proj/bench/state/repos/django/django/shortcuts.py"),
+            ),
+            "a file inside a repo rooted under bench/state/repos must still be indexed"
+        );
+
+        // The same pattern still excludes a bench/state/repos subdir WITHIN a repo.
+        let code_intel_root = Path::new("/home/u/code-intel");
+        assert!(
+            !should_index_file(
+                &config,
+                code_intel_root,
+                Path::new("/home/u/code-intel/bench/state/repos/django/x.py"),
+            ),
+            "a bench/state/repos subdir within a repo must still be excluded"
+        );
+        assert!(
+            should_skip_dir(
+                &config,
+                code_intel_root,
+                Path::new("/home/u/code-intel/bench/state/repos"),
+            ),
+            "the bench/state/repos subdir should be skipped during the walk"
+        );
+        // ...but the fixture repo's own same-named subdir is not skipped.
+        assert!(!should_skip_dir(
+            &config,
+            fixture_root,
+            Path::new("/home/u/proj/bench/state/repos/django/django"),
         ));
     }
 }

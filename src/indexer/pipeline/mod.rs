@@ -372,7 +372,9 @@ impl IndexPipeline {
             let std_path = p.as_std_path();
             if std_path.is_dir() {
                 files.extend(scan_files(&self.config, std_path)?);
-            } else if std_path.is_file() && should_index_file(&self.config, std_path) {
+            } else if std_path.is_file()
+                && should_index_file(&self.config, self.config.base_dir.as_std_path(), std_path)
+            {
                 files.push(std_path.to_path_buf());
             }
         }

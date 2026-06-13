@@ -128,6 +128,59 @@ def argument_names(arguments: ast.arguments) -> list[str]:
     return names
 
 
+def import_local_name(alias: ast.alias) -> str:
+    return alias.asname or alias.name.split(".", 1)[0]
+
+
+def collect_function_bindings(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    names = set(argument_names(node.args))
+    names.update(collect_statement_bindings(node.body))
+    return names
+
+
+def collect_statement_bindings(statements: list[ast.stmt]) -> set[str]:
+    names: set[str] = set()
+    for statement in statements:
+        names.update(bindings_in_statement(statement))
+    return names
+
+
+def bindings_in_statement(statement: ast.stmt) -> set[str]:
+    names: set[str] = set()
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        names.add(statement.name)
+        return names
+    if isinstance(statement, ast.Assign):
+        for target in statement.targets:
+            names.update(target_names(target))
+    elif isinstance(statement, ast.AnnAssign):
+        names.update(target_names(statement.target))
+    elif isinstance(statement, ast.AugAssign):
+        names.update(target_names(statement.target))
+    elif isinstance(statement, (ast.For, ast.AsyncFor)):
+        names.update(target_names(statement.target))
+    elif isinstance(statement, (ast.With, ast.AsyncWith)):
+        for item in statement.items:
+            if item.optional_vars is not None:
+                names.update(target_names(item.optional_vars))
+    elif isinstance(statement, ast.ExceptHandler):
+        if statement.name is not None:
+            names.add(statement.name)
+    elif isinstance(statement, ast.Import):
+        for alias in statement.names:
+            names.add(import_local_name(alias))
+    elif isinstance(statement, ast.ImportFrom):
+        for alias in statement.names:
+            names.add(alias.asname or alias.name)
+
+    for child in ast.iter_child_nodes(statement):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(child, ast.stmt):
+            names.update(bindings_in_statement(child))
+    return names
+
+
 def import_module_name(current_module: str, rel_path: Path, node: ast.ImportFrom) -> str:
     if node.level == 0:
         return node.module or ""
@@ -231,12 +284,15 @@ def infer_function_returns(
                 continue
 
             qualified = ".".join([module_name, *scope, node.name])
+            function_bindings = collect_function_bindings(node)
             for value in return_values_without_nested_defs(node.body):
                 if (
                     isinstance(value, ast.Call)
                     and isinstance(value.func, ast.Name)
                 ):
                     class_name = value.func.id
+                    if class_name in function_bindings:
+                        continue
                     candidates = [f"{module_name}.{class_name}"]
                     for candidate in candidates:
                         target = known.get(candidate)
@@ -426,7 +482,7 @@ class PythonCollector(ast.NodeVisitor):
                         self.bind_import(root, root)
                 self.add_reference("import", self.known[alias.name], node)
             else:
-                self.bind_local(alias.asname or alias.name.split(".", 1)[0])
+                self.bind_local(import_local_name(alias))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = import_module_name(self.module_name, Path(self.rel_path), node)
@@ -473,7 +529,7 @@ class PythonCollector(ast.NodeVisitor):
         self.scope.append(node.name)
         self.import_scopes.append({})
         self.assigned_type_scopes.append({})
-        self.local_binding_scopes.append(set(argument_names(node.args)))
+        self.local_binding_scopes.append(collect_function_bindings(node))
         self.enclosing_symbols.append(external)
         self.generic_visit(node)
         self.enclosing_symbols.pop()

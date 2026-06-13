@@ -245,6 +245,43 @@ class PythonProducerTests(unittest.TestCase):
             )
         )
 
+    def test_function_wide_local_bindings_shadow_imports_before_assignment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "def make_service():\n"
+                        "    return object()\n"
+                    ),
+                    "pkg/views.py": (
+                        "import pkg.services as services\n"
+                        "from pkg.services import make_service\n"
+                        "\n"
+                        "def render():\n"
+                        "    first = make_service()\n"
+                        "    make_service = lambda: object()\n"
+                        "    return first\n"
+                        "\n"
+                        "def render_alias():\n"
+                        "    first = services.make_service()\n"
+                        "    services = object()\n"
+                        "    return first\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["make_service"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_reassignment_clears_inferred_type_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -281,6 +318,37 @@ class PythonProducerTests(unittest.TestCase):
                         "    service = make_service()\n"
                         "    service, other = (None, None)\n"
                         "    return service.load(user_id)\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["UserService.load"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
+    def test_return_type_inference_respects_parameter_shadow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/views.py": (
+                        "class UserService:\n"
+                        "    def load(self):\n"
+                        "        return None\n"
+                        "\n"
+                        "def factory(UserService):\n"
+                        "    return UserService()\n"
+                        "\n"
+                        "def render(UserService):\n"
+                        "    service = factory(UserService)\n"
+                        "    return service.load()\n"
                     ),
                 },
             )

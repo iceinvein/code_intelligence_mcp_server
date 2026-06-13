@@ -146,6 +146,31 @@ class PythonProducerTests(unittest.TestCase):
             )
         )
 
+    def test_plain_import_does_not_resolve_to_bare_function_collision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/local.py": (
+                        "def json():\n"
+                        "    return {}\n"
+                        "\n"
+                        "import json\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "import"
+                and item["to_external_symbol"] == symbols["json"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_assigned_type_does_not_leak_between_functions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -184,6 +209,51 @@ class PythonProducerTests(unittest.TestCase):
         self.assertEqual(
             [item["from_external_symbol"] for item in calls_to_load],
             [symbols["prepare"]["external_symbol"]],
+        )
+
+    def test_reassignment_clears_inferred_type_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "pkg/services.py": (
+                        "class UserService:\n"
+                        "    def load(self, user_id):\n"
+                        "        return user_id\n"
+                        "\n"
+                        "def make_service():\n"
+                        "    return UserService()\n"
+                    ),
+                    "pkg/views.py": (
+                        "from pkg.services import make_service\n"
+                        "\n"
+                        "def render(user_id):\n"
+                        "    service = make_service()\n"
+                        "    service = None\n"
+                        "    return service.load(user_id)\n"
+                        "\n"
+                        "def render_annotated(user_id):\n"
+                        "    service = make_service()\n"
+                        "    service: object = None\n"
+                        "    return service.load(user_id)\n"
+                        "\n"
+                        "def render_augmented(user_id):\n"
+                        "    service = make_service()\n"
+                        "    service += None\n"
+                        "    return service.load(user_id)\n"
+                    ),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["UserService.load"]["external_symbol"]
+                for item in payload["references"]
+            )
         )
 
     def test_return_type_inference_ignores_unimported_class_name_collision(self):

@@ -239,6 +239,7 @@ class PythonCollector(ast.NodeVisitor):
         module_name: str,
         source: str,
         known: dict[str, str],
+        module_names: set[str],
         qualified_by_symbol: dict[str, str],
         class_qualified: set[str],
         function_returns: dict[str, str],
@@ -248,6 +249,7 @@ class PythonCollector(ast.NodeVisitor):
         self.source = source
         self.line_starts = line_index(source)
         self.known = known
+        self.module_names = module_names
         self.qualified_by_symbol = qualified_by_symbol
         self.class_qualified = class_qualified
         self.function_returns = function_returns
@@ -344,6 +346,9 @@ class PythonCollector(ast.NodeVisitor):
     def bind_assigned_type(self, local: str, qualified_class: str) -> None:
         self.assigned_type_scopes[-1][local] = qualified_class
 
+    def clear_assigned_type(self, local: str) -> None:
+        self.assigned_type_scopes[-1].pop(local, None)
+
     def lookup_assigned_type(self, local: str) -> str | None:
         for scope in reversed(self.assigned_type_scopes):
             if local in scope:
@@ -370,14 +375,14 @@ class PythonCollector(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.name in self.known:
+            if alias.name in self.module_names:
                 local = alias.asname or alias.name
                 self.bind_import(local, alias.name)
                 if alias.asname:
                     self.bind_import(alias.asname, alias.name)
                 else:
                     root = alias.name.split(".", 1)[0]
-                    if root in self.known:
+                    if root in self.module_names:
                         self.bind_import(root, root)
                 self.add_reference("import", self.known[alias.name], node)
 
@@ -426,12 +431,31 @@ class PythonCollector(ast.NodeVisitor):
         self.scope.pop()
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        class_name = None
         if isinstance(node.value, ast.Call):
             class_name = self.resolve_call_return_type(node.value)
-            if class_name is not None:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                if class_name is not None:
                         self.bind_assigned_type(target.id, class_name)
+                else:
+                    self.clear_assigned_type(target.id)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            class_name = None
+            if isinstance(node.value, ast.Call):
+                class_name = self.resolve_call_return_type(node.value)
+            if class_name is not None:
+                self.bind_assigned_type(node.target.id, class_name)
+            else:
+                self.clear_assigned_type(node.target.id)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            self.clear_assigned_type(node.target.id)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -496,6 +520,7 @@ def collect(root: Path) -> Artifact:
     files = discover_files(root, {".py"})
     source_roots = detect_source_roots(root, files)
     known: dict[str, str] = {}
+    module_names: set[str] = set()
     qualified_by_symbol: dict[str, str] = {}
     class_qualified: set[str] = set()
     modules: list[tuple[Path, str, ast.Module]] = []
@@ -505,6 +530,7 @@ def collect(root: Path) -> Artifact:
         modules.append((rel, source, ast.parse(source, filename=rel.as_posix())))
 
     for rel, _source, _tree in modules:
+        module_names.add(module_name_for_path(rel, source_roots))
         register_module(
             module_name_for_path(rel, source_roots),
             rel.as_posix(),
@@ -542,6 +568,7 @@ def collect(root: Path) -> Artifact:
             module_name_for_path(rel, source_roots),
             source,
             known,
+            module_names,
             qualified_by_symbol,
             class_qualified,
             function_returns,

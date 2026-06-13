@@ -60,7 +60,7 @@ def _has_judge(agg: dict | None) -> bool:
 def _build_headline(arms_data: dict[str, dict]) -> str:
     full = arms_data.get("code_intel_full")
     default = arms_data.get("default")
-    no_desc = arms_data.get("code_intel_no_descriptions")
+    no_desc = arms_data.get("code_intel_shipped")
     no_rerank = arms_data.get("code_intel_no_reranker")
     codegraph = arms_data.get("codegraph")
 
@@ -71,7 +71,7 @@ def _build_headline(arms_data: dict[str, dict]) -> str:
         lines.append(f"code_intel_full vs default: {dj:+.1f} judge / {dm:+.2f} mech.")
     if _has_judge(no_desc) and _has_judge(full):
         dj = no_desc["judge_median"] - full["judge_median"]
-        lines.append(f"code_intel_no_descriptions vs code_intel_full: {dj:+.1f} judge.")
+        lines.append(f"code_intel_shipped vs code_intel_full: {dj:+.1f} judge.")
     if _has_judge(no_rerank) and _has_judge(full):
         dj = no_rerank["judge_median"] - full["judge_median"]
         lines.append(f"code_intel_no_reranker vs code_intel_full: {dj:+.1f} judge.")

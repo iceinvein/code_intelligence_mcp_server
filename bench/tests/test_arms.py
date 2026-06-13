@@ -8,7 +8,7 @@ def test_five_arms_defined():
     assert set(arms.ARMS.keys()) == {
         "default",
         "code_intel_full",
-        "code_intel_no_descriptions",
+        "code_intel_shipped",
         "code_intel_no_reranker",
         "codegraph",
     }
@@ -32,8 +32,9 @@ def test_code_intel_full_enables_reranker_and_uses_full_variant():
     assert "mcp__code-intelligence__ask_code" in a.allowed_tools
 
 
-def test_code_intel_no_descriptions_sets_env_and_uses_no_desc_variant():
-    a = arms.ARMS["code_intel_no_descriptions"]
+def test_code_intel_shipped_sets_env_and_uses_no_desc_variant():
+    # Production-default config: descriptions off, reranker off, plain no_desc index.
+    a = arms.ARMS["code_intel_shipped"]
     assert a.daemon_env == {"BENCH_DISABLE_DESCRIPTIONS": "1"}
     assert a.index_variant == "no_desc"
 

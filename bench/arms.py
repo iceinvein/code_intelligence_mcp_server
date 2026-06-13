@@ -82,11 +82,19 @@ ARMS: dict[str, Arm] = {
             "Fall back to Read/Grep when results are insufficient."
         ),
     ),
-    "code_intel_no_descriptions": Arm(
-        name="code_intel_no_descriptions",
+    "code_intel_shipped": Arm(
+        name="code_intel_shipped",
         needs_daemon=True,
         is_codegraph=False,
         index_variant="no_desc",
+        # Production-default config: descriptions off (DESCRIPTIONS_ENABLED=false in
+        # prod, judged neutral in R005) and reranker off (RERANKER_ENABLED=false). The
+        # no_desc index is plain Tree-sitter; the provenance-overlay schema is present
+        # but inert (the bundled producers are stubs, so zero external rows are
+        # imported). BENCH_DISABLE_DESCRIPTIONS forces the description field empty at
+        # write and query so the index matches what ships. This is the arm that
+        # measures whether the shipped product improved or regressed. Cross-round
+        # baseline: R005 code_intel_no_descriptions (same config, pre-evidence-pack).
         daemon_env={"BENCH_DISABLE_DESCRIPTIONS": "1"},
         allowed_tools=list(DEFAULT_TOOLS) + list(CODE_INTEL_MCP_TOOLS),
         tool_guidance=(

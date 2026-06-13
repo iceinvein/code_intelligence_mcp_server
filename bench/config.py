@@ -23,7 +23,7 @@ def _env_int(key: str, default: int) -> int:
 AGENT_MODEL = _env("BENCH_AGENT_MODEL", "claude-sonnet-4-6")
 JUDGE_HAIKU = _env("BENCH_JUDGE_HAIKU", "claude-haiku-4-5")
 JUDGE_SONNET = _env("BENCH_JUDGE_SONNET", "claude-sonnet-4-6")
-JUDGE_OPUS = _env("BENCH_JUDGE_OPUS", "claude-opus-4-7")
+JUDGE_OPUS = _env("BENCH_JUDGE_OPUS", "claude-opus-4-8")
 
 # Binaries
 CLAUDE_BINARY = _env("BENCH_CLAUDE_BINARY", "claude")

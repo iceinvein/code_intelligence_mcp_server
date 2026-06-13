@@ -44,7 +44,7 @@ def test_render_markdown_includes_headline():
     arms_data = {
         "default": report.aggregate_arm("default", _scores([0.5, 0.5])),
         "code_intel_full": report.aggregate_arm("code_intel_full", _scores([0.9, 0.9])),
-        "code_intel_no_descriptions": report.aggregate_arm("code_intel_no_descriptions", _scores([0.95, 0.95])),
+        "code_intel_shipped": report.aggregate_arm("code_intel_shipped", _scores([0.95, 0.95])),
         "code_intel_no_reranker": report.aggregate_arm("code_intel_no_reranker", _scores([0.85, 0.85])),
         "codegraph": report.aggregate_arm("codegraph", rows=[], skipped=True),
     }

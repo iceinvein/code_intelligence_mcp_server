@@ -43,7 +43,7 @@ def test_daemon_for_code_intel_uses_correct_env_and_home(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon, "_wait_for_port", lambda *a, **k: None)
     monkeypatch.setattr(daemon, "BENCH_HOME", tmp_path)
 
-    d = daemon.maybe_start_daemon(ARMS["code_intel_no_descriptions"], port=18888)
+    d = daemon.maybe_start_daemon(ARMS["code_intel_shipped"], port=18888)
     assert d is not None
     assert d.port == 18888
     assert "BENCH_DISABLE_DESCRIPTIONS" in captured["env"]

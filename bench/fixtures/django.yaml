@@ -1,7 +1,7 @@
 meta:
   repo: django
   upstream_url: "https://github.com/django/django.git"
-  upstream_sha: "3e5887b9b1c1f06fabf96568a6ba7f19aeb9ad6d"
+  upstream_sha: "2d4add11fd57b05f7ea48e8b3e89e743c9871aa3"
   authored_at: "2026-05-27"
   authored_against_schema_version: 22
 

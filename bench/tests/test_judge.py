@@ -44,7 +44,7 @@ def test_judge_all_returns_median_and_range(monkeypatch):
     scores = {
         "claude-haiku-4-5": 4,
         "claude-sonnet-4-6": 7,
-        "claude-opus-4-7": 9,
+        "claude-opus-4-8": 9,
     }
 
     def fake_run(cmd, **kwargs):

@@ -1,8 +1,8 @@
 meta:
   repo: wolfmax
   upstream_url: "/Users/dikrana/Documents/workspace/wolfmax/wolfmax"
-  upstream_sha: "b56910e6939fe46e1e96a952cf03a95ad4ed7018"
-  authored_at: "2026-05-27"
+  upstream_sha: "da34bb0925b68a9409330d09173090a508454c65"
+  authored_at: "2026-06-13"
   authored_against_schema_version: 22
 
 questions:
@@ -292,7 +292,7 @@ questions:
     expected:
       citations:
         - { file: "packages/backend/src/api/crypto/epochs.ts", line_range: [24, 143], symbol: "cryptoEpochsRouter" }
-        - { file: "packages/backend/src/lib/receipt-signer.ts", line_range: [168, 199], symbol: "getReceiptSigner" }
+        - { file: "packages/backend/src/lib/receipt-signer.ts", line_range: [170, 201], symbol: "getReceiptSigner" }
         - { file: "packages/backend/src/lib/late-flag.ts", line_range: [12, 16], symbol: "isLate" }
       files:
         - "packages/backend/src/api/crypto/epochs.ts"
@@ -414,19 +414,21 @@ questions:
     difficulty: medium
     question: "If `hashAnonymousId` in packages/backend/src/lib/analytics-hash.ts were renamed to `anonymiseUserId`, which files would need updating?"
     rubric: |
-      The only call site at authoring time is packages/backend/src/api/analytics/events.ts
-      (line 43 in the POST / handler). The test file
-      packages/backend/src/lib/analytics-hash.ts would need its own exports updated.
-      Bonus: notes the import in events.ts (line 8).
-      Penalize: claiming many files reference hashAnonymousId when at authoring time
-      only events.ts calls it, or omitting the analytics-hash.ts file itself.
+      Two call sites exist: packages/backend/src/api/analytics/events.ts (line 43 in
+      the POST / handler) and the build script packages/backend/scripts/seed-analytics.ts.
+      The source file packages/backend/src/lib/analytics-hash.ts would need its own
+      export updated.
+      Bonus: notes the import in events.ts (line 7).
+      Penalize: omitting the analytics-hash.ts definition itself, or missing the
+      events.ts call site.
     expected:
       citations:
         - { file: "packages/backend/src/lib/analytics-hash.ts", line_range: [9, 13], symbol: "hashAnonymousId" }
-        - { file: "packages/backend/src/api/analytics/events.ts", line_range: [8, 8], symbol: "hashAnonymousId" }
+        - { file: "packages/backend/src/api/analytics/events.ts", line_range: [7, 7], symbol: "hashAnonymousId" }
       files:
         - "packages/backend/src/lib/analytics-hash.ts"
         - "packages/backend/src/api/analytics/events.ts"
+        - "packages/backend/scripts/seed-analytics.ts"
       facts:
         - ["analytics/events.ts"]
         - ["import", "call site"]
@@ -486,7 +488,7 @@ questions:
       DB access.
     expected:
       citations:
-        - { file: "packages/backend/src/db/index.ts", line_range: [1, 10], symbol: "db" }
+        - { file: "packages/backend/src/db/index.ts", line_range: [6, 16], symbol: "db" }
         - { file: "packages/backend/src/db/transaction.ts", line_range: [142, 194], symbol: "withTransaction" }
         - { file: "packages/backend/src/db/schema/index.ts", line_range: [1, 69], symbol: "schema" }
       files:

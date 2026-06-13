@@ -100,6 +100,30 @@ Caveat: cross-round, single-run (R006 today vs R005 yesterday, different daemon 
 
 **Decision:** descriptions and the reranker both ship off by default (`DESCRIPTIONS_ENABLED` / `RERANKER_ENABLED`, both `false`). Neither moved the judge; each adds setup cost. Re-enable + re-bench if that changes.
 
+## R007 result (2026-06-13) — post-foundation baseline
+
+First cycle since R006, capturing the ~58 commits landed since (provenance-overlay foundation + evidence-pack quality layer + the `rrf.k` knob). Single arm: `code_intel_shipped` (renamed from `code_intel_no_descriptions`; production defaults = descriptions off, reranker off, the overlay schema present but inert because the bundled producers are stubs). Agent `claude-sonnet-4-6`; judges haiku-4-5 / sonnet-4-6 / **opus-4-8** (Opus bumped from the now-stale 4.7). wolfmax re-pinned `da34bb09`, django re-pinned `2d4add11`. 40/40 runs `end_turn`; 1 judge casualty (wolfmax-symbol-01) excluded from the means below.
+
+| metric | R007 | R005 `no_descriptions` | Δ |
+|---|---:|---:|---:|
+| judge (casualties excl.) | 7.15 | 7.10 | +0.05 |
+| mech | 0.465 | 0.426 | +0.039 |
+| citation hit | 52% | 50% | +2pp |
+| hallucinated | 30% | 35% | -5pp |
+
+**No regression.** Judge is flat (well inside the ±2 noise band) with a small, consistent precision gain (mech +0.04, +2pp citation, -5pp hallucination) — the expected signature of the evidence-pack layer: better grounding, no prose-quality movement.
+
+**Confounds (so this is a fresh baseline, not a clean A/B of the new code):** wolfmax content re-pinned `b56910e`→`da34bb09` (+85 commits), django `3e5887b`→`2d4add11`, judge Opus 4.7→4.8.
+
+By task type, concept (+0.76 judge, mech 0.30→0.48), impact (+0.67), and multi_hop (+0.38) improved. symbol_lookup judge dropped (-1.14) **but retrieval was not the cause**: every symbol_lookup citation was correct with 0 hallucination (mech 0.67); the agent answered location-only and judges docked the missing rubric descriptions. multi_hop hallucination stays high (88%, ~on par with R005) — agents mis-cite line numbers in multi-file traces.
+
+Says nothing about overlay retrieval quality (producers are stubs → zero external rows). To measure that, build a real producer and add a `code_intel_external` arm A/B'd against this baseline.
+
+### Operational notes from this run
+
+- The default `exclude_patterns` entry `**/bench/state/repos/**` zeroed the django index (django is checked out under `bench/state/repos/`; every file matched the exclude → 0 symbols). Worked around via a `[repos.defaults] exclude_patterns` override in the variant `server.toml`. **Proper fix pending:** drop that entry from the daemon default, or move fixtures outside `bench/state/repos/`. wolfmax dodged it only because it is a symlink to an external path.
+- The shallow-clone checkout does not honor the pinned SHA (a `git checkout <sha>` after `git fetch --depth=1` left HEAD unmoved). django was re-pinned to the actually-checked-out `2d4add11` to keep prep a no-op; revisit if an exact pinned SHA is required.
+
 ## Daemon env contract
 
 Both descriptions and the reranker ship **off by default** in production (neither moved the judge in R005/R006). Each is a real `StandaloneConfig` toggle (default `false`), opted into per arm/variant:

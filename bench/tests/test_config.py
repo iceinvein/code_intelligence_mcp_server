@@ -15,7 +15,7 @@ def test_defaults_resolve_without_env(monkeypatch):
     assert config.AGENT_MODEL == "claude-sonnet-4-6"
     assert config.JUDGE_HAIKU == "claude-haiku-4-5"
     assert config.JUDGE_SONNET == "claude-sonnet-4-6"
-    assert config.JUDGE_OPUS == "claude-opus-4-7"
+    assert config.JUDGE_OPUS == "claude-opus-4-8"
     assert config.PER_QUESTION_TIMEOUT_S == 180
 
 

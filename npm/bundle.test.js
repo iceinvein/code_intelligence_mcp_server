@@ -55,6 +55,46 @@ test("validateBundle reports missing producer executables", () => {
 	}
 });
 
+test("validateBundle requires manifest-declared producer support files", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-bundle-"));
+	try {
+		fs.writeFileSync(path.join(dir, "code-intelligence-mcp-server"), "");
+		fs.chmodSync(path.join(dir, "code-intelligence-mcp-server"), 0o755);
+		fs.mkdirSync(path.join(dir, "producers", "bin"), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, "producers", "manifest.json"),
+			JSON.stringify({
+				producers: [
+					{
+						executable: "producers/bin/code-intelligence-external-python",
+						support_files: [
+							"producers/lib/__init__.py",
+							"producers/lib/normalized.py",
+							"producers/python/index.py",
+						],
+					},
+				],
+			}),
+		);
+		fs.writeFileSync(
+			path.join(dir, "producers", "bin", "code-intelligence-external-python"),
+			"",
+		);
+		fs.chmodSync(
+			path.join(dir, "producers", "bin", "code-intelligence-external-python"),
+			0o755,
+		);
+
+		assert.deepEqual(validateBundle(dir).missing, [
+			"producers/lib/__init__.py",
+			"producers/lib/normalized.py",
+			"producers/python/index.py",
+		]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("validateBundle reports malformed manifests", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ci-bundle-"));
 	try {

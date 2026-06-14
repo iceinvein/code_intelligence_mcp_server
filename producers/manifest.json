@@ -8,6 +8,9 @@
       "tier": "first_class",
       "output_file": "typescript-normalized.json",
       "requires_project_toolchain": true,
+      "support_files": [
+        "producers/typescript/index.js"
+      ],
       "description": "TypeScript and JavaScript external index producer"
     },
     {
@@ -17,6 +20,11 @@
       "tier": "first_class",
       "output_file": "rust-normalized.json",
       "requires_project_toolchain": true,
+      "support_files": [
+        "producers/lib/__init__.py",
+        "producers/lib/normalized.py",
+        "producers/rust/index.py"
+      ],
       "description": "Rust external index producer"
     },
     {
@@ -26,6 +34,11 @@
       "tier": "first_class",
       "output_file": "python-normalized.json",
       "requires_project_toolchain": true,
+      "support_files": [
+        "producers/lib/__init__.py",
+        "producers/lib/normalized.py",
+        "producers/python/index.py"
+      ],
       "description": "Python external index producer"
     },
     {
@@ -35,6 +48,11 @@
       "tier": "first_class",
       "output_file": "go-normalized.json",
       "requires_project_toolchain": true,
+      "support_files": [
+        "producers/lib/__init__.py",
+        "producers/lib/normalized.py",
+        "producers/go/index.py"
+      ],
       "description": "Go external index producer"
     },
     {

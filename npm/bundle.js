@@ -14,6 +14,14 @@ function isExecutable(filePath) {
 	}
 }
 
+function isFile(filePath) {
+	try {
+		return fs.statSync(filePath).isFile();
+	} catch {
+		return false;
+	}
+}
+
 function readManifest(binDir) {
 	const manifestPath = path.join(binDir, "producers", "manifest.json");
 	return JSON.parse(fs.readFileSync(manifestPath, "utf8"));
@@ -42,6 +50,14 @@ function validateBundle(binDir) {
 	for (const producer of manifest.producers) {
 		if (!isExecutable(path.join(binDir, producer.executable))) {
 			missing.push(producer.executable);
+		}
+
+		if (Array.isArray(producer.support_files)) {
+			for (const supportFile of producer.support_files) {
+				if (!isFile(path.join(binDir, supportFile))) {
+					missing.push(supportFile);
+				}
+			}
 		}
 	}
 

@@ -112,6 +112,35 @@ jobs:
           cp target/aarch64-apple-darwin/release/code-intelligence-mcp-server bundle/
           cp producers/manifest.json bundle/producers/manifest.json
           cp producers/bin/code-intelligence-external-* bundle/
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const manifest = JSON.parse(fs.readFileSync("producers/manifest.json", "utf8"));
+          const supportFiles = new Set();
+
+          for (const producer of manifest.producers || []) {
+            for (const supportFile of producer.support_files || []) {
+              supportFiles.add(supportFile);
+            }
+          }
+
+          for (const supportFile of supportFiles) {
+            const parts = supportFile.split("/");
+            if (
+              path.isAbsolute(supportFile) ||
+              parts.includes("") ||
+              parts.includes("..")
+            ) {
+              throw new Error(`Invalid producer support file path: ${supportFile}`);
+            }
+
+            const source = path.join(...parts);
+            const destination = path.join("bundle", ...parts);
+            fs.mkdirSync(path.dirname(destination), { recursive: true });
+            fs.copyFileSync(source, destination);
+          }
+          NODE
           chmod 755 bundle/code-intelligence-mcp-server bundle/code-intelligence-external-*
           tar czf code-intelligence-mcp-server-aarch64-apple-darwin.tar.gz -C bundle .
 

@@ -1,0 +1,138 @@
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURE = ROOT / "producers" / "tests" / "fixtures" / "rust"
+PRODUCER = ROOT / "producers" / "rust" / "index.py"
+WRAPPER = ROOT / "producers" / "bin" / "code-intelligence-external-rust"
+
+
+class RustProducerTests(unittest.TestCase):
+    def run_producer(self, fixture=FIXTURE):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "rust-normalized.json"
+            result = subprocess.run(
+                ["python3", str(PRODUCER), "index", "--output", str(output)],
+                cwd=fixture,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(output.read_text(encoding="utf-8"))
+
+    def write_fixture(self, root, files):
+        root = Path(root)
+        for relative, source in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8")
+
+    def test_emits_symbols_and_calls(self):
+        payload = self.run_producer()
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertEqual(payload["source_kind"], "rust_source")
+        self.assertEqual(payload["language"], "rust")
+        self.assertIn("UserService", symbols)
+        self.assertIn("UserService.load", symbols)
+        self.assertIn("make_service", symbols)
+        self.assertIn("render_user", symbols)
+
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_make_service = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["make_service"]
+        ]
+        calls_to_load = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["UserService.load"]
+        ]
+        self.assertEqual(1, len(calls_to_make_service))
+        self.assertEqual(1, len(calls_to_load))
+        self.assertTrue(
+            all(item["relationship"] == "call" for item in payload["references"])
+        )
+        self.assertTrue(
+            all(item["from_external_symbol"] is not None for item in payload["references"])
+        )
+        self.assertEqual(
+            target_ids["render_user"],
+            calls_to_make_service[0]["from_external_symbol"],
+        )
+        self.assertEqual(
+            target_ids["render_user"],
+            calls_to_load[0]["from_external_symbol"],
+        )
+        self.assertEqual(0.65, calls_to_make_service[0]["confidence"])
+        self.assertEqual("rust_source", calls_to_make_service[0]["provenance"])
+
+        source = (FIXTURE / "src" / "lib.rs").read_text(encoding="utf-8")
+        expected_start = len(source[: source.index("pub fn make_service")].encode("utf-8"))
+        self.assertEqual(expected_start, symbols["make_service"]["start_byte"])
+        self.assertGreater(symbols["make_service"]["end_byte"], expected_start)
+
+    def test_output_is_deterministic(self):
+        self.assertEqual(self.run_producer(), self.run_producer())
+
+    def test_wrapper_missing_output_exits_usage(self):
+        result = subprocess.run(
+            [str(WRAPPER), "index"],
+            cwd=FIXTURE,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(64, result.returncode, result.stderr)
+        self.assertIn("usage:", result.stderr)
+
+    def test_output_write_error_exits_usage(self):
+        result = subprocess.run(
+            ["python3", str(PRODUCER), "index", "--output", str(FIXTURE)],
+            cwd=FIXTURE,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(64, result.returncode, result.stderr)
+        self.assertIn("failed to write output", result.stderr)
+
+    def test_no_rust_project_or_files_exits_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["python3", str(PRODUCER), "index", "--output", str(Path(tmp) / "out.json")],
+                cwd=tmp,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        self.assertEqual(69, result.returncode, result.stderr)
+        self.assertIn("no Rust project or source files found", result.stderr)
+
+    def test_wrapper_emits_valid_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "rust-normalized.json"
+            result = subprocess.run(
+                [str(WRAPPER), "index", "--output", str(output)],
+                cwd=FIXTURE,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual("rust_source", payload["source_kind"])
+
+
+if __name__ == "__main__":
+    unittest.main()

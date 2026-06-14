@@ -5,6 +5,7 @@ import argparse
 import ast
 from pathlib import Path
 import sys
+import warnings
 
 
 BUNDLE_ROOT = Path(__file__).resolve().parents[2]
@@ -736,7 +737,18 @@ def collect(root: Path) -> Artifact:
 
     for rel in files:
         source = (root / rel).read_text(encoding="utf-8")
-        modules.append((rel, source, ast.parse(source, filename=rel.as_posix())))
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(source, filename=rel.as_posix())
+        except SyntaxError as exc:
+            location = f":{exc.lineno}" if exc.lineno is not None else ""
+            print(
+                f"warning: skipping invalid Python file {rel.as_posix()}{location}: {exc.msg}",
+                file=sys.stderr,
+            )
+            continue
+        modules.append((rel, source, tree))
 
     for rel, _source, _tree in modules:
         module_names.add(module_name_for_path(rel, source_roots))

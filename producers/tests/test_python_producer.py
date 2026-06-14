@@ -119,6 +119,25 @@ class PythonProducerTests(unittest.TestCase):
     def test_output_is_deterministic(self):
         self.assertEqual(self.run_producer(), self.run_producer())
 
+    def test_skips_invalid_python_files(self):
+        payload = self.run_producer()
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+
+        self.assertIn("UserService", symbols)
+        self.assertIn("render_user", symbols)
+        self.assertTrue(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == target_ids["make_service"]
+                and item["from_external_symbol"] == target_ids["render_user"]
+                for item in payload["references"]
+            )
+        )
+
     def test_bare_call_does_not_resolve_to_duplicate_in_other_module(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

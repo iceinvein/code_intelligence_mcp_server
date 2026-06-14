@@ -242,10 +242,23 @@ test("object-literal method shorthand declarations are not emitted as calls", ()
       "  return 1;",
       "}",
       "",
+      "export function load() {",
+      "  return 3;",
+      "}",
+      "",
       "export function makeActions() {",
       "  const actions = {",
       "    save() {",
       "      return 2;",
+      "    },",
+      "    async saveLater() {",
+      "      return save();",
+      "    },",
+      "    async save() {",
+      "      return 4;",
+      "    },",
+      "    *load() {",
+      "      yield 5;",
       "    }",
       "  };",
       "  return actions;",
@@ -256,10 +269,18 @@ test("object-literal method shorthand declarations are not emitted as calls", ()
 
   const payload = runProducer(root);
   const symbols = new Map(payload.symbols.map((item) => [item.display_name, item]));
-  assert.ok(!payload.references.some(
-    (item) =>
-      item.relationship === "call" &&
-      item.to_external_symbol === symbols.get("save").external_symbol,
+  const calls = payload.references.filter((item) => item.relationship === "call");
+  assert.ok(!calls.some(
+    (item) => item.line === 11 && item.to_external_symbol === symbols.get("save").external_symbol,
+  ));
+  assert.ok(calls.some(
+    (item) => item.line === 15 && item.to_external_symbol === symbols.get("save").external_symbol,
+  ));
+  assert.ok(!calls.some(
+    (item) => item.line === 17 && item.to_external_symbol === symbols.get("save").external_symbol,
+  ));
+  assert.ok(!calls.some(
+    (item) => item.line === 20 && item.to_external_symbol === symbols.get("load").external_symbol,
   ));
 });
 

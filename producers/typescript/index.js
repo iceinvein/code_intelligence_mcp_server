@@ -220,13 +220,6 @@ function findMatchingParen(source, openIndex) {
 	return -1;
 }
 
-function previousNonWhitespace(source, offset) {
-	for (let index = offset - 1; index >= 0; index -= 1) {
-		if (!/\s/.test(source[index])) return source[index];
-	}
-	return "";
-}
-
 function nextNonWhitespace(source, offset) {
 	for (let index = offset; index < source.length; index += 1) {
 		if (!/\s/.test(source[index])) return source[index];
@@ -239,8 +232,15 @@ function isObjectMethodShorthandDeclaration(source, nameOffset, name) {
 	if (source[open] !== "(") return false;
 	const close = findMatchingParen(source, open);
 	if (close < 0 || nextNonWhitespace(source, close + 1) !== "{") return false;
-	const previous = previousNonWhitespace(source, nameOffset);
-	return previous === "{" || previous === ",";
+	let before = nameOffset - 1;
+	while (before >= 0 && /\s/.test(source[before])) before -= 1;
+	let delimiter = before;
+	while (delimiter >= 0 && source[delimiter] !== "{" && source[delimiter] !== "," && source[delimiter] !== ";") {
+		delimiter -= 1;
+	}
+	if (source[delimiter] !== "{" && source[delimiter] !== ",") return false;
+	const prefix = source.slice(delimiter + 1, nameOffset).trim();
+	return prefix === "" || prefix === "async" || prefix === "*" || prefix === "async *";
 }
 
 function findFunctionBody(source, declarationEnd) {

@@ -312,7 +312,10 @@ def split_top_level_commas(text: str) -> list[str]:
 
 
 def parse_param_names(signature: str) -> tuple[str, ...]:
-    open_paren = signature.find("(")
+    match = FUNC_RE.search(signature)
+    if match is None:
+        return ()
+    open_paren = signature.find("(", match.end("name"))
     if open_paren == -1:
         return ()
     close_paren = matching_delimiter(signature, open_paren, "(", ")")
@@ -423,17 +426,7 @@ def build_import_path_map(
 
 
 def resolve_import_path(import_path: str, import_path_map: dict[str, str]) -> str | None:
-    if import_path in import_path_map:
-        return import_path_map[import_path]
-    candidates = [
-        package_dir
-        for suffix, package_dir in import_path_map.items()
-        if suffix and import_path.endswith(f"/{suffix}")
-    ]
-    unique = sorted(set(candidates))
-    if len(unique) == 1:
-        return unique[0]
-    return None
+    return import_path_map.get(import_path)
 
 
 def parse_imports(

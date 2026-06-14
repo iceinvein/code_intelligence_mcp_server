@@ -125,6 +125,48 @@ func Render(value any) string {
             )
         )
 
+    def test_external_import_with_local_package_suffix_does_not_resolve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "go.mod": "module example.com/local\n\ngo 1.22\n",
+                    "service/service.go": """
+package service
+
+func MakeService() string {
+	return ""
+}
+""".lstrip(),
+                    "app/app.go": """
+package app
+
+import "example.org/external/service"
+
+func Render() string {
+	return service.MakeService()
+}
+""".lstrip(),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["to_external_symbol"] == symbols["service"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["MakeService"]["external_symbol"]
+                for item in payload["references"]
+            )
+        )
+
     def test_method_suffix_without_receiver_type_does_not_resolve(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -252,6 +294,44 @@ func (s Service) Render() string {
         self.assertEqual(
             symbols["Service.Render"]["external_symbol"],
             calls_to_load[0]["from_external_symbol"],
+        )
+
+    def test_method_parameter_shadowing_import_alias_does_not_emit_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "go.mod": "module example.com/method-shadow\n\ngo 1.22\n",
+                    "service/service.go": """
+package service
+
+func MakeService() string {
+	return ""
+}
+""".lstrip(),
+                    "app/app.go": """
+package app
+
+import "example.com/method-shadow/service"
+
+type Renderer struct{}
+
+func (r Renderer) Render(service interface{ MakeService() string }) string {
+	return service.MakeService()
+}
+""".lstrip(),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertFalse(
+            any(
+                item["relationship"] == "call"
+                and item["to_external_symbol"] == symbols["MakeService"]["external_symbol"]
+                for item in payload["references"]
+            )
         )
 
     def test_string_literals_and_comments_do_not_emit_calls(self):

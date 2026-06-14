@@ -282,6 +282,9 @@ pub fn classify_repo_with_env(path: &Utf8Path, tmpdir: Option<&str>) -> RepoClas
             });
         return RepoClass::GitWorktree { main };
     }
+    if dot_git.as_std_path().is_dir() {
+        return RepoClass::Standard;
+    }
 
     let p = path.as_str();
     let under = |prefix: &str| {

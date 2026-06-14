@@ -1,9 +1,11 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use code_intelligence_mcp_server::config::{Config, EmbeddingsBackend, EmbeddingsDevice};
 use code_intelligence_mcp_server::embeddings::{hash::HashEmbedder, SharedEmbedder};
+use code_intelligence_mcp_server::external_index::artifact::read_normalized_artifact;
 use code_intelligence_mcp_server::external_index::importer::import_external_index;
 use code_intelligence_mcp_server::external_index::provider::{
     merged_references_to_internal_symbol, ReferenceSource,
@@ -13,7 +15,7 @@ use code_intelligence_mcp_server::handlers::{
 };
 use code_intelligence_mcp_server::indexer::pipeline::IndexPipeline;
 use code_intelligence_mcp_server::metrics::MetricsRegistry;
-use code_intelligence_mcp_server::path::Utf8PathBuf;
+use code_intelligence_mcp_server::path::{Utf8Path, Utf8PathBuf};
 use code_intelligence_mcp_server::retrieval::Retriever;
 use code_intelligence_mcp_server::storage::{
     sqlite::{EdgeRow, SqliteStore, SymbolRow},
@@ -26,6 +28,67 @@ use code_intelligence_mcp_server::tools::{
 use sha2::{Digest, Sha256};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn tier1_python_producer_artifact_imports_into_overlay() {
+    let fixture_repo = tier1_fixture_repo("python");
+    let artifact_file = run_tier1_producer("python", &fixture_repo);
+    let artifact = read_normalized_artifact(artifact_file.path()).expect("read python artifact");
+
+    assert_eq!(artifact.language, "python");
+    assert!(artifact
+        .symbols
+        .iter()
+        .any(|symbol| symbol.display_name == "render_user"));
+    assert!(artifact
+        .references
+        .iter()
+        .any(|reference| reference.relationship == "call"));
+    assert!(
+        artifact
+            .references
+            .iter()
+            .all(|reference| reference.relationship != "calls"),
+        "Tier 1 artifacts must use canonical singular relationship names"
+    );
+    assert_generated_artifact_imports_into_overlay(
+        &fixture_repo,
+        artifact_file.path(),
+        artifact.symbols.len(),
+        artifact.references.len(),
+    );
+}
+
+#[test]
+fn tier1_typescript_producer_artifact_imports_into_overlay() {
+    let fixture_repo = tier1_fixture_repo("typescript");
+    let artifact_file = run_tier1_producer("typescript", &fixture_repo);
+    let artifact =
+        read_normalized_artifact(artifact_file.path()).expect("read typescript artifact");
+
+    assert_eq!(artifact.language, "typescript");
+    assert!(artifact
+        .symbols
+        .iter()
+        .any(|symbol| symbol.display_name == "renderUser"));
+    assert!(artifact
+        .references
+        .iter()
+        .any(|reference| reference.relationship == "call"));
+    assert!(
+        artifact
+            .references
+            .iter()
+            .all(|reference| reference.relationship != "calls"),
+        "Tier 1 artifacts must use canonical singular relationship names"
+    );
+    assert_generated_artifact_imports_into_overlay(
+        &fixture_repo,
+        artifact_file.path(),
+        artifact.symbols.len(),
+        artifact.references.len(),
+    );
+}
 
 #[test]
 fn imports_normalized_artifact_and_maps_exact_range() {
@@ -1236,6 +1299,60 @@ fn write_artifact(contents: &str) -> tempfile::NamedTempFile {
 fn external_index_id_for_json(contents: &str) -> String {
     let hash = hex::encode(Sha256::digest(contents.as_bytes()));
     format!("external:{}", &hash[..16])
+}
+
+fn tier1_fixture_repo(language: &str) -> Utf8PathBuf {
+    Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("producers")
+        .join("tests")
+        .join("fixtures")
+        .join(language)
+}
+
+fn run_tier1_producer(producer: &str, fixture_repo: &Utf8Path) -> tempfile::NamedTempFile {
+    let artifact_file = tempfile::NamedTempFile::new().expect("temp producer artifact");
+    let wrapper = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("producers")
+        .join("bin")
+        .join(format!("code-intelligence-external-{producer}"));
+    let output = Command::new(wrapper.as_std_path())
+        .arg("index")
+        .arg("--output")
+        .arg(artifact_file.path())
+        .current_dir(fixture_repo.as_std_path())
+        .output()
+        .expect("run Tier 1 producer wrapper");
+
+    assert!(
+        output.status.success(),
+        "producer {producer} failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    artifact_file
+}
+
+fn assert_generated_artifact_imports_into_overlay(
+    fixture_repo: &Utf8Path,
+    artifact_path: &Path,
+    expected_symbols: usize,
+    expected_references: usize,
+) {
+    let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
+    store.init().expect("init sqlite");
+
+    let report = import_external_index(&store, fixture_repo.as_str(), artifact_path)
+        .expect("import generated Tier 1 artifact");
+    assert_eq!(report.symbols_imported, expected_symbols);
+    assert_eq!(report.references_imported, expected_references);
+
+    let stats = store
+        .external_index_stats(&report.index_id)
+        .expect("external stats for generated Tier 1 artifact");
+    assert_eq!(stats.symbol_count, expected_symbols as u64);
+    assert_eq!(stats.reference_count, expected_references as u64);
 }
 
 fn test_app_state() -> (tempfile::TempDir, AppState) {

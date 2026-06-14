@@ -262,6 +262,50 @@ pub fn render_user(id: &str) -> String {
         ]
         self.assertEqual([], calls_to_load)
 
+    def test_chained_initializer_does_not_infer_receiver_type_from_first_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "src/lib.rs": """
+pub struct UserService;
+
+impl UserService {
+    pub fn load(&self) -> String {
+        String::new()
+    }
+
+    pub fn id(&self) -> String {
+        String::new()
+    }
+}
+
+pub fn make_service() -> UserService {
+    UserService
+}
+
+pub fn render_user() -> String {
+    let service = make_service().id();
+    service.load()
+}
+""".lstrip()
+                },
+            )
+            payload = self.run_producer(root)
+
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_load = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["UserService.load"]
+        ]
+        self.assertEqual([], calls_to_load)
+
     def test_wrapper_missing_output_exits_usage(self):
         result = subprocess.run(
             [str(WRAPPER), "index"],

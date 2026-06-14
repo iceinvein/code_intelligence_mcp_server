@@ -45,9 +45,7 @@ MEMBER_CALL_RE = re.compile(rf"\b({IDENTIFIER})\s*\.\s*({IDENTIFIER})\s*(?=\()")
 LET_EXPLICIT_TYPE_RE = re.compile(
     rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\s*:\s*([A-Za-z_][A-Za-z0-9_:<>]*)"
 )
-LET_FUNCTION_CALL_RE = re.compile(
-    rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\s*(?::[^=;]+)?=\s*({IDENTIFIER})\s*\("
-)
+ASSIGNED_CALL_RE = re.compile(rf"=\s*({IDENTIFIER})\s*\(")
 LET_BINDING_RE = re.compile(rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\b[^;]*")
 ASSIGNMENT_RE = re.compile(rf"(?<![\w.])({IDENTIFIER})\s*=(?!=)([^;]*)")
 RETURN_TYPE_RE = re.compile(r"->\s*([A-Za-z_][A-Za-z0-9_:<>]*)")
@@ -514,13 +512,12 @@ def first_known_receiver_type(
     if explicit is not None:
         return normalize_type_name(explicit.group(2))
 
-    function_call = LET_FUNCTION_CALL_RE.search(text)
-    if function_call is not None:
-        return free_function_return_types.get(function_call.group(2))
-
-    assignment_call = re.search(rf"=\s*({IDENTIFIER})\s*\(", text)
-    if assignment_call is not None:
-        return free_function_return_types.get(assignment_call.group(1))
+    assigned_call = ASSIGNED_CALL_RE.search(text)
+    if assigned_call is not None:
+        open_paren = assigned_call.end() - 1
+        close_paren = matching_delimiter(text, open_paren, "(", ")")
+        if close_paren is not None and not text[close_paren + 1 :].strip():
+            return free_function_return_types.get(assigned_call.group(1))
 
     return None
 

@@ -225,6 +225,38 @@ func Render() string {
         self.assertEqual(69, result.returncode, result.stderr)
         self.assertIn("no Go project or source files found", result.stderr)
 
+    def test_test_only_go_files_do_not_exit_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "go-normalized.json"
+            self.write_fixture(
+                root,
+                {
+                    "pkg/only_test.go": """
+package pkg
+
+func TestOnly(t *testing.T) {
+	helper()
+}
+
+func helper() {}
+""".lstrip(),
+                },
+            )
+            result = subprocess.run(
+                ["python3", str(PRODUCER), "index", "--output", str(output)],
+                cwd=root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual("go_source", payload["source_kind"])
+        self.assertEqual([], payload["symbols"])
+        self.assertEqual([], payload["references"])
+
     def test_wrapper_emits_valid_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "go-normalized.json"

@@ -392,6 +392,10 @@ def discover_go_files(root: Path) -> list[Path]:
     ]
 
 
+def has_go_project_or_files(root: Path) -> bool:
+    return (root / "go.mod").exists() or bool(discover_files(root, {".go"}))
+
+
 def read_module_path(root: Path) -> str | None:
     go_mod = root / "go.mod"
     if not go_mod.exists():
@@ -946,8 +950,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     root = Path.cwd()
-    files = discover_go_files(root)
-    if not files and not (root / "go.mod").exists():
+    if not has_go_project_or_files(root):
         print("no Go project or source files found", file=sys.stderr)
         return 69
 

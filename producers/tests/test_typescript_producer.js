@@ -110,6 +110,69 @@ test("local bindings shadow imported names inside the same function", () => {
   ));
 });
 
+test("unresolved import bindings do not fall back to same-name local symbols", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-unresolved-imports-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/local.ts": [
+      "export function retry() { return 1; }",
+      "export function aliasRetry() { return 2; }",
+      "export function runDefault() { return 3; }",
+      "export function missingRelative() { return 4; }",
+      "export function tracked() { return 5; }",
+      "export class Retrier { retry() { return 6; } }",
+      "",
+    ].join("\n"),
+    "src/tracked.ts": "export function tracked() { return 7; }\n",
+    "src/app.ts": [
+      "import runDefault, { retry, retry as aliasRetry } from \"p-retry\";",
+      "import * as retryTools from \"retry-tools\";",
+      "import { missingRelative } from \"./missing\";",
+      "import { tracked } from \"./tracked\";",
+      "",
+      "export function useImports() {",
+      "  retry();",
+      "  aliasRetry();",
+      "  runDefault();",
+      "  retryTools.retry();",
+      "  missingRelative();",
+      "  tracked();",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  const symbols = new Map(payload.symbols.map((item) => [item.display_name, item]));
+  const localNames = ["retry", "aliasRetry", "runDefault", "missingRelative"];
+  for (const name of localNames) {
+    assert.ok(!payload.references.some(
+      (item) =>
+        item.relationship === "call" &&
+        item.to_external_symbol === symbols.get(name).external_symbol,
+    ));
+  }
+  assert.ok(!payload.references.some(
+    (item) =>
+      item.relationship === "call" &&
+      item.to_external_symbol === symbols.get("Retrier.retry").external_symbol,
+  ));
+  assert.ok(payload.references.some(
+    (item) =>
+      item.relationship === "call" &&
+      item.to_external_symbol === symbols.get("tracked").external_symbol,
+  ));
+  assert.ok(payload.references.some(
+    (item) =>
+      item.relationship === "import" &&
+      item.to_external_symbol === symbols.get("tracked").external_symbol,
+  ));
+  assert.equal(
+    payload.references.filter((item) => item.relationship === "import").length,
+    1,
+  );
+});
+
 test("generated directories are not indexed", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-generated-"));
   writeFixture(root, {
@@ -167,6 +230,36 @@ test("calls inside comments and strings are ignored", () => {
     (item) =>
       item.relationship === "call" &&
       item.to_external_symbol === symbols.get("target").external_symbol,
+  ));
+});
+
+test("object-literal method shorthand declarations are not emitted as calls", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-object-method-"));
+  writeFixture(root, {
+    "package.json": "{\"type\":\"module\"}\n",
+    "src/app.ts": [
+      "export function save() {",
+      "  return 1;",
+      "}",
+      "",
+      "export function makeActions() {",
+      "  const actions = {",
+      "    save() {",
+      "      return 2;",
+      "    }",
+      "  };",
+      "  return actions;",
+      "}",
+      "",
+    ].join("\n"),
+  });
+
+  const payload = runProducer(root);
+  const symbols = new Map(payload.symbols.map((item) => [item.display_name, item]));
+  assert.ok(!payload.references.some(
+    (item) =>
+      item.relationship === "call" &&
+      item.to_external_symbol === symbols.get("save").external_symbol,
   ));
 });
 

@@ -208,6 +208,41 @@ function findMatchingBrace(source, openIndex) {
 	return source.length - 1;
 }
 
+function findMatchingParen(source, openIndex) {
+	let depth = 0;
+	for (let index = openIndex; index < source.length; index += 1) {
+		if (source[index] === "(") depth += 1;
+		if (source[index] === ")") {
+			depth -= 1;
+			if (depth === 0) return index;
+		}
+	}
+	return -1;
+}
+
+function previousNonWhitespace(source, offset) {
+	for (let index = offset - 1; index >= 0; index -= 1) {
+		if (!/\s/.test(source[index])) return source[index];
+	}
+	return "";
+}
+
+function nextNonWhitespace(source, offset) {
+	for (let index = offset; index < source.length; index += 1) {
+		if (!/\s/.test(source[index])) return source[index];
+	}
+	return "";
+}
+
+function isObjectMethodShorthandDeclaration(source, nameOffset, name) {
+	const open = nameOffset + name.length;
+	if (source[open] !== "(") return false;
+	const close = findMatchingParen(source, open);
+	if (close < 0 || nextNonWhitespace(source, close + 1) !== "{") return false;
+	const previous = previousNonWhitespace(source, nameOffset);
+	return previous === "{" || previous === ",";
+}
+
 function findFunctionBody(source, declarationEnd) {
 	const open = source.indexOf("{", declarationEnd);
 	if (open < 0) return null;
@@ -267,15 +302,17 @@ function collectLocalBindings(bodySource) {
 	return bindings;
 }
 
-function collectVariableTypes(bodySource, localBindings, localImports, functionReturnClass) {
+function collectVariableTypes(bodySource, localBindings, localImports, importBindings, functionReturnClass) {
 	const variableTypes = new Map();
 	const assignmentRe = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\(/g;
 	let match;
 	while ((match = assignmentRe.exec(bodySource)) !== null) {
 		const variable = match[1];
 		const callee = match[2];
-		if (localBindings.has(callee) && localImports.has(callee)) continue;
-		const target = localImports.get(callee) || callee;
+		if (localBindings.has(callee) && importBindings.has(callee)) continue;
+		const imported = localImports.get(callee);
+		if (!imported && importBindings.has(callee)) continue;
+		const target = imported || callee;
 		const returned = functionReturnClass.get(target);
 		if (returned) variableTypes.set(variable, returned);
 	}
@@ -291,6 +328,37 @@ function parseImportNames(raw) {
 			const parts = item.split(/\s+as\s+/);
 			return { imported: parts[0].trim(), local: (parts[1] || parts[0]).trim() };
 		});
+}
+
+function parseImportDeclaration(rawImport) {
+	const specifier = rawImport.match(/\bfrom\s+["']([^"']+)["']/);
+	if (!specifier) return null;
+	let clause = rawImport.slice(rawImport.indexOf("import") + "import".length, specifier.index).trim();
+	if (clause.startsWith("type ")) clause = clause.slice("type ".length).trim();
+
+	const named = [];
+	const boundNames = new Set();
+	const addBinding = (name) => {
+		if (/^[A-Za-z_$][\w$]*$/.test(name)) boundNames.add(name);
+	};
+
+	const namedMatch = clause.match(/\{([^}]+)\}/);
+	if (namedMatch) {
+		for (const entry of parseImportNames(namedMatch[1])) {
+			named.push(entry);
+			addBinding(entry.local);
+		}
+	}
+
+	const namespaceMatch = clause.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
+	if (namespaceMatch) addBinding(namespaceMatch[1]);
+
+	const leading = clause.split(",")[0].trim();
+	if (leading && !leading.startsWith("{") && !leading.startsWith("*")) {
+		addBinding(leading);
+	}
+
+	return { specifier: specifier[1], named, boundNames };
 }
 
 function resolveRelativeModule(currentFile, specifier, fileSet) {
@@ -459,29 +527,32 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 		const { source, codeSource, starts, scopes } = fileData.get(filePath);
 		const moduleScope = scopes[0];
 		const localImports = new Map();
-		const importRe = /import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']/g;
+		const importBindings = new Set();
+		const importRe = /\bimport\s+(?!\()([\s\S]*?)\s+from\s+["'][^"']*["']/g;
 		let match;
 		while ((match = importRe.exec(codeSource)) !== null) {
 			const rawImport = source.slice(match.index, importRe.lastIndex);
-			const specifier = rawImport.match(/from\s+["']([^"']+)["']/);
-			if (!specifier) continue;
-			const moduleFile = resolveRelativeModule(filePath, specifier[1], fileSet);
+			const parsed = parseImportDeclaration(rawImport);
+			if (!parsed) continue;
+			for (const local of parsed.boundNames) importBindings.add(local);
+			const moduleFile = resolveRelativeModule(filePath, parsed.specifier, fileSet);
 			if (!moduleFile) continue;
-			for (const { imported, local } of parseImportNames(match[1])) {
+			for (const { imported, local } of parsed.named) {
 				const target = knownByFileAndDisplay.get(`${moduleFile}:${imported}`);
 				if (!target) continue;
 				localImports.set(local, target.external_symbol);
 				references.push(makeReference(moduleScope.external_symbol, target.external_symbol, "import", filePath, starts, match.index, importRe.lastIndex));
 			}
 		}
-		importsByFile.set(filePath, localImports);
+		importsByFile.set(filePath, { localImports, importBindings });
 	}
 
 	for (const filePath of files) {
 		const { source, codeSource, starts, scopes, declarations } = fileData.get(filePath);
-		const localImports = importsByFile.get(filePath) || new Map();
+		const importData = importsByFile.get(filePath) || { localImports: new Map(), importBindings: new Set() };
+		const { localImports, importBindings } = importData;
 		for (const scope of scopes) {
-			scope.variableTypes = collectVariableTypes(codeSource.slice(scope.bodyStart, scope.bodyEnd), scope.localBindings, localImports, functionReturnClass);
+			scope.variableTypes = collectVariableTypes(codeSource.slice(scope.bodyStart, scope.bodyEnd), scope.localBindings, localImports, importBindings, functionReturnClass);
 		}
 
 		const memberCallRe = /\b([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*\(/g;
@@ -495,7 +566,7 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 			const receiverType = scope.variableTypes.get(receiver);
 			if (receiverType) {
 				target = resolveUniqueDisplay(knownByDisplay, `${receiverType}.${method}`);
-			} else if (!scope.localBindings.has(receiver)) {
+			} else if (!scope.localBindings.has(receiver) && !importBindings.has(receiver)) {
 				const candidates = [];
 				for (const items of knownByDisplay.values()) {
 					for (const item of items) {
@@ -515,6 +586,7 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 			if (CALL_KEYWORDS.has(name)) continue;
 			const nameOffset = match.index;
 			if (declarations.has(nameOffset)) continue;
+			if (isObjectMethodShorthandDeclaration(codeSource, nameOffset, name)) continue;
 			if (nameOffset > 0 && codeSource[nameOffset - 1] === ".") continue;
 			if (nameOffset > 0 && /[A-Za-z_$\w$]/.test(codeSource[nameOffset - 1])) continue;
 			const before = codeSource.slice(Math.max(0, nameOffset - 16), nameOffset);
@@ -522,7 +594,7 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 				if (!/\bnew\s+$/.test(before)) continue;
 			}
 			const scope = enclosingScope(scopes, nameOffset) || scopes[0];
-			if (scope.localBindings.has(name) && localImports.has(name)) continue;
+			if (scope.localBindings.has(name) && importBindings.has(name)) continue;
 
 			let target = null;
 			const imported = localImports.get(name);
@@ -531,6 +603,8 @@ function collectReferences(files, fileData, knownByDisplay, knownByFileAndDispla
 					target = items.find((item) => item.external_symbol === imported) || target;
 					if (target) break;
 				}
+			} else if (importBindings.has(name)) {
+				continue;
 			} else if (!scope.localBindings.has(name) || BINDING_WORDS.has(name)) {
 				target = resolveUniqueDisplay(knownByDisplay, name);
 			}

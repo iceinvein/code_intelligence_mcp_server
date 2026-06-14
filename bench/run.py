@@ -261,12 +261,15 @@ def _env_for_variant(variant: str) -> dict[str, str]:
     if variant == "no_desc":
         return {"BENCH_DISABLE_DESCRIPTIONS": "1"}
     if variant == "external":
+        from bench import arms as arms_mod
+
         return {
             "BENCH_DISABLE_DESCRIPTIONS": "1",
             "DESCRIPTIONS_ENABLED": "false",
             "RERANKER_ENABLED": "false",
             "EXTERNAL_INDEX_AUTO": "true",
             "EXTERNAL_INDEX_ON_REFRESH": "explicit",
+            **arms_mod.tier1_source_producer_commands(),
         }
     if variant == "full":
         # Descriptions ship off by default; the full variant opts in so the

@@ -49,10 +49,26 @@ def test_variant_env_maps_external_to_explicit_producers():
 
     assert run._env_for_variant("no_desc") == {"BENCH_DISABLE_DESCRIPTIONS": "1"}
     assert run._env_for_variant("full") == {"DESCRIPTIONS_ENABLED": "1"}
-    assert run._env_for_variant("external") == {
+    external_env = run._env_for_variant("external")
+    assert external_env == {
         "BENCH_DISABLE_DESCRIPTIONS": "1",
         "DESCRIPTIONS_ENABLED": "false",
         "RERANKER_ENABLED": "false",
         "EXTERNAL_INDEX_AUTO": "true",
         "EXTERNAL_INDEX_ON_REFRESH": "explicit",
+        "EXTERNAL_INDEX_TYPESCRIPT_COMMAND": str(
+            REPO_ROOT / "producers" / "bin" / "code-intelligence-external-typescript"
+        ),
+        "EXTERNAL_INDEX_PYTHON_COMMAND": str(
+            REPO_ROOT / "producers" / "bin" / "code-intelligence-external-python"
+        ),
+        "EXTERNAL_INDEX_RUST_COMMAND": str(
+            REPO_ROOT / "producers" / "bin" / "code-intelligence-external-rust"
+        ),
+        "EXTERNAL_INDEX_GO_COMMAND": str(
+            REPO_ROOT / "producers" / "bin" / "code-intelligence-external-go"
+        ),
     }
+    for key, command in external_env.items():
+        if key.startswith("EXTERNAL_INDEX_") and key.endswith("_COMMAND"):
+            assert Path(command).is_file()

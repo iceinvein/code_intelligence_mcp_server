@@ -11,6 +11,7 @@ Each arm has:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 # Code-intelligence MCP tools that the agent may call. Keep aligned with what
@@ -43,6 +44,27 @@ CODEGRAPH_MCP_TOOLS = [
 ]
 
 DEFAULT_TOOLS = ["Read", "Grep", "Glob", "Bash"]
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def tier1_source_producer_commands() -> dict[str, str]:
+    producer_bin = REPO_ROOT / "producers" / "bin"
+    return {
+        "EXTERNAL_INDEX_TYPESCRIPT_COMMAND": str(
+            producer_bin / "code-intelligence-external-typescript"
+        ),
+        "EXTERNAL_INDEX_PYTHON_COMMAND": str(
+            producer_bin / "code-intelligence-external-python"
+        ),
+        "EXTERNAL_INDEX_RUST_COMMAND": str(
+            producer_bin / "code-intelligence-external-rust"
+        ),
+        "EXTERNAL_INDEX_GO_COMMAND": str(
+            producer_bin / "code-intelligence-external-go"
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -116,6 +138,7 @@ ARMS: dict[str, Arm] = {
             "RERANKER_ENABLED": "false",
             "EXTERNAL_INDEX_AUTO": "true",
             "EXTERNAL_INDEX_ON_REFRESH": "explicit",
+            **tier1_source_producer_commands(),
         },
         allowed_tools=list(DEFAULT_TOOLS) + list(CODE_INTEL_MCP_TOOLS),
         tool_guidance=(

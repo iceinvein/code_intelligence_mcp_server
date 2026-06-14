@@ -49,6 +49,8 @@ def test_external_arm_enables_tier1_producers_only():
     assert a.daemon_env["DESCRIPTIONS_ENABLED"] == "false"
     assert a.daemon_env["RERANKER_ENABLED"] == "false"
     assert "EXTERNAL_INDEX_PRODUCER" not in a.daemon_env
+    for key, command in arms.tier1_source_producer_commands().items():
+        assert a.daemon_env[key] == command
     assert "mcp__code-intelligence__ask_code" in a.allowed_tools
 
 

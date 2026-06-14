@@ -34,8 +34,9 @@ PACKAGE_RE = re.compile(rf"(?m)^\s*package\s+({IDENTIFIER})\b")
 TYPE_RE = re.compile(rf"\btype\s+({IDENTIFIER})\b")
 FUNC_RE = re.compile(
     rf"\bfunc\s*"
-    rf"(?:\(\s*(?:(?:{IDENTIFIER})\s+)?(?P<recv>\*?\s*{IDENTIFIER})\s*\)\s*)?"
-    rf"(?P<name>{IDENTIFIER})\s*\("
+    rf"(?:\(\s*(?:(?P<recv_name>{IDENTIFIER})\s+)?"
+    rf"(?P<recv>\*?\s*{IDENTIFIER}(?:\s*\[[^\]]+\])?)\s*\)\s*)?"
+    rf"(?P<name>{IDENTIFIER})(?:\s*\[[^\]]+\])?\s*\("
 )
 IMPORT_RE = re.compile(r"\bimport\b")
 IMPORT_SPEC_RE = re.compile(
@@ -81,6 +82,7 @@ class LocalSymbol:
     body_end: int | None
     return_type: ReceiverType | None = None
     param_names: tuple[str, ...] = ()
+    receiver_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -472,6 +474,79 @@ def parse_imports(
     return sorted(specs, key=lambda item: (item.start, item.import_path, item.alias or ""))
 
 
+def type_declaration_ranges(masked: str) -> list[tuple[str, int, int]]:
+    declarations: list[tuple[str, int, int]] = []
+    for match in TYPE_RE.finditer(masked):
+        declarations.append(type_declaration_range(masked, match.start(1), match.end(1)))
+
+    for group_match in re.finditer(r"\btype\s*\(", masked):
+        close = matching_delimiter(masked, group_match.end() - 1, "(", ")")
+        if close is None:
+            continue
+        declarations.extend(grouped_type_declaration_ranges(masked, group_match.end(), close))
+
+    unique: dict[tuple[str, int], tuple[str, int, int]] = {}
+    for name, start, end in declarations:
+        unique[(name, start)] = (name, start, end)
+    return sorted(unique.values(), key=lambda item: (item[1], item[0]))
+
+
+def type_declaration_range(
+    masked: str,
+    name_start: int,
+    name_end: int,
+    declaration_end: int | None = None,
+) -> tuple[str, int, int]:
+    name = masked[name_start:name_end]
+    line_end = find_line_end(masked, name_end)
+    end_limit = line_end if declaration_end is None else min(line_end, declaration_end)
+    open_brace = masked.find("{", name_end, end_limit)
+    if open_brace != -1:
+        close_brace = matching_brace(masked, open_brace)
+        end = close_brace + 1 if close_brace is not None else end_limit
+    else:
+        end = end_limit
+    return name, name_start, end
+
+
+def grouped_type_declaration_ranges(
+    masked: str,
+    start: int,
+    end: int,
+) -> list[tuple[str, int, int]]:
+    declarations: list[tuple[str, int, int]] = []
+    cursor = start
+    while cursor < end:
+        while cursor < end and (masked[cursor].isspace() or masked[cursor] == ";"):
+            cursor += 1
+        name_match = re.match(rf"{IDENTIFIER}\b", masked[cursor:end])
+        if name_match is None:
+            cursor += 1
+            continue
+
+        name_start = cursor
+        name_end = cursor + name_match.end()
+        cursor = name_end
+        depths = {"(": 0, "[": 0, "{": 0}
+        closing = {")": "(", "]": "[", "}": "{"}
+        while cursor < end:
+            char = masked[cursor]
+            if char in depths:
+                depths[char] += 1
+            elif char in closing:
+                opener = closing[char]
+                if depths[opener] > 0:
+                    depths[opener] -= 1
+            elif char in {";", "\n"} and all(depth == 0 for depth in depths.values()):
+                break
+            cursor += 1
+        declarations.append(
+            type_declaration_range(masked, name_start, name_end, cursor)
+        )
+        cursor += 1
+    return declarations
+
+
 def alias_for_import(spec: ImportSpec, package_name: str | None) -> str | None:
     if spec.alias in {".", "_"}:
         return None
@@ -556,15 +631,7 @@ def collect_file_symbols(
             LocalSymbol(package_symbol, package_name, package_dir, None, None)
         )
 
-    for match in TYPE_RE.finditer(masked):
-        name = match.group(1)
-        line_end = find_line_end(masked, match.end())
-        open_brace = masked.find("{", match.end(), line_end)
-        if open_brace != -1:
-            close_brace = matching_brace(masked, open_brace)
-            end = close_brace + 1 if close_brace is not None else line_end
-        else:
-            end = line_end
+    for name, start, end in type_declaration_ranges(masked):
         symbol = symbol_for_range(
             rel_path,
             offsets,
@@ -572,7 +639,7 @@ def collect_file_symbols(
             "type",
             name,
             f"{package_dir}:{name}",
-            match.start(),
+            start,
             end,
         )
         symbols.append(LocalSymbol(symbol, package_name, package_dir, None, None))
@@ -618,6 +685,7 @@ def collect_file_symbols(
                 body_end,
                 return_type,
                 param_names,
+                match.group("recv_name"),
             )
         )
 
@@ -785,7 +853,10 @@ def collect_file_references(
         shadowed_names = set(local.param_names)
         if local.symbol.kind == "method" and "." in local.symbol.display_name:
             receiver_type = local.symbol.display_name.rsplit(".", 1)[0]
-            receiver_types["self"] = ReceiverType(local.package_dir, receiver_type)
+            receiver_value = ReceiverType(local.package_dir, receiver_type)
+            receiver_types["self"] = receiver_value
+            if local.receiver_name is not None:
+                receiver_types[local.receiver_name] = receiver_value
 
         events: list[tuple[int, int, str, object]] = []
         for binding in collect_binding_events(

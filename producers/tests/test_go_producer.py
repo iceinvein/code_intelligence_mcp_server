@@ -158,6 +158,102 @@ func RenderUser(svc any, id string) string {
             )
         )
 
+    def test_grouped_type_declarations_emit_type_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "go.mod": "module example.com/grouped-types\n\ngo 1.22\n",
+                    "model/model.go": """
+package model
+
+type (
+	Alpha struct{}; Beta interface{}
+	Gamma interface {
+		Render() string
+	}
+)
+""".lstrip(),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertEqual("type", symbols["Alpha"]["kind"])
+        self.assertEqual("type", symbols["Beta"]["kind"])
+        self.assertEqual("type", symbols["Gamma"]["kind"])
+        self.assertNotIn("Render", symbols)
+
+    def test_generic_free_functions_and_receiver_methods_emit_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "go.mod": "module example.com/generics\n\ngo 1.22\n",
+                    "box/box.go": """
+package box
+
+type Box[T any] struct{}
+
+func NewBox[T any]() Box[T] {
+	return Box[T]{}
+}
+
+func (b Box[T]) Open() string {
+	return ""
+}
+""".lstrip(),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        self.assertEqual("function", symbols["NewBox"]["kind"])
+        self.assertEqual("method", symbols["Box.Open"]["kind"])
+
+    def test_receiver_binding_resolves_method_call_on_same_receiver_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "go.mod": "module example.com/receiver-binding\n\ngo 1.22\n",
+                    "service/service.go": """
+package service
+
+type Service struct{}
+
+func (s Service) Load() string {
+	return ""
+}
+
+func (s Service) Render() string {
+	return s.Load()
+}
+""".lstrip(),
+                },
+            )
+            payload = self.run_producer(root)
+
+        symbols = {item["display_name"]: item for item in payload["symbols"]}
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_load = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["Service.Load"]
+        ]
+        self.assertEqual(1, len(calls_to_load))
+        self.assertEqual(
+            symbols["Service.Render"]["external_symbol"],
+            calls_to_load[0]["from_external_symbol"],
+        )
+
     def test_string_literals_and_comments_do_not_emit_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

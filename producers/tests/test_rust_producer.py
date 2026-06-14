@@ -120,6 +120,148 @@ pub fn render_answer(answer: String) -> String {
         ]
         self.assertEqual([], calls_to_as_str)
 
+    def test_path_qualified_new_does_not_resolve_to_local_new(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "src/lib.rs": """
+pub struct UserService;
+
+impl UserService {
+    pub fn new() -> Self {
+        UserService
+    }
+}
+
+pub fn new() -> i32 {
+    1
+}
+
+pub fn build() -> UserService {
+    UserService::new()
+}
+""".lstrip()
+                },
+            )
+            payload = self.run_producer(root)
+
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_new = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["new"]
+        ]
+        self.assertEqual([], calls_to_new)
+
+    def test_external_path_qualified_call_does_not_resolve_to_local_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "src/lib.rs": """
+pub fn from_str() -> i32 {
+    1
+}
+
+pub fn parse() -> i32 {
+    serde_json::from_str()
+}
+""".lstrip()
+                },
+            )
+            payload = self.run_producer(root)
+
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_from_str = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["from_str"]
+        ]
+        self.assertEqual([], calls_to_from_str)
+
+    def test_parameter_shadowing_function_name_suppresses_direct_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "src/lib.rs": """
+pub fn make_service() -> i32 {
+    1
+}
+
+pub fn render(make_service: fn() -> i32) -> i32 {
+    make_service()
+}
+""".lstrip()
+                },
+            )
+            payload = self.run_producer(root)
+
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_make_service = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["make_service"]
+        ]
+        self.assertEqual([], calls_to_make_service)
+
+    def test_receiver_shadowing_suppresses_stale_method_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "src/lib.rs": """
+pub struct UserService;
+
+impl UserService {
+    pub fn load(&self, id: &str) -> String {
+        id.to_string()
+    }
+}
+
+pub fn make_service() -> UserService {
+    UserService
+}
+
+pub fn render_user(id: &str) -> String {
+    let service = make_service();
+    let service = id;
+    service.load(id)
+}
+""".lstrip()
+                },
+            )
+            payload = self.run_producer(root)
+
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_load = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["UserService.load"]
+        ]
+        self.assertEqual([], calls_to_load)
+
     def test_wrapper_missing_output_exits_usage(self):
         result = subprocess.run(
             [str(WRAPPER), "index"],

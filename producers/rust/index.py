@@ -40,7 +40,7 @@ FN_RE = re.compile(
     rf"fn\s+({IDENTIFIER})"
 )
 IMPL_RE = re.compile(r"\bimpl\b")
-DIRECT_CALL_RE = re.compile(rf"(?<![\w.])({IDENTIFIER})\s*(?=\()")
+DIRECT_CALL_RE = re.compile(rf"(?<![\w.:])({IDENTIFIER})\s*(?=\()")
 MEMBER_CALL_RE = re.compile(rf"\b({IDENTIFIER})\s*\.\s*({IDENTIFIER})\s*(?=\()")
 LET_EXPLICIT_TYPE_RE = re.compile(
     rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\s*:\s*([A-Za-z_][A-Za-z0-9_:<>]*)"
@@ -48,6 +48,8 @@ LET_EXPLICIT_TYPE_RE = re.compile(
 LET_FUNCTION_CALL_RE = re.compile(
     rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\s*(?::[^=;]+)?=\s*({IDENTIFIER})\s*\("
 )
+LET_BINDING_RE = re.compile(rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\b[^;]*")
+ASSIGNMENT_RE = re.compile(rf"(?<![\w.])({IDENTIFIER})\s*=(?!=)([^;]*)")
 RETURN_TYPE_RE = re.compile(r"->\s*([A-Za-z_][A-Za-z0-9_:<>]*)")
 
 
@@ -57,6 +59,7 @@ class LocalSymbol:
     body_start: int | None
     body_end: int | None
     return_type: str | None = None
+    param_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,14 @@ class ItemRange:
     name: str
     open_brace: int
     close_brace: int
+
+
+@dataclass(frozen=True)
+class BindingEvent:
+    offset: int
+    name: str
+    receiver_type: str | None
+    introduces_name: bool
 
 
 def char_byte_offsets(source: str) -> list[int]:
@@ -197,6 +208,65 @@ def matching_brace(masked: str, open_brace: int) -> int | None:
             if depth == 0:
                 return index
     return None
+
+
+def matching_delimiter(
+    masked: str, open_index: int, open_char: str, close_char: str
+) -> int | None:
+    depth = 0
+    for index in range(open_index, len(masked)):
+        char = masked[index]
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depths = {"(": 0, "[": 0, "<": 0}
+    closing = {")": "(", "]": "[", ">": "<"}
+    for index, char in enumerate(text):
+        if char in depths:
+            depths[char] += 1
+        elif char in closing:
+            opener = closing[char]
+            if depths[opener] > 0:
+                depths[opener] -= 1
+        elif char == "," and all(depth == 0 for depth in depths.values()):
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
+
+
+def parse_param_names(params: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for part in split_top_level_commas(params):
+        if ":" not in part:
+            continue
+        binding = part.split(":", 1)[0].strip()
+        binding = binding.lstrip("&").strip()
+        while binding.startswith(("mut ", "ref ")):
+            binding = binding.split(None, 1)[1].strip()
+        match = re.search(rf"({IDENTIFIER})\s*$", binding)
+        if match is not None:
+            names.append(match.group(1))
+    return tuple(names)
+
+
+def parse_function_param_names(masked: str, start: int, end: int) -> tuple[str, ...]:
+    open_paren = masked.find("(", start, end)
+    if open_paren == -1:
+        return ()
+    close_paren = matching_delimiter(masked, open_paren, "(", ")")
+    if close_paren is None or close_paren > end:
+        return ()
+    return parse_param_names(masked[open_paren + 1 : close_paren])
 
 
 def find_item_end(masked: str, start: int) -> int:
@@ -383,7 +453,16 @@ def collect_file_symbols(root: Path, rel: Path) -> list[LocalSymbol]:
             item_end,
         )
         return_type = parse_return_type(masked, match.end(), item_end)
-        symbols.append(LocalSymbol(symbol, body_start, body_end, return_type))
+        param_names = parse_function_param_names(masked, match.end(), item_end)
+        symbols.append(
+            LocalSymbol(
+                symbol,
+                body_start,
+                body_end,
+                return_type,
+                param_names,
+            )
+        )
 
     return sorted(
         symbols,
@@ -428,28 +507,57 @@ def receiver_type_for_local(local: LocalSymbol) -> str | None:
     return local.symbol.display_name.rsplit(".", 1)[0]
 
 
-def infer_receiver_types(
-    body: str,
-    local: LocalSymbol,
-    free_function_return_types: dict[str, str],
-) -> dict[str, str]:
-    receiver_types: dict[str, str] = {}
-    self_type = receiver_type_for_local(local)
-    if self_type is not None:
-        receiver_types["self"] = self_type
+def first_known_receiver_type(
+    text: str, free_function_return_types: dict[str, str]
+) -> str | None:
+    explicit = LET_EXPLICIT_TYPE_RE.search(text)
+    if explicit is not None:
+        return normalize_type_name(explicit.group(2))
 
-    for match in LET_EXPLICIT_TYPE_RE.finditer(body):
-        type_name = normalize_type_name(match.group(2))
-        if type_name is not None:
-            receiver_types[match.group(1)] = type_name
+    function_call = LET_FUNCTION_CALL_RE.search(text)
+    if function_call is not None:
+        return free_function_return_types.get(function_call.group(2))
 
-    for match in LET_FUNCTION_CALL_RE.finditer(body):
-        variable_name, function_name = match.groups()
-        return_type = free_function_return_types.get(function_name)
-        if return_type is not None:
-            receiver_types.setdefault(variable_name, return_type)
+    assignment_call = re.search(rf"=\s*({IDENTIFIER})\s*\(", text)
+    if assignment_call is not None:
+        return free_function_return_types.get(assignment_call.group(1))
 
-    return receiver_types
+    return None
+
+
+def contains_offset(spans: list[tuple[int, int]], offset: int) -> bool:
+    return any(start <= offset < end for start, end in spans)
+
+
+def collect_binding_events(
+    body: str, free_function_return_types: dict[str, str]
+) -> list[BindingEvent]:
+    events: list[BindingEvent] = []
+    let_spans: list[tuple[int, int]] = []
+    for match in LET_BINDING_RE.finditer(body):
+        let_spans.append((match.start(), match.end()))
+        events.append(
+            BindingEvent(
+                match.end(),
+                match.group(1),
+                first_known_receiver_type(match.group(0), free_function_return_types),
+                True,
+            )
+        )
+
+    for match in ASSIGNMENT_RE.finditer(body):
+        if contains_offset(let_spans, match.start()):
+            continue
+        events.append(
+            BindingEvent(
+                match.end(),
+                match.group(1),
+                first_known_receiver_type(match.group(0), free_function_return_types),
+                False,
+            )
+        )
+
+    return sorted(events, key=lambda item: (item.offset, item.name))
 
 
 def collect_file_references(
@@ -472,32 +580,62 @@ def collect_file_references(
             continue
         from_external = local.symbol.external_symbol
         body = masked[local.body_start : local.body_end]
-        receiver_types = infer_receiver_types(body, local, free_function_return_types)
+        receiver_types: dict[str, str] = {}
+        shadowed_names = set(local.param_names)
+        self_type = receiver_type_for_local(local)
+        if self_type is not None:
+            receiver_types["self"] = self_type
 
+        events: list[tuple[int, int, str, object]] = []
+        for binding in collect_binding_events(body, free_function_return_types):
+            events.append((binding.offset, 0, "binding", binding))
         for match in MEMBER_CALL_RE.finditer(body):
-            receiver_name, name = match.groups()
-            receiver_type = receiver_types.get(receiver_name)
-            if receiver_type is None:
-                continue
-            target = methods_by_type_and_name.get((receiver_type, name))
-            if target is None:
-                continue
-            start = local.body_start + match.start(2)
-            end = local.body_start + match.end(2)
-            references.append(
-                reference_for_call(
-                    rel_path,
-                    offsets,
-                    starts,
-                    from_external,
-                    target,
-                    start,
-                    end,
-                )
-            )
-
+            events.append((match.start(0), 1, "member", match))
         for match in DIRECT_CALL_RE.finditer(body):
+            events.append((match.start(1), 1, "direct", match))
+
+        for _, _, event_kind, event in sorted(events, key=lambda item: (item[0], item[1])):
+            if event_kind == "binding":
+                binding = event
+                assert isinstance(binding, BindingEvent)
+                if binding.introduces_name:
+                    shadowed_names.add(binding.name)
+                if binding.receiver_type is None:
+                    receiver_types.pop(binding.name, None)
+                else:
+                    receiver_types[binding.name] = binding.receiver_type
+                continue
+
+            if event_kind == "member":
+                match = event
+                assert isinstance(match, re.Match)
+                receiver_name, name = match.groups()
+                receiver_type = receiver_types.get(receiver_name)
+                if receiver_type is None:
+                    continue
+                target = methods_by_type_and_name.get((receiver_type, name))
+                if target is None:
+                    continue
+                start = local.body_start + match.start(2)
+                end = local.body_start + match.end(2)
+                references.append(
+                    reference_for_call(
+                        rel_path,
+                        offsets,
+                        starts,
+                        from_external,
+                        target,
+                        start,
+                        end,
+                    )
+                )
+                continue
+
+            match = event
+            assert isinstance(match, re.Match)
             name = match.group(1)
+            if name in shadowed_names:
+                continue
             target = free_functions.get(name)
             if target is None:
                 continue

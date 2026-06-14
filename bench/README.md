@@ -124,6 +124,36 @@ Says nothing about overlay retrieval quality (producers are stubs → zero exter
 - The default `exclude_patterns` entry `**/bench/state/repos/**` zeroed the django index (django is checked out under `bench/state/repos/`; every file matched the exclude → 0 symbols). Worked around via a `[repos.defaults] exclude_patterns` override in the variant `server.toml`. **Proper fix pending:** drop that entry from the daemon default, or move fixtures outside `bench/state/repos/`. wolfmax dodged it only because it is a symlink to an external path.
 - The shallow-clone checkout does not honor the pinned SHA (a `git checkout <sha>` after `git fetch --depth=1` left HEAD unmoved). django was re-pinned to the actually-checked-out `2d4add11` to keep prep a no-op; revisit if an exact pinned SHA is required.
 
+## R008 result (2026-06-14) — first external-overlay A/B
+
+First round with real Tier-1 external producers (Python/TS/Rust/Go) merged from `codex/tier1-external-producers`. Arms: `code_intel_shipped` (no_desc, overlay inert) vs `code_intel_external` (same defaults + `EXTERNAL_INDEX_AUTO=true`, explicit producer execution). 80 runs, all `end_turn`.
+
+**Headline aggregate is misleading** — it folds in an invalid django-external arm (see Caveats). The real signal is per-repo:
+
+| arm / repo | n | judge | mech | citation | halluc | tools | tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| shipped / wolfmax | 20 | 6.90 | 0.45 | 55% | 35% | 4.2 | 178.6k |
+| external / wolfmax | 20 | 6.65 | 0.45 | 60% | 35% | 5.2 | 179.8k |
+| shipped / django | 20 | 6.85 | 0.45 | 50% | 45% | 5.3 | 201.1k |
+| external / django | 20 | 7.25 | 0.40 | 35% | 25% | 6.0 | 255.3k |
+
+**wolfmax is the only valid overlay test** (2,563 real `typescript_source` rows imported). There the external overlay is **judge -0.25** (inside the ±1.4–1.8 band), **mech flat**, **+5pp citation**, at **~1 extra tool call**. Same signature as descriptions/reranker in R005–R007: a marginal precision bump that does not move the judge. Does not justify enabling external indexing by default on this evidence.
+
+### Caveats (why django-external is invalid)
+
+- **Wrong producer for django.** `detect_producer_for_repo` returns a single producer and checks manifests in fixed priority with `package.json`/`tsconfig.json` first. Django's root has **both** `package.json` (JS tooling) and `pyproject.toml`, so TypeScript matched first and the Python producer never ran: django imported **60 stray-JS overlay rows instead of ~42k Python symbols**. The django-external arm is therefore ≈ the shipped arm; its +0.40 judge / -15pp citation / +54k tokens are run-to-run noise, not an overlay effect. Fix: run **all** detected producers per repo; re-prep + re-run the django external arm for the decisive Python-overlay A/B.
+- **Judging looked rate-limited but was a parser bug.** 57/80 judge rows first came back all-zero and were misread as a subscription limit. Real cause: `judge.py`'s `_JSON_BLOCK` regex (`\{[^{}]*"score"[^{}]*\}`) cannot parse a reply whose `justification` contains literal braces (e.g. "injects `{ user, session }`") or a ```` ```json ```` fence. Replaced with a string-aware balanced-brace extractor; added regression tests. Recovered the 57 rows with `python3 -m bench.rejudge R008` (resume-aware: re-judges only casualties, persists incrementally, self-exits after N consecutive real failures), then `report R008`.
+
+## Resuming a partially-judged round
+
+If judging stops part-way (real rate limit, or a parser/CLI failure), the casualty rows are all-zero with empty justifications. Re-judge only those without touching the 80 runs or the good rows:
+
+```bash
+python3 -m bench.rejudge R008 --dry-run   # list casualties, no API calls
+python3 -m bench.rejudge R008             # re-judge casualties, persist incrementally
+python3 -m bench.run report R008          # re-aggregate (report reads judge_median from scores.json)
+```
+
 ## Daemon env contract
 
 Both descriptions and the reranker ship **off by default** in production (neither moved the judge in R005/R006). Each is a real `StandaloneConfig` toggle (default `false`), opted into per arm/variant:

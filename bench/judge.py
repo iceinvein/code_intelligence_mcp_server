@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 import statistics
 import subprocess
 from dataclasses import dataclass, field
@@ -38,9 +37,6 @@ class JudgeAggregate:
     range: int
 
 
-_JSON_BLOCK = re.compile(r"\{[^{}]*\"score\"[^{}]*\}", re.DOTALL)
-
-
 def _build_user_prompt(
     question_id: str,
     question: str,
@@ -65,11 +61,52 @@ def _build_user_prompt(
     )
 
 
+def _extract_json_object(text: str) -> dict:
+    """Return the first balanced ``{...}`` object containing a ``score`` key.
+
+    A plain regex cannot do this: judge justifications routinely contain literal
+    braces (e.g. ``injects { user, session } into context``) and the models often
+    wrap the object in a ```json``` fence. This does a string-aware balanced-brace
+    scan so braces and quotes *inside* string values do not terminate the object,
+    then falls through to the next ``{`` if a candidate fails to parse or lacks a
+    score (e.g. a brace that opens inside prose before the real object).
+    """
+    s = text.strip()
+    for start, ch0 in enumerate(s):
+        if ch0 != "{":
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(s)):
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(s[start:i + 1])
+                    except json.JSONDecodeError:
+                        break  # malformed candidate; try the next '{'
+                    if isinstance(obj, dict) and "score" in obj:
+                        return obj
+                    break  # parsed but not our object; try the next '{'
+    raise ValueError(f"no JSON object with score in judge response: {text!r}")
+
+
 def _parse_response(raw: str) -> tuple[int, str]:
-    m = _JSON_BLOCK.search(raw)
-    if not m:
-        raise ValueError(f"no JSON object in judge response: {raw!r}")
-    obj = json.loads(m.group(0))
+    obj = _extract_json_object(raw)
     score = max(0, min(10, int(obj.get("score", 0))))
     just = str(obj.get("justification", ""))
     return score, just

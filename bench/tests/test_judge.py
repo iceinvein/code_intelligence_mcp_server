@@ -92,3 +92,48 @@ def test_judge_one_retries_on_malformed_json(monkeypatch):
     )
     assert attempts["count"] == 2  # one retry
     assert result.score == 5
+
+
+def test_parse_response_handles_braces_inside_justification():
+    # Regression (R008): the old brace-free regex bailed at the literal `{` in the
+    # justification text, dropping a perfectly valid judgement to a 0 casualty.
+    raw = (
+        '{"score": 6, "justification": "Correct, but omits that authPlugin injects '
+        '{ user, session } into route context."}'
+    )
+    score, just = judge._parse_response(raw)
+    assert score == 6
+    assert "{ user, session }" in just
+
+
+def test_parse_response_handles_markdown_fence():
+    raw = '```json\n{"score": 8, "justification": "good answer"}\n```'
+    score, just = judge._parse_response(raw)
+    assert score == 8
+    assert just == "good answer"
+
+
+def test_parse_response_skips_leading_prose_brace():
+    # A stray `{` in prose before the real object must not abort extraction.
+    raw = 'Here { is my verdict: {"score": 3, "justification": "weak {x} here"}'
+    score, just = judge._parse_response(raw)
+    assert score == 3
+    assert "weak {x} here" == just
+
+
+def test_judge_one_parses_justification_with_braces(monkeypatch):
+    inner = '{"score": 6, "justification": "injects { user, session } into context"}'
+    cli_output = json.dumps({"type": "result", "subtype": "success", "result": inner})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeCompleted(stdout=cli_output.encode()))
+    result = judge.judge_one(
+        model="claude-opus-4-8",
+        question_id="q1",
+        question="?",
+        rubric="r",
+        citations=[],
+        mech_context={},
+        answer="a",
+    )
+    assert result.error is None
+    assert result.score == 6
+    assert "{ user, session }" in result.justification

@@ -402,6 +402,18 @@ test("wrapper usage and missing output errors exit 64", () => {
   assert.match(missingOutput.stderr, /usage:/);
 });
 
+test("output write errors exit 64 without stack trace", () => {
+  const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-output-dir-"));
+  const result = spawnSync(
+    process.execPath,
+    [PRODUCER, "index", "--output", outputDirectory],
+    { cwd: FIXTURE, encoding: "utf8" },
+  );
+  assert.equal(result.status, 64);
+  assert.match(result.stderr, /failed to write output:/);
+  assert.doesNotMatch(result.stderr, /at .*index\.js/);
+});
+
 test("no TypeScript or JavaScript files exits 69", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typescript-empty-"));
   fs.writeFileSync(path.join(root, "package.json"), "{\"type\":\"module\"}\n", "utf8");

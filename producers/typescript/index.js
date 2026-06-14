@@ -659,8 +659,14 @@ function main(argv) {
 		symbols,
 		references,
 	};
-	fs.mkdirSync(path.dirname(path.resolve(argv[2])), { recursive: true });
-	fs.writeFileSync(argv[2], sortedJson(payload), "utf8");
+	const outputPath = path.resolve(argv[2]);
+	try {
+		fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+		fs.writeFileSync(outputPath, sortedJson(payload), "utf8");
+	} catch (error) {
+		console.error(`failed to write output: ${error.message}`);
+		return 64;
+	}
 	return 0;
 }
 

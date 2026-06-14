@@ -117,7 +117,7 @@ First cycle since R006, capturing the ~58 commits landed since (provenance-overl
 
 By task type, concept (+0.76 judge, mech 0.30→0.48), impact (+0.67), and multi_hop (+0.38) improved. symbol_lookup judge dropped (-1.14) **but retrieval was not the cause**: every symbol_lookup citation was correct with 0 hallucination (mech 0.67); the agent answered location-only and judges docked the missing rubric descriptions. multi_hop hallucination stays high (88%, ~on par with R005) — agents mis-cite line numbers in multi-file traces.
 
-Says nothing about overlay retrieval quality (producers are stubs → zero external rows). To measure that, build a real producer and add a `code_intel_external` arm A/B'd against this baseline.
+Says nothing about overlay retrieval quality (producers are stubs → zero external rows). The next external-overlay benchmark arm is `code_intel_external`: it keeps the R007 production defaults and enables explicit external producer execution only. Run it after the TypeScript and Python producer smoke tests import non-zero rows for wolfmax and Django.
 
 ### Operational notes from this run
 

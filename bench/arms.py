@@ -102,6 +102,27 @@ ARMS: dict[str, Arm] = {
             "Fall back to Read/Grep when results are insufficient."
         ),
     ),
+    "code_intel_external": Arm(
+        name="code_intel_external",
+        needs_daemon=True,
+        is_codegraph=False,
+        index_variant="no_desc",
+        # R007 production-default baseline plus explicit external producer execution.
+        # Do not set EXTERNAL_INDEX_PRODUCER here; the daemon detects the project
+        # languages and selects the matching shipped producers.
+        daemon_env={
+            "BENCH_DISABLE_DESCRIPTIONS": "1",
+            "DESCRIPTIONS_ENABLED": "false",
+            "RERANKER_ENABLED": "false",
+            "EXTERNAL_INDEX_AUTO": "true",
+            "EXTERNAL_INDEX_ON_REFRESH": "explicit",
+        },
+        allowed_tools=list(DEFAULT_TOOLS) + list(CODE_INTEL_MCP_TOOLS),
+        tool_guidance=(
+            "Start with `mcp__code-intelligence__ask_code` for codebase questions. "
+            "Fall back to Read/Grep when results are insufficient."
+        ),
+    ),
     "code_intel_no_reranker": Arm(
         name="code_intel_no_reranker",
         needs_daemon=True,

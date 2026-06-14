@@ -4,11 +4,12 @@ import pytest
 from bench import arms
 
 
-def test_five_arms_defined():
+def test_six_arms_defined():
     assert set(arms.ARMS.keys()) == {
         "default",
         "code_intel_full",
         "code_intel_shipped",
+        "code_intel_external",
         "code_intel_no_reranker",
         "codegraph",
     }
@@ -37,6 +38,18 @@ def test_code_intel_shipped_sets_env_and_uses_no_desc_variant():
     a = arms.ARMS["code_intel_shipped"]
     assert a.daemon_env == {"BENCH_DISABLE_DESCRIPTIONS": "1"}
     assert a.index_variant == "no_desc"
+
+
+def test_external_arm_enables_tier1_producers_only():
+    a = arms.ARMS["code_intel_external"]
+    assert a.needs_daemon is True
+    assert a.index_variant == "no_desc"
+    assert a.daemon_env["EXTERNAL_INDEX_AUTO"] == "true"
+    assert a.daemon_env["EXTERNAL_INDEX_ON_REFRESH"] == "explicit"
+    assert a.daemon_env["DESCRIPTIONS_ENABLED"] == "false"
+    assert a.daemon_env["RERANKER_ENABLED"] == "false"
+    assert "EXTERNAL_INDEX_PRODUCER" not in a.daemon_env
+    assert "mcp__code-intelligence__ask_code" in a.allowed_tools
 
 
 def test_code_intel_no_reranker_leaves_reranker_off_and_reuses_full_variant():

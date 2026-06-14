@@ -51,7 +51,7 @@ FIXTURES_DIR = BENCH_DIR / "fixtures"
 def bench_home_for_variant(variant: str) -> Path:
     """Return the isolated HOME path for the given index variant.
 
-    Each variant gets its own .code-intelligence/ tree so full and no_desc
+    Each variant gets its own .code-intelligence/ tree so benchmark index
     indexes can coexist without overwriting each other.
     Arms with index_variant=None (default, codegraph) use the legacy BENCH_HOME.
     """

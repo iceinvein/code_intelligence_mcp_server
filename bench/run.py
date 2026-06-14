@@ -257,6 +257,24 @@ def _wait_for_descriptions(db_path: Path, repo_name: str) -> None:
             return
 
 
+def _env_for_variant(variant: str) -> dict[str, str]:
+    if variant == "no_desc":
+        return {"BENCH_DISABLE_DESCRIPTIONS": "1"}
+    if variant == "external":
+        return {
+            "BENCH_DISABLE_DESCRIPTIONS": "1",
+            "DESCRIPTIONS_ENABLED": "false",
+            "RERANKER_ENABLED": "false",
+            "EXTERNAL_INDEX_AUTO": "true",
+            "EXTERNAL_INDEX_ON_REFRESH": "explicit",
+        }
+    if variant == "full":
+        # Descriptions ship off by default; the full variant opts in so the
+        # index actually contains LLM descriptions to measure against no_desc.
+        return {"DESCRIPTIONS_ENABLED": "1"}
+    return {}
+
+
 def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
     """Spawn the daemon with a per-variant HOME, register the repo, trigger reindex,
     wait for jobs to settle, then stop the daemon."""
@@ -293,13 +311,7 @@ def _build_variant(repo_name: str, repo_path: Path, variant: str) -> None:
     # Pre-register the repo so /api/repos/<hash>/reindex does not 404.
     repo_hash_str = _ensure_repo_registered(home, repo_name, repo_path)
 
-    env_extra: dict[str, str] = {}
-    if variant == "no_desc":
-        env_extra["BENCH_DISABLE_DESCRIPTIONS"] = "1"
-    elif variant == "full":
-        # Descriptions ship off by default; the full variant opts in so the
-        # index actually contains LLM descriptions to measure against no_desc.
-        env_extra["DESCRIPTIONS_ENABLED"] = "1"
+    env_extra = _env_for_variant(variant)
 
     port = daemon_mod.pick_free_port()
     env = _os.environ.copy()

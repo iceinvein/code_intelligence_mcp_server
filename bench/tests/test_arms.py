@@ -43,7 +43,7 @@ def test_code_intel_shipped_sets_env_and_uses_no_desc_variant():
 def test_external_arm_enables_tier1_producers_only():
     a = arms.ARMS["code_intel_external"]
     assert a.needs_daemon is True
-    assert a.index_variant == "no_desc"
+    assert a.index_variant == "external"
     assert a.daemon_env["EXTERNAL_INDEX_AUTO"] == "true"
     assert a.daemon_env["EXTERNAL_INDEX_ON_REFRESH"] == "explicit"
     assert a.daemon_env["DESCRIPTIONS_ENABLED"] == "false"
@@ -69,4 +69,4 @@ def test_codegraph_arm_uses_codegraph_tools_no_daemon():
 
 def test_distinct_index_variants_dedupes():
     variants = arms.distinct_index_variants(list(arms.ARMS.values()))
-    assert variants == {"full", "no_desc"}
+    assert variants == {"full", "no_desc", "external"}

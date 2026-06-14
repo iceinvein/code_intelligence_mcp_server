@@ -42,3 +42,17 @@ def test_cli_validate_smoke_fixture():
 def test_cli_list_does_not_crash_on_empty_results_dir():
     result = _run_cli(["list"])
     assert result.returncode == 0
+
+
+def test_variant_env_maps_external_to_explicit_producers():
+    from bench import run
+
+    assert run._env_for_variant("no_desc") == {"BENCH_DISABLE_DESCRIPTIONS": "1"}
+    assert run._env_for_variant("full") == {"DESCRIPTIONS_ENABLED": "1"}
+    assert run._env_for_variant("external") == {
+        "BENCH_DISABLE_DESCRIPTIONS": "1",
+        "DESCRIPTIONS_ENABLED": "false",
+        "RERANKER_ENABLED": "false",
+        "EXTERNAL_INDEX_AUTO": "true",
+        "EXTERNAL_INDEX_ON_REFRESH": "explicit",
+    }

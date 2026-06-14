@@ -1,10 +1,10 @@
-"""Arm definitions: the five rows in the benchmark cross-product.
+"""Arm definitions: the rows in the benchmark cross-product.
 
 Each arm has:
 - daemon_env:    env vars set on the daemon process (empty for arms without daemon)
 - needs_daemon:  True if our code-intelligence daemon must be started for this arm
 - is_codegraph:  True for the codegraph competitor arm
-- index_variant: which pre-built index variant to use (full | no_desc | None)
+- index_variant: which pre-built index variant to use (full | no_desc | external | None)
 - allowed_tools: tool allowlist for claude --print
 - tool_guidance: single paragraph appended to the system prompt
 """
@@ -50,7 +50,7 @@ class Arm:
     name: str
     needs_daemon: bool
     is_codegraph: bool
-    index_variant: str | None  # "full" | "no_desc" | None
+    index_variant: str | None  # "full" | "no_desc" | "external" | None
     daemon_env: dict[str, str] = field(default_factory=dict)
     allowed_tools: list[str] = field(default_factory=list)
     tool_guidance: str = ""
@@ -106,7 +106,7 @@ ARMS: dict[str, Arm] = {
         name="code_intel_external",
         needs_daemon=True,
         is_codegraph=False,
-        index_variant="no_desc",
+        index_variant="external",
         # R007 production-default baseline plus explicit external producer execution.
         # Do not set EXTERNAL_INDEX_PRODUCER here; the daemon detects the project
         # languages and selects the matching shipped producers.

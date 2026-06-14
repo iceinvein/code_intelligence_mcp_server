@@ -85,6 +85,41 @@ class RustProducerTests(unittest.TestCase):
     def test_output_is_deterministic(self):
         self.assertEqual(self.run_producer(), self.run_producer())
 
+    def test_common_member_call_without_receiver_type_does_not_resolve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(
+                root,
+                {
+                    "src/lib.rs": """
+pub struct AnswerQuality;
+
+impl AnswerQuality {
+    pub fn as_str(&self) -> &'static str {
+        "good"
+    }
+}
+
+pub fn render_answer(answer: String) -> String {
+    answer.as_str().to_string()
+}
+""".lstrip()
+                },
+            )
+            payload = self.run_producer(root)
+
+        target_ids = {
+            item["display_name"]: item["external_symbol"]
+            for item in payload["symbols"]
+        }
+        calls_to_as_str = [
+            item
+            for item in payload["references"]
+            if item["relationship"] == "call"
+            and item["to_external_symbol"] == target_ids["AnswerQuality.as_str"]
+        ]
+        self.assertEqual([], calls_to_as_str)
+
     def test_wrapper_missing_output_exits_usage(self):
         result = subprocess.run(
             [str(WRAPPER), "index"],

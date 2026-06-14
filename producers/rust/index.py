@@ -41,7 +41,14 @@ FN_RE = re.compile(
 )
 IMPL_RE = re.compile(r"\bimpl\b")
 DIRECT_CALL_RE = re.compile(rf"(?<![\w.])({IDENTIFIER})\s*(?=\()")
-MEMBER_CALL_RE = re.compile(rf"\.\s*({IDENTIFIER})\s*(?=\()")
+MEMBER_CALL_RE = re.compile(rf"\b({IDENTIFIER})\s*\.\s*({IDENTIFIER})\s*(?=\()")
+LET_EXPLICIT_TYPE_RE = re.compile(
+    rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\s*:\s*([A-Za-z_][A-Za-z0-9_:<>]*)"
+)
+LET_FUNCTION_CALL_RE = re.compile(
+    rf"\blet\s+(?:mut\s+)?({IDENTIFIER})\s*(?::[^=;]+)?=\s*({IDENTIFIER})\s*\("
+)
+RETURN_TYPE_RE = re.compile(r"->\s*([A-Za-z_][A-Za-z0-9_:<>]*)")
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,7 @@ class LocalSymbol:
     symbol: Symbol
     body_start: int | None
     body_end: int | None
+    return_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +243,29 @@ def parse_impl_type(header: str) -> str | None:
     return match.group(0) if match else None
 
 
+def normalize_type_name(type_text: str) -> str | None:
+    text = type_text.strip().lstrip("&").strip()
+    if text.startswith("mut "):
+        text = text[len("mut ") :].strip()
+    prefix = text.split("<", 1)[0]
+    match = re.search(IDENTIFIER, prefix.rsplit("::", 1)[-1])
+    return match.group(0) if match else None
+
+
+def parse_return_type(masked: str, start: int, end: int) -> str | None:
+    open_brace = masked.find("{", start, end)
+    semicolon = masked.find(";", start, end)
+    signature_end = end
+    if open_brace != -1:
+        signature_end = min(signature_end, open_brace)
+    if semicolon != -1:
+        signature_end = min(signature_end, semicolon)
+    match = RETURN_TYPE_RE.search(masked, start, signature_end)
+    if match is None:
+        return None
+    return normalize_type_name(match.group(1))
+
+
 def collect_impl_ranges(masked: str) -> list[ImplRange]:
     ranges: list[ImplRange] = []
     for match in IMPL_RE.finditer(masked):
@@ -351,7 +382,8 @@ def collect_file_symbols(root: Path, rel: Path) -> list[LocalSymbol]:
             match.start(),
             item_end,
         )
-        symbols.append(LocalSymbol(symbol, body_start, body_end))
+        return_type = parse_return_type(masked, match.end(), item_end)
+        symbols.append(LocalSymbol(symbol, body_start, body_end, return_type))
 
     return sorted(
         symbols,
@@ -390,12 +422,43 @@ def reference_for_call(
     )
 
 
+def receiver_type_for_local(local: LocalSymbol) -> str | None:
+    if local.symbol.kind != "method" or "." not in local.symbol.display_name:
+        return None
+    return local.symbol.display_name.rsplit(".", 1)[0]
+
+
+def infer_receiver_types(
+    body: str,
+    local: LocalSymbol,
+    free_function_return_types: dict[str, str],
+) -> dict[str, str]:
+    receiver_types: dict[str, str] = {}
+    self_type = receiver_type_for_local(local)
+    if self_type is not None:
+        receiver_types["self"] = self_type
+
+    for match in LET_EXPLICIT_TYPE_RE.finditer(body):
+        type_name = normalize_type_name(match.group(2))
+        if type_name is not None:
+            receiver_types[match.group(1)] = type_name
+
+    for match in LET_FUNCTION_CALL_RE.finditer(body):
+        variable_name, function_name = match.groups()
+        return_type = free_function_return_types.get(function_name)
+        if return_type is not None:
+            receiver_types.setdefault(variable_name, return_type)
+
+    return receiver_types
+
+
 def collect_file_references(
     root: Path,
     rel: Path,
     local_symbols: list[LocalSymbol],
     free_functions: dict[str, str],
-    methods_by_name: dict[str, str],
+    free_function_return_types: dict[str, str],
+    methods_by_type_and_name: dict[tuple[str, str], str],
 ) -> list[Reference]:
     source = (root / rel).read_text(encoding="utf-8")
     masked = mask_non_code(source)
@@ -409,14 +472,18 @@ def collect_file_references(
             continue
         from_external = local.symbol.external_symbol
         body = masked[local.body_start : local.body_end]
+        receiver_types = infer_receiver_types(body, local, free_function_return_types)
 
         for match in MEMBER_CALL_RE.finditer(body):
-            name = match.group(1)
-            target = methods_by_name.get(name)
+            receiver_name, name = match.groups()
+            receiver_type = receiver_types.get(receiver_name)
+            if receiver_type is None:
+                continue
+            target = methods_by_type_and_name.get((receiver_type, name))
             if target is None:
                 continue
-            start = local.body_start + match.start(1)
-            end = local.body_start + match.end(1)
+            start = local.body_start + match.start(2)
+            end = local.body_start + match.end(2)
             references.append(
                 reference_for_call(
                     rel_path,
@@ -468,7 +535,15 @@ def collect(root: Path) -> Artifact:
 
     free_functions: dict[str, str] = {}
     function_candidates: dict[str, list[Symbol]] = {}
-    methods_by_name: dict[str, str] = {}
+    function_return_type_candidates: dict[str, list[str]] = {}
+    free_function_return_types: dict[str, str] = {}
+    method_candidates: dict[tuple[str, str], list[Symbol]] = {}
+    methods_by_type_and_name: dict[tuple[str, str], str] = {}
+    symbols_by_external = {
+        local.symbol.external_symbol: local
+        for local_symbols in symbols_by_file.values()
+        for local in local_symbols
+    }
     for symbol in sorted(
         symbols,
         key=lambda item: (
@@ -479,13 +554,27 @@ def collect(root: Path) -> Artifact:
     ):
         if symbol.kind == "function":
             function_candidates.setdefault(symbol.display_name, []).append(symbol)
+            local = symbols_by_external.get(symbol.external_symbol)
+            if local is not None and local.return_type is not None:
+                function_return_type_candidates.setdefault(symbol.display_name, []).append(
+                    local.return_type
+                )
         elif symbol.kind == "method":
-            method_name = symbol.display_name.rsplit(".", 1)[-1]
-            methods_by_name.setdefault(method_name, symbol.external_symbol)
+            type_name, method_name = symbol.display_name.rsplit(".", 1)
+            method_candidates.setdefault((type_name, method_name), []).append(symbol)
 
     for name, candidates in function_candidates.items():
         if len(candidates) == 1:
             free_functions[name] = candidates[0].external_symbol
+
+    for name, candidates in function_return_type_candidates.items():
+        unique_return_types = sorted(set(candidates))
+        if len(function_candidates.get(name, [])) == 1 and len(unique_return_types) == 1:
+            free_function_return_types[name] = unique_return_types[0]
+
+    for key, candidates in method_candidates.items():
+        if len(candidates) == 1:
+            methods_by_type_and_name[key] = candidates[0].external_symbol
 
     references: list[Reference] = []
     for rel in files:
@@ -495,7 +584,8 @@ def collect(root: Path) -> Artifact:
                 rel,
                 symbols_by_file[rel],
                 free_functions,
-                methods_by_name,
+                free_function_return_types,
+                methods_by_type_and_name,
             )
         )
 

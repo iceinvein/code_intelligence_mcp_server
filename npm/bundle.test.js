@@ -72,8 +72,6 @@ test("release archive step includes root wrappers and manifest support files", (
 		);
 
 		fs.mkdirSync(path.join(dir, "producers", "bin"), { recursive: true });
-		fs.mkdirSync(path.join(dir, "producers", "lib"), { recursive: true });
-		fs.mkdirSync(path.join(dir, "producers", "python"), { recursive: true });
 		fs.writeFileSync(
 			path.join(dir, "producers", "manifest.json"),
 			JSON.stringify({
@@ -89,12 +87,25 @@ test("release archive step includes root wrappers and manifest support files", (
 				],
 			}),
 		);
-		fs.writeFileSync(path.join(dir, "producers", "lib", "__init__.py"), "");
-		fs.writeFileSync(path.join(dir, "producers", "lib", "normalized.py"), "");
-		fs.writeFileSync(path.join(dir, "producers", "python", "index.py"), "");
-		fs.writeFileSync(
+		fs.cpSync(
+			path.join(__dirname, "..", "producers", "lib"),
+			path.join(dir, "producers", "lib"),
+			{ recursive: true },
+		);
+		fs.cpSync(
+			path.join(__dirname, "..", "producers", "python"),
+			path.join(dir, "producers", "python"),
+			{ recursive: true },
+		);
+		fs.copyFileSync(
+			path.join(
+				__dirname,
+				"..",
+				"producers",
+				"bin",
+				"code-intelligence-external-python",
+			),
 			path.join(dir, "producers", "bin", "code-intelligence-external-python"),
-			"",
 		);
 		fs.chmodSync(
 			path.join(dir, "producers", "bin", "code-intelligence-external-python"),
@@ -110,7 +121,29 @@ test("release archive step includes root wrappers and manifest support files", (
 			},
 		);
 
-		assert.deepEqual(validateBundle(path.join(dir, "bundle")).missing, []);
+		const bundleDir = path.join(dir, "bundle");
+		assert.deepEqual(validateBundle(bundleDir).missing, []);
+
+		const fixtureDir = path.join(dir, "fixture");
+		fs.mkdirSync(fixtureDir);
+		fs.writeFileSync(
+			path.join(fixtureDir, "service.py"),
+			"def make_service():\n    return object()\n",
+		);
+		const output = path.join(dir, "python-normalized.json");
+		childProcess.execFileSync(
+			path.join(bundleDir, "code-intelligence-external-python"),
+			["index", "--output", output],
+			{
+				cwd: fixtureDir,
+				stdio: "pipe",
+			},
+		);
+		const payload = JSON.parse(fs.readFileSync(output, "utf8"));
+		assert.equal(payload.language, "python");
+		assert.ok(
+			payload.symbols.some((symbol) => symbol.display_name === "make_service"),
+		);
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}

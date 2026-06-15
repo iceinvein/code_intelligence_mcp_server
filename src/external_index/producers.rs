@@ -360,6 +360,63 @@ pub fn generate_and_import(
     producer: Option<String>,
     language: Option<String>,
 ) -> Result<Value> {
+    // An explicit producer/language request runs exactly that one (back-compat
+    // with EXTERNAL_INDEX_PRODUCER and the generate_external_index tool).
+    if producer.is_some() || language.is_some() {
+        return generate_and_import_one(store, repo_root, repo_data_dir, producer, language);
+    }
+
+    // Pure auto-detect: a repo can be polyglot (Django ships both package.json
+    // and pyproject.toml). Run every producer its manifests indicate, not just
+    // the first by priority, so the dominant language is never silently dropped.
+    let detected = detect_producers_for_repo(Utf8Path::new(repo_root));
+    match detected.as_slice() {
+        [] => Ok(json!({
+            "ok": false,
+            "status": "no_supported_producer_detected",
+            "language": language,
+            "supported_producers": supported_producers(),
+        })),
+        [single] => generate_and_import_one(
+            store,
+            repo_root,
+            repo_data_dir,
+            Some((*single).to_string()),
+            None,
+        ),
+        many => {
+            let mut results = Vec::with_capacity(many.len());
+            let mut any_ok = false;
+            for producer_id in many {
+                let result = generate_and_import_one(
+                    store,
+                    repo_root,
+                    repo_data_dir,
+                    Some((*producer_id).to_string()),
+                    None,
+                )?;
+                if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+                    any_ok = true;
+                }
+                results.push(result);
+            }
+            Ok(json!({
+                "ok": any_ok,
+                "status": "multi_producer",
+                "producers": many,
+                "results": results,
+            }))
+        }
+    }
+}
+
+fn generate_and_import_one(
+    store: &SqliteStore,
+    repo_root: &str,
+    repo_data_dir: &Utf8Path,
+    producer: Option<String>,
+    language: Option<String>,
+) -> Result<Value> {
     let requested_producer = producer
         .or_else(|| producer_for_language(language.as_deref()).map(str::to_string))
         .or_else(|| detect_producer_for_repo(Utf8Path::new(repo_root)).map(str::to_string));
@@ -402,6 +459,15 @@ fn producer_for_language(language: Option<&str>) -> Option<&'static str> {
 }
 
 pub fn detect_producer_for_repo(repo_root: &Utf8Path) -> Option<&'static str> {
+    detect_producers_for_repo(repo_root).into_iter().next()
+}
+
+/// Every producer whose manifest markers are present in the repo root, in
+/// priority order. A polyglot repo returns several (e.g. Django ships both
+/// `package.json` and `pyproject.toml`); auto-mode runs all of them so the
+/// dominant language is never dropped by the first manifest match. Falls back
+/// to a single file-extension-count winner when no manifest marker is found.
+pub fn detect_producers_for_repo(repo_root: &Utf8Path) -> Vec<&'static str> {
     let root = repo_root.as_std_path();
     let manifest_candidates = [
         ("typescript", ["package.json", "tsconfig.json"].as_slice()),
@@ -419,13 +485,20 @@ pub fn detect_producer_for_repo(repo_root: &Utf8Path) -> Option<&'static str> {
         ("ruby", ["Gemfile"].as_slice()),
     ];
 
+    let mut detected = Vec::new();
     for (producer, files) in manifest_candidates {
         if files.iter().any(|file| root.join(file).exists()) {
-            return Some(producer);
+            detected.push(producer);
         }
     }
 
-    detect_producer_from_files(root)
+    if detected.is_empty() {
+        if let Some(producer) = detect_producer_from_files(root) {
+            detected.push(producer);
+        }
+    }
+
+    detected
 }
 
 fn detect_producer_from_files(root: &Path) -> Option<&'static str> {
@@ -823,6 +896,71 @@ mod tests {
             detect_producer_for_repo(Utf8Path::from_path(repo.path()).expect("utf8 repo"));
 
         assert_eq!(detected, Some("typescript"));
+    }
+
+    #[test]
+    fn detect_producers_returns_all_manifest_matches_for_polyglot_repo() {
+        // Regression (R008): Django ships both package.json (JS tooling) and
+        // pyproject.toml. The old single-result detector returned only
+        // typescript (first by priority) and the Python producer never ran, so
+        // the external arm imported ~60 stray-JS rows instead of ~42k Python
+        // symbols. Auto-mode must detect both.
+        let repo = tempfile::tempdir().expect("repo");
+        std::fs::write(repo.path().join("package.json"), "{}").expect("write package.json");
+        std::fs::write(
+            repo.path().join("pyproject.toml"),
+            "[project]\nname='demo'\n",
+        )
+        .expect("write pyproject.toml");
+
+        let detected =
+            detect_producers_for_repo(Utf8Path::from_path(repo.path()).expect("utf8 repo"));
+        assert_eq!(detected, vec!["typescript", "python"]);
+
+        // The single-result wrapper keeps its first-match contract.
+        assert_eq!(
+            detect_producer_for_repo(Utf8Path::from_path(repo.path()).expect("utf8 repo")),
+            Some("typescript"),
+        );
+    }
+
+    #[test]
+    fn auto_mode_runs_every_detected_producer_for_polyglot_repo() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let store = SqliteStore::open_in_memory().expect("sqlite");
+        store.init().expect("init");
+        let repo = tempfile::tempdir().expect("repo");
+        let repo_data = tempfile::tempdir().expect("repo data");
+        std::fs::write(repo.path().join("package.json"), "{}").expect("write package.json");
+        std::fs::write(
+            repo.path().join("pyproject.toml"),
+            "[project]\nname='demo'\n",
+        )
+        .expect("write pyproject.toml");
+        let _ts = EnvVarGuard::set(
+            "EXTERNAL_INDEX_TYPESCRIPT_COMMAND",
+            "__missing_ts_external_index__",
+        );
+        let _py = EnvVarGuard::set(
+            "EXTERNAL_INDEX_PYTHON_COMMAND",
+            "__missing_py_external_index__",
+        );
+
+        let response = generate_and_import(
+            &store,
+            repo.path().to_str().expect("utf8"),
+            Utf8Path::from_path(repo_data.path()).expect("utf8"),
+            None,
+            None,
+        )
+        .expect("response");
+
+        assert_eq!(response["status"], "multi_producer");
+        assert_eq!(response["producers"], json!(["typescript", "python"]));
+        let results = response["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["producer"], "typescript");
+        assert_eq!(results[1]["producer"], "python");
     }
 
     #[test]

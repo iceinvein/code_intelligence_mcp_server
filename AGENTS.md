@@ -55,7 +55,7 @@ Unbound tool calls return an actionable JSON-RPC error pointing at all four opti
 
 ### What Codex Gets
 
-Once connected, Codex gains access to 32 MCP tools including:
+Once connected, Codex gains access to 39 MCP tools including:
 
 - **`ask_code`** — Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
 - **`investigate`** — Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
@@ -66,6 +66,7 @@ Once connected, Codex gains access to 32 MCP tools including:
 - **`find_affected_code`** — Impact analysis before refactoring
 - **`trace_data_flow`** — Follow variable reads/writes through the code
 - **`get_index_stats`** / **`refresh_index`** — Monitor and trigger re-indexing
+- **`approve_indexing`**: Approve or decline indexing for a newly-detected implicitly-bound repo. The server returns a `consent_required` result for never-indexed repos (for example git worktrees / temp copies); relay it to the user and call `approve_indexing` with their decision.
 
 ### Dashboard and JSON API
 

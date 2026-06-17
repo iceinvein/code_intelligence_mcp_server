@@ -55,7 +55,7 @@ Unbound tool calls return an actionable JSON-RPC error pointing at all four opti
 
 ### What Claude Code Gets
 
-Once connected, Claude Code gains access to 33 MCP tools including:
+Once connected, Claude Code gains access to 39 MCP tools including:
 
 - **`ask_code`** — Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
 - **`investigate`** — Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.

@@ -1,6 +1,6 @@
 # Code Intelligence System Architecture
 
-This document describes the architecture of the Code Intelligence MCP Server (v4.x). Since v4.0 the server runs as a single shared HTTP daemon managed by launchd; the v3 stdio-per-client transport and leader-election machinery have been removed. The daemon builds a local knowledge graph of every registered repo and exposes it through 32 MCP tools, a JSON API, and an embedded dashboard.
+This document describes the architecture of the Code Intelligence MCP Server (v4.x). Since v4.0 the server runs as a single shared HTTP daemon managed by launchd; the v3 stdio-per-client transport and leader-election machinery have been removed. The daemon builds a local knowledge graph of every registered repo and exposes it through 39 MCP tools, a JSON API, and an embedded dashboard.
 
 The long-term product boundary is the local code intelligence engine, not MCP itself. MCP is one adapter over the daemon. A first-class CLI and stable JSON contracts are the next durable interface layer; see [Interface Direction](docs/architecture/interface-direction.md).
 

@@ -40,7 +40,6 @@ to introduce hallucinations the agent then anchored on. \
 For specialist queries call `investigate` (composite multi-hop), `search_code` \
 (hybrid search), `get_definition`, `find_references`, `get_call_hierarchy`, \
 `find_affected_code`, `trace_data_flow`, or `explore_dependency_graph` directly. \
-`plan_code_investigation` is recommendation-only. \
 \
 Prefer these tools over Grep/Read for any question they answer directly -- they carry \
 semantic context (definitions, edges, intent classification) that text search cannot. \
@@ -153,45 +152,29 @@ pub(crate) async fn dispatch_task_augmented_call(
 /// All tools advertised by both embedded and standalone handlers
 pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
     vec![
+        // Core retrieval
+        AskCodeTool::tool(),
+        InvestigateTool::tool(),
         SearchCodeTool::tool(),
-        RefreshIndexTool::tool(),
-        ImportExternalIndexTool::tool(),
-        GenerateExternalIndexTool::tool(),
+        HydrateSymbolsTool::tool(),
+        // Navigation
         GetDefinitionTool::tool(),
         FindReferencesTool::tool(),
-        GetFileSymbolsTool::tool(),
         GetCallHierarchyTool::tool(),
-        ExploreDependencyGraphTool::tool(),
-        GetSimilarityClusterTool::tool(),
         GetTypeGraphTool::tool(),
-        GetUsageExamplesTool::tool(),
-        GetIndexStatsTool::tool(),
-        HydrateSymbolsTool::tool(),
-        PlanCodeInvestigationTool::tool(),
-        InvestigateTool::tool(),
-        AskCodeTool::tool(),
-        BindWorkspaceTool::tool(),
-        ApproveIndexingTool::tool(),
-        ReportSelectionTool::tool(),
-        ReportFileAccessTool::tool(),
-        ExplainSearchTool::tool(),
-        FindSimilarCodeTool::tool(),
-        SummarizeFileTool::tool(),
-        GetModuleSummaryTool::tool(),
+        ExploreDependencyGraphTool::tool(),
         TraceDataFlowTool::tool(),
         FindAffectedCodeTool::tool(),
-        SearchTodosTool::tool(),
+        // Overview
+        SummarizeFileTool::tool(),
+        GetModuleSummaryTool::tool(),
+        // Tests
         FindTestsForSymbolTool::tool(),
-        SearchDecoratorsTool::tool(),
-        SearchFrameworkPatternsTool::tool(),
-        FindDeadCodeTool::tool(),
-        FindDuplicatesTool::tool(),
-        SearchAcrossReposTool::tool(),
-        ExploreCrossRepoDependenciesTool::tool(),
-        FindStaleDescriptionsTool::tool(),
-        FindUndocumentedSymbolsTool::tool(),
-        PredictImpactTool::tool(),
-        GetContextBundleTool::tool(),
+        // Lifecycle / admin
+        RefreshIndexTool::tool(),
+        GetIndexStatsTool::tool(),
+        BindWorkspaceTool::tool(),
+        ApproveIndexingTool::tool(),
     ]
 }
 
@@ -451,10 +434,6 @@ mod tests {
             "server instructions must direct the agent to synthesise the final answer, got: {instructions}"
         );
         assert!(
-            instructions.contains("plan_code_investigation"),
-            "server instructions must still mention the planner tool, got: {instructions}"
-        );
-        assert!(
             instructions.contains("investigate"),
             "server instructions must still mention investigate (raw evidence path), got: {instructions}"
         );
@@ -521,36 +500,6 @@ mod tests {
     }
 
     #[test]
-    fn all_tools_contains_get_similarity_cluster() {
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"get_similarity_cluster"),
-            "all_tools() must include 'get_similarity_cluster', but only found: {names:?}"
-        );
-    }
-
-    #[test]
-    fn all_tools_contains_search_across_repos() {
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"search_across_repos"),
-            "all_tools() must include 'search_across_repos', but only found: {names:?}"
-        );
-    }
-
-    #[test]
-    fn all_tools_contains_plan_code_investigation() {
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"plan_code_investigation"),
-            "all_tools() must include 'plan_code_investigation', but only found: {names:?}"
-        );
-    }
-
-    #[test]
     fn dispatch_routes_plan_code_investigation() {
         let source = include_str!("mod.rs");
         assert!(
@@ -605,16 +554,6 @@ mod tests {
     }
 
     #[test]
-    fn all_tools_contains_explore_cross_repo_dependencies() {
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"explore_cross_repo_dependencies"),
-            "all_tools() must include 'explore_cross_repo_dependencies', but only found: {names:?}"
-        );
-    }
-
-    #[test]
     fn explore_cross_repo_dependencies_tool_serializes_correctly() {
         use crate::tools::ExploreCrossRepoDependenciesTool;
 
@@ -662,42 +601,12 @@ mod tests {
     }
 
     #[test]
-    fn all_tools_contains_get_context_bundle() {
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"get_context_bundle"),
-            "all_tools() must include 'get_context_bundle', but only found: {names:?}"
-        );
-    }
-
-    #[test]
     fn all_tools_contains_approve_indexing() {
         let tools = all_tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(
             names.contains(&"approve_indexing"),
             "approve_indexing must be advertised in all_tools()"
-        );
-    }
-
-    #[test]
-    fn all_tools_contains_import_external_index() {
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"import_external_index"),
-            "all_tools() must include 'import_external_index', but only found: {names:?}"
-        );
-    }
-
-    #[test]
-    fn all_tools_contains_generate_external_index() {
-        let tools = all_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"generate_external_index"),
-            "all_tools() must include 'generate_external_index', but only found: {names:?}"
         );
     }
 
@@ -764,5 +673,61 @@ mod tests {
             source.contains("SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into()"),
             "dispatch_tool_call must use the SEARCH_ACROSS_REPOS_EMBEDDED_MSG constant"
         );
+    }
+
+    #[test]
+    fn all_tools_advertises_exactly_the_eighteen_core_tools() {
+        let tools = all_tools();
+        let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        names.sort_unstable();
+        let expected = [
+            "approve_indexing",
+            "ask_code",
+            "bind_workspace",
+            "explore_dependency_graph",
+            "find_affected_code",
+            "find_references",
+            "find_tests_for_symbol",
+            "get_call_hierarchy",
+            "get_definition",
+            "get_index_stats",
+            "get_module_summary",
+            "get_type_graph",
+            "hydrate_symbols",
+            "investigate",
+            "refresh_index",
+            "search_code",
+            "summarize_file",
+            "trace_data_flow",
+        ];
+        assert_eq!(
+            names, expected,
+            "all_tools() must advertise exactly the 18 core tools"
+        );
+    }
+
+    #[test]
+    fn hidden_operational_tools_remain_dispatchable_but_unadvertised() {
+        let tools = all_tools();
+        let advertised: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        let source = include_str!("mod.rs");
+        for hidden in [
+            "get_file_symbols",
+            "get_usage_examples",
+            "explain_search",
+            "import_external_index",
+            "generate_external_index",
+            "report_selection",
+            "report_file_access",
+        ] {
+            assert!(
+                !advertised.contains(&hidden),
+                "{hidden} must NOT be advertised in all_tools()"
+            );
+            assert!(
+                source.contains(&format!("\"{hidden}\" =>")),
+                "{hidden} must still be routable in dispatch_tool_call"
+            );
+        }
     }
 }

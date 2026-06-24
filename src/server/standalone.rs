@@ -1,18 +1,13 @@
 //! Standalone mode MCP handler — routes sessions to per-repo AppState
 
-use crate::handlers::{
-    handle_explore_cross_repo_dependencies, handle_search_across_repos, parse_tool_args,
-    tool_internal_error, AppState,
-};
+use crate::handlers::{parse_tool_args, AppState};
 use crate::path::Utf8PathBuf;
 use crate::registry::{IndexConsent, RepoRegistry};
 use crate::server::mcp_proxy::{BoundRepos, PendingRepos};
 use crate::server::project_check::{ProjectGate, SkipReason};
 use crate::server::{all_tools, dispatch_tool_call, tool_json_content};
 use crate::session::SessionManager;
-use crate::tools::{
-    ApproveIndexingTool, BindWorkspaceTool, ExploreCrossRepoDependenciesTool, SearchAcrossReposTool,
-};
+use crate::tools::{ApproveIndexingTool, BindWorkspaceTool};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rust_mcp_sdk::{
@@ -789,33 +784,6 @@ impl ServerHandler for StandaloneHandler {
         if params.name == "approve_indexing" {
             let tool: ApproveIndexingTool = parse_tool_args(&params)?;
             let result = self.handle_approve_indexing(&runtime, tool).await?;
-            return Ok(tool_json_content(&result));
-        }
-
-        // Cross-repo search can span registered repos, but still requires a
-        // bound/approved session before exposing global repository contents.
-        if params.name == "search_across_repos" {
-            match self.resolve_state(&runtime).await? {
-                Resolved::Ready(_) => {}
-                Resolved::Consent(payload) => return Ok(tool_json_content(&payload)),
-            }
-            let tool: SearchAcrossReposTool = parse_tool_args(&params)?;
-            let result = handle_search_across_repos(&self.session_manager, tool)
-                .await
-                .map_err(tool_internal_error)?;
-            return Ok(tool_json_content(&result));
-        }
-
-        // Cross-repo dependency exploration needs both per-repo state AND SessionManager
-        if params.name == "explore_cross_repo_dependencies" {
-            let state = match self.resolve_state(&runtime).await? {
-                Resolved::Ready(s) => s,
-                Resolved::Consent(payload) => return Ok(tool_json_content(&payload)),
-            };
-            let tool: ExploreCrossRepoDependenciesTool = parse_tool_args(&params)?;
-            let result =
-                handle_explore_cross_repo_dependencies(&state, self.session_manager.as_ref(), tool)
-                    .map_err(tool_internal_error)?;
             return Ok(tool_json_content(&result));
         }
 

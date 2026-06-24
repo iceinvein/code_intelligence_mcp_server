@@ -48,14 +48,6 @@ files the index does not cover (markdown, JSON, TOML), or when `pack.coverage.st
 is partial/no_hits or rows are candidates."
 }
 
-/// Error message returned when `search_across_repos` is called in embedded (stdio) mode.
-pub const SEARCH_ACROSS_REPOS_EMBEDDED_MSG: &str =
-    "search_across_repos is only available in standalone mode. Start the server with --standalone to use cross-repo search.";
-
-/// Error message returned when `explore_cross_repo_dependencies` is called in embedded (stdio) mode.
-pub const EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG: &str =
-    "explore_cross_repo_dependencies is only available in standalone mode. Start the server with --standalone to use cross-repo dependency exploration.";
-
 /// Build the `ServerTasks` capability block for MCP task-augmented tool calls.
 ///
 /// Used by both embedded and standalone server initialization so the capability
@@ -317,20 +309,6 @@ pub async fn dispatch_tool_call(
             Ok(tool_json_content(&result))
         }
 
-        // --- Standalone-only tools (error in embedded mode) ---
-        "search_across_repos" => {
-            let mut result =
-                CallToolResult::text_content(vec![SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into()]);
-            result.is_error = Some(true);
-            Ok(result)
-        }
-        "explore_cross_repo_dependencies" => {
-            let mut result =
-                CallToolResult::text_content(vec![EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.into()]);
-            result.is_error = Some(true);
-            Ok(result)
-        }
-
         _ => Err(CallToolError::unknown_tool(params.name)),
     };
 
@@ -450,28 +428,6 @@ mod tests {
     }
 
     #[test]
-    fn search_across_repos_tool_serializes_correctly() {
-        use crate::tools::SearchAcrossReposTool;
-
-        // Verify round-trip serialization
-        let tool = SearchAcrossReposTool {
-            query: "auth handler".to_string(),
-            limit: Some(5),
-            include_display: Some(true),
-        };
-        let json = serde_json::to_string(&tool).unwrap();
-        let parsed: SearchAcrossReposTool = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.query, "auth handler");
-        assert_eq!(parsed.limit, Some(5));
-        assert_eq!(parsed.include_display, Some(true));
-
-        // limit defaults to None when absent
-        let no_limit: SearchAcrossReposTool = serde_json::from_str(r#"{"query":"foo"}"#).unwrap();
-        assert_eq!(no_limit.limit, None);
-        assert_eq!(no_limit.include_display, None);
-    }
-
-    #[test]
     fn task_augmented_error_message_and_routing_in_shared_dispatch() {
         // The shared `dispatch_task_augmented_call` function handles all task routing.
         // Verify via source inspection that it matches refresh_index and rejects
@@ -495,83 +451,12 @@ mod tests {
     }
 
     #[test]
-    fn explore_cross_repo_dependencies_tool_serializes_correctly() {
-        use crate::tools::ExploreCrossRepoDependenciesTool;
-
-        let tool = ExploreCrossRepoDependenciesTool {
-            symbol_name: "MyService".to_string(),
-            file_path: Some("src/service.rs".to_string()),
-            direction: Some("downstream".to_string()),
-            limit: Some(10),
-            include_display: Some(true),
-        };
-        let json = serde_json::to_string(&tool).unwrap();
-        let parsed: ExploreCrossRepoDependenciesTool = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.symbol_name, "MyService");
-        assert_eq!(parsed.file_path, Some("src/service.rs".to_string()));
-        assert_eq!(parsed.direction, Some("downstream".to_string()));
-        assert_eq!(parsed.limit, Some(10));
-        assert_eq!(parsed.include_display, Some(true));
-
-        // Defaults when optional fields are absent
-        let minimal: ExploreCrossRepoDependenciesTool =
-            serde_json::from_str(r#"{"symbol_name":"foo"}"#).unwrap();
-        assert_eq!(minimal.symbol_name, "foo");
-        assert!(minimal.file_path.is_none());
-        assert!(minimal.direction.is_none());
-        assert!(minimal.limit.is_none());
-        assert!(minimal.include_display.is_none());
-    }
-
-    #[test]
-    fn embedded_mode_explore_cross_repo_deps_returns_helpful_message() {
-        assert!(
-            EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.contains("standalone"),
-            "Message must mention standalone mode"
-        );
-        assert!(
-            EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.contains("explore_cross_repo_dependencies"),
-            "Message must mention the tool name"
-        );
-
-        let source = include_str!("mod.rs");
-        assert!(
-            source.contains("EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG.into()"),
-            "dispatch_tool_call must use the EXPLORE_CROSS_REPO_DEPS_EMBEDDED_MSG constant"
-        );
-    }
-
-    #[test]
     fn all_tools_contains_approve_indexing() {
         let tools = all_tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(
             names.contains(&"approve_indexing"),
             "approve_indexing must be advertised in all_tools()"
-        );
-    }
-
-    #[test]
-    fn embedded_mode_search_across_repos_returns_helpful_message() {
-        // Verify that the constant message is informative and mentions
-        // both the tool name and the --standalone flag so users know how
-        // to enable cross-repo search.
-        assert!(
-            SEARCH_ACROSS_REPOS_EMBEDDED_MSG.contains("standalone"),
-            "Message must mention standalone mode"
-        );
-        assert!(
-            SEARCH_ACROSS_REPOS_EMBEDDED_MSG.contains("search_across_repos"),
-            "Message must mention the tool name"
-        );
-
-        // Verify that `dispatch_tool_call` uses this constant by checking
-        // the source code references it (compile-time guarantee via the
-        // constant being used in the match arm above).
-        let source = include_str!("mod.rs");
-        assert!(
-            source.contains("SEARCH_ACROSS_REPOS_EMBEDDED_MSG.into()"),
-            "dispatch_tool_call must use the SEARCH_ACROSS_REPOS_EMBEDDED_MSG constant"
         );
     }
 
@@ -627,6 +512,38 @@ mod tests {
             assert!(
                 source.contains(&format!("\"{hidden}\" =>")),
                 "{hidden} must still be routable in dispatch_tool_call"
+            );
+        }
+    }
+
+    #[test]
+    fn deleted_tools_are_fully_removed() {
+        let tools = all_tools();
+        let advertised: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        let source = include_str!("mod.rs");
+        for deleted in [
+            "plan_code_investigation",
+            "get_context_bundle",
+            "get_similarity_cluster",
+            "find_similar_code",
+            "search_todos",
+            "search_decorators",
+            "search_framework_patterns",
+            "find_dead_code",
+            "find_duplicates",
+            "find_stale_descriptions",
+            "find_undocumented_symbols",
+            "predict_impact",
+            "search_across_repos",
+            "explore_cross_repo_dependencies",
+        ] {
+            assert!(
+                !advertised.contains(&deleted),
+                "{deleted} must not be advertised"
+            );
+            assert!(
+                !source.contains(&format!("\"{deleted}\" =>")),
+                "{deleted} dispatch arm must be removed from dispatch_tool_call"
             );
         }
     }

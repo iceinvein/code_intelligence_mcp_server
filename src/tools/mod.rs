@@ -338,37 +338,6 @@ pub struct FindTestsForSymbolTool {
     pub include_display: Option<bool>,
 }
 
-#[macros::mcp_tool(
-    name = "search_across_repos",
-    description = "Search all indexed repositories. Standalone only."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct SearchAcrossReposTool {
-    pub query: String,
-    /// Default 10.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "explore_cross_repo_dependencies",
-    description = "Explore cross-repo dependencies for a symbol. Standalone only."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct ExploreCrossRepoDependenciesTool {
-    pub symbol_name: String,
-    /// Disambiguating file path.
-    pub file_path: Option<String>,
-    /// downstream, upstream, or both.
-    pub direction: Option<String>,
-    /// Default 20.
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

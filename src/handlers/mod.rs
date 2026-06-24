@@ -6,14 +6,12 @@
 //! - `navigation`: get_definition, find_references, get_file_symbols, etc.
 //! - `graph`: call_hierarchy, type_graph, dependency_graph, trace_data_flow
 //! - `analysis`: find_affected_code, find_tests_for_symbol
-//! - `cross_repo`: search_across_repos, explore_cross_repo_dependencies
 //! - `learning`: report_selection, report_file_access
 
 mod analysis;
 mod ask_code;
 mod ask_code_cache;
 mod budget;
-mod cross_repo;
 mod evidence_pack;
 mod framework_routes;
 mod graph;
@@ -36,7 +34,6 @@ pub use state::AppState;
 // Re-export all handlers for use by server dispatch
 pub use analysis::{handle_find_affected_code, handle_find_tests_for_symbol};
 pub use ask_code::handle_ask_code;
-pub use cross_repo::{handle_explore_cross_repo_dependencies, handle_search_across_repos};
 pub use graph::{
     handle_explore_dependency_graph, handle_get_call_hierarchy, handle_get_type_graph,
     handle_trace_data_flow,

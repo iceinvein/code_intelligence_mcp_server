@@ -199,7 +199,7 @@ For scripting outside the dashboard, every UI surface has a structured endpoint 
 
 ## What It Does
 
-Unlike basic text search (grep/ripgrep), this server builds a **local knowledge graph** of your code and exposes it through 39 MCP tools.
+Unlike basic text search (grep/ripgrep), this server builds a **local knowledge graph** of your code and exposes it through 18 MCP tools.
 
 | Capability | How It Works |
 |---|---|
@@ -214,7 +214,7 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 
 ---
 
-## Tools (39)
+## Tools (18)
 
 > **Upgrade note (3.0.0):** `search_code` no longer assembles a `context` markdown bundle by default. Pass `context: "snippets"` for compact per-hit code, or `context: "full"` to restore the v2 behavior. See [Migration](#migration-v2--v3) below.
 
@@ -224,7 +224,6 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 |---|---|
 | `ask_code` | Single-call entry point for any code question. Runs the full `investigate` chain server-side and returns verified evidence (symbol, file, line range, body) plus a shape classification for you to synthesize the answer from. |
 | `investigate` | Composite multi-hop retrieval. Picks the right specialist chain (search → call hierarchy / data flow / impact / dependencies) by question shape and returns bundled evidence with verified locations. |
-| `plan_code_investigation` | Recommendation-only: suggests which tools to run for a question, without executing them. Prefer `investigate` when you want the steps actually run. |
 
 ### Search & Navigation
 
@@ -236,54 +235,29 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 | `get_call_hierarchy` | Upstream callers and downstream callees |
 | `get_type_graph` | Inheritance chains, type aliases, implements relationships |
 | `explore_dependency_graph` | Module-level import/export dependencies |
-| `get_file_symbols` | All symbols defined in a file |
-| `get_usage_examples` | Real-world usage examples from the codebase |
-| `get_context_bundle` | Pre-assembled context bundle (definitions, call chains, tests, similar code) for a task description, in one call |
 
 ### Analysis
 
 | Tool | What It Does |
 |---|---|
-| `find_affected_code` | Reverse dependency analysis — what breaks if this changes? |
-| `predict_impact` | Like `find_affected_code` but also factors in git co-change history for confidence scoring |
+| `find_affected_code` | Reverse dependency analysis: what breaks if this changes? |
 | `trace_data_flow` | Follow variable reads and writes through the code |
-| `find_similar_code` | Semantically similar code to a given symbol |
-| `get_similarity_cluster` | Symbols in the same semantic cluster |
-| `find_duplicates` | Groups of semantically near-duplicate symbols based on embedding clusters |
-| `find_dead_code` | Symbols with zero incoming references — candidates for safe removal |
-| `explain_search` | Scoring breakdown explaining why results ranked as they did |
 | `summarize_file` | File summary with symbol counts and key exports |
 | `get_module_summary` | All exported symbols from a module with signatures |
 
-### Testing, Frameworks & Discovery
+### Testing & Discovery
 
 | Tool | What It Does |
 |---|---|
 | `find_tests_for_symbol` | Find tests that cover a given symbol |
-| `search_todos` | Search TODO/FIXME comments |
-| `search_decorators` | Find TypeScript/JavaScript decorators |
-| `search_framework_patterns` | Find framework-specific patterns (routes, middleware, WebSocket handlers) |
-| `find_undocumented_symbols` | Symbols missing LLM-generated descriptions, ranked by importance |
-| `find_stale_descriptions` | Symbols whose LLM descriptions are out of sync with the current code (content-hash mismatch) |
 
-### Cross-Repo
-
-| Tool | What It Does |
-|---|---|
-| `search_across_repos` | Run a single query across all indexed repos, merged by score |
-| `explore_cross_repo_dependencies` | Walk dependency edges that cross repo boundaries |
-
-### Index Management & Learning
+### Index Management
 
 | Tool | What It Does |
 |---|---|
 | `hydrate_symbols` | Load full context for a set of symbol IDs |
-| `report_selection` | Feedback loop — tell the server which result was useful |
-| `report_file_access` | Tell the server when a file is viewed/edited; feeds file-affinity ranking |
 | `refresh_index` | Manually trigger re-indexing |
 | `get_index_stats` | Index statistics (files, symbols, edges, last updated) |
-| `generate_external_index` | Run a configured external index producer for the bound repo, then import its artifact (opt-in) |
-| `import_external_index` | Import a normalized external index artifact and merge its precise symbols/references into the overlay |
 
 ### Session & Consent
 
@@ -291,6 +265,8 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 |---|---|
 | `bind_workspace` | Bind the session to a workspace root by absolute path (the manual fallback for clients that can't set `?repo=`) |
 | `approve_indexing` | Approve or decline indexing for a repo the daemon flagged with `consent_required` (see [Indexing consent](#indexing-consent)) |
+
+> A few operational tools remain callable by name but are intentionally not advertised to keep the model's tool list focused: `get_file_symbols`, `get_usage_examples`, `explain_search`, `import_external_index`, `generate_external_index`, `report_selection`, `report_file_access`.
 
 ---
 
@@ -487,7 +463,7 @@ src/
 ├── graph/            # PageRank, call hierarchy, type graphs, dependency graph
 ├── handlers/         # MCP tool implementations
 ├── server/           # MCP protocol routing (embedded + standalone)
-├── tools/            # Tool definitions (39 MCP tools)
+├── tools/            # Tool definitions (18 advertised MCP tools)
 ├── cli.rs            # Daemon lifecycle and agent-query CLI
 ├── embeddings/       # jina-code-embeddings-1.5b (GGUF via llama.cpp + Metal)
 ├── llm/              # Qwen2.5-Coder-1.5B (GGUF via llama.cpp + Metal)

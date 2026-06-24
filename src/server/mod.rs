@@ -242,16 +242,6 @@ pub async fn dispatch_tool_call(
                 tool
             ))
         }
-        "find_similar_code" => {
-            dispatch_async!(
-                params,
-                FindSimilarCodeTool,
-                |tool| handle_find_similar_code(state, tool)
-            )
-        }
-        "get_context_bundle" => dispatch_async!(params, GetContextBundleTool, |tool| {
-            handle_get_context_bundle(state, tool)
-        }),
         "import_external_index" => {
             dispatch_async!(params, ImportExternalIndexTool, |tool| {
                 handle_import_external_index(state, tool)
@@ -275,11 +265,6 @@ pub async fn dispatch_tool_call(
                 state, tool
             ))
         }
-        "plan_code_investigation" => {
-            dispatch_sync!(params, PlanCodeInvestigationTool, |tool| {
-                handle_plan_code_investigation(tool)
-            })
-        }
         "investigate" => {
             dispatch_async!(params, InvestigateTool, |tool| handle_investigate(
                 state, tool
@@ -290,9 +275,6 @@ pub async fn dispatch_tool_call(
         }
         "explore_dependency_graph" => dispatch_sync!(params, ExploreDependencyGraphTool, |tool| {
             handle_explore_dependency_graph(state, tool)
-        }),
-        "get_similarity_cluster" => dispatch_sync!(params, GetSimilarityClusterTool, |tool| {
-            handle_get_similarity_cluster(state, tool)
         }),
         "find_references" => {
             dispatch_sync!(params, FindReferencesTool, |tool| handle_find_references(
@@ -324,41 +306,9 @@ pub async fn dispatch_tool_call(
         "find_affected_code" => dispatch_sync!(params, FindAffectedCodeTool, |tool| {
             handle_find_affected_code(state, tool)
         }),
-        "search_todos" => dispatch_sync!(params, SearchTodosTool, |tool| handle_search_todos(
-            state, tool
-        )),
         "find_tests_for_symbol" => dispatch_sync!(params, FindTestsForSymbolTool, |tool| {
             handle_find_tests_for_symbol(state, tool)
         }),
-        "search_decorators" => dispatch_sync!(params, SearchDecoratorsTool, |tool| {
-            handle_search_decorators(state, tool)
-        }),
-        "search_framework_patterns" => {
-            dispatch_sync!(params, SearchFrameworkPatternsTool, |tool| {
-                handle_search_framework_patterns(state, tool)
-            })
-        }
-        "find_dead_code" => dispatch_sync!(params, FindDeadCodeTool, |tool| handle_find_dead_code(
-            state, tool
-        )),
-        "find_duplicates" => {
-            dispatch_sync!(params, FindDuplicatesTool, |tool| handle_find_duplicates(
-                state, tool
-            ))
-        }
-        "find_stale_descriptions" => dispatch_sync!(params, FindStaleDescriptionsTool, |tool| {
-            handle_find_stale_descriptions(state, tool)
-        }),
-        "find_undocumented_symbols" => {
-            dispatch_sync!(params, FindUndocumentedSymbolsTool, |tool| {
-                handle_find_undocumented_symbols(state, tool)
-            })
-        }
-        "predict_impact" => {
-            dispatch_sync!(params, PredictImpactTool, |tool| handle_predict_impact(
-                state, tool
-            ))
-        }
 
         // --- Special: get_index_stats takes no tool arg ---
         "get_index_stats" => {
@@ -500,15 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_routes_plan_code_investigation() {
-        let source = include_str!("mod.rs");
-        assert!(
-            source.contains(r#""plan_code_investigation" =>"#),
-            "dispatch_tool_call must route plan_code_investigation"
-        );
-    }
-
-    #[test]
     fn search_across_repos_tool_serializes_correctly() {
         use crate::tools::SearchAcrossReposTool;
 
@@ -607,47 +548,6 @@ mod tests {
         assert!(
             names.contains(&"approve_indexing"),
             "approve_indexing must be advertised in all_tools()"
-        );
-    }
-
-    #[test]
-    fn get_context_bundle_tool_serializes_correctly() {
-        use crate::tools::GetContextBundleTool;
-
-        // Full round-trip
-        let tool = GetContextBundleTool {
-            task: "fix auth bug".to_string(),
-            max_tokens: Some(4096),
-            sections: Some(vec!["definitions".to_string(), "tests".to_string()]),
-            seed_limit: Some(5),
-            include_raw_sections: Some(true),
-        };
-        let json = serde_json::to_string(&tool).unwrap();
-        let parsed: GetContextBundleTool = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.task, "fix auth bug");
-        assert_eq!(parsed.max_tokens, Some(4096));
-        assert_eq!(parsed.seed_limit, Some(5));
-        assert_eq!(parsed.include_raw_sections, Some(true));
-        assert_eq!(
-            parsed.sections,
-            Some(vec!["definitions".to_string(), "tests".to_string()])
-        );
-
-        // Minimal (only required field)
-        let minimal: GetContextBundleTool = serde_json::from_str(r#"{"task":"hello"}"#).unwrap();
-        assert_eq!(minimal.task, "hello");
-        assert!(minimal.max_tokens.is_none());
-        assert!(minimal.sections.is_none());
-        assert!(minimal.seed_limit.is_none());
-        assert!(minimal.include_raw_sections.is_none());
-    }
-
-    #[test]
-    fn dispatch_routes_get_context_bundle() {
-        let source = include_str!("mod.rs");
-        assert!(
-            source.contains(r#""get_context_bundle" =>"#),
-            "dispatch_tool_call must route get_context_bundle"
         );
     }
 

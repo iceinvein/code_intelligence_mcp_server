@@ -149,17 +149,6 @@ pub struct ExploreDependencyGraphTool {
 }
 
 #[macros::mcp_tool(
-    name = "get_similarity_cluster",
-    description = "Return symbols in the same semantic cluster."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct GetSimilarityClusterTool {
-    pub symbol_name: String,
-    /// Default 20.
-    pub limit: Option<u32>,
-}
-
-#[macros::mcp_tool(
     name = "hydrate_symbols",
     description = "Fetch source bodies for symbol IDs returned by search_code, find_references, get_call_hierarchy, or any other code-intelligence tool. Use this to read the body of an already-located symbol instead of reaching for read/grep. Accepts a verbose flag to control how much surrounding context is returned per symbol."
 )]
@@ -171,19 +160,6 @@ pub struct HydrateSymbolsTool {
     pub mode: Option<String>,
     /// Include per-symbol metadata (id, role, tokens, reasons).
     pub verbose: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "plan_code_investigation",
-    description = "Recommend a code-intelligence workflow for a natural-language codebase question. Use this before Grep/Read when deciding whether the task needs search_code, find_references, find_affected_code, predict_impact, trace_data_flow, explore_dependency_graph, get_module_summary, summarize_file, or hydrate_symbols. This tool only recommends next tool calls; it does not execute them. For most non-trivial questions, prefer `investigate` (the executing variant) over running this plan and the recommended steps yourself."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct PlanCodeInvestigationTool {
-    pub question: String,
-    pub target: Option<String>,
-    pub file_path: Option<String>,
-    /// Default 4, clamped to 1..=6.
-    pub max_steps: Option<u32>,
 }
 
 #[macros::mcp_tool(
@@ -285,21 +261,6 @@ pub struct ExplainSearchTool {
 }
 
 #[macros::mcp_tool(
-    name = "find_similar_code",
-    description = "Find code similar to a symbol or snippet."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct FindSimilarCodeTool {
-    pub symbol_name: Option<String>,
-    pub code_snippet: Option<String>,
-    pub file_path: Option<String>,
-    pub limit: Option<u32>,
-    pub threshold: Option<f32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
     name = "trace_data_flow",
     description = "Trace where a variable, field, or symbol is read and written across the codebase. Use this when answering 'how does data flow from X to Y' or 'where does this value come from'; it follows reads/writes edges that plain grep cannot infer. Do NOT fall back to grep + manual reading when you need to understand dataflow. Pair with hydrate_symbols to fetch the bodies of the readers and writers it returns."
 )]
@@ -336,7 +297,7 @@ pub struct SummarizeFileTool {
 
 #[macros::mcp_tool(
     name = "find_affected_code",
-    description = "Find every symbol that depends on a target (reverse dependency graph). Use this when answering 'if I rename or change X, what breaks?'; it walks the indexed dependency graph and returns affected sites with file:line. Do NOT fall back to grep + manual reading for impact analysis on symbols this tool can already locate. Use predict_impact if you also want git co-change signal alongside the static graph."
+    description = "Find every symbol that depends on a target (reverse dependency graph). Use this when answering 'if I rename or change X, what breaks?'; it walks the indexed dependency graph and returns affected sites with file:line. Do NOT fall back to grep + manual reading for impact analysis on symbols this tool can already locate."
 )]
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct FindAffectedCodeTool {
@@ -364,23 +325,6 @@ pub struct GetModuleSummaryTool {
 }
 
 #[macros::mcp_tool(
-    name = "search_todos",
-    description = "Search indexed TODO and FIXME comments."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct SearchTodosTool {
-    /// TODO text keyword.
-    pub query: Option<String>,
-    /// File path filter.
-    pub file_path: Option<String>,
-    /// todo or fixme.
-    pub kind: Option<String>,
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
     name = "find_tests_for_symbol",
     description = "Find tests associated with a symbol or source file. Returns `test_files` (verified test-source links from path-pattern inference at index time) and `tests_for_symbol` (specific test functions calling the target via call-graph edges). When `test_files` is non-empty, the paths are guaranteed to be indexed: cite them directly without Read/Grep verification. Use this BEFORE falling back to ask_code/investigate for test-coverage questions; it gives a direct test-file answer that ask_code's BM25 ranking often misses because production symbols outrank test wrappers."
 )]
@@ -389,78 +333,6 @@ pub struct FindTestsForSymbolTool {
     pub symbol_name: String,
     /// Disambiguating file path.
     pub file_path: Option<String>,
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "search_decorators",
-    description = "Search TypeScript or JavaScript decorators."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct SearchDecoratorsTool {
-    /// Decorator name.
-    pub name: Option<String>,
-    /// Decorator type.
-    pub decorator_type: Option<String>,
-    /// Default 50.
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "search_framework_patterns",
-    description = "Search indexed framework patterns such as routes."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct SearchFrameworkPatternsTool {
-    /// Framework filter.
-    pub framework: Option<String>,
-    /// Pattern kind.
-    pub kind: Option<String>,
-    /// HTTP method.
-    pub http_method: Option<String>,
-    /// Route path.
-    pub path: Option<String>,
-    /// Default 50.
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "find_dead_code",
-    description = "Find symbols with no incoming references."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct FindDeadCodeTool {
-    /// File path filter.
-    pub file_path: Option<String>,
-    /// Language filter.
-    pub language: Option<String>,
-    /// Symbol kind filter.
-    pub kind: Option<String>,
-    /// Include tests.
-    pub include_tests: Option<bool>,
-    /// Default 50.
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "find_duplicates",
-    description = "Find likely duplicate symbols by semantic cluster."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct FindDuplicatesTool {
-    /// File path filter.
-    pub file_path: Option<String>,
-    /// Symbol kind filter.
-    pub kind: Option<String>,
-    /// Default 50.
     pub limit: Option<u32>,
     /// Include markdown summary.
     pub include_display: Option<bool>,
@@ -495,73 +367,6 @@ pub struct ExploreCrossRepoDependenciesTool {
     pub limit: Option<u32>,
     /// Include markdown summary.
     pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "find_stale_descriptions",
-    description = "Find cached symbol descriptions whose source changed."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct FindStaleDescriptionsTool {
-    /// File path filter.
-    pub file_path: Option<String>,
-    /// Default 100.
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "find_undocumented_symbols",
-    description = "Find symbols without generated descriptions."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct FindUndocumentedSymbolsTool {
-    /// File path filter.
-    pub file_path: Option<String>,
-    /// Default 3.
-    pub min_lines: Option<u32>,
-    /// Exported only.
-    pub exported_only: Option<bool>,
-    /// Default 100.
-    pub limit: Option<u32>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "predict_impact",
-    description = "Predict the blast radius of changing a symbol by combining the static dependency graph with git co-change history. Use this for 'what will break if I refactor X' and 'which files historically change with X'; it surfaces both compile-time deps and behavioral coupling that grep alone cannot see. Do NOT manually grep for callers and then guess at impact; this tool already does both passes."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct PredictImpactTool {
-    pub symbol_name: String,
-    /// Disambiguating file path.
-    pub file_path: Option<String>,
-    /// Default 20.
-    pub limit: Option<u32>,
-    /// Include tests.
-    pub include_tests: Option<bool>,
-    /// Include markdown summary.
-    pub include_display: Option<bool>,
-}
-
-#[macros::mcp_tool(
-    name = "get_context_bundle",
-    description = "Build one compact context bundle for a task."
-)]
-#[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
-pub struct GetContextBundleTool {
-    /// Task description.
-    pub task: String,
-    /// Context token budget.
-    pub max_tokens: Option<u32>,
-    /// definitions, call_chain, tests, similar, affected.
-    pub sections: Option<Vec<String>>,
-    /// Default 3.
-    pub seed_limit: Option<u32>,
-    /// Include raw section outputs.
-    pub include_raw_sections: Option<bool>,
 }
 
 #[cfg(test)]
@@ -609,34 +414,6 @@ mod tests {
         assert!(
             desc.contains("verbose"),
             "hydrate_symbols description must mention the verbose flag"
-        );
-    }
-
-    #[test]
-    fn plan_code_investigation_description_advertises_routing_and_specialists() {
-        let desc = PlanCodeInvestigationTool::tool()
-            .description
-            .clone()
-            .unwrap_or_default();
-        assert!(
-            desc.contains("Grep/Read"),
-            "plan_code_investigation description must position itself before Grep/Read, got: {desc}"
-        );
-        assert!(
-            desc.contains("find_affected_code"),
-            "plan_code_investigation description must mention find_affected_code, got: {desc}"
-        );
-        assert!(
-            desc.contains("trace_data_flow"),
-            "plan_code_investigation description must mention trace_data_flow, got: {desc}"
-        );
-        assert!(
-            desc.contains("explore_dependency_graph"),
-            "plan_code_investigation description must mention explore_dependency_graph, got: {desc}"
-        );
-        assert!(
-            desc.contains("does not execute"),
-            "plan_code_investigation description must say it only recommends, got: {desc}"
         );
     }
 
@@ -747,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn find_affected_code_description_advertises_impact_and_chains_predict_impact() {
+    fn find_affected_code_description_advertises_impact_and_discourages_grep() {
         let desc = FindAffectedCodeTool::tool()
             .description
             .clone()
@@ -759,30 +536,6 @@ mod tests {
         assert!(
             desc.contains("Do NOT fall back to grep"),
             "find_affected_code description must explicitly discourage grep fallback, got: {desc}"
-        );
-        assert!(
-            desc.contains("predict_impact"),
-            "find_affected_code description must name predict_impact as a richer alternative, got: {desc}"
-        );
-    }
-
-    #[test]
-    fn predict_impact_description_advertises_blast_radius_and_discourages_manual_grep() {
-        let desc = PredictImpactTool::tool()
-            .description
-            .clone()
-            .unwrap_or_default();
-        assert!(
-            desc.to_lowercase().contains("blast radius"),
-            "predict_impact description must include the blast-radius value hook, got: {desc}"
-        );
-        assert!(
-            desc.to_lowercase().contains("co-change"),
-            "predict_impact description must mention git co-change as the differentiator, got: {desc}"
-        );
-        assert!(
-            desc.contains("Do NOT manually grep"),
-            "predict_impact description must explicitly discourage manual grep + guess, got: {desc}"
         );
     }
 

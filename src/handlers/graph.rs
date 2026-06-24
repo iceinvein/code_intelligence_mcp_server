@@ -86,62 +86,6 @@ pub fn handle_explore_dependency_graph(
     Ok(graph)
 }
 
-/// Handle get_similarity_cluster tool
-pub fn handle_get_similarity_cluster(
-    state: &AppState,
-    tool: GetSimilarityClusterTool,
-) -> Result<serde_json::Value, anyhow::Error> {
-    let limit = clamp_limit(tool.limit, 20, 100);
-
-    let sqlite = &state.sqlite;
-
-    let roots = sqlite.search_symbols_by_exact_name(&tool.symbol_name, None, 10)?;
-    let root = roots.first().cloned();
-
-    let Some(root) = root else {
-        return Ok(json!({
-            "symbol_name": tool.symbol_name,
-            "cluster_key": null,
-            "count": 0,
-            "symbols": [],
-        }));
-    };
-
-    let cluster_key = sqlite.get_similarity_cluster_key(&root.id)?;
-
-    let mut out = Vec::new();
-    if let Some(key) = cluster_key.clone() {
-        // "__skipped__" is a sentinel for symbols that were deliberately not
-        // embedded (file-kind, tiny private helpers, test symbols).  Listing
-        // the cluster would return all such unrelated symbols.
-        if key == "__skipped__" {
-            return Ok(json!({
-                "symbol_name": root.name,
-                "cluster_key": null,
-                "count": 0,
-                "symbols": [],
-            }));
-        }
-        let rows = sqlite.list_symbols_in_cluster(&key, limit + 1)?;
-        for (id, name) in rows {
-            if id == root.id {
-                continue;
-            }
-            if out.len() >= limit {
-                break;
-            }
-            out.push(json!({ "id": id, "name": name }));
-        }
-    }
-
-    Ok(json!({
-        "symbol_name": root.name,
-        "cluster_key": cluster_key,
-        "count": out.len(),
-        "symbols": out,
-    }))
-}
-
 /// Handle get_call_hierarchy tool
 pub fn handle_get_call_hierarchy(
     state: &AppState,

@@ -2,8 +2,6 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::tools::PlanCodeInvestigationTool;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvestigationIntent {
@@ -64,17 +62,6 @@ pub fn plan_code_investigation(
             "Do not start with grep unless code-intelligence cannot locate the target.".to_string(),
         ],
     })
-}
-
-#[allow(dead_code)]
-pub fn handle_plan_code_investigation(tool: PlanCodeInvestigationTool) -> Result<Value> {
-    let plan = plan_code_investigation(
-        &tool.question,
-        tool.target.as_deref(),
-        tool.file_path.as_deref(),
-        tool.max_steps.unwrap_or(4) as usize,
-    )?;
-    Ok(json!(plan))
 }
 
 fn classify_intent(question: &str, file_path: Option<&str>) -> InvestigationIntent {

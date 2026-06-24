@@ -55,6 +55,8 @@ Every session needs a bound workspace. v4 tries four sources in order; first mat
 3. **Single-repo fallback** — when only one repo is registered, sessions auto-bind to it.
 4. **Hard error** — actionable message pointing at the URL form and `bind_workspace`.
 
+When a session binds a **never-indexed** repo through one of the *implicit* paths (`roots/list` or the single-repo fallback), the daemon does not index it silently: the first tool call returns a `consent_required` result so the agent can ask you first. Explicit `?repo=` and `bind_workspace` binds skip this gate. See [Indexing consent](#indexing-consent).
+
 **Claude Code**: nothing extra; roots is auto-negotiated.
 
 **Every other client (Cursor, OpenCode, Codex, Continue, Windsurf, Trae)**: add `?repo=...` to the URL. Example for OpenCode:
@@ -136,15 +138,39 @@ Use `generate_external_index` or opt-in refresh configuration to run producers b
 
 ![Dashboard](docs/dashboard.png)
 
-Open `http://127.0.0.1:17802/` once the daemon is up. The dashboard shows:
+Open `http://127.0.0.1:17802/` once the daemon is up. The dashboard is a single-page app with a sidebar of views and a system / light / dark theme toggle in the header:
 
-- **Repositories**: every registered repo, sortable by last-accessed. Click the row to expand per-repo stats (symbols, edges, descriptions, coverage %, latest run timings). Re-index and Delete actions inline.
-- **MCP sessions**: connected vs bound count, with a five-minute inactivity TTL so dead sessions evict themselves.
-- **Jobs**: in-flight and recently finished background indexing jobs with status badge, live elapsed, files/symbols summary on success, error message on failure.
-- **Logs**: live tail over SSE with pause/clear and level filtering.
-- **Theme**: system / light / dark toggle in the header.
+- **Overview**: daemon status, stat cards (repositories, sessions, jobs), the repo list, and recent indexing jobs.
+- **Search**: an interactive hybrid-search playground; pick any indexed repo and run a query straight from the browser.
+- **Repositories**: every registered repo with per-repo stats (symbols, edges, descriptions, coverage %, latest run timings), inline re-index / delete, and an Add Repo flow.
+- **Symbols**: browse the indexed symbols for a repo.
+- **Graph**: interactive call hierarchy, type, and dependency graph visualization.
+- **Consent**: approve or decline indexing for repos bound implicitly (see [Indexing consent](#indexing-consent)).
+- **Logs**: live tail over SSE with pause / clear and level filtering.
+- **Jobs · sessions**: background indexing jobs and connected vs bound MCP sessions (dead sessions evict themselves after a five-minute inactivity TTL).
+- **Settings**: read and write the `server.toml` tuning knobs without restarting the editor.
 
 The dashboard, the JSON API at `/api/*`, and the discovery endpoint all bind 127.0.0.1 only and enforce same-origin checks so a malicious web page cannot reach the daemon via DNS rebinding.
+
+### Indexing consent
+
+Indexing a repo runs a full GPU embedding pass and starts a file watcher, so the daemon will not silently index a directory an editor binds on your behalf (a git worktree, a temp checkout, a stray `roots/list` root). When a session binds a **never-indexed** repo *implicitly*, the first tool call returns a `consent_required` result instead of indexing:
+
+```json
+{
+  "status": "consent_required",
+  "repo": "/Users/me/project/.worktrees/feature",
+  "detected": "git_worktree",
+  "recommendation": "Looks like a git worktree of /Users/me/project (usually ephemeral). Indexing runs a full GPU embedding pass and starts a file watcher. Most worktrees should be skipped.",
+  "action": "Ask the user whether to index this repo. Then call approve_indexing with {\"repo\": \"...\", \"decision\": \"approve\"} or {\"decision\": \"decline\"}."
+}
+```
+
+The agent relays the question and calls `approve_indexing` with the answer: `approve` indexes the repo and remembers the choice, `decline` records it and skips indexing (a later `approve` re-enables it). The path is tagged `standard`, `git_worktree`, `temp_dir`, or `ephemeral` so the agent can offer a sensible default. **Explicit binds bypass the gate**: a `?repo=` URL or a `bind_workspace` call is a declaration of intent and indexes immediately. Set `INDEX_CONSENT_REQUIRED=false` to restore unconditional auto-indexing (useful for CI / benchmarks).
+
+![Consent](docs/consent.png)
+
+The dashboard's **Consent** tab lists repos awaiting a decision (and any you previously declined) with inline approve / decline buttons, mirroring the `GET` / `POST /api/consent` endpoint.
 
 ### JSON API
 
@@ -160,6 +186,8 @@ For scripting outside the dashboard, every UI surface has a structured endpoint 
 | `DELETE` | `/api/repos/:id` | drop the index, registry entry, and data dir |
 | `GET` | `/api/sessions` | bound + connected MCP sessions |
 | `GET` | `/api/jobs` | running + recent (≤15 min) jobs |
+| `GET` | `/api/consent` | repos awaiting an indexing decision (+ previously declined) |
+| `POST` | `/api/consent` | approve or decline indexing for a repo |
 | `GET` | `/api/logs/stream` | SSE stream of log lines |
 | `POST` | `/api/query/ask` | CLI-facing `ask_code` wrapper with structured envelope |
 | `POST` | `/api/query/search` | CLI-facing `search_code` wrapper with structured envelope |
@@ -171,7 +199,7 @@ For scripting outside the dashboard, every UI surface has a structured endpoint 
 
 ## What It Does
 
-Unlike basic text search (grep/ripgrep), this server builds a **local knowledge graph** of your code and exposes it through 32 MCP tools.
+Unlike basic text search (grep/ripgrep), this server builds a **local knowledge graph** of your code and exposes it through 18 MCP tools.
 
 | Capability | How It Works |
 |---|---|
@@ -186,9 +214,16 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 
 ---
 
-## Tools (32)
+## Tools (18)
 
 > **Upgrade note (3.0.0):** `search_code` no longer assembles a `context` markdown bundle by default. Pass `context: "snippets"` for compact per-hit code, or `context: "full"` to restore the v2 behavior. See [Migration](#migration-v2--v3) below.
+
+### Investigation (start here)
+
+| Tool | What It Does |
+|---|---|
+| `ask_code` | Single-call entry point for any code question. Runs the full `investigate` chain server-side and returns verified evidence (symbol, file, line range, body) plus a shape classification for you to synthesize the answer from. |
+| `investigate` | Composite multi-hop retrieval. Picks the right specialist chain (search → call hierarchy / data flow / impact / dependencies) by question shape and returns bundled evidence with verified locations. |
 
 ### Search & Navigation
 
@@ -200,52 +235,38 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 | `get_call_hierarchy` | Upstream callers and downstream callees |
 | `get_type_graph` | Inheritance chains, type aliases, implements relationships |
 | `explore_dependency_graph` | Module-level import/export dependencies |
-| `get_file_symbols` | All symbols defined in a file |
-| `get_usage_examples` | Real-world usage examples from the codebase |
-| `get_context_bundle` | Pre-assembled context bundle (definitions, call chains, tests, similar code) for a task description, in one call |
 
 ### Analysis
 
 | Tool | What It Does |
 |---|---|
-| `find_affected_code` | Reverse dependency analysis — what breaks if this changes? |
-| `predict_impact` | Like `find_affected_code` but also factors in git co-change history for confidence scoring |
+| `find_affected_code` | Reverse dependency analysis: what breaks if this changes? |
 | `trace_data_flow` | Follow variable reads and writes through the code |
-| `find_similar_code` | Semantically similar code to a given symbol |
-| `get_similarity_cluster` | Symbols in the same semantic cluster |
-| `find_duplicates` | Groups of semantically near-duplicate symbols based on embedding clusters |
-| `find_dead_code` | Symbols with zero incoming references — candidates for safe removal |
-| `explain_search` | Scoring breakdown explaining why results ranked as they did |
 | `summarize_file` | File summary with symbol counts and key exports |
 | `get_module_summary` | All exported symbols from a module with signatures |
 
-### Testing, Frameworks & Discovery
+### Testing & Discovery
 
 | Tool | What It Does |
 |---|---|
 | `find_tests_for_symbol` | Find tests that cover a given symbol |
-| `search_todos` | Search TODO/FIXME comments |
-| `search_decorators` | Find TypeScript/JavaScript decorators |
-| `search_framework_patterns` | Find framework-specific patterns (routes, middleware, WebSocket handlers) |
-| `find_undocumented_symbols` | Symbols missing LLM-generated descriptions, ranked by importance |
-| `find_stale_descriptions` | Symbols whose LLM descriptions are out of sync with the current code (content-hash mismatch) |
 
-### Cross-Repo
-
-| Tool | What It Does |
-|---|---|
-| `search_across_repos` | Run a single query across all indexed repos, merged by score |
-| `explore_cross_repo_dependencies` | Walk dependency edges that cross repo boundaries |
-
-### Index Management & Learning
+### Index Management
 
 | Tool | What It Does |
 |---|---|
 | `hydrate_symbols` | Load full context for a set of symbol IDs |
-| `report_selection` | Feedback loop — tell the server which result was useful |
-| `report_file_access` | Tell the server when a file is viewed/edited; feeds file-affinity ranking |
 | `refresh_index` | Manually trigger re-indexing |
 | `get_index_stats` | Index statistics (files, symbols, edges, last updated) |
+
+### Session & Consent
+
+| Tool | What It Does |
+|---|---|
+| `bind_workspace` | Bind the session to a workspace root by absolute path (the manual fallback for clients that can't set `?repo=`) |
+| `approve_indexing` | Approve or decline indexing for a repo the daemon flagged with `consent_required` (see [Indexing consent](#indexing-consent)) |
+
+> A few operational tools remain callable by name but are intentionally not advertised to keep the model's tool list focused: `get_file_symbols`, `get_usage_examples`, `explain_search`, `import_external_index`, `generate_external_index`, `report_selection`, `report_file_access`.
 
 ---
 
@@ -317,6 +338,7 @@ Works out of the box with no configuration. All settings are optional environmen
 | `INDEX_PATTERNS` | `**/*.ts,**/*.rs,...` | Glob patterns to index |
 | `EXCLUDE_PATTERNS` | `**/node_modules/**,...` | Glob patterns to exclude |
 | `REPO_ROOTS` | — | Comma-separated paths for multi-repo |
+| `INDEX_CONSENT_REQUIRED` | `true` | Ask before indexing a never-indexed repo bound implicitly (see [Indexing consent](#indexing-consent)). `false` restores unconditional auto-indexing |
 
 **Embeddings:**
 
@@ -341,11 +363,11 @@ Works out of the box with no configuration. All settings are optional environmen
 | `MAX_CONTEXT_TOKENS` | `8192` | Token budget for assembled context |
 | `MAX_CONTEXT_BYTES` | `200000` | Byte-based fallback limit |
 
-**Learning (off by default):**
+**Learning (on by default):**
 
 | Variable | Default | Description |
 |---|---|---|
-| `LEARNING_ENABLED` | `false` | Track user selections to personalize results |
+| `LEARNING_ENABLED` | `true` | Track user selections and file access to personalize results |
 | `LEARNING_SELECTION_BOOST` | `0.1` | Max boost from selection history |
 | `LEARNING_FILE_AFFINITY_BOOST` | `0.05` | Max boost from file access frequency |
 
@@ -441,7 +463,7 @@ src/
 ├── graph/            # PageRank, call hierarchy, type graphs, dependency graph
 ├── handlers/         # MCP tool implementations
 ├── server/           # MCP protocol routing (embedded + standalone)
-├── tools/            # Tool definitions (32 MCP tools)
+├── tools/            # Tool definitions (18 advertised MCP tools)
 ├── cli.rs            # Daemon lifecycle and agent-query CLI
 ├── embeddings/       # jina-code-embeddings-1.5b (GGUF via llama.cpp + Metal)
 ├── llm/              # Qwen2.5-Coder-1.5B (GGUF via llama.cpp + Metal)

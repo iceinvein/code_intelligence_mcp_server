@@ -37,6 +37,11 @@ DAEMON_BINARY = REPO_ROOT / "target" / "release" / "code-intelligence-mcp-server
 PER_QUESTION_TIMEOUT_S = _env_int("BENCH_TIMEOUT_S", 180)
 DAEMON_HEALTH_TIMEOUT_S = _env_int("BENCH_DAEMON_HEALTH_TIMEOUT_S", 30)
 
+# Agent turn cap per question. Typical runs use 5-6 turns; the pathological tail
+# (30 turns / ~880k tokens in R008) burns tokens quadratically via cache re-reads
+# without improving answers. 0 disables the cap.
+MAX_TURNS = _env_int("BENCH_MAX_TURNS", 12)
+
 # Paths
 BENCH_DIR = REPO_ROOT / "bench"
 STATE_DIR = BENCH_DIR / "state"

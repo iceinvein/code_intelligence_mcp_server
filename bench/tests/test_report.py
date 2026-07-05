@@ -34,6 +34,23 @@ def test_aggregate_arm():
     assert agg["n"] == 3
 
 
+def test_aggregate_includes_token_efficiency_and_turn_caps():
+    rows = _scores([1.0, 0.8])
+    rows[0]["hit_turn_cap"] = True
+    agg = report.aggregate_arm("code_intel_full", rows)
+    # 50000 input tokens/run, judge mean 9.0 -> ~5556 tokens per judge point
+    assert agg["tokens_per_judge_point"] == pytest.approx(50000 / 9.0)
+    assert agg["turn_capped_rate"] == pytest.approx(0.5)
+
+
+def test_aggregate_token_efficiency_none_without_judge():
+    rows = _scores([1.0])
+    for r in rows:
+        r["judge_median"] = None
+    agg = report.aggregate_arm("x", rows)
+    assert agg["tokens_per_judge_point"] is None
+
+
 def test_aggregate_handles_skipped_arm():
     agg = report.aggregate_arm("codegraph", rows=[], skipped=True)
     assert agg["skipped"] is True

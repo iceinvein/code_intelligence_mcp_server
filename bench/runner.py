@@ -131,6 +131,21 @@ def _parse_transcript(transcript_bytes: bytes) -> dict:
             size = len(content) if isinstance(content, str) else len(json.dumps(content) if content else "")
             if tool_calls:
                 tool_calls[-1].result_size = size
+        elif msg_type == "user":
+            # stream-json delivers tool results as user messages with tool_result blocks.
+            msg = obj.get("message", {})
+            for block in msg.get("content", []) or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    content = block.get("content")
+                    if isinstance(content, str):
+                        size = len(content)
+                    elif isinstance(content, list):
+                        size = sum(len(b.get("text", "")) if isinstance(b, dict) else 0
+                                   for b in content)
+                    else:
+                        size = len(json.dumps(content)) if content else 0
+                    if tool_calls:
+                        tool_calls[-1].result_size = size
         elif msg_type == "assistant":
             msg = obj.get("message", {})
             content = msg.get("content", [])
@@ -150,9 +165,18 @@ def _parse_transcript(transcript_bytes: bytes) -> dict:
                 if k in u:
                     usage[k] = u[k]
         elif msg_type == "result":
-            stop_reason = obj.get("stop_reason", "unknown")
+            if obj.get("subtype") == "error_max_turns":
+                stop_reason = "max_turns"
+            else:
+                stop_reason = obj.get("stop_reason", "unknown") or "unknown"
             if not final_answer:
                 final_answer = obj.get("result", "") or ""
+            # The result line carries cumulative usage; prefer it over the
+            # last assistant message's per-turn usage.
+            u = obj.get("usage", {}) or {}
+            for k in usage:
+                if k in u:
+                    usage[k] = u[k]
 
     return {
         "final_answer": final_answer,
@@ -176,7 +200,10 @@ def run_question(
     # and 'usage' -- much easier to parse than the verbose stream-json hook flood.
     cmd = [
         config.CLAUDE_BINARY, "--print",
-        "--output-format", "json",
+        # stream-json (requires --verbose) is the only format with per-tool
+        # detail: real tool names and result sizes. Plain json only exposes
+        # num_turns, which made the tools metric a turn count of "<unknown>"s.
+        "--output-format", "stream-json", "--verbose",
         "--model", config.AGENT_MODEL,
         "--system-prompt", system_prompt,
         "--allowed-tools", ",".join(arm.allowed_tools),
@@ -186,6 +213,8 @@ def run_question(
         "--strict-mcp-config",
         "--setting-sources", "",
     ]
+    if config.MAX_TURNS > 0:
+        cmd.extend(["--max-turns", str(config.MAX_TURNS)])
     if daemon is not None:
         mcp_config = daemon.build_mcp_config()
         if mcp_config:

@@ -87,6 +87,88 @@ def test_runner_handles_timeout(monkeypatch, tmp_path):
     assert run.final_answer == ""
 
 
+def _stream_json_transcript() -> bytes:
+    """Realistic claude --print --output-format stream-json --verbose output."""
+    lines = [
+        {"type": "system", "subtype": "init", "tools": ["Grep", "Read"]},
+        {"type": "assistant", "message": {
+            "content": [{"type": "tool_use", "id": "tu1", "name": "Grep",
+                         "input": {"pattern": "foo"}}],
+            "usage": {"input_tokens": 10, "output_tokens": 5,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 30},
+        }},
+        {"type": "user", "message": {
+            "content": [{"type": "tool_result", "tool_use_id": "tu1",
+                         "content": [{"type": "text", "text": "x" * 500}]}],
+        }},
+        {"type": "assistant", "message": {
+            "content": [{"type": "text", "text": "The answer is src/foo.rs:42"}],
+            "usage": {"input_tokens": 12, "output_tokens": 40,
+                      "cache_read_input_tokens": 600, "cache_creation_input_tokens": 0},
+        }},
+        {"type": "result", "subtype": "success", "result": "The answer is src/foo.rs:42",
+         "stop_reason": "end_turn", "num_turns": 2,
+         "usage": {"input_tokens": 22, "output_tokens": 45,
+                   "cache_read_input_tokens": 600, "cache_creation_input_tokens": 30}},
+    ]
+    return ("\n".join(json.dumps(l) for l in lines) + "\n").encode()
+
+
+def test_runner_caps_turns(monkeypatch, tmp_path):
+    arm = ARMS["default"]
+    q = _q()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeCompleted(stdout=_stream_json_transcript())
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    idx = captured["cmd"].index("--max-turns")
+    assert captured["cmd"][idx + 1] == "12"  # BENCH_MAX_TURNS default
+
+
+def test_runner_requests_stream_json(monkeypatch, tmp_path):
+    arm = ARMS["default"]
+    q = _q()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeCompleted(stdout=_stream_json_transcript())
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    idx = captured["cmd"].index("--output-format")
+    assert captured["cmd"][idx + 1] == "stream-json"
+    assert "--verbose" in captured["cmd"]
+
+
+def test_parser_extracts_real_tool_calls_and_result_sizes():
+    parsed = runner._parse_transcript(_stream_json_transcript())
+    assert [t.name for t in parsed["tool_calls"]] == ["Grep"]
+    assert parsed["tool_calls"][0].result_size == 500
+    assert parsed["final_answer"] == "The answer is src/foo.rs:42"
+
+
+def test_parser_takes_cumulative_usage_from_result_line():
+    parsed = runner._parse_transcript(_stream_json_transcript())
+    assert parsed["usage"]["input_tokens"] == 22
+    assert parsed["usage"]["cache_read_input_tokens"] == 600
+    assert parsed["usage"]["cache_creation_input_tokens"] == 30
+
+
+def test_parser_flags_max_turns_stop():
+    lines = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "partial"}]}},
+        {"type": "result", "subtype": "error_max_turns", "result": "partial", "num_turns": 12},
+    ]
+    raw = ("\n".join(json.dumps(l) for l in lines) + "\n").encode()
+    parsed = runner._parse_transcript(raw)
+    assert parsed["stop_reason"] == "max_turns"
+
+
 def test_runner_retries_on_nonzero_exit_then_succeeds(monkeypatch, tmp_path):
     arm = ARMS["default"]
     q = _q()

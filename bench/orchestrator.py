@@ -78,6 +78,7 @@ def _score_record(q: Question, rec: dict, repo_path: Path, read_lines=None) -> d
         "input_tokens": rec.get("input_tokens", 0) + rec.get("cache_read_tokens", 0),
         "wall_ms": rec.get("wall_ms", 0),
         "run_error": rec.get("run_error"),
+        "hit_turn_cap": rec.get("stop_reason") == "max_turns",
         "judge_median": None,
         "judge_range": None,
         "judge_casualty": False,

@@ -21,6 +21,8 @@ def aggregate_arm(arm_name: str, rows: list[dict], skipped: bool = False) -> dic
             "tool_calls_mean": None,
             "input_tokens_mean": None,
             "wall_seconds_mean": None,
+            "tokens_per_judge_point": None,
+            "turn_capped_rate": None,
         }
     n = len(rows)
     judge_medians_raw = [r.get("judge_median") for r in rows]
@@ -28,11 +30,13 @@ def aggregate_arm(arm_name: str, rows: list[dict], skipped: bool = False) -> dic
     judge_medians = [v for v in judge_medians_raw if v is not None]
     judge_ranges = [v for v in judge_ranges_raw if v is not None]
     mechs = [r["mech"] for r in rows]
+    input_tokens_mean = sum(r["input_tokens"] for r in rows) / n
+    judge_mean = sum(judge_medians) / len(judge_medians) if judge_medians else None
     return {
         "arm": arm_name,
         "skipped": False,
         "n": n,
-        "judge_median": sum(judge_medians) / len(judge_medians) if judge_medians else None,
+        "judge_median": judge_mean,
         "judge_range_mean": sum(judge_ranges) / len(judge_ranges) if judge_ranges else None,
         "mech": sum(mechs) / n,
         "mech_p25": statistics.quantiles(mechs, n=4)[0] if n >= 4 else min(mechs),
@@ -40,8 +44,11 @@ def aggregate_arm(arm_name: str, rows: list[dict], skipped: bool = False) -> dic
         "forbidden_hit_rate": sum(1 for r in rows if r.get("forbidden_hit")) / n,
         "hallucinated_citation_rate": sum(1 for r in rows if r.get("hallucinated")) / n,
         "tool_calls_mean": sum(r["tool_calls"] for r in rows) / n,
-        "input_tokens_mean": sum(r["input_tokens"] for r in rows) / n,
+        "input_tokens_mean": input_tokens_mean,
         "wall_seconds_mean": sum(r["wall_ms"] for r in rows) / 1000 / n,
+        "tokens_per_judge_point": (input_tokens_mean / judge_mean
+                                   if judge_mean else None),
+        "turn_capped_rate": sum(1 for r in rows if r.get("hit_turn_cap")) / n,
     }
 
 
@@ -105,12 +112,14 @@ def render_markdown(
     lines.append(_build_headline(arms_data))
     lines.append("")
     lines.append("## Per-arm aggregate\n")
-    lines.append("| arm | n | judge | mech | citation | tools | tokens | wall |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("| arm | n | judge | mech | citation | tools | tokens | tok/judge-pt | capped | wall |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for arm_name, agg in arms_data.items():
         if agg["skipped"]:
-            lines.append(f"| {arm_name} | 0 | skipped | skipped | skipped | skipped | skipped | skipped |")
+            lines.append(f"| {arm_name} | 0 | skipped | skipped | skipped | skipped | skipped | skipped | skipped | skipped |")
         else:
+            tok_pt = agg.get("tokens_per_judge_point")
+            capped = agg.get("turn_capped_rate")
             lines.append(
                 f"| {arm_name} | {agg['n']} | "
                 f"{_fmt(agg['judge_median'])} ±{_fmt(agg['judge_range_mean'])} | "
@@ -118,6 +127,8 @@ def render_markdown(
                 f"{_fmt(agg['citation_hit_rate'])} | "
                 f"{_fmt(agg['tool_calls_mean'], 1)} | "
                 f"{int(agg['input_tokens_mean']):,} | "
+                f"{'n/a' if tok_pt is None else f'{int(tok_pt):,}'} | "
+                f"{'n/a' if capped is None else f'{capped:.0%}'} | "
                 f"{_fmt(agg['wall_seconds_mean'], 0)}s |"
             )
     lines.append("")

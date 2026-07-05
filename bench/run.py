@@ -155,7 +155,7 @@ def cmd_prep(args) -> int:
                 variant_home = config.bench_home_for_variant(variant)
                 data_dir = variant_home / ".code-intelligence" / "repos" / repo_hash_str
                 meta_dict = {
-                    "daemon_sha": repos.current_daemon_sha(),
+                    "daemon_bin": repos.daemon_binary_hash(),
                     "repo_upstream_sha": _read_pinned_sha(name),
                     "variant": variant,
                     "schema_version": 22,

@@ -46,3 +46,21 @@ def test_ensure_repo_checkout_clones_if_missing(monkeypatch, tmp_path):
     repos.ensure_repo_checkout(name="myrepo", upstream_url="https://e/repo.git",
                                 upstream_sha="abc123", target_dir=target)
     assert any("clone" in str(c) for c in calls)
+
+
+def test_daemon_binary_hash_is_stable_16_hex(monkeypatch, tmp_path):
+    import importlib
+    from bench import config, repos
+
+    fake_bin = tmp_path / "daemon"
+    fake_bin.write_bytes(b"binary-contents-v1")
+    monkeypatch.setattr(config, "DAEMON_BINARY", fake_bin)
+
+    h1 = repos.daemon_binary_hash()
+    h2 = repos.daemon_binary_hash()
+    assert h1 == h2
+    assert len(h1) == 16
+    int(h1, 16)  # hex
+
+    fake_bin.write_bytes(b"binary-contents-v2")
+    assert repos.daemon_binary_hash() != h1

@@ -67,3 +67,17 @@ def current_daemon_sha() -> str:
         ["git", "rev-parse", "HEAD"],
         check=True, capture_output=True, cwd=str(config.REPO_ROOT),
     ).stdout.decode().strip()
+
+
+def daemon_binary_hash() -> str:
+    """16-char sha256 of the daemon binary.
+
+    Index caches key on this instead of git HEAD: the binary is what produces
+    the index, so bench-only (or docs-only) commits must not invalidate hours
+    of cached embedding work, and an unrebuilt binary after Rust changes must.
+    """
+    h = hashlib.sha256()
+    with open(config.DAEMON_BINARY, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]

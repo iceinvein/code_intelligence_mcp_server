@@ -28,6 +28,8 @@ The `./bench` wrapper is `python3 -m bench.run`. There is no shell-script wrappe
 - **Judge casualty semantics.** Errored judges are excluded from the median (an errored judge used to count as a 0 and drag it); rows with fewer than 2 valid panel judges are casualties with `judge_median=None`, which reports skip. Empty/errored answers are never judged.
 - **Runner error handling.** Nonzero CLI exits retry once, then record `run_error=cli_exit_N`; timeouts keep the partial transcript and record `run_error=timeout`. Errored runs are excluded from judging and visible in scores.
 - **Repeats.** `full --repeats N` runs each (arm, question) N times (rep index in every record) for paired variance analysis. Single runs cannot distinguish real deltas from the ±1.6 judge noise band.
+- **Quota-exhaustion recovery.** After `BENCH_MAX_CONSECUTIVE_FAILURES` (default 5) consecutive failed runs or fully-failed judgements, the cycle aborts with a resume command instead of burning the remaining quota; exit code 3. On resume, errored runs are re-run and error-casualty judge rows re-judged (records dedupe last-wins, so the fresh attempt replaces the failed one).
+- **Index caches key on the daemon binary hash** (not git HEAD), so bench-only commits do not invalidate cached embedding work, and Rust changes without a rebuild do not falsely pass as fresh.
 - **Token efficiency is a first-class output.** The report includes tokens/run, tokens-per-judge-point, and the turn-capped rate per arm.
 
 ### Scoring revision (2026-07-05)

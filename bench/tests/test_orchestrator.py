@@ -247,6 +247,72 @@ def test_orchestrator_judges_concurrently(monkeypatch, tmp_path):
     assert len(jlines) == len(fixture.questions)
 
 
+def test_orchestrator_repeats_run_each_question_n_times(monkeypatch, tmp_path):
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+    ran = []
+
+    def fake_run_question(arm, q, daemon, repo_path, transcripts_dir):
+        ran.append(q.id)
+        return _fake_run(arm, q, repo_path)
+
+    monkeypatch.setattr(runner, "run_question", fake_run_question)
+    _no_daemon(monkeypatch)
+
+    results_dir = tmp_path / "R001"
+    summary = orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"]],
+        repos=[(fixture, repo_path)],
+        results_dir=results_dir,
+        judge_enabled=False,
+        repeats=2,
+    )
+    nq = len(fixture.questions)
+    assert len(ran) == nq * 2
+    rows = [json.loads(l) for l in (results_dir / "runs.jsonl").read_text().splitlines()]
+    assert len(rows) == nq * 2
+    reps = {(r["question_id"], r["rep"]) for r in rows}
+    assert len(reps) == nq * 2  # each (question, rep) pair distinct
+    assert summary["n_runs"] == nq * 2
+    assert len(summary["scores"]) == nq * 2
+
+
+def test_orchestrator_repeats_resume_skips_completed_reps(monkeypatch, tmp_path):
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+    first_q = fixture.questions[0]
+
+    results_dir = tmp_path / "R001"
+    results_dir.mkdir(parents=True)
+    prior = {
+        "arm": "default", "question_id": first_q.id, "repo": fixture.meta.repo,
+        "rep": 0,
+        "final_answer": "prior", "tool_calls": [], "input_tokens": 1,
+        "output_tokens": 1, "cache_read_tokens": 0, "cache_creation_tokens": 0,
+        "wall_ms": 5, "stop_reason": "end_turn", "model": "x", "run_error": None,
+    }
+    (results_dir / "runs.jsonl").write_text(json.dumps(prior) + "\n")
+
+    ran = []
+
+    def fake_run_question(arm, q, daemon, repo_path, transcripts_dir):
+        ran.append(q.id)
+        return _fake_run(arm, q, repo_path)
+
+    monkeypatch.setattr(runner, "run_question", fake_run_question)
+    _no_daemon(monkeypatch)
+
+    orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"]],
+        repos=[(fixture, repo_path)],
+        results_dir=results_dir,
+        judge_enabled=False,
+        repeats=2,
+    )
+    # first_q rep0 resumed; rep1 plus both reps of the others run fresh
+    assert ran.count(first_q.id) == 1
+
+
 def test_orchestrator_persists_judge_errors_and_casualties(monkeypatch, tmp_path):
     fixture = _smoke_fixture()
     repo_path = Path(__file__).resolve().parents[2]

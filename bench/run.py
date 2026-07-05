@@ -450,8 +450,11 @@ def cmd_full(args) -> int:
 
     results_dir = config.RESULTS_DIR / round_id
     if results_dir.exists():
-        print(f"error: {results_dir} exists; pass --round explicitly", file=sys.stderr)
-        return 2
+        if args.round is None:
+            print(f"error: {results_dir} exists; pass --round explicitly to resume it",
+                  file=sys.stderr)
+            return 2
+        print(f"resuming {round_id}: completed runs and judgements will be skipped")
 
     print(
         f"running {round_id}: arms=[{','.join(a.name for a in arms_to_run)}] "
@@ -467,6 +470,7 @@ def cmd_full(args) -> int:
         repos=repos_to_run,
         results_dir=results_dir,
         judge_enabled=judge_enabled,
+        repeats=args.repeats,
     )
     print(f"completed {summary['n_runs']} runs; results in {results_dir}")
     return 0
@@ -593,6 +597,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_full.add_argument("--arms", default=None)
     p_full.add_argument("--repos", default=None)
     p_full.add_argument("--round", type=int, default=None)
+    p_full.add_argument("--repeats", type=int, default=1,
+                        help="runs per (arm, question); >1 enables paired variance analysis")
     p_full.set_defaults(func=cmd_full)
 
     p_arm = sub.add_parser("arm")

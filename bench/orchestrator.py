@@ -41,11 +41,12 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             f.write(json.dumps(r, default=str) + "\n")
 
 
-def _run_record(run: runner.Run, repo_name: str) -> dict:
+def _run_record(run: runner.Run, repo_name: str, rep: int = 0) -> dict:
     return {
         "arm": run.arm,
         "question_id": run.question_id,
         "repo": repo_name,
+        "rep": rep,
         "final_answer": run.final_answer,
         "tool_calls": [{"name": t.name, "input_summary": t.input_summary} for t in run.tool_calls],
         "input_tokens": run.input_tokens,
@@ -70,6 +71,7 @@ def _score_record(q: Question, rec: dict, repo_path: Path, read_lines=None) -> d
         "task_type": q.task_type,
         "arm": rec["arm"],
         "repo": rec["repo"],
+        "rep": rec.get("rep", 0),
         "mech": final_mech,
         "mech_raw": raw["raw"],
         "citation_hit": raw["citation_hit"],
@@ -98,6 +100,7 @@ def run_cycle(
     results_dir: Path,
     judge_enabled: bool = False,
     resume: bool = True,
+    repeats: int = 1,
 ) -> dict:
     """Run one bench cycle. Returns a summary dict; writes results to results_dir."""
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -113,14 +116,15 @@ def run_cycle(
     }
 
     all_runs: list[dict] = _read_jsonl(runs_path) if resume else []
-    done = {(r["arm"], r["question_id"]) for r in all_runs}
+    done = {(r["arm"], r["question_id"], r.get("rep", 0)) for r in all_runs}
 
     for arm in arms_to_run:
         pending = [
-            (fixture, repo_path, q)
+            (fixture, repo_path, q, rep)
             for fixture, repo_path in repos
             for q in fixture.questions
-            if (arm.name, q.id) not in done
+            for rep in range(max(1, repeats))
+            if (arm.name, q.id, rep) not in done
         ]
         if not pending:
             continue
@@ -135,12 +139,15 @@ def run_cycle(
         write_lock = threading.Lock()
 
         def _execute(item, _arm=arm, _daemon=daemon):
-            fixture, repo_path, q = item
+            fixture, repo_path, q, rep = item
+            # rep 0 keeps the historical transcript layout; higher reps get
+            # their own subtree so transcripts are never overwritten.
+            tdir = transcripts_dir if rep == 0 else transcripts_dir / f"rep{rep}"
             run = runner.run_question(
                 arm=_arm, q=q, daemon=_daemon,
-                repo_path=repo_path, transcripts_dir=transcripts_dir,
+                repo_path=repo_path, transcripts_dir=tdir,
             )
-            rec = _run_record(run, fixture.meta.repo)
+            rec = _run_record(run, fixture.meta.repo, rep=rep)
             with write_lock:
                 _append_jsonl(runs_path, rec)
                 all_runs.append(rec)
@@ -155,7 +162,7 @@ def run_cycle(
 
     # Scoring is derived: recomputed for every run (including resumed ones).
     all_scores: list[dict] = []
-    score_by_key: dict[tuple[str, str], dict] = {}
+    score_by_key: dict[tuple[str, str, int], dict] = {}
     for rec in all_runs:
         entry = qmap.get((rec["repo"], rec["question_id"]))
         if entry is None:
@@ -163,16 +170,16 @@ def run_cycle(
         q, repo_path = entry
         s = _score_record(q, rec, repo_path)
         all_scores.append(s)
-        score_by_key[(rec["arm"], rec["question_id"])] = s
+        score_by_key[(rec["arm"], rec["question_id"], rec.get("rep", 0))] = s
 
     # Judging (skipped if judge_enabled is False). Casualty runs (empty answer or
     # run_error) are never judged: 3 judge calls to confirm a known-zero is waste.
     judge_records: list[dict] = _read_jsonl(judge_path) if resume else []
-    judged = {(j["arm"], j["question_id"]) for j in judge_records}
+    judged = {(j["arm"], j["question_id"], j.get("rep", 0)) for j in judge_records}
     if judge_enabled:
         pending_judge: list[dict] = []
         for rec in all_runs:
-            key = (rec["arm"], rec["question_id"])
+            key = (rec["arm"], rec["question_id"], rec.get("rep", 0))
             if key in judged or key not in score_by_key:
                 continue
             if _is_run_casualty(rec):
@@ -183,7 +190,7 @@ def run_cycle(
         judge_lock = threading.Lock()
 
         def _judge(rec):
-            key = (rec["arm"], rec["question_id"])
+            key = (rec["arm"], rec["question_id"], rec.get("rep", 0))
             q, _repo_path = qmap[(rec["repo"], rec["question_id"])]
             s = score_by_key[key]
             citations = [{"file": c.file, "line_range": list(c.line_range), "symbol": c.symbol}
@@ -205,6 +212,7 @@ def run_cycle(
                 "arm": rec["arm"],
                 "question_id": q.id,
                 "repo": rec["repo"],
+                "rep": rec.get("rep", 0),
                 "scores": agg.scores,
                 "justifications": agg.justifications,
                 "median": agg.median,
@@ -226,7 +234,7 @@ def run_cycle(
     # Apply judge results (fresh + resumed) to score rows. Casualty rows keep
     # judge_median=None so aggregates skip them instead of averaging zeros.
     for jrec in judge_records:
-        s = score_by_key.get((jrec["arm"], jrec["question_id"]))
+        s = score_by_key.get((jrec["arm"], jrec["question_id"], jrec.get("rep", 0)))
         if s is None:
             continue
         if jrec.get("casualty"):

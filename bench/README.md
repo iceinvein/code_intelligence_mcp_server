@@ -1,6 +1,6 @@
 # Bench
 
-The code-intelligence-mcp benchmark harness. Runs N arms against M repos with K questions each, scores each answer mechanically and via a 3-judge consensus, renders a markdown report.
+The code-intelligence-mcp benchmark harness. Runs N arms against M repos with K questions each, scores each answer mechanically and via tiered LLM judging, renders a markdown report.
 
 R005 (2026-05-28) is the first cross-repo cycle: 5 arms × 40 questions across wolfmax and Django.
 
@@ -10,11 +10,35 @@ R005 (2026-05-28) is the first cross-repo cycle: 5 arms × 40 questions across w
 make -C bench install        # PyYAML + pytest (anthropic SDK is no longer required)
 make -C bench test           # pytest
 make -C bench validate-smoke # lint the smoke fixture
-./bench full --arms default,code_intel_full --repos wolfmax,django
-./bench report R005
+./bench full --arms default,code_intel_shipped --repos wolfmax,django --repeats 3
+./bench report R010
+python3 -m bench.rescore R008   # zero-token re-score after scoring-logic changes
 ```
 
 The `./bench` wrapper is `python3 -m bench.run`. There is no shell-script wrapper at the repo root (it would collide with the `bench/` directory).
+
+## Harness behavior (since 2026-07-05 overhaul)
+
+- **Crash-safe + resumable.** `runs.jsonl` and `judge.jsonl` are appended record-by-record; `scores.json` is derived data rebuilt at cycle end. `full --round <N>` on an existing round resumes it: completed (arm, question, rep) runs and judged rows are skipped. A crash loses at most the in-flight record (R009 previously lost all 80 runs to the old end-of-cycle write).
+- **Isolated CLI calls.** Runner and judge pass `--strict-mcp-config` and `--setting-sources ""`, so globally-configured MCP servers (including the production code-intelligence daemon), user/project settings, and hooks no longer leak into arms or judges. Before this, the `default` arm was never a clean no-MCP baseline.
+- **Real tool telemetry.** `--output-format stream-json --verbose` gives real per-tool names and result sizes (the old `json` format only exposed `num_turns`, so the tools column was a turn count). Result sizes make token-hungry tool responses visible.
+- **Turn caps.** `--max-turns` (`BENCH_MAX_TURNS`, default 12, 0 disables). Typical runs use 5-6 turns; the R008 tail (30 turns, ~880k tokens) burned cache-read tokens quadratically. Capped runs are flagged `hit_turn_cap`.
+- **Concurrency.** Agent runs execute in a per-arm pool (`BENCH_RUN_CONCURRENCY`, default 4); judging in its own pool (`BENCH_JUDGE_CONCURRENCY`, default 3).
+- **Tiered judging** (`BENCH_JUDGE_TIERED`, default on): haiku scores first; decisive extremes (0-2, 9-10) are accepted haiku-only, mid-band (3-8) or errored haiku escalates to the sonnet+opus panel. Roughly halves judge calls against the ~240-calls/5h subscription window. `judge.jsonl` records the tier per row.
+- **Judge casualty semantics.** Errored judges are excluded from the median (an errored judge used to count as a 0 and drag it); rows with fewer than 2 valid panel judges are casualties with `judge_median=None`, which reports skip. Empty/errored answers are never judged.
+- **Runner error handling.** Nonzero CLI exits retry once, then record `run_error=cli_exit_N`; timeouts keep the partial transcript and record `run_error=timeout`. Errored runs are excluded from judging and visible in scores.
+- **Repeats.** `full --repeats N` runs each (arm, question) N times (rep index in every record) for paired variance analysis. Single runs cannot distinguish real deltas from the ±1.6 judge noise band.
+- **Token efficiency is a first-class output.** The report includes tokens/run, tokens-per-judge-point, and the turn-capped rate per arm.
+
+### Scoring revision (2026-07-05)
+
+Three scoring bugs were fixed and R007/R008 re-scored (`scores.json.pre-rescore` keeps the old rows):
+
+1. Forbidden-term matching is negation-aware. Correct negative answers that deny a forbidden term ("there is no RedisCache") were zeroed; 7/8 negative rows in R008 were false-penalized.
+2. Citation extraction rejects non-paths (`127.0.0.1:17800`, host:port, version strings) that were scored as hallucinated citations.
+3. Citation-hit matching accepts plural "lines 42-88" and "(L42)".
+
+Re-scored aggregates: R007 mech 0.465→0.581, citation 52%→62%; R008 mech 0.438→0.555, citation 50%→60%. Conclusion revision: on wolfmax (the only valid overlay A/B), the external overlay is mech-negative vs shipped (0.541 vs 0.605), previously reported flat. Use `python3 -m bench.rescore R<NNN>` after any future scoring change; it verifies citations against the fixture's pinned SHA via `git show`, so a drifted working tree (the wolfmax symlink) does not distort verification.
 
 ## Architecture
 
@@ -29,9 +53,10 @@ bench/
 │   ├── smoke.yaml    3-question dev fixture (against this repo)
 │   ├── wolfmax.yaml  20 questions pinned to wolfmax HEAD
 │   └── django.yaml   20 questions pinned to Django 5.1.4
-├── score.py          mech (citation_hit + file + facts) + citation verification + forbidden
-├── runner.py         spawns `claude --print` per (arm, question) and parses the JSONL transcript
-├── judge.py          multi-judge consensus via 3 `claude --print` calls (haiku + sonnet + opus); median + range
+├── score.py          mech (citation_hit + file + facts) + citation verification + negation-aware forbidden
+├── runner.py         spawns `claude --print` per (arm, question); stream-json telemetry, retries, isolation
+├── judge.py          tiered judging (haiku gate + sonnet/opus panel); errored judges excluded from median
+├── rescore.py        zero-token re-score of a stored round against the pinned SHA (git show)
 ├── daemon.py         starts the code-intelligence daemon per arm with the right BENCH_DISABLE_* env and per-variant HOME
 ├── repos.py          repo checkout + index variant cache freshness
 ├── orchestrator.py   end-to-end cycle (per-arm question runs, scoring, judging, write JSONL outputs)
@@ -182,8 +207,10 @@ See `bench/fixtures/AUTHORING.md` for the rules.
 - Wire `cmd_arm`, `cmd_question`, `cmd_diff`, `cmd_clean` (stubs today).
 - Fix `cmd_report` so codegraph version + daemon SHA in the round header come from real run metadata instead of the placeholder `"?"`.
 - Investigate why the description worker stagnates around 90-95% on large repos. Either it is a real failure mode (some symbols never get described) or a timing issue with the 2-minute stagnant detection.
-- The rejudge script (`/tmp/rejudge_R005_resume.py`) is one-off. Promote it to `bench/rejudge.py` plus a `./bench rejudge <round>` subcommand for repeatable rate-limit recovery.
-- Consider raising `MAX_CONSECUTIVE_FAIL_BEFORE_EXIT` from 5 to 10 to ride out brief network blips.
+- Move fixture checkouts out of `bench/state/repos/` (kills the `**/bench/state/repos/**` exclude-pattern trap AND the ancestor-CLAUDE.md leak into agent runs; note this changes repo hashes and invalidates cached indexes).
+- Content-addressed run reuse across rounds: key runs by (arm config, daemon SHA, question, repo SHA, agent model) so an unchanged baseline arm can be reused instead of re-run in A/B rounds.
+- Curate a ~15-question iteration fixture from the most discriminative questions in R005-R008; keep the full 40 for release rounds.
+- Re-prep and re-run the django external arm (the R008 django overlay used the wrong producer; the fix landed but the decisive Python-overlay A/B never ran).
 
 ## Re-running
 

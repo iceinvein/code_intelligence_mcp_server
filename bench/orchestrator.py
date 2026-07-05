@@ -34,6 +34,19 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _key(rec: dict) -> tuple[str, str, int]:
+    return (rec["arm"], rec["question_id"], rec.get("rep", 0))
+
+
+def _dedupe_last(records: list[dict]) -> list[dict]:
+    """Keep the last record per (arm, question, rep). Appended re-runs and
+    re-judgements come later in the file, so last-wins is retry-wins."""
+    by_key: dict[tuple[str, str, int], dict] = {}
+    for r in records:
+        by_key[_key(r)] = r
+    return list(by_key.values())
+
+
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as f:
@@ -115,10 +128,16 @@ def run_cycle(
         for q in fixture.questions
     }
 
-    all_runs: list[dict] = _read_jsonl(runs_path) if resume else []
-    done = {(r["arm"], r["question_id"], r.get("rep", 0)) for r in all_runs}
+    all_runs: list[dict] = _dedupe_last(_read_jsonl(runs_path)) if resume else []
+    # Errored runs are NOT done: a resume after quota exhaustion re-runs them.
+    done = {_key(r) for r in all_runs if not r.get("run_error")}
+
+    consecutive_failures = 0
+    abort = threading.Event()
 
     for arm in arms_to_run:
+        if abort.is_set():
+            break
         pending = [
             (fixture, repo_path, q, rep)
             for fixture, repo_path in repos
@@ -139,6 +158,9 @@ def run_cycle(
         write_lock = threading.Lock()
 
         def _execute(item, _arm=arm, _daemon=daemon):
+            nonlocal consecutive_failures
+            if abort.is_set():
+                return
             fixture, repo_path, q, rep = item
             # rep 0 keeps the historical transcript layout; higher reps get
             # their own subtree so transcripts are never overwritten.
@@ -149,6 +171,12 @@ def run_cycle(
             )
             rec = _run_record(run, fixture.meta.repo, rep=rep)
             with write_lock:
+                if run.run_error:
+                    consecutive_failures += 1
+                    if consecutive_failures >= config_mod.MAX_CONSECUTIVE_FAILURES:
+                        abort.set()
+                else:
+                    consecutive_failures = 0
                 _append_jsonl(runs_path, rec)
                 all_runs.append(rec)
 
@@ -161,6 +189,8 @@ def run_cycle(
                 daemon.stop()
 
     # Scoring is derived: recomputed for every run (including resumed ones).
+    # Dedupe keeps the freshest attempt per (arm, question, rep).
+    all_runs = _dedupe_last(all_runs)
     all_scores: list[dict] = []
     score_by_key: dict[tuple[str, str, int], dict] = {}
     for rec in all_runs:
@@ -174,12 +204,17 @@ def run_cycle(
 
     # Judging (skipped if judge_enabled is False). Casualty runs (empty answer or
     # run_error) are never judged: 3 judge calls to confirm a known-zero is waste.
-    judge_records: list[dict] = _read_jsonl(judge_path) if resume else []
-    judged = {(j["arm"], j["question_id"], j.get("rep", 0)) for j in judge_records}
+    judge_records: list[dict] = _dedupe_last(_read_jsonl(judge_path)) if resume else []
+    # Rows judged cleanly are done; casualties caused by judge errors (quota
+    # exhaustion) are re-judged on resume.
+    judged = {_key(j) for j in judge_records
+              if not (j.get("casualty") and j.get("errors"))}
+    judge_consecutive = 0
+    judge_abort = threading.Event()
     if judge_enabled:
         pending_judge: list[dict] = []
         for rec in all_runs:
-            key = (rec["arm"], rec["question_id"], rec.get("rep", 0))
+            key = _key(rec)
             if key in judged or key not in score_by_key:
                 continue
             if _is_run_casualty(rec):
@@ -190,7 +225,10 @@ def run_cycle(
         judge_lock = threading.Lock()
 
         def _judge(rec):
-            key = (rec["arm"], rec["question_id"], rec.get("rep", 0))
+            nonlocal judge_consecutive
+            if judge_abort.is_set():
+                return
+            key = _key(rec)
             q, _repo_path = qmap[(rec["repo"], rec["question_id"])]
             s = score_by_key[key]
             citations = [{"file": c.file, "line_range": list(c.line_range), "symbol": c.symbol}
@@ -223,6 +261,12 @@ def run_cycle(
                 "tier": agg.tier,
             }
             with judge_lock:
+                if agg.n_valid == 0:
+                    judge_consecutive += 1
+                    if judge_consecutive >= config_mod.MAX_CONSECUTIVE_FAILURES:
+                        judge_abort.set()
+                else:
+                    judge_consecutive = 0
                 _append_jsonl(judge_path, jrec)
                 judge_records.append(jrec)
 
@@ -233,8 +277,9 @@ def run_cycle(
 
     # Apply judge results (fresh + resumed) to score rows. Casualty rows keep
     # judge_median=None so aggregates skip them instead of averaging zeros.
-    for jrec in judge_records:
-        s = score_by_key.get((jrec["arm"], jrec["question_id"], jrec.get("rep", 0)))
+    # Dedupe last-wins so a fresh re-judgement replaces an earlier casualty.
+    for jrec in _dedupe_last(judge_records):
+        s = score_by_key.get(_key(jrec))
         if s is None:
             continue
         if jrec.get("casualty"):
@@ -242,6 +287,7 @@ def run_cycle(
         else:
             s["judge_median"] = jrec["median"]
             s["judge_range"] = jrec["range"]
+            s["judge_casualty"] = False
 
     _write_jsonl(results_dir / "scores.json", all_scores)
 
@@ -249,4 +295,6 @@ def run_cycle(
         "n_runs": len(all_runs),
         "n_judged": len(judge_records),
         "scores": all_scores,
+        "aborted": abort.is_set(),
+        "judge_aborted": judge_abort.is_set(),
     }

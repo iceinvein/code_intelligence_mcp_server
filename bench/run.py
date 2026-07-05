@@ -472,6 +472,18 @@ def cmd_full(args) -> int:
         judge_enabled=judge_enabled,
         repeats=args.repeats,
     )
+    if summary.get("aborted") or summary.get("judge_aborted"):
+        stage = "runs" if summary.get("aborted") else "judging"
+        print(
+            f"ABORTED during {stage} after {config.MAX_CONSECUTIVE_FAILURES} consecutive "
+            f"failures (quota exhaustion?). Completed work is persisted. Resume with:\n"
+            f"  ./bench full --round {int(round_id[1:])}"
+            + (f" --arms {args.arms}" if args.arms else "")
+            + (f" --repos {args.repos}" if args.repos else "")
+            + (f" --repeats {args.repeats}" if args.repeats != 1 else ""),
+            file=sys.stderr,
+        )
+        return 3
     print(f"completed {summary['n_runs']} runs; results in {results_dir}")
     return 0
 

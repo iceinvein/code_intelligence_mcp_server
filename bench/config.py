@@ -75,6 +75,11 @@ def bench_home_for_variant(variant: str) -> Path:
 RUN_CONCURRENCY = _env_int("BENCH_RUN_CONCURRENCY", 4)
 JUDGE_CONCURRENCY = _env_int("BENCH_JUDGE_CONCURRENCY", 3)
 
+# Circuit breaker: abort the cycle after this many consecutive failed agent runs
+# or judge calls (the signature of subscription quota exhaustion). Everything
+# completed so far is persisted; `full --round <N>` resumes, re-running failures.
+MAX_CONSECUTIVE_FAILURES = _env_int("BENCH_MAX_CONSECUTIVE_FAILURES", 5)
+
 # Tiered judging: haiku scores first; the sonnet+opus panel only runs when the
 # haiku score is mid-band (3-8) or errored. Extremes are stable across judges,
 # and the ~240-calls/5h subscription window is the real judging constraint.

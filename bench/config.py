@@ -19,6 +19,13 @@ def _env_int(key: str, default: int) -> int:
     return int(raw) if raw is not None else default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 # Models
 AGENT_MODEL = _env("BENCH_AGENT_MODEL", "claude-sonnet-4-6")
 JUDGE_HAIKU = _env("BENCH_JUDGE_HAIKU", "claude-haiku-4-5")
@@ -61,6 +68,17 @@ def bench_home_for_variant(variant: str) -> Path:
     Arms with index_variant=None (default, codegraph) use the legacy BENCH_HOME.
     """
     return STATE_DIR / "home" / variant
+
+# Concurrency. Agent runs are independent (the daemon serves concurrent
+# sessions); judge calls are independent CLI spawns. Both were fully serial,
+# which made a 2-arm round ~2h wall time.
+RUN_CONCURRENCY = _env_int("BENCH_RUN_CONCURRENCY", 4)
+JUDGE_CONCURRENCY = _env_int("BENCH_JUDGE_CONCURRENCY", 3)
+
+# Tiered judging: haiku scores first; the sonnet+opus panel only runs when the
+# haiku score is mid-band (3-8) or errored. Extremes are stable across judges,
+# and the ~240-calls/5h subscription window is the real judging constraint.
+JUDGE_TIERED = _env_bool("BENCH_JUDGE_TIERED", True)
 
 # Progress
 PROGRESS_MODE = _env("BENCH_PROGRESS", "rich")  # rich | plain

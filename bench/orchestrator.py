@@ -10,6 +10,8 @@ judged rows are skipped.
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from bench import arms as arms_mod
@@ -130,15 +132,23 @@ def run_cycle(
         else:
             daemon = None
 
-        try:
-            for fixture, repo_path, q in pending:
-                run = runner.run_question(
-                    arm=arm, q=q, daemon=daemon,
-                    repo_path=repo_path, transcripts_dir=transcripts_dir,
-                )
-                rec = _run_record(run, fixture.meta.repo)
+        write_lock = threading.Lock()
+
+        def _execute(item, _arm=arm, _daemon=daemon):
+            fixture, repo_path, q = item
+            run = runner.run_question(
+                arm=_arm, q=q, daemon=_daemon,
+                repo_path=repo_path, transcripts_dir=transcripts_dir,
+            )
+            rec = _run_record(run, fixture.meta.repo)
+            with write_lock:
                 _append_jsonl(runs_path, rec)
                 all_runs.append(rec)
+
+        try:
+            workers = max(1, config_mod.RUN_CONCURRENCY)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(pool.map(_execute, pending))
         finally:
             if daemon is not None:
                 daemon.stop()
@@ -160,6 +170,7 @@ def run_cycle(
     judge_records: list[dict] = _read_jsonl(judge_path) if resume else []
     judged = {(j["arm"], j["question_id"]) for j in judge_records}
     if judge_enabled:
+        pending_judge: list[dict] = []
         for rec in all_runs:
             key = (rec["arm"], rec["question_id"])
             if key in judged or key not in score_by_key:
@@ -167,8 +178,13 @@ def run_cycle(
             if _is_run_casualty(rec):
                 score_by_key[key]["judge_casualty"] = True
                 continue
-            entry = qmap[(rec["repo"], rec["question_id"])]
-            q, _repo_path = entry
+            pending_judge.append(rec)
+
+        judge_lock = threading.Lock()
+
+        def _judge(rec):
+            key = (rec["arm"], rec["question_id"])
+            q, _repo_path = qmap[(rec["repo"], rec["question_id"])]
             s = score_by_key[key]
             citations = [{"file": c.file, "line_range": list(c.line_range), "symbol": c.symbol}
                          for c in q.expected.citations]
@@ -196,9 +212,16 @@ def run_cycle(
                 "errors": agg.errors,
                 "n_valid": agg.n_valid,
                 "casualty": agg.casualty,
+                "tier": agg.tier,
             }
-            _append_jsonl(judge_path, jrec)
-            judge_records.append(jrec)
+            with judge_lock:
+                _append_jsonl(judge_path, jrec)
+                judge_records.append(jrec)
+
+        if pending_judge:
+            workers = max(1, config_mod.JUDGE_CONCURRENCY)
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(pool.map(_judge, pending_judge))
 
     # Apply judge results (fresh + resumed) to score rows. Casualty rows keep
     # judge_median=None so aggregates skip them instead of averaging zeros.

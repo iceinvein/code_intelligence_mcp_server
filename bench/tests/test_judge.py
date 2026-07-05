@@ -130,6 +130,80 @@ def test_aggregate_all_valid_matches_plain_median():
     assert agg.errors == {}
 
 
+def _capture_models(monkeypatch, score_by_model):
+    called = []
+
+    def fake_run(cmd, **kwargs):
+        model = cmd[cmd.index("--model") + 1]
+        called.append(model)
+        return FakeCompleted(stdout=make_response(score_by_model[model], model))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return called
+
+
+def test_tiered_judging_accepts_haiku_extreme_without_panel(monkeypatch):
+    from bench import config
+    called = _capture_models(monkeypatch, {config.JUDGE_HAIKU: 9})
+    agg = judge.judge_all(
+        question_id="q1", question="?", rubric="r",
+        citations=[], mech_context={}, answer="a",
+    )
+    assert called == [config.JUDGE_HAIKU]
+    assert agg.median == 9
+    assert agg.n_valid == 1
+    assert not agg.casualty
+    assert agg.tier == "haiku_only"
+
+
+def test_tiered_judging_escalates_midband_to_panel(monkeypatch):
+    from bench import config
+    called = _capture_models(monkeypatch, {
+        config.JUDGE_HAIKU: 5, config.JUDGE_SONNET: 7, config.JUDGE_OPUS: 6,
+    })
+    agg = judge.judge_all(
+        question_id="q1", question="?", rubric="r",
+        citations=[], mech_context={}, answer="a",
+    )
+    assert sorted(called) == sorted([config.JUDGE_HAIKU, config.JUDGE_SONNET, config.JUDGE_OPUS])
+    assert agg.median == 6
+    assert agg.n_valid == 3
+    assert agg.tier == "panel"
+
+
+def test_tiered_judging_escalates_on_haiku_error(monkeypatch):
+    from bench import config
+
+    def fake_run(cmd, **kwargs):
+        model = cmd[cmd.index("--model") + 1]
+        if model == config.JUDGE_HAIKU:
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
+        return FakeCompleted(stdout=make_response(7, model))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    agg = judge.judge_all(
+        question_id="q1", question="?", rubric="r",
+        citations=[], mech_context={}, answer="a",
+    )
+    assert agg.median == 7
+    assert agg.n_valid == 2
+    assert not agg.casualty
+
+
+def test_panel_mode_when_tiering_disabled(monkeypatch):
+    from bench import config
+    monkeypatch.setattr(config, "JUDGE_TIERED", False)
+    called = _capture_models(monkeypatch, {
+        config.JUDGE_HAIKU: 9, config.JUDGE_SONNET: 9, config.JUDGE_OPUS: 9,
+    })
+    agg = judge.judge_all(
+        question_id="q1", question="?", rubric="r",
+        citations=[], mech_context={}, answer="a",
+    )
+    assert len(called) == 3
+    assert agg.tier == "panel"
+
+
 def test_judge_one_retries_on_malformed_json(monkeypatch):
     attempts = {"count": 0}
 

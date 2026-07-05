@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import statistics
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from bench import config
@@ -38,6 +39,7 @@ class JudgeAggregate:
     errors: dict[str, str] = field(default_factory=dict)
     n_valid: int = 3
     casualty: bool = False
+    tier: str = "panel"  # "panel" | "haiku_only"
 
 
 def aggregate_results(question_id: str, results: dict[str, JudgeResult]) -> JudgeAggregate:
@@ -244,6 +246,24 @@ def judge_one(
     )
 
 
+def _judge_models(labels: list[str], **kwargs) -> dict[str, JudgeResult]:
+    """Run the given judge labels concurrently."""
+    models = {
+        "haiku": config.JUDGE_HAIKU,
+        "sonnet": config.JUDGE_SONNET,
+        "opus": config.JUDGE_OPUS,
+    }
+    results: dict[str, JudgeResult] = {}
+    with ThreadPoolExecutor(max_workers=len(labels)) as pool:
+        futures = {
+            label: pool.submit(judge_one, model=models[label], **kwargs)
+            for label in labels
+        }
+        for label, fut in futures.items():
+            results[label] = fut.result()
+    return results
+
+
 def judge_all(
     *,
     question_id: str,
@@ -254,23 +274,40 @@ def judge_all(
     answer: str,
     cwd: str | None = None,
 ) -> JudgeAggregate:
-    """Run 3 judges and aggregate to median + range."""
-    judges = {
-        "haiku": config.JUDGE_HAIKU,
-        "sonnet": config.JUDGE_SONNET,
-        "opus": config.JUDGE_OPUS,
-    }
-    results: dict[str, JudgeResult] = {}
-    for label, model in judges.items():
-        results[label] = judge_one(
-            model=model,
+    """Judge one answer.
+
+    Tiered mode (default): haiku scores first; a decisive extreme (0-2 or 9-10)
+    is accepted as-is, while mid-band (3-8) or errored haiku results escalate to
+    the sonnet+opus panel. Roughly halves judge calls, which is what matters
+    against the subscription rate-limit window. BENCH_JUDGE_TIERED=0 restores
+    the always-3-judge panel.
+    """
+    kwargs = dict(
+        question_id=question_id,
+        question=question,
+        rubric=rubric,
+        citations=citations,
+        mech_context=mech_context,
+        answer=answer,
+        cwd=cwd,
+    )
+    if not config.JUDGE_TIERED:
+        return aggregate_results(question_id, _judge_models(["haiku", "sonnet", "opus"], **kwargs))
+
+    haiku = judge_one(model=config.JUDGE_HAIKU, **kwargs)
+    if haiku.error is None and not (3 <= haiku.score <= 8):
+        return JudgeAggregate(
             question_id=question_id,
-            question=question,
-            rubric=rubric,
-            citations=citations,
-            mech_context=mech_context,
-            answer=answer,
-            cwd=cwd,
+            scores={"haiku": haiku.score},
+            justifications={"haiku": haiku.justification},
+            median=float(haiku.score),
+            range=0,
+            errors={},
+            n_valid=1,
+            casualty=False,
+            tier="haiku_only",
         )
 
+    results = {"haiku": haiku}
+    results.update(_judge_models(["sonnet", "opus"], **kwargs))
     return aggregate_results(question_id, results)

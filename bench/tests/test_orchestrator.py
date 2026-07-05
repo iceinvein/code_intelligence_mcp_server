@@ -167,6 +167,86 @@ def test_orchestrator_skips_judging_empty_and_errored_answers(monkeypatch, tmp_p
     assert bad_score["run_error"] == "timeout"
 
 
+def test_orchestrator_runs_questions_concurrently(monkeypatch, tmp_path):
+    import threading
+    import time as _time
+
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+
+    state = {"active": 0, "max_active": 0}
+    lock = threading.Lock()
+
+    def fake_run_question(arm, q, daemon, repo_path, transcripts_dir):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        _time.sleep(0.05)
+        with lock:
+            state["active"] -= 1
+        return _fake_run(arm, q, repo_path)
+
+    monkeypatch.setattr(runner, "run_question", fake_run_question)
+    monkeypatch.setattr(orchestrator.config_mod, "RUN_CONCURRENCY", 3)
+    _no_daemon(monkeypatch)
+
+    results_dir = tmp_path / "R001"
+    summary = orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"]],
+        repos=[(fixture, repo_path)],
+        results_dir=results_dir,
+        judge_enabled=False,
+    )
+    assert state["max_active"] > 1  # questions overlapped
+    lines = (results_dir / "runs.jsonl").read_text().splitlines()
+    assert len(lines) == len(fixture.questions)  # thread-safe appends, no loss
+    assert summary["n_runs"] == len(fixture.questions)
+
+
+def test_orchestrator_judges_concurrently(monkeypatch, tmp_path):
+    import threading
+    import time as _time
+
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+
+    monkeypatch.setattr(
+        runner, "run_question",
+        lambda arm, q, daemon, repo_path, transcripts_dir: _fake_run(arm, q, repo_path),
+    )
+    _no_daemon(monkeypatch)
+    monkeypatch.setattr(orchestrator.config_mod, "JUDGE_CONCURRENCY", 3)
+
+    state = {"active": 0, "max_active": 0}
+    lock = threading.Lock()
+
+    def fake_judge_all(**kwargs):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        _time.sleep(0.05)
+        with lock:
+            state["active"] -= 1
+        return judge.JudgeAggregate(
+            question_id=kwargs["question_id"], scores={"haiku": 7},
+            justifications={}, median=7.0, range=0, errors={}, n_valid=3,
+        )
+
+    monkeypatch.setattr(orchestrator.judge_mod, "judge_all", fake_judge_all)
+
+    results_dir = tmp_path / "R001"
+    summary = orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"]],
+        repos=[(fixture, repo_path)],
+        results_dir=results_dir,
+        judge_enabled=True,
+    )
+    assert state["max_active"] > 1
+    assert summary["n_judged"] == len(fixture.questions)
+    jlines = (results_dir / "judge.jsonl").read_text().splitlines()
+    assert len(jlines) == len(fixture.questions)
+
+
 def test_orchestrator_persists_judge_errors_and_casualties(monkeypatch, tmp_path):
     fixture = _smoke_fixture()
     repo_path = Path(__file__).resolve().parents[2]

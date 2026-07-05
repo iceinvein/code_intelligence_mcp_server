@@ -243,6 +243,16 @@ def run_question(
             run_error = "timeout"
             break
         if result.returncode != 0:
+            # The CLI exits nonzero for terminal "errors" that still carry a
+            # full transcript (e.g. --max-turns hit: subtype error_max_turns).
+            # If stdout parses to a result line, this is a completed capped run,
+            # not a CLI failure: keep it, don't retry, don't flag run_error.
+            candidate = _parse_transcript(result.stdout)
+            if candidate["stop_reason"] != "unknown":
+                run_error = None
+                transcript_path.write_bytes(result.stdout)
+                parsed = candidate
+                break
             run_error = f"cli_exit_{result.returncode}"
             continue  # transient CLI failure: retry once
         run_error = None

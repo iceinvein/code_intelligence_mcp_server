@@ -169,6 +169,39 @@ def test_parser_flags_max_turns_stop():
     assert parsed["stop_reason"] == "max_turns"
 
 
+def test_runner_accepts_max_turns_exit_1_without_retry(monkeypatch, tmp_path):
+    """claude -p exits 1 when --max-turns is hit but stdout still carries the
+    full transcript (subtype error_max_turns). That is a capped run, not a CLI
+    failure: keep the transcript, no retry, no run_error."""
+    arm = ARMS["default"]
+    q = _q()
+    lines = [
+        {"type": "assistant", "message": {
+            "content": [{"type": "text", "text": "partial exploration"}],
+            "usage": {"input_tokens": 5, "output_tokens": 9,
+                      "cache_read_input_tokens": 10, "cache_creation_input_tokens": 2},
+        }},
+        {"type": "result", "subtype": "error_max_turns", "is_error": True,
+         "num_turns": 12,
+         "usage": {"input_tokens": 5, "output_tokens": 9,
+                   "cache_read_input_tokens": 10, "cache_creation_input_tokens": 2}},
+    ]
+    stdout = ("\n".join(json.dumps(l) for l in lines) + "\n").encode()
+    calls = {"n": 0}
+
+    def fake_run(*a, **k):
+        calls["n"] += 1
+        return FakeCompleted(stdout=stdout, returncode=1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    assert calls["n"] == 1  # not retried
+    assert run.run_error is None
+    assert run.stop_reason == "max_turns"
+    assert run.final_answer == "partial exploration"
+    assert (tmp_path / "default" / "q1.jsonl").read_bytes() == stdout
+
+
 def test_runner_retries_on_nonzero_exit_then_succeeds(monkeypatch, tmp_path):
     arm = ARMS["default"]
     q = _q()

@@ -35,6 +35,37 @@ class JudgeAggregate:
     justifications: dict[str, str]
     median: float
     range: int
+    errors: dict[str, str] = field(default_factory=dict)
+    n_valid: int = 3
+    casualty: bool = False
+
+
+def aggregate_results(question_id: str, results: dict[str, JudgeResult]) -> JudgeAggregate:
+    """Aggregate per-judge results, excluding errored judges from median/range.
+
+    An errored judge carries score 0; folding that into the median silently drags
+    the aggregate (the R005/R008 'rate limit' confusion). Rows with fewer than 2
+    valid judges are flagged as casualties so reports can exclude them.
+    """
+    valid = {label: r for label, r in results.items() if r.error is None}
+    errors = {label: r.error for label, r in results.items() if r.error is not None}
+    if valid:
+        valid_scores = [r.score for r in valid.values()]
+        median = statistics.median(valid_scores)
+        rng = max(valid_scores) - min(valid_scores)
+    else:
+        median = 0.0
+        rng = 0
+    return JudgeAggregate(
+        question_id=question_id,
+        scores={label: r.score for label, r in results.items()},
+        justifications={label: r.justification for label, r in results.items()},
+        median=median,
+        range=rng,
+        errors=errors,
+        n_valid=len(valid),
+        casualty=len(valid) < 2,
+    )
 
 
 def _build_user_prompt(
@@ -175,6 +206,10 @@ def judge_one(
                     "--system-prompt", system_prompt,
                     "--allowed-tools", "",
                     "--output-format", "json",
+                    # Isolation: judges must not load global MCP servers or
+                    # user/project settings and hooks (token overhead + bias).
+                    "--strict-mcp-config",
+                    "--setting-sources", "",
                 ],
                 input=user_prompt.encode(),
                 capture_output=True,
@@ -238,14 +273,4 @@ def judge_all(
             cwd=cwd,
         )
 
-    scores = {label: r.score for label, r in results.items()}
-    justifications = {label: r.justification for label, r in results.items()}
-    median = statistics.median(scores.values())
-    rng = max(scores.values()) - min(scores.values())
-    return JudgeAggregate(
-        question_id=question_id,
-        scores=scores,
-        justifications=justifications,
-        median=median,
-        range=rng,
-    )
+    return aggregate_results(question_id, results)

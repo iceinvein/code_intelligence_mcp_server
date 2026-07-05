@@ -13,7 +13,7 @@ from bench.fixtures_io import Citation, Question
 # "src/foo.rs line 42", "src/foo.rs at line 42-88"
 _CITATION_PATTERNS = [
     re.compile(r"(?P<file>[\w./\-]+\.\w+):(?P<start>\d+)(?:-(?P<end>\d+))?"),
-    re.compile(r"(?P<file>[\w./\-]+\.\w+)\s+(?:at\s+)?line\s+(?P<start>\d+)(?:-(?P<end>\d+))?"),
+    re.compile(r"(?P<file>[\w./\-]+\.\w+)\s+(?:at\s+)?lines?\s+(?P<start>\d+)(?:-(?P<end>\d+))?"),
 ]
 
 
@@ -33,7 +33,7 @@ def _cite_appears(c: Citation, answer: str) -> bool:
     if c.file.lower() not in a:
         return False
     pat = re.compile(
-        re.escape(c.file) + r"(?::|.{0,30}line\s+)(?P<start>\d+)(?:-(?P<end>\d+))?",
+        re.escape(c.file) + r"(?::|.{0,30}lines?\s+|.{0,30}\(L)(?P<start>\d+)(?:-(?P<end>\d+))?",
         re.IGNORECASE,
     )
     for m in pat.finditer(answer):
@@ -91,6 +91,24 @@ def mech_score(q: Question, answer: str) -> dict:
     }
 
 
+# Extensions accepted for bare-filename citations (no directory component). Without
+# this gate, "127.0.0.1:17800", host:port pairs, and version strings parse as
+# citations, fail verification, and get scored as hallucinations.
+_CODE_EXTENSIONS = {
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "c", "h",
+    "cpp", "hpp", "cc", "hh", "rb", "php", "swift", "kt", "kts", "scala", "sql",
+    "sh", "bash", "zsh", "yaml", "yml", "toml", "json", "md", "txt", "html",
+    "css", "scss", "vue", "svelte", "cfg", "ini", "xml", "proto", "graphql",
+}
+
+
+def _looks_like_path(file: str) -> bool:
+    if "/" in file:
+        return True
+    ext = file.rsplit(".", 1)[-1].lower()
+    return ext in _CODE_EXTENSIONS
+
+
 def _extract_citations(answer: str) -> list[tuple[str, int, int]]:
     """Yield (file, start_line, end_line) tuples from cited file:line patterns."""
     seen: set[tuple[str, int, int]] = set()
@@ -98,8 +116,7 @@ def _extract_citations(answer: str) -> list[tuple[str, int, int]]:
     for pat in _CITATION_PATTERNS:
         for m in pat.finditer(answer):
             file = m.group("file")
-            # Filter false positives: must contain at least one '/' or '.' indicating a path.
-            if "/" not in file and "." not in file:
+            if not _looks_like_path(file):
                 continue
             try:
                 start = int(m.group("start"))
@@ -173,9 +190,42 @@ def compute_citation_multiplier(answer: str, repo_path: Path) -> tuple[float, li
     return multiplier, results
 
 
+# A forbidden-term mention is only a hit when it is affirmative. Correct answers to
+# negative questions ("Is there a RedisCache?") must name the term while denying it
+# ("there is no RedisCache"), so bare substring matching zeroes exactly the answers
+# the fixture wants to reward.
+_NEGATION_MARKERS = (
+    "no ", "not ", "n't", "never", "without", "neither", "nor ",
+    "absent", "lacks", "lack of", "instead of", "rather than",
+)
+_SENTENCE_BOUNDARIES = (".", "!", "?", "\n", ";")
+
+
+def _is_negated_mention(answer_lower: str, idx: int, window: int = 80) -> bool:
+    """True when a negation marker precedes idx within the same sentence."""
+    ctx = answer_lower[max(0, idx - window):idx]
+    for b in _SENTENCE_BOUNDARIES:
+        p = ctx.rfind(b)
+        if p != -1:
+            ctx = ctx[p + 1:]
+    return any(m in ctx for m in _NEGATION_MARKERS)
+
+
 def forbidden_hits(q: Question, answer: str) -> list[str]:
     a = answer.lower()
-    return [f for f in q.expected.forbidden if f.lower() in a]
+    hits: list[str] = []
+    for f in q.expected.forbidden:
+        fl = f.lower()
+        idx = 0
+        while True:
+            i = a.find(fl, idx)
+            if i == -1:
+                break
+            if not _is_negated_mention(a, i):
+                hits.append(f)
+                break
+            idx = i + len(fl)
+    return hits
 
 
 def final_mech(q: Question, answer: str, citation_multiplier: float) -> float:

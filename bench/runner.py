@@ -36,6 +36,7 @@ class Run:
     model: str = ""
     daemon_sha: str | None = None
     raw_transcript_path: str | None = None
+    run_error: str | None = None
 
 
 SYSTEM_PROMPT_TEMPLATE = """You are an investigation agent answering a single question about a codebase.
@@ -179,6 +180,11 @@ def run_question(
         "--model", config.AGENT_MODEL,
         "--system-prompt", system_prompt,
         "--allowed-tools", ",".join(arm.allowed_tools),
+        # Isolation: without these, globally-configured MCP servers (including the
+        # production code-intelligence daemon) and user/project settings+hooks leak
+        # into every arm, contaminating the comparison and inflating context tokens.
+        "--strict-mcp-config",
+        "--setting-sources", "",
     ]
     if daemon is not None:
         mcp_config = daemon.build_mcp_config()
@@ -189,28 +195,44 @@ def run_question(
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
 
     start = time.monotonic()
-    try:
-        result = subprocess.run(
-            cmd,
-            input=q.question.encode("utf-8"),
-            capture_output=True,
-            timeout=config.PER_QUESTION_TIMEOUT_S,
-            cwd=str(repo_path),
-        )
-        wall_ms = int((time.monotonic() - start) * 1000)
+    run_error: str | None = None
+    parsed: dict | None = None
+    for _attempt in range(2):
+        try:
+            result = subprocess.run(
+                cmd,
+                input=q.question.encode("utf-8"),
+                capture_output=True,
+                timeout=config.PER_QUESTION_TIMEOUT_S,
+                cwd=str(repo_path),
+            )
+        except subprocess.TimeoutExpired as e:
+            # Don't retry timeouts (another PER_QUESTION_TIMEOUT_S wait for a run
+            # that is likely to time out again); keep whatever partial output exists.
+            if e.output:
+                transcript_path.write_bytes(e.output)
+            run_error = "timeout"
+            break
+        if result.returncode != 0:
+            run_error = f"cli_exit_{result.returncode}"
+            continue  # transient CLI failure: retry once
+        run_error = None
         transcript_path.write_bytes(result.stdout)
         parsed = _parse_transcript(result.stdout)
-    except subprocess.TimeoutExpired:
-        wall_ms = int((time.monotonic() - start) * 1000)
+        break
+    wall_ms = int((time.monotonic() - start) * 1000)
+
+    if parsed is None:
         return Run(
             arm=arm.name,
             question_id=q.id,
             repo=str(repo_path),
             final_answer="",
             wall_ms=wall_ms,
-            stop_reason="timeout",
+            stop_reason="timeout" if run_error == "timeout" else "cli_error",
             model=config.AGENT_MODEL,
             raw_transcript_path=str(transcript_path),
+            run_error=run_error,
         )
 
     return Run(
@@ -227,4 +249,5 @@ def run_question(
         stop_reason=parsed["stop_reason"],
         model=config.AGENT_MODEL,
         raw_transcript_path=str(transcript_path),
+        run_error=None,
     )

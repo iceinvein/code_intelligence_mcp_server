@@ -87,6 +87,65 @@ def test_runner_handles_timeout(monkeypatch, tmp_path):
     assert run.final_answer == ""
 
 
+def test_runner_retries_on_nonzero_exit_then_succeeds(monkeypatch, tmp_path):
+    arm = ARMS["default"]
+    q = _q()
+    calls = {"n": 0}
+
+    def fake_run(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeCompleted(stdout=b"", stderr=b"boom", returncode=1)
+        return FakeCompleted(stdout=_fake_transcript("recovered answer"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    assert calls["n"] == 2
+    assert run.run_error is None
+    assert run.final_answer == "recovered answer"
+
+
+def test_runner_records_error_after_persistent_cli_failure(monkeypatch, tmp_path):
+    arm = ARMS["default"]
+    q = _q()
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: FakeCompleted(stdout=b"", stderr=b"fatal", returncode=2),
+    )
+    run = runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    assert run.run_error == "cli_exit_2"
+    assert run.final_answer == ""
+
+
+def test_runner_timeout_records_error_and_keeps_partial_transcript(monkeypatch, tmp_path):
+    arm = ARMS["default"]
+    q = _q()
+
+    def fake_run(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=1, output=b'{"partial": true}')
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run = runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    assert run.run_error == "timeout"
+    assert (tmp_path / "default" / "q1.jsonl").read_bytes() == b'{"partial": true}'
+
+
+def test_runner_isolates_cli_from_user_config(monkeypatch, tmp_path):
+    arm = ARMS["default"]
+    q = _q()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeCompleted(stdout=_fake_transcript("a"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    assert "--strict-mcp-config" in captured["cmd"]
+    idx = captured["cmd"].index("--setting-sources")
+    assert captured["cmd"][idx + 1] == ""
+
+
 def test_runner_writes_transcript_to_disk(monkeypatch, tmp_path):
     arm = ARMS["default"]
     q = _q()

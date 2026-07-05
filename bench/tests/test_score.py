@@ -104,6 +104,57 @@ def test_citation_verification_partial_hallucination(tmp_path):
     assert multiplier == 0.5  # at least one hallucination, not all
 
 
+def test_citation_hit_matches_plural_lines():
+    q = _q()
+    answer = "The bar function is defined in src/foo.rs, lines 12-28."
+    result = score.mech_score(q, answer)
+    assert result["citation_hit"] is True
+
+
+def test_citation_hit_matches_l_notation():
+    q = _q()
+    answer = "See src/foo.rs (L15) for the bar definition."
+    result = score.mech_score(q, answer)
+    assert result["citation_hit"] is True
+
+
+def test_citation_hit_still_requires_overlapping_range():
+    q = _q()  # canonical range 10-30
+    answer = "The bar function is defined in src/foo.rs, lines 200-220."
+    result = score.mech_score(q, answer)
+    assert result["citation_hit"] is False
+
+
+def test_ip_and_port_is_not_a_citation(tmp_path):
+    answer = "The daemon listens on 127.0.0.1:17800 and the API on 127.0.0.1:17802."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert results == []
+    assert multiplier == 1.0
+
+
+def test_url_with_port_is_not_a_citation(tmp_path):
+    answer = "Docs are served at localhost.example.com:8080 during development."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert results == []
+    assert multiplier == 1.0
+
+
+def test_version_string_is_not_a_citation(tmp_path):
+    answer = "This changed in release 4.5.0:2020 of the toolchain."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert results == []
+    assert multiplier == 1.0
+
+
+def test_bare_filename_with_code_extension_is_a_citation(tmp_path):
+    (tmp_path / "models.py").write_text("x = 1\n" * 50)
+    answer = "The field is declared in models.py:12."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert len(results) == 1
+    assert results[0].ok
+    assert multiplier == 1.0
+
+
 def test_forbidden_soft_penalty_subtracts_quarter_per_hit():
     q = _q(forbidden=["src/banned.rs", "fake_helper"])
     answer = "src/foo.rs:10-30 bar - but also see src/banned.rs and fake_helper."
@@ -114,9 +165,42 @@ def test_forbidden_soft_penalty_subtracts_quarter_per_hit():
 
 def test_forbidden_strict_zeros_on_any_hit():
     q = _q(forbidden=["src/banned.rs"], forbidden_strict=True)
-    answer = "src/foo.rs:10 bar (do not confuse with src/banned.rs)."
+    answer = "src/foo.rs:10 bar (also implemented in src/banned.rs)."
     final = score.final_mech(q, answer, citation_multiplier=1.0)
     assert final == 0.0
+
+
+def test_forbidden_negated_mention_not_counted():
+    q = _q(forbidden=["RedisCache", "ioredis"])
+    answer = (
+        "No, there is no RedisCache class in the codebase. "
+        "The project does not import ioredis anywhere; rate limiting uses an in-memory Map."
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_denial_phrasing_not_counted():
+    q = _q(forbidden=["LegacyAuthMiddleware"])
+    answer = "There is no LegacyAuthMiddleware; authentication is handled by authPlugin in macro.ts."
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_affirmative_mention_still_counted():
+    q = _q(forbidden=["RedisCache"])
+    answer = "Caching is implemented by the RedisCache class in cache.py."
+    assert score.forbidden_hits(q, answer) == ["RedisCache"]
+
+
+def test_forbidden_negation_does_not_leak_across_sentences():
+    q = _q(forbidden=["RedisCache"])
+    answer = "There is no LRU layer. The RedisCache class handles all caching."
+    assert score.forbidden_hits(q, answer) == ["RedisCache"]
+
+
+def test_forbidden_mixed_negated_and_affirmative_counts():
+    q = _q(forbidden=["RedisCache"])
+    answer = "There is no RedisCache in src/. However, RedisCache is defined in vendor/cache.py."
+    assert score.forbidden_hits(q, answer) == ["RedisCache"]
 
 
 def test_combined_pipeline_clamps_to_zero():

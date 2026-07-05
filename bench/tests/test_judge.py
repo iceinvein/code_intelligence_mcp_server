@@ -66,6 +66,70 @@ def test_judge_all_returns_median_and_range(monkeypatch):
     assert agg.scores == {"haiku": 4, "sonnet": 7, "opus": 9}
 
 
+def test_judge_one_isolates_cli_from_user_config(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeCompleted(stdout=make_response(5, "m"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    judge.judge_one(
+        model="m", question_id="q1", question="?", rubric="r",
+        citations=[], mech_context={}, answer="a",
+    )
+    assert "--strict-mcp-config" in captured["cmd"]
+    idx = captured["cmd"].index("--setting-sources")
+    assert captured["cmd"][idx + 1] == ""
+
+
+def test_aggregate_excludes_errored_judges_from_median():
+    results = {
+        "haiku": judge.JudgeResult(model="h", question_id="q1", score=8,
+                                   justification="ok", raw_response="r"),
+        "sonnet": judge.JudgeResult(model="s", question_id="q1", score=9,
+                                    justification="ok", raw_response="r"),
+        "opus": judge.JudgeResult(model="o", question_id="q1", score=0,
+                                  justification="", raw_response="", error="timeout"),
+    }
+    agg = judge.aggregate_results("q1", results)
+    assert agg.median == 8.5  # median of the 2 valid scores, not (0, 8, 9)
+    assert agg.range == 1
+    assert agg.n_valid == 2
+    assert agg.errors == {"opus": "timeout"}
+    assert not agg.casualty
+
+
+def test_aggregate_marks_casualty_when_fewer_than_two_valid():
+    results = {
+        "haiku": judge.JudgeResult(model="h", question_id="q1", score=7,
+                                   justification="ok", raw_response="r"),
+        "sonnet": judge.JudgeResult(model="s", question_id="q1", score=0,
+                                    justification="", raw_response="", error="parse_failed"),
+        "opus": judge.JudgeResult(model="o", question_id="q1", score=0,
+                                  justification="", raw_response="", error="timeout"),
+    }
+    agg = judge.aggregate_results("q1", results)
+    assert agg.casualty
+    assert agg.n_valid == 1
+
+
+def test_aggregate_all_valid_matches_plain_median():
+    results = {
+        "haiku": judge.JudgeResult(model="h", question_id="q1", score=4,
+                                   justification="ok", raw_response="r"),
+        "sonnet": judge.JudgeResult(model="s", question_id="q1", score=7,
+                                    justification="ok", raw_response="r"),
+        "opus": judge.JudgeResult(model="o", question_id="q1", score=9,
+                                  justification="ok", raw_response="r"),
+    }
+    agg = judge.aggregate_results("q1", results)
+    assert agg.median == 7
+    assert agg.range == 5
+    assert agg.n_valid == 3
+    assert agg.errors == {}
+
+
 def test_judge_one_retries_on_malformed_json(monkeypatch):
     attempts = {"count": 0}
 

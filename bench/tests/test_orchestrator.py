@@ -1,10 +1,11 @@
 """Tests for bench/orchestrator.py - the end-to-end cycle (mocked)."""
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from bench import arms, fixtures_io, orchestrator, runner
+from bench import arms, fixtures_io, judge, orchestrator, runner
 
 
 def _smoke_fixture():
@@ -47,3 +48,156 @@ def test_orchestrator_runs_all_arms_in_order(monkeypatch, tmp_path):
     expected_pairs = [(a, q.id) for a in arms_ordered for q in fixture.questions]
     assert set(arm_calls) == set(expected_pairs)
     assert (results_dir / "runs.jsonl").exists()
+
+
+def _fake_run(arm, q, repo_path, answer="src/indexer/pipeline/mod.rs:85 IndexPipeline struct",
+              run_error=None):
+    return runner.Run(
+        arm=arm.name, question_id=q.id, repo=str(repo_path),
+        final_answer=answer, stop_reason="end_turn", model="x", run_error=run_error,
+    )
+
+
+def _no_daemon(monkeypatch):
+    monkeypatch.setattr(
+        "bench.daemon.maybe_start_daemon",
+        lambda arm, port, home=None: None,
+    )
+
+
+def test_orchestrator_persists_runs_incrementally_on_crash(monkeypatch, tmp_path):
+    """A crash mid-cycle must not lose completed runs (the R009 failure)."""
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+    calls = {"n": 0}
+
+    def fake_run_question(arm, q, daemon, repo_path, transcripts_dir):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("boom")
+        return _fake_run(arm, q, repo_path)
+
+    monkeypatch.setattr(runner, "run_question", fake_run_question)
+    _no_daemon(monkeypatch)
+
+    results_dir = tmp_path / "R001"
+    with pytest.raises(RuntimeError):
+        orchestrator.run_cycle(
+            arms_to_run=[arms.ARMS["default"]],
+            repos=[(fixture, repo_path)],
+            results_dir=results_dir,
+            judge_enabled=False,
+        )
+    lines = (results_dir / "runs.jsonl").read_text().splitlines()
+    assert len(lines) == 2  # the two completed runs survived
+
+
+def test_orchestrator_resume_skips_completed_runs(monkeypatch, tmp_path):
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+    first_q = fixture.questions[0]
+
+    results_dir = tmp_path / "R001"
+    results_dir.mkdir(parents=True)
+    prior = {
+        "arm": "default", "question_id": first_q.id, "repo": fixture.meta.repo,
+        "final_answer": "prior answer src/indexer/pipeline/mod.rs:85",
+        "tool_calls": [], "input_tokens": 1, "output_tokens": 1,
+        "cache_read_tokens": 0, "cache_creation_tokens": 0,
+        "wall_ms": 5, "stop_reason": "end_turn", "model": "x", "run_error": None,
+    }
+    (results_dir / "runs.jsonl").write_text(json.dumps(prior) + "\n")
+
+    ran = []
+
+    def fake_run_question(arm, q, daemon, repo_path, transcripts_dir):
+        ran.append(q.id)
+        return _fake_run(arm, q, repo_path)
+
+    monkeypatch.setattr(runner, "run_question", fake_run_question)
+    _no_daemon(monkeypatch)
+
+    summary = orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"]],
+        repos=[(fixture, repo_path)],
+        results_dir=results_dir,
+        judge_enabled=False,
+    )
+    assert first_q.id not in ran  # resumed, not re-run
+    assert len(ran) == len(fixture.questions) - 1
+    # the resumed run still gets a score row
+    scored_ids = {s["question_id"] for s in summary["scores"]}
+    assert first_q.id in scored_ids
+
+
+def test_orchestrator_skips_judging_empty_and_errored_answers(monkeypatch, tmp_path):
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+    bad_q = fixture.questions[0].id
+
+    def fake_run_question(arm, q, daemon, repo_path, transcripts_dir):
+        if q.id == bad_q:
+            return _fake_run(arm, q, repo_path, answer="", run_error="timeout")
+        return _fake_run(arm, q, repo_path)
+
+    monkeypatch.setattr(runner, "run_question", fake_run_question)
+    _no_daemon(monkeypatch)
+
+    judged = []
+
+    def fake_judge_all(**kwargs):
+        judged.append(kwargs["question_id"])
+        return judge.JudgeAggregate(
+            question_id=kwargs["question_id"], scores={"haiku": 7},
+            justifications={}, median=7.0, range=0, errors={}, n_valid=3,
+        )
+
+    monkeypatch.setattr(orchestrator.judge_mod, "judge_all", fake_judge_all)
+
+    summary = orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"]],
+        repos=[(fixture, repo_path)],
+        results_dir=tmp_path / "R001",
+        judge_enabled=True,
+    )
+    assert bad_q not in judged
+    bad_score = next(s for s in summary["scores"] if s["question_id"] == bad_q)
+    assert bad_score["judge_median"] is None
+    assert bad_score["judge_casualty"] is True
+    assert bad_score["run_error"] == "timeout"
+
+
+def test_orchestrator_persists_judge_errors_and_casualties(monkeypatch, tmp_path):
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+
+    monkeypatch.setattr(
+        runner, "run_question",
+        lambda arm, q, daemon, repo_path, transcripts_dir: _fake_run(arm, q, repo_path),
+    )
+    _no_daemon(monkeypatch)
+
+    def fake_judge_all(**kwargs):
+        return judge.JudgeAggregate(
+            question_id=kwargs["question_id"], scores={"haiku": 7, "sonnet": 0, "opus": 0},
+            justifications={"haiku": "ok"}, median=7.0, range=0,
+            errors={"sonnet": "timeout", "opus": "parse_failed"}, n_valid=1, casualty=True,
+        )
+
+    monkeypatch.setattr(orchestrator.judge_mod, "judge_all", fake_judge_all)
+
+    results_dir = tmp_path / "R001"
+    summary = orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"]],
+        repos=[(fixture, repo_path)],
+        results_dir=results_dir,
+        judge_enabled=True,
+    )
+    jrec = json.loads((results_dir / "judge.jsonl").read_text().splitlines()[0])
+    assert jrec["errors"] == {"sonnet": "timeout", "opus": "parse_failed"}
+    assert jrec["n_valid"] == 1
+    assert jrec["casualty"] is True
+    # casualty judge results must not pollute score aggregates
+    for s in summary["scores"]:
+        assert s["judge_median"] is None
+        assert s["judge_casualty"] is True

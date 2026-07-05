@@ -135,8 +135,28 @@ def _extract_citations(answer: str) -> list[tuple[str, int, int]]:
     return out
 
 
-def compute_citation_multiplier(answer: str, repo_path: Path) -> tuple[float, list[CitationVerification]]:
+def _fs_line_reader(repo_path: Path):
+    """Default line reader: the repo working tree. Returns None for missing/binary."""
+    def read(file: str) -> list[str] | None:
+        full = repo_path / file
+        if not full.exists():
+            return None
+        try:
+            return full.read_text().splitlines()
+        except UnicodeDecodeError:
+            return None
+    return read
+
+
+def compute_citation_multiplier(
+    answer: str,
+    repo_path: Path,
+    read_lines=None,
+) -> tuple[float, list[CitationVerification]]:
     """Verify every file:line citation in the answer. Return (multiplier, per-citation results).
+
+    read_lines(file) -> list[str] | None overrides how file content is fetched
+    (e.g. a pinned git tree instead of the working tree, which may have drifted).
 
     Multiplier:
       0 hallucinations -> 1.0
@@ -146,24 +166,17 @@ def compute_citation_multiplier(answer: str, repo_path: Path) -> tuple[float, li
     cites = _extract_citations(answer)
     if not cites:
         return 1.0, []
+    if read_lines is None:
+        read_lines = _fs_line_reader(repo_path)
 
     results: list[CitationVerification] = []
     for file, start, end in cites:
-        full = repo_path / file
-        if not full.exists():
+        lines = read_lines(file)
+        if lines is None:
             results.append(CitationVerification(
                 raw_match=f"{file}:{start}-{end}",
                 file=file, start_line=start, end_line=end,
                 ok=False, reason="file_does_not_exist",
-            ))
-            continue
-        try:
-            lines = full.read_text().splitlines()
-        except UnicodeDecodeError:
-            results.append(CitationVerification(
-                raw_match=f"{file}:{start}-{end}",
-                file=file, start_line=start, end_line=end,
-                ok=False, reason="binary_file",
             ))
             continue
         if start > len(lines):

@@ -57,9 +57,9 @@ def _run_record(run: runner.Run, repo_name: str) -> dict:
     }
 
 
-def _score_record(q: Question, rec: dict, repo_path: Path) -> dict:
+def _score_record(q: Question, rec: dict, repo_path: Path, read_lines=None) -> dict:
     answer = rec.get("final_answer", "")
-    multiplier, verifications = score.compute_citation_multiplier(answer, repo_path)
+    multiplier, verifications = score.compute_citation_multiplier(answer, repo_path, read_lines)
     final_mech = score.final_mech(q, answer, multiplier)
     raw = score.mech_score(q, answer)
     forbidden = score.forbidden_hits(q, answer)

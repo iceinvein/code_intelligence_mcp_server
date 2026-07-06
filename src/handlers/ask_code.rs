@@ -259,11 +259,6 @@ fn evidence_to_json(evidence: &[EvidenceItem]) -> Vec<Value> {
                 "kind": e.kind,
                 "start_line": e.start_line,
                 "end_line": e.end_line,
-                "cite": crate::handlers::evidence_pack::cite_token(
-                    Some(&e.file_path),
-                    Some(e.start_line),
-                    Some(e.end_line),
-                ),
                 "body": e.body,
             })
         })
@@ -411,11 +406,7 @@ fn build_evidence_only_response(
             file, symbol, or path that no row contains (the coverage classifier can mark complete \
             and still miss test files, configs, or files outside the question's main noun-phrase), \
             fall back to Grep/Glob/Read once -- don't re-query ask_code or investigate with \
-            rephrased prompts. Citation contract: when citing a location, copy the supporting \
-            item's `cite` token verbatim (format path:start-end) and never shorten the path \
-            to a basename -- `packages/backend/src/api/x.ts:10` must not become `x.ts:10`, \
-            in prose included. Never cite a file or line range that no evidence item or pack \
-            row contains."
+            rephrased prompts."
             .to_string()
     };
     if is_hook_callback_question(question) {
@@ -596,39 +587,6 @@ mod tests {
             end_line: end,
             body: "body".to_string(),
         }
-    }
-
-    #[test]
-    fn evidence_json_carries_cite_tokens() {
-        let items = [
-            ev("a", "src/session.ts", 120, 141),
-            ev("b", "src/one.ts", 7, 7),
-        ];
-        let json_items = evidence_to_json(&items);
-        assert_eq!(json_items[0]["cite"], "src/session.ts:120-141");
-        assert_eq!(json_items[1]["cite"], "src/one.ts:7");
-    }
-
-    #[test]
-    fn evidence_only_follow_up_states_citation_contract() {
-        let investigate = json!({"verified_locations": []});
-        let response = build_evidence_only_response(
-            "How does createSession work?",
-            AnswerQuality::Balanced,
-            &investigate,
-            &[ev("a", "src/x.ts", 1, 5)],
-            1,
-        );
-        let follow_up = response["follow_up"].as_str().expect("follow_up string");
-        assert!(
-            follow_up.contains("`cite` token") && follow_up.contains("verbatim"),
-            "follow_up must state the verbatim cite-token contract: {follow_up}"
-        );
-        assert!(
-            follow_up.contains("never shorten"),
-            "follow_up must forbid path abbreviation (R011: agents truncated \
-             long monorepo paths to basenames): {follow_up}"
-        );
     }
 
     #[test]

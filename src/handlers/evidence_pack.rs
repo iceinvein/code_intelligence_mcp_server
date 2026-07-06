@@ -46,6 +46,11 @@ pub struct EvidenceRow {
     pub end_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enclosing_symbol: Option<String>,
+    /// Copy-paste citation token ("path:start-end"). Agents mis-transcribe line
+    /// numbers when composing citations from separate fields; a verbatim token
+    /// removes the transcription step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cite: Option<String>,
     pub evidence: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -140,13 +145,20 @@ pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
 
     let coverage = coverage_for(kind, &rows, &input.target);
 
+    let mut guidance = answer_guidance(kind);
+    guidance.push(
+        "When citing, copy a row's `cite` token verbatim; never cite a file or line \
+         range that no row contains."
+            .to_string(),
+    );
+
     EvidencePack {
         kind,
         target: input.target,
         coverage,
         rows,
         edges: Vec::new(),
-        answer_guidance: answer_guidance(kind),
+        answer_guidance: guidance,
     }
 }
 
@@ -217,6 +229,7 @@ fn row_from_location(
         None
     };
 
+    let cite = cite_token(location.file_path.as_deref(), line, location.end_line);
     EvidenceRow {
         role,
         ordinal,
@@ -226,9 +239,25 @@ fn row_from_location(
         line,
         end_line: location.end_line,
         enclosing_symbol: None,
+        cite,
         evidence,
         reason: location.kind,
         risk,
+    }
+}
+
+/// "path:start-end", or "path:line" when there is no forward range (the
+/// selected evidence line can sit past the location's end_line).
+pub fn cite_token(
+    file_path: Option<&str>,
+    line: Option<u32>,
+    end_line: Option<u32>,
+) -> Option<String> {
+    let file = file_path?;
+    let line = line?;
+    match end_line {
+        Some(end) if end > line => Some(format!("{file}:{line}-{end}")),
+        _ => Some(format!("{file}:{line}")),
     }
 }
 
@@ -585,6 +614,67 @@ mod tests {
 
         assert_eq!(value["rows"][0]["line"], 12);
         assert_eq!(value["rows"][0]["evidence"], "target_fn();");
+    }
+
+    #[test]
+    fn rows_carry_copy_paste_cite_tokens() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "where is target_fn defined?".to_string(),
+            target: "target_fn".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "fn target_fn() {}")],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"][0]["cite"], "src/app.rs:10-11");
+    }
+
+    #[test]
+    fn cite_token_collapses_to_single_line_when_evidence_line_past_end() {
+        // The selected evidence line (start 10 + offset 2 = 12) sits past the
+        // location's end_line (11); the cite must not be an inverted range.
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "who calls target_fn".to_string(),
+            target: "target_fn".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "setup();\nmore_setup();\ntarget_fn();")],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"][0]["line"], 12);
+        assert_eq!(value["rows"][0]["cite"], "src/app.rs:12");
+    }
+
+    #[test]
+    fn answer_guidance_includes_citation_contract() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "how does data flow through target_fn?".to_string(),
+            target: "target_fn".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![location(10, "fn target_fn() {}")],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        let guidance = value["answer_guidance"].as_array().unwrap();
+        assert!(
+            guidance
+                .iter()
+                .any(|g| g.as_str().unwrap_or("").contains("`cite` token")
+                    && g.as_str().unwrap_or("").contains("verbatim")),
+            "every pack must instruct verbatim cite-token citation: {guidance:?}"
+        );
     }
 
     #[test]

@@ -147,8 +147,9 @@ pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
 
     let mut guidance = answer_guidance(kind);
     guidance.push(
-        "When citing, copy a row's `cite` token verbatim; never cite a file or line \
-         range that no row contains."
+        "When citing, copy a row's `cite` token verbatim and never shorten the path: \
+         `packages/backend/src/api/x.ts:10-20` must not become `x.ts:10-20`. Never cite \
+         a file or line range that no row contains."
             .to_string(),
     );
 
@@ -674,6 +675,12 @@ mod tests {
                 .any(|g| g.as_str().unwrap_or("").contains("`cite` token")
                     && g.as_str().unwrap_or("").contains("verbatim")),
             "every pack must instruct verbatim cite-token citation: {guidance:?}"
+        );
+        assert!(
+            guidance
+                .iter()
+                .any(|g| g.as_str().unwrap_or("").contains("never shorten")),
+            "guidance must forbid path abbreviation: {guidance:?}"
         );
     }
 

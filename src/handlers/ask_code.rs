@@ -412,8 +412,10 @@ fn build_evidence_only_response(
             and still miss test files, configs, or files outside the question's main noun-phrase), \
             fall back to Grep/Glob/Read once -- don't re-query ask_code or investigate with \
             rephrased prompts. Citation contract: when citing a location, copy the supporting \
-            item's `cite` token verbatim (format path:start-end); never cite a file or line \
-            range that no evidence item or pack row contains."
+            item's `cite` token verbatim (format path:start-end) and never shorten the path \
+            to a basename -- `packages/backend/src/api/x.ts:10` must not become `x.ts:10`, \
+            in prose included. Never cite a file or line range that no evidence item or pack \
+            row contains."
             .to_string()
     };
     if is_hook_callback_question(question) {
@@ -621,6 +623,11 @@ mod tests {
         assert!(
             follow_up.contains("`cite` token") && follow_up.contains("verbatim"),
             "follow_up must state the verbatim cite-token contract: {follow_up}"
+        );
+        assert!(
+            follow_up.contains("never shorten"),
+            "follow_up must forbid path abbreviation (R011: agents truncated \
+             long monorepo paths to basenames): {follow_up}"
         );
     }
 

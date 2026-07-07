@@ -42,6 +42,10 @@ Three scoring bugs were fixed and R007/R008 re-scored (`scores.json.pre-rescore`
 
 Re-scored aggregates: R007 mech 0.465→0.581, citation 52%→62%; R008 mech 0.438→0.555, citation 50%→60%. Conclusion revision: on wolfmax (the only valid overlay A/B), the external overlay is mech-negative vs shipped (0.541 vs 0.605), previously reported flat. Use `python3 -m bench.rescore R<NNN>` after any future scoring change; it verifies citations against the fixture's pinned SHA via `git show`, so a drifted working tree (the wolfmax symlink) does not distort verification.
 
+### Scoring revision 2 (2026-07-07): imprecision vs fabrication
+
+Classifying every failing citation in R010-R012 found ~zero fabricated paths: the "hallucination" metric was measuring path-shortening style (agents write `upgrade-helper.ts:83` for `packages/backend/src/api/crypto/upgrade-helper.ts:83`). Citation verification now resolves shortened paths by unique suffix match (with the cited line in range) and flags them `imprecise` instead of hallucinated; ambiguous basenames (multiple viable files) and fabricated paths remain hallucinations. `_cite_appears` accepts suffix-cited expected files, so citation_hit stops undercounting. Corrected R010 baseline: hallucinated 12.5% (all ambiguity), imprecise 20%, citation hit 71%, mech 0.682.
+
 ## Architecture
 
 ```

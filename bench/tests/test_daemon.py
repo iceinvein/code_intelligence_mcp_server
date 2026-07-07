@@ -56,3 +56,19 @@ def test_daemon_stop_terminates_process():
     d = daemon.Daemon(arm_name="code_intel_full", port=18888, process=proc)
     d.stop()
     assert proc.returncode == -15
+
+
+def test_mcp_config_url_binds_repo_explicitly():
+    d = daemon.Daemon(arm_name="x", port=17800, process=FakeProc())
+    cfg = d.build_mcp_config(repo_path="/abs/path/to my repo")
+    url = cfg["mcpServers"]["code-intelligence"]["url"]
+    # ?repo= is the primary v4 binding source; without it sessions start
+    # unbound (2 repos registered -> no single-repo fallback) and agents
+    # burn turns on bind_workspace or fall back to Grep entirely.
+    assert url == "http://127.0.0.1:17800/mcp?repo=/abs/path/to%20my%20repo"
+
+
+def test_mcp_config_url_without_repo_stays_bare():
+    d = daemon.Daemon(arm_name="x", port=17800, process=FakeProc())
+    cfg = d.build_mcp_config()
+    assert cfg["mcpServers"]["code-intelligence"]["url"] == "http://127.0.0.1:17800/mcp"

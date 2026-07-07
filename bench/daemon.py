@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,13 +23,23 @@ class Daemon:
     port: int
     process: subprocess.Popen
 
-    def build_mcp_config(self) -> dict:
-        """Build the --mcp-config JSON passed to claude --print."""
+    def build_mcp_config(self, repo_path: str | None = None) -> dict:
+        """Build the --mcp-config JSON passed to claude --print.
+
+        repo_path binds the session explicitly via the ?repo= URL query (the
+        primary v4 binding source). Without it, sessions start unbound (the
+        bench registry holds 2 repos, so the single-repo fallback is off) and
+        agents burn turns on bind_workspace or fall back to Grep entirely:
+        56/240 R010-R012 runs never reached an MCP tool.
+        """
+        url = f"http://127.0.0.1:{self.port}/mcp"
+        if repo_path:
+            url += f"?repo={urllib.parse.quote(repo_path)}"
         return {
             "mcpServers": {
                 "code-intelligence": {
                     "type": "streamable-http",
-                    "url": f"http://127.0.0.1:{self.port}/mcp",
+                    "url": url,
                 }
             }
         }

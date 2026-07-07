@@ -46,8 +46,10 @@ DAEMON_HEALTH_TIMEOUT_S = _env_int("BENCH_DAEMON_HEALTH_TIMEOUT_S", 30)
 
 # Agent turn cap per question. Typical runs use 5-6 turns; the pathological tail
 # (30 turns / ~880k tokens in R008) burns tokens quadratically via cache re-reads
-# without improving answers. 0 disables the cap.
-MAX_TURNS = _env_int("BENCH_MAX_TURNS", 12)
+# without improving answers. 16 leaves headroom for the measured 2-3 turn
+# deferred-MCP-schema discovery tax (12 truncated deep multi_hop traces to
+# judge-0 fragments in R010-R012). 0 disables the cap.
+MAX_TURNS = _env_int("BENCH_MAX_TURNS", 16)
 
 # Paths
 BENCH_DIR = REPO_ROOT / "bench"

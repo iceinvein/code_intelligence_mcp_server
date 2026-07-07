@@ -126,7 +126,7 @@ def test_runner_caps_turns(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", fake_run)
     runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
     idx = captured["cmd"].index("--max-turns")
-    assert captured["cmd"][idx + 1] == "12"  # BENCH_MAX_TURNS default
+    assert captured["cmd"][idx + 1] == "16"  # BENCH_MAX_TURNS default
 
 
 def test_runner_requests_stream_json(monkeypatch, tmp_path):
@@ -270,3 +270,27 @@ def test_runner_writes_transcript_to_disk(monkeypatch, tmp_path):
     transcript_path = tmp_path / "default" / "q1.jsonl"
     assert transcript_path.exists()
     assert transcript_path.read_bytes() == transcript_bytes
+
+
+def test_runner_passes_repo_binding_to_mcp_config(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    arm = ARMS["code_intel_shipped"]
+    q = _q()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeCompleted(stdout=_stream_json_transcript())
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    class FakeDaemon:
+        def build_mcp_config(self, repo_path=None):
+            captured["repo_path"] = repo_path
+            return {"mcpServers": {"code-intelligence": {"url": f"http://x/mcp?repo={repo_path}"}}}
+
+    runner.run_question(arm, q, daemon=FakeDaemon(), repo_path=tmp_path, transcripts_dir=tmp_path)
+    assert captured["repo_path"] == str(tmp_path)
+    idx = captured["cmd"].index("--mcp-config")
+    assert f"?repo={tmp_path}" in captured["cmd"][idx + 1]

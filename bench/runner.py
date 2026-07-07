@@ -216,7 +216,7 @@ def run_question(
     if config.MAX_TURNS > 0:
         cmd.extend(["--max-turns", str(config.MAX_TURNS)])
     if daemon is not None:
-        mcp_config = daemon.build_mcp_config()
+        mcp_config = daemon.build_mcp_config(repo_path=str(repo_path))
         if mcp_config:
             cmd.extend(["--mcp-config", json.dumps(mcp_config)])
 

@@ -90,3 +90,27 @@ def test_git_line_reader_reads_pinned_tree():
     lines = reader("bench/README.md")
     assert lines and lines[0].startswith("# Bench")
     assert reader("does/not/exist.rs") is None
+
+
+def test_git_file_lister_lists_pinned_tree():
+    sha = "4c2b5ae"
+    lister = rescore.git_file_lister(REPO_ROOT, sha)
+    files = lister()
+    assert "bench/README.md" in files
+    assert lister() is files  # memoized
+
+
+def test_rescore_dedupes_superseded_retry_records(tmp_path):
+    q = _smoke_qid()
+    failed = _smoke_run(qid=q.id, answer="")
+    failed["run_error"] = "timeout"
+    retry = _smoke_run(qid=q.id, answer="see src/indexer/mod.rs:10")
+    retry["run_error"] = None
+    round_dir = _write_round(tmp_path, [failed, retry])
+
+    summary = rescore.rescore_round(round_dir)
+
+    assert summary["n_rescored"] == 1  # one row per (arm, question, rep)
+    rows = [json.loads(l) for l in (round_dir / "scores.json").read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["run_error"] is None  # the later retry wins

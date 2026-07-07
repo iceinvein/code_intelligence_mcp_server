@@ -73,9 +73,13 @@ def _run_record(run: runner.Run, repo_name: str, rep: int = 0) -> dict:
     }
 
 
-def _score_record(q: Question, rec: dict, repo_path: Path, read_lines=None) -> dict:
+def _score_record(
+    q: Question, rec: dict, repo_path: Path, read_lines=None, list_files=None
+) -> dict:
     answer = rec.get("final_answer", "")
-    multiplier, verifications = score.compute_citation_multiplier(answer, repo_path, read_lines)
+    multiplier, verifications = score.compute_citation_multiplier(
+        answer, repo_path, read_lines, list_files
+    )
     final_mech = score.final_mech(q, answer, multiplier)
     raw = score.mech_score(q, answer)
     forbidden = score.forbidden_hits(q, answer)
@@ -90,6 +94,7 @@ def _score_record(q: Question, rec: dict, repo_path: Path, read_lines=None) -> d
         "citation_hit": raw["citation_hit"],
         "citation_multiplier": multiplier,
         "hallucinated": any(not v.ok for v in verifications),
+        "imprecise_citations": sum(1 for v in verifications if v.imprecise),
         "forbidden_hit": bool(forbidden),
         "tool_calls": len(rec.get("tool_calls", [])),
         "input_tokens": rec.get("input_tokens", 0) + rec.get("cache_read_tokens", 0),

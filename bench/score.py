@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,21 +26,37 @@ class CitationVerification:
     end_line: int
     ok: bool
     reason: str = ""
+    # Shortened-but-resolvable path (unique suffix match with the cited line in
+    # range). Classifying these as hallucinations conflated citation *style*
+    # with fabrication: R010-R012 diagnosis found ~0 true fabrications.
+    imprecise: bool = False
+    resolved_file: str | None = None
+
+
+def _is_suffix_of(cited: str, full: str) -> bool:
+    """True when `cited` names `full` exactly or as a path suffix on a '/' boundary."""
+    return cited == full or full.endswith("/" + cited)
 
 
 def _cite_appears(c: Citation, answer: str) -> bool:
-    """True when the answer mentions c.file AND a line number falling within c.line_range."""
+    """True when the answer cites c.file (full path, or an unambiguous path
+    suffix) with a line number overlapping c.line_range."""
     a = answer.lower()
-    if c.file.lower() not in a:
-        return False
-    pat = re.compile(
-        re.escape(c.file) + r"(?::|.{0,30}lines?\s+|.{0,30}\(L)(?P<start>\d+)(?:-(?P<end>\d+))?",
-        re.IGNORECASE,
-    )
-    for m in pat.finditer(answer):
-        start = int(m.group("start"))
-        end = int(m.group("end")) if m.group("end") else start
-        if not (end < c.line_range[0] or start > c.line_range[1]):
+    if c.file.lower() in a:
+        pat = re.compile(
+            re.escape(c.file) + r"(?::|.{0,30}lines?\s+|.{0,30}\(L)(?P<start>\d+)(?:-(?P<end>\d+))?",
+            re.IGNORECASE,
+        )
+        for m in pat.finditer(answer):
+            start = int(m.group("start"))
+            end = int(m.group("end")) if m.group("end") else start
+            if not (end < c.line_range[0] or start > c.line_range[1]):
+                return True
+    # Agents habitually shorten long paths in prose ("upgrade-helper.ts:83" for
+    # packages/backend/src/api/crypto/upgrade-helper.ts). Accept a suffix-cited
+    # expected file when the line range overlaps.
+    for file, start, end in _extract_citations(answer):
+        if _is_suffix_of(file, c.file) and not (end < c.line_range[0] or start > c.line_range[1]):
             return True
     return False
 
@@ -148,17 +165,75 @@ def _fs_line_reader(repo_path: Path):
     return read
 
 
+_FILE_LIST_CACHE: dict[str, list[str]] = {}
+
+
+def _fs_file_lister(repo_path: Path):
+    """Default repo file lister (git ls-files, falling back to a walk)."""
+    key = str(repo_path.resolve())
+
+    def list_files() -> list[str]:
+        if key not in _FILE_LIST_CACHE:
+            files: list[str] = []
+            try:
+                out = subprocess.run(
+                    ["git", "-C", str(repo_path), "ls-files"],
+                    capture_output=True, check=True,
+                )
+                files = out.stdout.decode().splitlines()
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass
+            if not files:
+                files = [
+                    str(p.relative_to(repo_path))
+                    for p in repo_path.rglob("*")
+                    if p.is_file() and ".git" not in p.parts
+                ]
+            _FILE_LIST_CACHE[key] = files
+        return _FILE_LIST_CACHE[key]
+
+    return list_files
+
+
+def _resolve_by_suffix(
+    file: str, start: int, read_lines, list_files,
+) -> tuple[str | None, str]:
+    """Try to resolve a shortened path. Returns (resolved_file, failure_reason).
+
+    A citation resolves when exactly one repo file matches the cited path as a
+    suffix AND contains the cited start line. Multiple viable candidates are
+    genuinely ambiguous; zero candidates means the path is fabricated.
+    """
+    candidates = [f for f in list_files() if _is_suffix_of(file, f)]
+    if not candidates:
+        return None, "file_does_not_exist"
+    viable = []
+    for cand in candidates:
+        lines = read_lines(cand)
+        if lines is not None and start <= len(lines):
+            viable.append(cand)
+    if len(viable) == 1:
+        return viable[0], ""
+    if len(viable) > 1:
+        return None, "ambiguous_path"
+    return None, "line_out_of_range"
+
+
 def compute_citation_multiplier(
     answer: str,
     repo_path: Path,
     read_lines=None,
+    list_files=None,
 ) -> tuple[float, list[CitationVerification]]:
     """Verify every file:line citation in the answer. Return (multiplier, per-citation results).
 
-    read_lines(file) -> list[str] | None overrides how file content is fetched
-    (e.g. a pinned git tree instead of the working tree, which may have drifted).
+    read_lines(file) -> list[str] | None and list_files() -> list[str] override
+    how the repo tree is consulted (e.g. a pinned git tree instead of a working
+    tree that may have drifted).
 
-    Multiplier:
+    Shortened paths that uniquely resolve by suffix (with the cited line in
+    range) verify OK but are flagged imprecise. Only unresolvable citations
+    count as hallucinated for the multiplier:
       0 hallucinations -> 1.0
       >=1 hallucination -> 0.5
       all citations hallucinated -> 0.0
@@ -168,16 +243,26 @@ def compute_citation_multiplier(
         return 1.0, []
     if read_lines is None:
         read_lines = _fs_line_reader(repo_path)
+    if list_files is None:
+        list_files = _fs_file_lister(repo_path)
 
     results: list[CitationVerification] = []
     for file, start, end in cites:
         lines = read_lines(file)
         if lines is None:
-            results.append(CitationVerification(
-                raw_match=f"{file}:{start}-{end}",
-                file=file, start_line=start, end_line=end,
-                ok=False, reason="file_does_not_exist",
-            ))
+            resolved, reason = _resolve_by_suffix(file, start, read_lines, list_files)
+            if resolved is not None:
+                results.append(CitationVerification(
+                    raw_match=f"{file}:{start}-{end}",
+                    file=file, start_line=start, end_line=end,
+                    ok=True, imprecise=True, resolved_file=resolved,
+                ))
+            else:
+                results.append(CitationVerification(
+                    raw_match=f"{file}:{start}-{end}",
+                    file=file, start_line=start, end_line=end,
+                    ok=False, reason=reason,
+                ))
             continue
         if start > len(lines):
             results.append(CitationVerification(

@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from bench import config, fixtures_io
-from bench.orchestrator import _read_jsonl, _score_record, _write_jsonl
+from bench.orchestrator import _dedupe_last, _read_jsonl, _score_record, _write_jsonl
 
 
 def git_line_reader(repo_path: Path, sha: str):
@@ -45,6 +45,22 @@ def git_line_reader(repo_path: Path, sha: str):
         return lines
 
     return read
+
+
+def git_file_lister(repo_path: Path, sha: str):
+    """File lister over a pinned git tree (for shortened-path resolution)."""
+    cache: dict[str, list[str]] = {}
+
+    def list_files() -> list[str]:
+        if "files" not in cache:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_path), "ls-tree", "-r", "--name-only", sha],
+                capture_output=True,
+            )
+            cache["files"] = proc.stdout.decode().splitlines() if proc.returncode == 0 else []
+        return cache["files"]
+
+    return list_files
 
 
 def _sha_available(repo_path: Path, sha: str) -> bool:
@@ -83,13 +99,14 @@ def _aggregate(rows: list[dict]) -> dict:
         "hallucinated": sum(1 for r in rows if r.get("hallucinated")) / n,
         "forbidden_hit": sum(1 for r in rows if r.get("forbidden_hit")) / n,
         "judge": sum(judged) / len(judged) if judged else None,
+        "imprecise": sum(1 for r in rows if r.get("imprecise_citations", 0) > 0) / n,
     }
 
 
 def rescore_round(round_dir: Path) -> dict:
     round_dir = Path(round_dir)
-    runs = _read_jsonl(round_dir / "runs.jsonl")
-    judges = _read_jsonl(round_dir / "judge.jsonl")
+    runs = _dedupe_last(_read_jsonl(round_dir / "runs.jsonl"))
+    judges = _dedupe_last(_read_jsonl(round_dir / "judge.jsonl"))
     if not runs:
         raise SystemExit(f"no runs.jsonl in {round_dir}")
 
@@ -102,11 +119,14 @@ def rescore_round(round_dir: Path) -> dict:
         fixture = fixtures_io.load_fixture(config.FIXTURES_DIR / f"{name}.yaml")
         repo_path = _resolve_repo_path(name)
         sha = fixture.meta.upstream_sha
-        reader = git_line_reader(repo_path, sha) if _sha_available(repo_path, sha) else None
-        if reader is None:
+        if _sha_available(repo_path, sha):
+            reader = git_line_reader(repo_path, sha)
+            lister = git_file_lister(repo_path, sha)
+        else:
+            reader = lister = None
             print(f"warning: {name}: pinned {sha[:12]} not available; verifying "
                   f"against working tree", file=sys.stderr)
-        repo_ctx[name] = (repo_path, reader)
+        repo_ctx[name] = (repo_path, reader, lister)
         for q in fixture.questions:
             qmap[(name, q.id)] = q
 
@@ -119,9 +139,9 @@ def rescore_round(round_dir: Path) -> dict:
             print(f"warning: no fixture question for {rec['question_id']}; skipping",
                   file=sys.stderr)
             continue
-        repo_path, reader = repo_ctx[repo_name]
+        repo_path, reader, lister = repo_ctx[repo_name]
         rec = {**rec, "repo": repo_name}
-        s = _score_record(q, rec, repo_path, read_lines=reader)
+        s = _score_record(q, rec, repo_path, read_lines=reader, list_files=lister)
         new_scores.append(s)
         score_by_key[(rec["arm"], rec["question_id"])] = s
 
@@ -159,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         old, new = summary["old"], summary["new"]
         print(f"\n{summary['round']}: rescored {summary['n_rescored']} rows")
         if old:
-            for k in ("mech", "citation_hit", "hallucinated", "forbidden_hit", "judge"):
+            for k in ("mech", "citation_hit", "hallucinated", "imprecise", "forbidden_hit", "judge"):
                 o, nv = old.get(k), new.get(k)
                 fmt = lambda v: "n/a" if v is None else f"{v:.3f}"
                 delta = "" if o is None or nv is None else f"  ({nv - o:+.3f})"

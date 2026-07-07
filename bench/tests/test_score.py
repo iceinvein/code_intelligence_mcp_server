@@ -155,6 +155,85 @@ def test_bare_filename_with_code_extension_is_a_citation(tmp_path):
     assert multiplier == 1.0
 
 
+def _monorepo(tmp_path):
+    f = tmp_path / "packages" / "backend" / "src" / "api" / "upgrade-helper.ts"
+    f.parent.mkdir(parents=True)
+    f.write_text("line\n" * 100)
+    return tmp_path
+
+
+def test_shortened_path_resolves_by_unique_suffix(tmp_path):
+    _monorepo(tmp_path)
+    answer = "The helper is defined in upgrade-helper.ts:15."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert multiplier == 1.0
+    assert results[0].ok
+    assert results[0].imprecise  # shortened, but resolvable: not a fabrication
+    assert results[0].resolved_file == "packages/backend/src/api/upgrade-helper.ts"
+
+
+def test_shortened_path_with_partial_directory_resolves(tmp_path):
+    _monorepo(tmp_path)
+    answer = "See api/upgrade-helper.ts:15 for details."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert multiplier == 1.0
+    assert results[0].ok
+    assert results[0].imprecise
+
+
+def test_ambiguous_suffix_resolves_when_only_one_has_the_line(tmp_path):
+    _monorepo(tmp_path)
+    other = tmp_path / "packages" / "frontend" / "upgrade-helper.ts"
+    other.parent.mkdir(parents=True)
+    other.write_text("short\n")  # 1 line: cited line 15 cannot be here
+    answer = "See upgrade-helper.ts:15."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert multiplier == 1.0
+    assert results[0].ok
+    assert results[0].resolved_file == "packages/backend/src/api/upgrade-helper.ts"
+
+
+def test_ambiguous_suffix_with_multiple_candidates_stays_hallucinated(tmp_path):
+    _monorepo(tmp_path)
+    other = tmp_path / "packages" / "frontend" / "upgrade-helper.ts"
+    other.parent.mkdir(parents=True)
+    other.write_text("line\n" * 100)  # both candidates contain line 15
+    answer = "See upgrade-helper.ts:15."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert multiplier == 0.0
+    assert not results[0].ok
+    assert results[0].reason == "ambiguous_path"
+
+
+def test_fabricated_path_stays_hallucinated(tmp_path):
+    _monorepo(tmp_path)
+    answer = "See totally/made-up.ts:15."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert multiplier == 0.0
+    assert not results[0].ok
+
+
+def test_citation_hit_accepts_suffix_cited_expected_file():
+    q = _q()  # expected: src/foo.rs lines 10-30
+    answer = "The bar function is defined in foo.rs:15."
+    result = score.mech_score(q, answer)
+    assert result["citation_hit"] is True
+
+
+def test_citation_hit_suffix_still_requires_range_overlap():
+    q = _q()
+    answer = "The bar function is defined in foo.rs:200."
+    result = score.mech_score(q, answer)
+    assert result["citation_hit"] is False
+
+
+def test_citation_hit_suffix_does_not_match_different_file():
+    q = _q()  # expected src/foo.rs
+    answer = "Defined in oo.rs:15 and also barfoo.rs:15."
+    result = score.mech_score(q, answer)
+    assert result["citation_hit"] is False
+
+
 def test_forbidden_soft_penalty_subtracts_quarter_per_hit():
     q = _q(forbidden=["src/banned.rs", "fake_helper"])
     answer = "src/foo.rs:10-30 bar - but also see src/banned.rs and fake_helper."

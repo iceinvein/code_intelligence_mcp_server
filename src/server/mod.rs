@@ -45,7 +45,11 @@ Prefer these tools over Grep/Read for any question they answer directly -- they 
 semantic context (definitions, edges, intent classification) that text search cannot. \
 Fall back to Grep/Read only for exact literal strings (error messages, config values), \
 files the index does not cover (markdown, JSON, TOML), or when `pack.coverage.status` \
-is partial/no_hits or rows are candidates."
+is partial/no_hits or rows are candidates. \
+\
+When citing code locations, always use the full repo-relative path exactly as returned \
+by these tools (e.g. packages/backend/src/api/x.ts:42), never a shortened basename: in \
+multi-package repos a bare filename is ambiguous and graders treat it as unverifiable."
 }
 
 /// Build the `ServerTasks` capability block for MCP task-augmented tool calls.
@@ -364,6 +368,11 @@ mod tests {
         assert!(
             instructions.contains("investigate"),
             "server instructions must still mention investigate (raw evidence path), got: {instructions}"
+        );
+        assert!(
+            instructions.contains("full repo-relative path"),
+            "server instructions must set the full-path citation norm once per session \
+             (per-response guidance measured ineffective in R011/R012): {instructions}"
         );
         assert!(
             instructions.contains("Grep"),

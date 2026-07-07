@@ -72,3 +72,52 @@ def test_variant_env_maps_external_to_explicit_producers():
     for key, command in external_env.items():
         if key.startswith("EXTERNAL_INDEX_") and key.endswith("_COMMAND"):
             assert Path(command).is_file()
+
+
+def test_stale_variant_index_is_wiped_before_rebuild(tmp_path, monkeypatch):
+    """Reindex no-ops on unchanged file fingerprints, so a stale cache (new
+    daemon binary with changed extraction) must wipe the data dir to force a
+    real rebuild; POSTing reindex over the old dir silently keeps stale edges."""
+    from bench import run as run_mod
+
+    data_dir = tmp_path / "repo_hash"
+    data_dir.mkdir(parents=True)
+    (data_dir / "code-intelligence.db").write_text("stale")
+    (data_dir / "bench-cache.json").write_text('{"daemon_bin": "old"}')
+
+    built = {}
+
+    def fake_build(name, repo_path, variant):
+        built["called"] = True
+        # the stale artifacts must be gone before the daemon rebuilds
+        assert not (data_dir / "code-intelligence.db").exists()
+
+    monkeypatch.setattr(run_mod, "_build_variant", fake_build)
+
+    status = run_mod.ensure_variant_index(
+        name="repo", repo_path=tmp_path / "checkout", variant="no_desc",
+        meta_dict={"daemon_bin": "new"}, data_dir=data_dir,
+    )
+    assert status == "built"
+    assert built.get("called")
+
+
+def test_fresh_variant_index_is_left_alone(tmp_path, monkeypatch):
+    import json as _json
+    from bench import run as run_mod
+
+    data_dir = tmp_path / "repo_hash"
+    data_dir.mkdir(parents=True)
+    meta = {"daemon_bin": "same"}
+    (data_dir / "bench-cache.json").write_text(_json.dumps(meta))
+    (data_dir / "code-intelligence.db").write_text("good")
+
+    monkeypatch.setattr(run_mod, "_build_variant",
+                        lambda *a, **k: pytest.fail("must not rebuild fresh index"))
+
+    status = run_mod.ensure_variant_index(
+        name="repo", repo_path=tmp_path / "checkout", variant="no_desc",
+        meta_dict=meta, data_dir=data_dir,
+    )
+    assert status == "cached"
+    assert (data_dir / "code-intelligence.db").read_text() == "good"

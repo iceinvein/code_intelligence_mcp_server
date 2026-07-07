@@ -512,9 +512,13 @@ pub fn extract_edges_for_symbol(
                         })
                         .collect(),
                 ));
+                // The budget caps emitted reference EDGES. Counting every
+                // scanned identifier (the old behavior) let locals/builtins
+                // early in a body burn the budget before later imported
+                // identifiers (e.g. drizzle schema tables) were reached.
+                refs_added += 1;
             }
         }
-        refs_added += 1;
     }
 
     // Add type edges
@@ -783,6 +787,52 @@ mod tests {
         assert!(edges
             .iter()
             .any(|(e, _)| { e.edge_type == "reference" && e.to_symbol_id == expected_b_id }));
+    }
+
+    #[test]
+    fn reference_budget_counts_emitted_edges_not_scanned_identifiers() {
+        // A drizzle-style handler references an imported schema table late in
+        // a body full of locals. The old cap burned the 20-identifier budget
+        // on unresolvable names before reaching the import, so the table
+        // never got a reference edge (real miss: desktopAuthExchangeCodes in
+        // wolfmax's desktop-auth.ts, docked by judges in every trace answer).
+        let locals: String = (0..25)
+            .map(|i| format!("  const local{i} = other{i};\n"))
+            .collect();
+        // No import line: a symbol's text is the handler body only; file-top
+        // imports arrive via the imports parameter.
+        let text = format!(
+            "export function handler() {{\n{locals}  db.insert(exchangeCodes).values({{}});\n}}"
+        );
+        let row = symbol("id_h", "handler", "function", &text, "src/x.ts");
+        let imports = vec![Import {
+            name: "exchangeCodes".to_string(),
+            source: "./schema".to_string(),
+            alias: None,
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &HashMap::new(),
+            &HashMap::new(),
+            &imports,
+            &[],
+            &[],
+            None,
+            None,
+        );
+
+        let expected = stable_symbol_id("src/schema.ts", "exchangeCodes", 0);
+        assert!(
+            edges
+                .iter()
+                .any(|(e, _)| e.edge_type == "reference" && e.to_symbol_id == expected),
+            "imported identifier used late in the body must still get a reference edge; got: {:?}",
+            edges
+                .iter()
+                .map(|(e, _)| (e.edge_type.clone(), e.to_symbol_id.clone()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

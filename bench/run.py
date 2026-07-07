@@ -163,13 +163,36 @@ def cmd_prep(args) -> int:
                 if repos.index_is_fresh(data_dir, meta_dict):
                     print(f"  {name}/{variant}: cached, skipping rebuild")
                     continue
-                print(f"  {name}/{variant}: building")
-                _build_variant(name, repo_path, variant)
-                repos.write_cache(data_dir, meta_dict)
+                print(f"  {name}/{variant}: stale, rebuilding from scratch")
+                ensure_variant_index(
+                    name=name, repo_path=repo_path, variant=variant,
+                    meta_dict=meta_dict, data_dir=data_dir,
+                )
                 print(f"  {name}/{variant}: done")
 
     print("prep: complete")
     return 0
+
+
+def ensure_variant_index(*, name: str, repo_path: Path, variant: str,
+                         meta_dict: dict, data_dir: Path) -> str:
+    """Build the variant index if the cache is stale; return 'cached' or 'built'.
+
+    A stale cache means the daemon binary (or pin/schema) changed. The daemon's
+    reindex no-ops on unchanged file fingerprints, so extraction changes never
+    reach an existing index: the data dir must be wiped for a real rebuild.
+    (Found live: a reference-edge extraction fix produced zero new edges until
+    the index was rebuilt from scratch.)
+    """
+    import shutil as _shutil
+    from bench import repos
+
+    if repos.index_is_fresh(data_dir, meta_dict):
+        return "cached"
+    _shutil.rmtree(data_dir, ignore_errors=True)
+    _build_variant(name, repo_path, variant)
+    repos.write_cache(data_dir, meta_dict)
+    return "built"
 
 
 def _read_pinned_sha(name: str) -> str:

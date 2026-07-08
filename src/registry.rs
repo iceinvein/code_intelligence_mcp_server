@@ -24,6 +24,44 @@ fn default_consent() -> IndexConsent {
     IndexConsent::Approved
 }
 
+/// Classify catastrophic repository roots that must never be registered.
+/// Returns a human-readable reason, or `None` when the path is acceptable.
+/// A registry entry like "/" (observed after R017: an errant bind wrote one)
+/// makes the per-repo watcher watch the whole disk; the first file event
+/// anywhere starts an index run over the entire filesystem that starves every
+/// session sharing the daemon.
+fn forbidden_repo_root(repo_path: &str) -> Option<&'static str> {
+    let trimmed = repo_path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        // "" or "/"
+        return Some("filesystem root");
+    }
+    if matches!(
+        trimmed,
+        "/Users"
+            | "/home"
+            | "/tmp"
+            | "/private/tmp"
+            | "/var"
+            | "/private/var"
+            | "/etc"
+            | "/usr"
+            | "/opt"
+            | "/System"
+            | "/Library"
+            | "/Applications"
+            | "/Volumes"
+    ) {
+        return Some("system directory");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() && trimmed == home.trim_end_matches('/') {
+            return Some("home directory");
+        }
+    }
+    None
+}
+
 /// Extract the repo name (last path component) for logging/display.
 fn repo_name_from_path(repo_path: &str) -> String {
     repo_path
@@ -79,6 +117,13 @@ impl RepoRegistry {
     /// Register a repository, creating its data directory and persisting to JSON.
     /// If already registered, updates last_accessed and returns existing entry.
     pub fn register(&self, repo_path: &str) -> Result<RepoEntry> {
+        if let Some(kind) = forbidden_repo_root(repo_path) {
+            anyhow::bail!(
+                "refusing to register '{repo_path}' as a repository root ({kind}). \
+                 A watcher on such a root scans the entire tree on any file event; \
+                 an errant '/' entry starved every bench session in R017."
+            );
+        }
         let hash = Self::path_hash(repo_path);
         let mut registry = self.load()?;
 
@@ -307,6 +352,26 @@ mod tests {
         let entry2 = reg2.get("/Users/dev/my-project").unwrap();
         assert!(entry2.is_some());
         assert_eq!(entry2.unwrap().name, "my-project");
+    }
+
+    #[test]
+    fn register_refuses_catastrophic_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+
+        for path in ["/", "", "/Users", "/tmp", "/System", "/Volumes"] {
+            let err = reg.register(path).unwrap_err();
+            assert!(
+                err.to_string().contains("refusing to register"),
+                "{path} must be refused: {err}"
+            );
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            assert!(reg.register(&home).is_err(), "home dir must be refused");
+        }
+        // Normal project paths still register.
+        assert!(reg.register("/Users/dev/project").is_ok());
     }
 
     #[test]

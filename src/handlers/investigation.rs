@@ -659,6 +659,42 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         None
     };
 
+    // Step 3.7.05: inject the top referenced/called cross-file definitions
+    // (schema tables, shared helpers) into the verified-location channel.
+    // R014 measured that agents cite `evidence[]` rows and ignore side
+    // blocks, so these must be evidence, not commentary. dedup_locations in
+    // build_response drops any that the trace already carries.
+    let mut secondary = secondary;
+    if let Some(sm) = supporting_modules.as_ref() {
+        // Don't spend injection slots on symbols the trace already carries;
+        // dedup would drop them after they displaced genuinely new rows.
+        let present: std::collections::HashSet<&str> = primary
+            .locations
+            .iter()
+            .chain(secondary.iter().flat_map(|s| s.locations.iter()))
+            .map(|l| l.symbol_id.as_str())
+            .collect();
+        let fresh_targets: Vec<_> = sm
+            .definition_targets
+            .iter()
+            .filter(|(row, _)| !present.contains(row.id.as_str()))
+            .cloned()
+            .collect();
+        let defs = supporting_definition_locations(fresh_targets, SUPPORTING_DEFINITION_CAP);
+        if !defs.is_empty() {
+            match secondary.as_mut() {
+                Some(s) => s.locations.extend(defs),
+                None => {
+                    secondary = Some(SecondaryHop {
+                        via: "supporting_definition",
+                        raw: json!({"note": "referenced definitions used by the traced flow"}),
+                        locations: defs,
+                    })
+                }
+            }
+        }
+    }
+
     // Step 3.7.1: auto-include IPC boundary files for flow questions that
     // cross the renderer / preload / main process line. The supporting
     // modules lookup only finds files called BY the primary file; the
@@ -791,6 +827,10 @@ struct SupportingModules {
     /// One entry per distinct callee file. Order is by descending
     /// `callee_count` (then file name for stability).
     modules: Vec<ModuleEntry>,
+    /// Cross-file target symbols with their use counts, for injection into
+    /// the verified-location/evidence channel (agents cite evidence rows;
+    /// they ignore side blocks, measured in R014).
+    definition_targets: Vec<(crate::storage::sqlite::SymbolRow, usize)>,
 }
 
 struct ModuleEntry {
@@ -995,6 +1035,64 @@ fn is_supporting_edge(edge_type: &str, callee_kind: &str) -> bool {
     }
 }
 
+/// Cap for injected supporting-definition evidence rows. Small on purpose:
+/// they supplement the trace, they must not displace it.
+const SUPPORTING_DEFINITION_CAP: usize = 3;
+const SUPPORTING_DEFINITION_BODY_LINES: usize = 24;
+
+/// Shape the top cross-file definition targets into verified locations so
+/// they land in `evidence[]` and `pack.rows`. R014 measured that agents cite
+/// evidence rows and ignore side blocks (supporting_modules surfaced the
+/// schema files; zero answers cited them), so the definitions must ride the
+/// evidence channel itself.
+fn supporting_definition_locations(
+    defs: Vec<(crate::storage::sqlite::SymbolRow, usize)>,
+    cap: usize,
+) -> Vec<VerifiedLocation> {
+    // Data definitions (schema tables, type consts) outrank callable kinds:
+    // generic error classes win on raw use count but are never what trace
+    // rubrics require the agent to cite.
+    fn kind_rank(kind: &str) -> u8 {
+        match kind {
+            "const" | "variable" | "struct" | "enum" | "type" | "type_alias" | "interface"
+            | "property" => 0,
+            _ => 1,
+        }
+    }
+    let mut defs = defs;
+    defs.sort_by(|a, b| {
+        kind_rank(&a.0.kind)
+            .cmp(&kind_rank(&b.0.kind))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.name.cmp(&b.0.name))
+    });
+    defs.into_iter()
+        .take(cap)
+        .map(|(row, _count)| {
+            let mut body: String = row
+                .text
+                .lines()
+                .take(SUPPORTING_DEFINITION_BODY_LINES)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if row.text.lines().count() > SUPPORTING_DEFINITION_BODY_LINES {
+                body.push_str("\n// ... truncated");
+            }
+            VerifiedLocation {
+                symbol_id: row.id,
+                symbol_name: row.name,
+                file_path: row.file_path,
+                kind: row.kind,
+                start_line: row.start_line,
+                end_line: row.end_line,
+                via: "supporting_definition",
+                body,
+                route_exposure: Vec::new(),
+            }
+        })
+        .collect()
+}
+
 fn run_supporting_modules_lookup(
     state: &AppState,
     primary: &PrimaryHop,
@@ -1021,6 +1119,9 @@ fn run_supporting_modules_lookup(
         callee_count: usize,
     }
     let mut buckets: std::collections::HashMap<String, Bucket> = std::collections::HashMap::new();
+    // target symbol id -> (row, distinct-use count), for evidence injection.
+    let mut targets: std::collections::HashMap<String, (crate::storage::sqlite::SymbolRow, usize)> =
+        std::collections::HashMap::new();
 
     for sym in &symbols_in_file {
         let edges = sqlite.list_edges_from(&sym.id, 64)?;
@@ -1042,6 +1143,10 @@ fn run_supporting_modules_lookup(
                 callee_name: callee.name.clone(),
                 at_line: edge.at_line.unwrap_or(sym.start_line),
             };
+            targets
+                .entry(callee.id.clone())
+                .and_modify(|(_, c)| *c += 1)
+                .or_insert((callee.clone(), 1));
             let bucket = buckets.entry(callee.file_path.clone()).or_default();
             // Dedupe by (callee_name, at_line) per file.
             if !bucket
@@ -1080,6 +1185,7 @@ fn run_supporting_modules_lookup(
     Ok(Some(SupportingModules {
         anchor_file,
         modules,
+        definition_targets: targets.into_values().collect(),
     }))
 }
 
@@ -2264,13 +2370,15 @@ fn apply_response_budget(response: &mut Value) {
 
     // Stage 2: drop bodies past index 2. The top 3 hits are the ones the
     // agent will cite most often, so they keep their bodies even when
-    // those bodies are large.
+    // those bodies are large. Injected supporting_definition rows are
+    // exempt: their bodies are pre-trimmed small and a bodyless definition
+    // row is not citable evidence.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
     {
         for (i, entry) in arr.iter_mut().enumerate() {
-            if i >= 3 {
+            if i >= 3 && entry["via"] != "supporting_definition" {
                 if let Some(obj) = entry.as_object_mut() {
                     obj.insert("body".to_string(), json!(""));
                     obj.insert("body_dropped".to_string(), json!(true));
@@ -2312,13 +2420,30 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 4: truncate verified_locations to first 8.
+    // Stage 4: truncate verified_locations to 8, preserving injected
+    // supporting_definition rows (they ride at the end of the list and a
+    // keep-first-8 cut would silently drop exactly the rows the injection
+    // exists to deliver).
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
     {
         if arr.len() > 8 {
-            arr.truncate(8);
+            let defs: Vec<Value> = arr
+                .iter()
+                .filter(|l| l["via"] == "supporting_definition")
+                .take(SUPPORTING_DEFINITION_CAP)
+                .cloned()
+                .collect();
+            let keep_others = 8usize.saturating_sub(defs.len());
+            let mut kept: Vec<Value> = arr
+                .iter()
+                .filter(|l| l["via"] != "supporting_definition")
+                .take(keep_others)
+                .cloned()
+                .collect();
+            kept.extend(defs);
+            *arr = kept;
             response["verified_locations_truncated"] = json!(true);
         }
     }
@@ -2386,6 +2511,113 @@ fn apply_response_budget(response: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supporting_definition_locations_pick_top_by_use_count() {
+        // R014: agents cite evidence[] rows but ignore side blocks, so the
+        // referenced definitions must become verified locations.
+        fn sym(id: &str, name: &str, file: &str, text: &str) -> crate::storage::sqlite::SymbolRow {
+            crate::storage::sqlite::SymbolRow {
+                id: id.to_string(),
+                file_path: file.to_string(),
+                language: "typescript".to_string(),
+                kind: "const".to_string(),
+                name: name.to_string(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 10,
+                end_line: 30,
+                text: text.to_string(),
+            }
+        }
+        let defs = vec![
+            (
+                sym(
+                    "a",
+                    "tableA",
+                    "src/db/schema/a.ts",
+                    "export const tableA = pgTable();",
+                ),
+                2usize,
+            ),
+            (
+                sym("b", "tableB", "src/db/schema/b.ts", &"line\n".repeat(60)),
+                5,
+            ),
+            (
+                sym(
+                    "c",
+                    "helperC",
+                    "src/db/c.ts",
+                    "export function helperC() {}",
+                ),
+                3,
+            ),
+            (
+                sym(
+                    "d",
+                    "tableD",
+                    "src/db/schema/d.ts",
+                    "export const tableD = pgTable();",
+                ),
+                1,
+            ),
+        ];
+        let locations = supporting_definition_locations(defs, 3);
+
+        // top 3 by use count, descending
+        assert_eq!(
+            locations
+                .iter()
+                .map(|l| l.symbol_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tableB", "helperC", "tableA"],
+        );
+        assert!(locations.iter().all(|l| l.via == "supporting_definition"));
+        // oversized bodies are trimmed so definitions don't crowd the pack
+        let b = &locations[0];
+        assert!(
+            b.body.lines().count() <= 25,
+            "body must be trimmed: {}",
+            b.body.lines().count()
+        );
+        assert!(b.body.contains("truncated"));
+    }
+
+    #[test]
+    fn supporting_definitions_prefer_data_definitions_over_classes() {
+        // Live finding: raw use-count picks generic error CLASSES
+        // (ValidationError, called everywhere) over the schema table the
+        // rubrics actually demand. Data definitions outrank callable kinds.
+        fn sym(id: &str, name: &str, kind: &str) -> crate::storage::sqlite::SymbolRow {
+            crate::storage::sqlite::SymbolRow {
+                id: id.to_string(),
+                file_path: format!("src/{name}.ts"),
+                language: "typescript".to_string(),
+                kind: kind.to_string(),
+                name: name.to_string(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 0,
+                start_line: 1,
+                end_line: 5,
+                text: "x".to_string(),
+            }
+        }
+        let defs = vec![
+            (sym("e1", "ValidationError", "class"), 9usize),
+            (sym("e2", "AuthenticationError", "class"), 7),
+            (sym("t1", "exchangeCodes", "const"), 2),
+            (sym("f1", "withTransaction", "function"), 4),
+        ];
+        let locations = supporting_definition_locations(defs, 3);
+        let names: Vec<&str> = locations.iter().map(|l| l.symbol_name.as_str()).collect();
+        assert_eq!(
+            names[0], "exchangeCodes",
+            "the data definition must outrank higher-count callables: {names:?}"
+        );
+    }
 
     #[test]
     fn supporting_modules_gate_fires_for_trace_shapes() {
@@ -3019,6 +3251,69 @@ mod tests {
     }
 
     #[test]
+    fn budget_truncation_preserves_supporting_definitions() {
+        // Injected definitions ride at the end of the location list; the
+        // stage-4 keep-first-8 truncation must not silently drop them (that
+        // is how R014's side-block information never reached the agent).
+        let mk = |i: usize, via: &str| {
+            json!({
+                "symbol_id": format!("s{i}"),
+                "symbol_name": format!("sym{i}"),
+                "file_path": "src/x.ts",
+                "kind": "const",
+                "start_line": 1,
+                "end_line": 2,
+                "via": via,
+                "body": "b".repeat(1000),
+            })
+        };
+        let mut locs: Vec<Value> = (0..38).map(|i| mk(i, "search_code")).collect();
+        locs.push(mk(98, "supporting_definition"));
+        locs.push(mk(99, "supporting_definition"));
+        // Heavy pack keeps the response over budget through stages 1-3, so
+        // the location-truncation stage actually runs (as on real multi-hop
+        // traces: R014 live responses set verified_locations_truncated).
+        let mut response = json!({
+            "question": "q",
+            "context_chain": "",
+            "plan": {},
+            "verified_locations": locs,
+            "pack": {"rows": [{"role": "primary", "evidence": "e".repeat(40_000)}]},
+        });
+
+        apply_response_budget(&mut response);
+
+        let kept_rows = response["verified_locations"].as_array().unwrap().clone();
+        // Small pre-trimmed definition bodies must survive the stage-2 body
+        // drop: a bodyless definition row is not citable evidence.
+        for l in kept_rows
+            .iter()
+            .filter(|l| l["via"] == "supporting_definition")
+        {
+            assert!(
+                !l["body"].as_str().unwrap_or("").is_empty(),
+                "supporting definition bodies must be preserved"
+            );
+        }
+        let kept: Vec<String> = kept_rows
+            .iter()
+            .map(|l| l["via"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            kept.len() <= 8,
+            "stage 4 must still cap at 8: {}",
+            kept.len()
+        );
+        assert_eq!(
+            kept.iter()
+                .filter(|v| *v == "supporting_definition")
+                .count(),
+            2,
+            "supporting definitions must survive budget truncation: {kept:?}"
+        );
+    }
+
+    #[test]
     fn response_budget_terminal_fallback_truncates_top_level_fields() {
         let original_row_count = 2;
         let mut response = json!({
@@ -3616,6 +3911,7 @@ mod tests {
         };
         let supporting = SupportingModules {
             anchor_file: "src/main/pr-review-manager.ts".to_string(),
+            definition_targets: Vec::new(),
             modules: vec![
                 ModuleEntry {
                     file: "src/main/pr-review-peer-review.ts".to_string(),

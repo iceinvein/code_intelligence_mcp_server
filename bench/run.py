@@ -174,6 +174,45 @@ def cmd_prep(args) -> int:
     return 0
 
 
+def load_question_set(name_or_path: str) -> set[str]:
+    """Load a question-set (curated question-id subset) by name or path.
+
+    Names resolve to bench/fixtures/question_sets/<name>.json. Iteration
+    rounds run the discrimination-weighted subset; the full fixtures stay
+    the release gate.
+    """
+    path = Path(name_or_path)
+    if not path.exists():
+        path = config.FIXTURES_DIR / "question_sets" / f"{name_or_path}.json"
+    if not path.exists():
+        raise SystemExit(f"question set not found: {name_or_path}")
+    data = json.loads(path.read_text())
+    return set(data["questions"])
+
+
+def filter_fixture(fixture, keep_ids: set[str]):
+    """Return a copy of the fixture with only the questions in keep_ids."""
+    import dataclasses
+
+    return dataclasses.replace(
+        fixture,
+        questions=[q for q in fixture.questions if q.id in keep_ids],
+    )
+
+
+def apply_question_set(fixtures: list, keep_ids: set[str]) -> list:
+    """Filter every fixture to keep_ids; fail loudly on ids matching nothing
+    (typos or stale ids would otherwise silently shrink the round)."""
+    all_ids = {q.id for f in fixtures for q in f.questions}
+    missing = keep_ids - all_ids
+    if missing:
+        raise SystemExit(
+            f"question set contains ids not present in the loaded fixtures: {sorted(missing)}"
+        )
+    filtered = [filter_fixture(f, keep_ids) for f in fixtures]
+    return [f for f in filtered if f.questions]
+
+
 def ensure_variant_index(*, name: str, repo_path: Path, variant: str,
                          meta_dict: dict, data_dir: Path) -> str:
     """Build the variant index if the cache is stale; return 'cached' or 'built'.
@@ -459,6 +498,15 @@ def cmd_full(args) -> int:
                 return 2
         repos_to_run.append((fixture, repo_path))
 
+    if args.question_set:
+        keep = load_question_set(args.question_set)
+        fixtures_only = apply_question_set([f for f, _ in repos_to_run], keep)
+        path_by_repo = {f.meta.repo: p for f, p in repos_to_run}
+        repos_to_run = [(f, path_by_repo[f.meta.repo]) for f in fixtures_only]
+        n_q = sum(len(f.questions) for f, _ in repos_to_run)
+        print(f"question set '{args.question_set}': {n_q} questions across "
+              f"{len(repos_to_run)} repos")
+
     # Pick round id.
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     existing = sorted([p.name for p in config.RESULTS_DIR.iterdir()
@@ -503,7 +551,8 @@ def cmd_full(args) -> int:
             f"  ./bench full --round {int(round_id[1:])}"
             + (f" --arms {args.arms}" if args.arms else "")
             + (f" --repos {args.repos}" if args.repos else "")
-            + (f" --repeats {args.repeats}" if args.repeats != 1 else ""),
+            + (f" --repeats {args.repeats}" if args.repeats != 1 else "")
+            + (f" --question-set {args.question_set}" if args.question_set else ""),
             file=sys.stderr,
         )
         return 3
@@ -634,6 +683,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_full.add_argument("--round", type=int, default=None)
     p_full.add_argument("--repeats", type=int, default=1,
                         help="runs per (arm, question); >1 enables paired variance analysis")
+    p_full.add_argument("--question-set", default=None,
+                        help="name (bench/fixtures/question_sets/<name>.json) or path of a "
+                             "curated question-id subset, e.g. 'iteration'")
     p_full.set_defaults(func=cmd_full)
 
     p_arm = sub.add_parser("arm")

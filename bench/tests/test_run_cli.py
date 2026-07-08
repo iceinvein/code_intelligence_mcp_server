@@ -121,3 +121,38 @@ def test_fresh_variant_index_is_left_alone(tmp_path, monkeypatch):
     )
     assert status == "cached"
     assert (data_dir / "code-intelligence.db").read_text() == "good"
+
+
+def test_question_set_loads_by_name_and_path(tmp_path):
+    import json as _json
+    from bench import run as run_mod
+
+    # by name: resolves bench/fixtures/question_sets/<name>.json
+    ids = run_mod.load_question_set("iteration")
+    assert "wolfmax-arch-03" in ids
+    assert "django-multi-hop-02" not in ids  # excluded cap-stress question
+
+    # by path
+    p = tmp_path / "custom.json"
+    p.write_text(_json.dumps({"name": "c", "questions": ["a-1", "b-2"]}))
+    assert run_mod.load_question_set(str(p)) == {"a-1", "b-2"}
+
+
+def test_question_set_filters_fixture_questions():
+    from bench import fixtures_io, config
+    from bench import run as run_mod
+
+    fixture = fixtures_io.load_fixture(config.FIXTURES_DIR / "smoke.yaml")
+    keep = {fixture.questions[0].id}
+    filtered = run_mod.filter_fixture(fixture, keep)
+    assert [q.id for q in filtered.questions] == [fixture.questions[0].id]
+    assert filtered.meta.repo == fixture.meta.repo
+
+
+def test_question_set_with_no_matching_ids_raises():
+    from bench import fixtures_io, config
+    from bench import run as run_mod
+
+    fixture = fixtures_io.load_fixture(config.FIXTURES_DIR / "smoke.yaml")
+    with pytest.raises(SystemExit):
+        run_mod.apply_question_set([fixture], {"nonexistent-question-id"})

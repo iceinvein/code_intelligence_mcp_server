@@ -31,6 +31,7 @@ The `./bench` wrapper is `python3 -m bench.run`. There is no shell-script wrappe
 - **Quota-exhaustion recovery.** After `BENCH_MAX_CONSECUTIVE_FAILURES` (default 5) consecutive failed runs or fully-failed judgements, the cycle aborts with a resume command instead of burning the remaining quota; exit code 3. On resume, errored runs are re-run and error-casualty judge rows re-judged (records dedupe last-wins, so the fresh attempt replaces the failed one).
 - **Index caches key on the daemon binary hash** (not git HEAD), so bench-only commits do not invalidate cached embedding work, and Rust changes without a rebuild do not falsely pass as fresh.
 - **Token efficiency is a first-class output.** The report includes tokens/run, tokens-per-judge-point, and the turn-capped rate per arm.
+- **Iteration question set.** `full --question-set iteration` runs the 16-question discrimination-weighted subset (curated from R010-R014 signal/noise; 32 runs at --repeats 2 vs 80) for cheap A/Bs. The full 40-question fixtures remain the release gate. Sets live in `bench/fixtures/question_sets/`.
 
 ### Scoring revision (2026-07-05)
 

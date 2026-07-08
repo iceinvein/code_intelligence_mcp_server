@@ -1,0 +1,22 @@
+{
+  "name": "iteration",
+  "description": "16-question discrimination-weighted subset for iteration rounds (32 runs at --repeats 2 vs 80 for the full set). Curated 2026-07-08 from R010-R014 variance: signal = cross-round judge spread, noise = same-round rep disagreement. Excluded: django-symbol-01 and django-negative-01 (always 10, zero signal), wolfmax-concept-04 and django-arch-02 (rep noise >= 4, pure noise), django-multi-hop-02 (turn-cap bimodal; a cap-policy stress test, poisons A/B means). Full 40-question fixtures remain the release gate.",
+  "questions": [
+    "wolfmax-arch-01",
+    "wolfmax-arch-02",
+    "wolfmax-arch-03",
+    "wolfmax-multi-hop-01",
+    "wolfmax-multi-hop-02",
+    "wolfmax-symbol-02",
+    "wolfmax-concept-03",
+    "wolfmax-negative-01",
+    "django-arch-01",
+    "django-arch-03",
+    "django-multi-hop-04",
+    "django-impact-02",
+    "django-impact-03",
+    "django-symbol-02",
+    "django-symbol-03",
+    "django-negative-02"
+  ]
+}

@@ -187,6 +187,7 @@ pub fn classify_shape(
             "flow through",
             "trace how",
             "trace the",
+            "trace from",
             "how does the",
             "step by step",
             "before reaching",
@@ -440,6 +441,7 @@ fn is_pipeline_walkthrough_question(question: &str) -> bool {
             "name each",
             "trace how",
             "trace the",
+            "trace from",
             "supporting module",
             "modules each step",
             "modules each stage",
@@ -689,6 +691,43 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
                         via: "supporting_definition",
                         raw: json!({"note": "referenced definitions used by the traced flow"}),
                         locations: defs,
+                    })
+                }
+            }
+        }
+    }
+
+    // Step 3.7.08: inject route handlers matching endpoint paths named in
+    // the question ("trace from the /proof endpoint"). See
+    // route_endpoint_locations for the rationale. When the trace already
+    // carries a router symbol it rides as one anonymous node among dozens
+    // and the stage-4 positional cut drops it (live-verified on the R015
+    // concept-03 question), so the injected copy REPLACES any secondary-hop
+    // copy instead of deferring to it: the injected row has the focused
+    // body window and budget-stage exemption the trace copy lacks. Primary
+    // (search) hits keep precedence: they ride at the top with full bodies.
+    {
+        let present_primary: HashSet<&str> = primary
+            .locations
+            .iter()
+            .map(|l| l.symbol_id.as_str())
+            .collect();
+        let fresh: Vec<_> = route_endpoint_locations(&state.sqlite, &question)?
+            .into_iter()
+            .filter(|l| !present_primary.contains(l.symbol_id.as_str()))
+            .collect();
+        if !fresh.is_empty() {
+            let fresh_ids: HashSet<String> = fresh.iter().map(|l| l.symbol_id.clone()).collect();
+            match secondary.as_mut() {
+                Some(s) => {
+                    s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
+                    s.locations.extend(fresh);
+                }
+                None => {
+                    secondary = Some(SecondaryHop {
+                        via: "route_endpoint",
+                        raw: json!({"note": "route handlers matching endpoint paths in the question"}),
+                        locations: fresh,
                     })
                 }
             }
@@ -1091,6 +1130,137 @@ fn supporting_definition_locations(
             }
         })
         .collect()
+}
+
+/// Cap for injected route-endpoint evidence rows. Multiple routes can match
+/// one mention ("/proof" matches both /:id/proof and /:uuid/proof); carrying
+/// each lets the agent disambiguate or cover both.
+const ROUTE_ENDPOINT_CAP: usize = 3;
+const ROUTE_ENDPOINT_BODY_LINES: usize = 24;
+
+/// Extract route-path tokens ("/proof", "/api/users/:id") from a question.
+/// A whitespace-delimited token starting with '/' in a code question is a
+/// route mention. Tokens containing a dot are skipped so filesystem paths
+/// ("/Users/x/src/a.ts") never trigger route injection.
+fn endpoint_path_tokens(question: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in question.split_whitespace() {
+        let token = raw
+            .trim_matches(|c: char| !(c.is_alphanumeric() || matches!(c, '/' | ':' | '_' | '-')));
+        if token.len() < 2 || !token.starts_with('/') || token.contains('.') {
+            continue;
+        }
+        if !token.chars().any(|c| c.is_alphanumeric()) {
+            continue;
+        }
+        let token = token.to_lowercase();
+        if !out.contains(&token) {
+            out.push(token);
+        }
+    }
+    out
+}
+
+/// Smallest non-file symbol in `file_path` whose line range contains `line`.
+/// Route registrations sit inside router consts (Elysia/Express chains) or
+/// handler functions; the tightest enclosing symbol is the citable one.
+fn enclosing_symbol_at(
+    sqlite: &crate::storage::sqlite::SqliteStore,
+    file_path: &str,
+    line: u32,
+) -> Result<Option<crate::storage::sqlite::SymbolRow>> {
+    let rows = sqlite.list_symbols_by_file(file_path)?;
+    Ok(rows
+        .into_iter()
+        .filter(|r| r.kind != "file" && r.start_line <= line && line <= r.end_line)
+        .min_by_key(|r| (r.end_line - r.start_line, r.start_line)))
+}
+
+/// Slice up to `max_lines` of a symbol body starting just above `focus_line`.
+/// A 200-line router const would otherwise show only its head; the route
+/// registration the injection targeted must be visible in the body.
+fn body_window(text: &str, symbol_start: u32, focus_line: u32, max_lines: usize) -> String {
+    let skip = (focus_line.saturating_sub(symbol_start) as usize).saturating_sub(2);
+    let total = text.lines().count();
+    if skip == 0 || skip >= total {
+        return body_with_cap(text, max_lines);
+    }
+    let kept: Vec<&str> = text
+        .lines()
+        .skip(skip)
+        .take(max_lines)
+        .map(|l| l.trim_end())
+        .collect();
+    let mut out = format!("// ... {skip} earlier lines\n{}", kept.join("\n"));
+    if total > skip + max_lines {
+        out.push_str(&format!("\n// ... {} more lines", total - skip - max_lines));
+    }
+    out
+}
+
+/// Resolve route mentions in the question ("the /proof endpoint") to the
+/// framework route patterns the indexer extracted, then to the symbols
+/// enclosing each registration site. R015 wolfmax-concept-03: the trace
+/// hop's edge budget starved on a script hub before its upward walk reached
+/// the HTTP entry points, so the answer cited only mid-chain helpers. Route
+/// handlers are exactly the must-cite rows endpoint-anchored rubrics demand,
+/// and `framework_patterns` already knows them by path; inject them as
+/// evidence instead of hoping the graph walk surfaces them. Shape-agnostic
+/// on purpose: endpoint-anchored concept questions classify as Discover,
+/// which has no secondary hop at all.
+fn route_endpoint_locations(
+    sqlite: &crate::storage::sqlite::SqliteStore,
+    question: &str,
+) -> Result<Vec<VerifiedLocation>> {
+    use crate::handlers::framework_routes::is_route_pattern;
+
+    let tokens = endpoint_path_tokens(question);
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut seen_sites = HashSet::new();
+    let mut seen_symbols = HashSet::new();
+    let mut out = Vec::new();
+    for token in tokens.iter().take(3) {
+        let patterns =
+            sqlite.search_framework_patterns(None, None, None, Some(token), None, None, 50)?;
+        for pattern in patterns {
+            if !is_route_pattern(&pattern) {
+                continue;
+            }
+            if !seen_sites.insert((pattern.file_path.clone(), pattern.line)) {
+                continue;
+            }
+            let Some(row) = enclosing_symbol_at(sqlite, &pattern.file_path, pattern.line)? else {
+                continue;
+            };
+            if !seen_symbols.insert(row.id.clone()) {
+                continue;
+            }
+            let body = body_window(
+                &row.text,
+                row.start_line,
+                pattern.line,
+                ROUTE_ENDPOINT_BODY_LINES,
+            );
+            let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
+            out.push(VerifiedLocation {
+                symbol_id: row.id,
+                symbol_name: row.name,
+                file_path: row.file_path,
+                kind: row.kind,
+                start_line: row.start_line,
+                end_line: row.end_line,
+                via: "route_endpoint",
+                body,
+                route_exposure,
+            });
+            if out.len() >= ROUTE_ENDPOINT_CAP {
+                return Ok(out);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn run_supporting_modules_lookup(
@@ -2071,6 +2241,13 @@ fn summarize_secondary(raw: &Value, via: &str) -> Value {
     }
 }
 
+/// Vias whose rows were injected server-side to carry must-cite evidence.
+/// Budget stages must not drop them: they ride at the end of the location
+/// list and their bodies are pre-trimmed small.
+fn is_injected_via(via: &Value) -> bool {
+    via == "supporting_definition" || via == "route_endpoint"
+}
+
 /// Trim the response to fit `RESPONSE_BUDGET_BYTES`. Degrades in stages:
 ///   1. Drop oversized raw bodies from verified_locations.
 ///   2. Drop bodies from secondary verified_locations (anything past the
@@ -2370,15 +2547,15 @@ fn apply_response_budget(response: &mut Value) {
 
     // Stage 2: drop bodies past index 2. The top 3 hits are the ones the
     // agent will cite most often, so they keep their bodies even when
-    // those bodies are large. Injected supporting_definition rows are
-    // exempt: their bodies are pre-trimmed small and a bodyless definition
-    // row is not citable evidence.
+    // those bodies are large. Injected rows (supporting_definition,
+    // route_endpoint) are exempt: their bodies are pre-trimmed small and a
+    // bodyless injected row is not citable evidence.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
     {
         for (i, entry) in arr.iter_mut().enumerate() {
-            if i >= 3 && entry["via"] != "supporting_definition" {
+            if i >= 3 && !is_injected_via(&entry["via"]) {
                 if let Some(obj) = entry.as_object_mut() {
                     obj.insert("body".to_string(), json!(""));
                     obj.insert("body_dropped".to_string(), json!(true));
@@ -2420,29 +2597,29 @@ fn apply_response_budget(response: &mut Value) {
         return;
     }
 
-    // Stage 4: truncate verified_locations to 8, preserving injected
-    // supporting_definition rows (they ride at the end of the list and a
-    // keep-first-8 cut would silently drop exactly the rows the injection
-    // exists to deliver).
+    // Stage 4: truncate verified_locations to 8, preserving injected rows
+    // (supporting_definition, route_endpoint): they ride at the end of the
+    // list and a keep-first-8 cut would silently drop exactly the rows the
+    // injections exist to deliver.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
     {
         if arr.len() > 8 {
-            let defs: Vec<Value> = arr
+            let injected: Vec<Value> = arr
                 .iter()
-                .filter(|l| l["via"] == "supporting_definition")
-                .take(SUPPORTING_DEFINITION_CAP)
+                .filter(|l| is_injected_via(&l["via"]))
+                .take(SUPPORTING_DEFINITION_CAP + ROUTE_ENDPOINT_CAP)
                 .cloned()
                 .collect();
-            let keep_others = 8usize.saturating_sub(defs.len());
+            let keep_others = 8usize.saturating_sub(injected.len());
             let mut kept: Vec<Value> = arr
                 .iter()
-                .filter(|l| l["via"] != "supporting_definition")
+                .filter(|l| !is_injected_via(&l["via"]))
                 .take(keep_others)
                 .cloned()
                 .collect();
-            kept.extend(defs);
+            kept.extend(injected);
             *arr = kept;
             response["verified_locations_truncated"] = json!(true);
         }
@@ -3310,6 +3487,175 @@ mod tests {
                 .count(),
             2,
             "supporting definitions must survive budget truncation: {kept:?}"
+        );
+    }
+
+    #[test]
+    fn budget_truncation_preserves_route_endpoints() {
+        // Injected route handlers ride at the end of the location list like
+        // supporting definitions; the stage-4 cut and stage-2 body drop must
+        // keep them (R015 concept-03: entry points never reached the agent).
+        let mk = |i: usize, via: &str| {
+            json!({
+                "symbol_id": format!("s{i}"),
+                "symbol_name": format!("sym{i}"),
+                "file_path": "src/x.ts",
+                "kind": "const",
+                "start_line": 1,
+                "end_line": 2,
+                "via": via,
+                "body": "b".repeat(1000),
+            })
+        };
+        let mut locs: Vec<Value> = (0..38).map(|i| mk(i, "search_code")).collect();
+        locs.push(mk(98, "route_endpoint"));
+        locs.push(mk(99, "route_endpoint"));
+        let mut response = json!({
+            "question": "q",
+            "context_chain": "",
+            "plan": {},
+            "verified_locations": locs,
+            "pack": {"rows": [{"role": "primary", "evidence": "e".repeat(40_000)}]},
+        });
+
+        apply_response_budget(&mut response);
+
+        let kept_rows = response["verified_locations"].as_array().unwrap().clone();
+        for l in kept_rows.iter().filter(|l| l["via"] == "route_endpoint") {
+            assert!(
+                !l["body"].as_str().unwrap_or("").is_empty(),
+                "route endpoint bodies must be preserved"
+            );
+        }
+        assert!(kept_rows.len() <= 8);
+        assert_eq!(
+            kept_rows
+                .iter()
+                .filter(|l| l["via"] == "route_endpoint")
+                .count(),
+            2,
+            "route endpoints must survive budget truncation"
+        );
+    }
+
+    #[test]
+    fn endpoint_path_tokens_extract_route_mentions() {
+        assert_eq!(
+            endpoint_path_tokens("Trace from the /proof endpoint to the calendar poll."),
+            vec!["/proof"]
+        );
+        assert_eq!(
+            endpoint_path_tokens("How does the GET /api/users/:id handler validate input?"),
+            vec!["/api/users/:id"]
+        );
+        // Wrapping punctuation is stripped.
+        assert_eq!(endpoint_path_tokens("the (/proof) route"), vec!["/proof"]);
+        assert!(endpoint_path_tokens("How does auth work?").is_empty());
+        // Filesystem-looking tokens and bare slashes never trigger injection.
+        assert!(endpoint_path_tokens("read /Users/x/src/a.ts and / or //").is_empty());
+        // Relative paths don't start with '/'.
+        assert!(endpoint_path_tokens("open src/lib/analytics.ts").is_empty());
+    }
+
+    #[test]
+    fn route_endpoint_locations_resolve_enclosing_handler_symbol() {
+        use crate::storage::sqlite::{FrameworkPatternRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let body: String = (0..200)
+            .map(|i| {
+                if i == 121 {
+                    "\t\t\"/:id/proof\",".to_string()
+                } else {
+                    format!("// line {}", i + 24)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let router = SymbolRow {
+            id: "router".to_string(),
+            file_path: "src/api/crypto/epochs.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "const".to_string(),
+            name: "cryptoEpochsRouter".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 24,
+            end_line: 223,
+            text: body,
+        };
+        let file_sym = SymbolRow {
+            id: "file".to_string(),
+            file_path: "src/api/crypto/epochs.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "file".to_string(),
+            name: "src/api/crypto/epochs.ts".to_string(),
+            exported: false,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 1,
+            end_line: 230,
+            text: String::new(),
+        };
+        sqlite.upsert_symbol(&router).unwrap();
+        sqlite.upsert_symbol(&file_sym).unwrap();
+        sqlite
+            .batch_upsert_framework_patterns(&[FrameworkPatternRow {
+                id: "route:1".to_string(),
+                file_path: "src/api/crypto/epochs.ts".to_string(),
+                line: 145,
+                framework: "elysia".to_string(),
+                kind: "route".to_string(),
+                http_method: Some("GET".to_string()),
+                path: Some("/:id/proof".to_string()),
+                name: None,
+                handler: Some("<anonymous>".to_string()),
+                arguments: None,
+                parent_chain: None,
+                updated_at: 0,
+            }])
+            .unwrap();
+
+        let locations = route_endpoint_locations(
+            &sqlite,
+            "Trace from the /proof endpoint to the calendar poll.",
+        )
+        .unwrap();
+
+        assert_eq!(locations.len(), 1, "one route site, one location");
+        let loc = &locations[0];
+        assert_eq!(loc.symbol_name, "cryptoEpochsRouter");
+        assert_eq!(loc.via, "route_endpoint");
+        // The body must show the registration site, not the router's head:
+        // the pattern line (145) is deep inside the 200-line const.
+        assert!(
+            loc.body.contains("/:id/proof"),
+            "body must include the route registration: {}",
+            &loc.body[..200.min(loc.body.len())]
+        );
+        assert!(
+            !loc.route_exposure.is_empty(),
+            "route exposure must be attached"
+        );
+
+        // No route mention, no injection.
+        assert!(route_endpoint_locations(&sqlite, "How does auth work?")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn classify_call_trace_for_trace_from_phrasing() {
+        assert_eq!(
+            classify_shape(
+                "Trace from the /proof endpoint to the calendar poll.",
+                None,
+                None
+            ),
+            InvestigationShape::CallTrace
         );
     }
 

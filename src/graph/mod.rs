@@ -230,13 +230,18 @@ pub fn build_call_hierarchy(
     depth: usize,
     limit: usize,
 ) -> anyhow::Result<serde_json::Value> {
-    let mut nodes = std::collections::HashMap::<String, serde_json::Value>::new();
+    // Nodes keep BFS discovery order: downstream consumers (investigate's
+    // trace hop, response-budget truncation) treat earlier rows as closer
+    // to the pivot. A HashMap here made that ordering random per call.
+    let mut nodes = Vec::<serde_json::Value>::new();
+    let mut node_ids = std::collections::HashSet::<String>::new();
     let mut edges = Vec::<serde_json::Value>::new();
     let mut visited = std::collections::HashSet::<String>::new();
     let mut seen_edges =
         std::collections::HashSet::<(String, String, String, Option<String>, Option<u32>)>::new();
 
-    nodes.insert(root.id.clone(), node_json(root));
+    nodes.push(node_json(root));
+    node_ids.insert(root.id.clone());
     visited.insert(root.id.clone());
 
     let do_callers = direction == "callers" || direction == "both";
@@ -266,9 +271,9 @@ pub fn build_call_hierarchy(
                     let Some(caller) = sqlite.get_symbol_by_id(&e.from_symbol_id)? else {
                         continue;
                     };
-                    nodes
-                        .entry(caller.id.clone())
-                        .or_insert_with(|| node_json(&caller));
+                    if node_ids.insert(caller.id.clone()) {
+                        nodes.push(node_json(&caller));
+                    }
                     let is_async = e.edge_type == "async_call" || e.edge_type == "spawn";
                     if seen_edges.insert(call_hierarchy_edge_key(&e)) {
                         edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
@@ -293,9 +298,9 @@ pub fn build_call_hierarchy(
                     let Some(callee) = sqlite.get_symbol_by_id(&e.to_symbol_id)? else {
                         continue;
                     };
-                    nodes
-                        .entry(callee.id.clone())
-                        .or_insert_with(|| node_json(&callee));
+                    if node_ids.insert(callee.id.clone()) {
+                        nodes.push(node_json(&callee));
+                    }
                     let is_async = e.edge_type == "async_call" || e.edge_type == "spawn";
                     if seen_edges.insert(call_hierarchy_edge_key(&e)) {
                         edges.push(edge_json(sqlite, &e, &[("is_async", json!(is_async))]));
@@ -313,7 +318,7 @@ pub fn build_call_hierarchy(
         "symbol_name": root.name,
         "direction": direction,
         "depth": depth,
-        "nodes": nodes.into_values().collect::<Vec<_>>(),
+        "nodes": nodes,
         "edges": edges,
     }))
 }
@@ -558,6 +563,13 @@ mod tests {
         assert!(edges
             .iter()
             .any(|edge| edge["from"] == "root" && edge["to"] == "callee"));
+
+        // Nodes ride in BFS discovery order, root first. Downstream
+        // consumers truncate the list positionally; HashMap ordering made
+        // which rows survived random per call.
+        let nodes = graph.get("nodes").unwrap().as_array().unwrap();
+        assert_eq!(nodes[0]["id"], "root");
+        assert_eq!(nodes.len(), 3);
     }
 
     #[test]

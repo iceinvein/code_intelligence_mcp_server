@@ -57,6 +57,23 @@ def build_system_prompt(arm: Arm) -> str:
     )
 
 
+# The claude CLI reports subscription-quota exhaustion as a normal result
+# line ("You've hit your session limit - resets 11pm"), so the run parses
+# cleanly with the banner as final_answer and zero tool calls (all 32 R017
+# runs persisted this way). Flag it as a run error so failure-aware resume
+# re-runs it instead of judging the banner. The length guard keeps genuine
+# answers that merely mention limits from being flagged.
+_QUOTA_ANSWER_MARKERS = (
+    "hit your session limit",
+    "hit your usage limit",
+)
+
+
+def quota_limited_answer(answer: str) -> bool:
+    a = answer.strip().lower()
+    return len(a) < 200 and any(m in a for m in _QUOTA_ANSWER_MARKERS)
+
+
 def _summarize_input(input_obj: Any) -> str:
     if not isinstance(input_obj, dict):
         return ""
@@ -288,5 +305,5 @@ def run_question(
         stop_reason=parsed["stop_reason"],
         model=config.AGENT_MODEL,
         raw_transcript_path=str(transcript_path),
-        run_error=None,
+        run_error="quota_limited" if quota_limited_answer(parsed["final_answer"]) else None,
     )

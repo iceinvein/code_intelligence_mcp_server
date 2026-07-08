@@ -294,3 +294,29 @@ def test_runner_passes_repo_binding_to_mcp_config(monkeypatch, tmp_path):
     assert captured["repo_path"] == str(tmp_path)
     idx = captured["cmd"].index("--mcp-config")
     assert f"?repo={tmp_path}" in captured["cmd"][idx + 1]
+
+
+def test_quota_limited_answer_detection():
+    assert runner.quota_limited_answer(
+        "You've hit your session limit · resets 11pm (Australia/Perth)")
+    assert runner.quota_limited_answer("You've hit your usage limit.")
+    # A genuine answer that merely mentions limits is not flagged.
+    assert not runner.quota_limited_answer(
+        "The rate limiter in src/limits.ts caps requests; once you've hit your "
+        "session limit the middleware returns 429. " + "x" * 200)
+    assert not runner.quota_limited_answer("upgradeAggregationTree is called from epochs.ts:205")
+
+
+def test_runner_flags_quota_banner_as_run_error(monkeypatch, tmp_path):
+    # The CLI reports quota exhaustion as a normal result line; the run must
+    # carry run_error so failure-aware resume re-runs it (R017: all 32 runs
+    # persisted the banner as a successful answer).
+    arm = ARMS["default"]
+    q = _q()
+    banner = "You've hit your session limit · resets 11pm (Australia/Perth)"
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: FakeCompleted(stdout=_fake_transcript(banner)))
+    run = runner.run_question(arm, q, daemon=None, repo_path=tmp_path, transcripts_dir=tmp_path)
+    assert run.run_error == "quota_limited"
+    assert run.final_answer == banner

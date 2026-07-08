@@ -1,0 +1,5 @@
+{
+  "name": "trace-cites",
+  "description": "Targeted probe: the trace questions whose rubrics dock missing secondary must-cite files (the questions the evidence injection exists for). Not in the iteration set because they scored low on discrimination; used for targeted checks of citation-behavior changes.",
+  "questions": ["wolfmax-multi-hop-03"]
+}

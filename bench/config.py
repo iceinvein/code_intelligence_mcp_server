@@ -92,6 +92,13 @@ JUDGE_CONCURRENCY = _env_int("BENCH_JUDGE_CONCURRENCY", 3)
 # completed so far is persisted; `full --round <N>` resumes, re-running failures.
 MAX_CONSECUTIVE_FAILURES = _env_int("BENCH_MAX_CONSECUTIVE_FAILURES", 5)
 
+# Content-addressed run reuse: before running a (arm, question, rep) slot, look
+# for a prior-round record with an identical run_key (arm config, daemon binary
+# hash, question text, repo pin, agent model + CLI, turn cap) and adopt it
+# instead of re-running. Unchanged baseline arms in A/B rounds become free.
+# Judging is never reused. See bench/reuse.py.
+RUN_REUSE = _env_bool("BENCH_RUN_REUSE", True)
+
 # Tiered judging: haiku scores first; the sonnet+opus panel only runs when the
 # haiku score is mid-band (3-8) or errored. Extremes are stable across judges,
 # and the ~240-calls/5h subscription window is the real judging constraint.

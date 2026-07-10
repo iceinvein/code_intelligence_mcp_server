@@ -218,9 +218,22 @@ See `bench/fixtures/AUTHORING.md` for the rules.
 - Wire `cmd_arm`, `cmd_question`, `cmd_diff`, `cmd_clean` (stubs today).
 - Fix `cmd_report` so codegraph version + daemon SHA in the round header come from real run metadata instead of the placeholder `"?"`.
 - Investigate why the description worker stagnates around 90-95% on large repos. Either it is a real failure mode (some symbols never get described) or a timing issue with the 2-minute stagnant detection.
-- Content-addressed run reuse across rounds: key runs by (arm config, daemon SHA, question, repo SHA, agent model) so an unchanged baseline arm can be reused instead of re-run in A/B rounds.
 - Curate a ~15-question iteration fixture from the most discriminative questions in R005-R008; keep the full 40 for release rounds.
 - Re-prep and re-run the django external arm (the R008 django overlay used the wrong producer; the fix landed but the decisive Python-overlay A/B never ran).
+
+## Run reuse across rounds
+
+Each run record carries a `run_key`: a content hash of the arm definition
+(system prompt, allowed tools, daemon env, index variant), the daemon binary
+hash, the question id + text, the repo pin SHA, the agent model, the claude CLI
+version, and the turn cap. Before running a slot, the orchestrator scans prior
+rounds (newest first) for a clean record with the same key at the same
+(arm, question, rep) and adopts it into the new round's runs.jsonl with
+`reused_from` set -- so the unchanged baseline arm of an A/B round costs zero
+agent tokens. Judging is never reused (judge-side changes must apply to all
+rows uniformly), the smoke fixture is never keyed (it runs against the live
+working tree), and rounds recorded before 2026-07-10 carry no key. Opt out with
+`BENCH_RUN_REUSE=0`. See `bench/reuse.py`.
 
 ## Re-running
 

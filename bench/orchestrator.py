@@ -18,6 +18,8 @@ from bench import arms as arms_mod
 from bench import config as config_mod
 from bench import daemon as daemon_mod
 from bench import judge as judge_mod
+from bench import repos as repos_mod
+from bench import reuse as reuse_mod
 from bench import runner, score
 from bench.fixtures_io import Fixture, Question
 
@@ -111,6 +113,47 @@ def _is_run_casualty(rec: dict) -> bool:
     return bool(rec.get("run_error")) or not str(rec.get("final_answer", "")).strip()
 
 
+def _compute_run_keys(
+    arms_to_run: list[arms_mod.Arm],
+    repos: list[tuple[Fixture, Path]],
+    repeats: int,
+) -> dict[tuple[str, str, int], str | None]:
+    """run_key per (arm, question_id, rep) slot; None where reuse is unsound.
+
+    None cases: the smoke fixture (runs against this repo's live working tree,
+    so the pinned SHA does not describe the content) and daemon arms when the
+    daemon binary is missing (index provenance cannot be attested; the run
+    itself would fail at daemon start anyway).
+    """
+    try:
+        daemon_bin: str | None = repos_mod.daemon_binary_hash()
+    except OSError:
+        daemon_bin = None
+    cli_version = reuse_mod.binary_version(config_mod.CLAUDE_BINARY)
+
+    keys: dict[tuple[str, str, int], str | None] = {}
+    for arm in arms_to_run:
+        for fixture, repo_path in repos:
+            unsound = (
+                repo_path.resolve() == config_mod.REPO_ROOT.resolve()
+                or (arm.needs_daemon and daemon_bin is None)
+            )
+            for q in fixture.questions:
+                key = None if unsound else reuse_mod.run_key(
+                    arm,
+                    q.id,
+                    q.question,
+                    fixture.meta.upstream_sha,
+                    model=config_mod.AGENT_MODEL,
+                    max_turns=config_mod.MAX_TURNS,
+                    daemon_bin=daemon_bin if arm.needs_daemon else None,
+                    cli_version=cli_version,
+                )
+                for rep in range(max(1, repeats)):
+                    keys[(arm.name, q.id, rep)] = key
+    return keys
+
+
 def run_cycle(
     *,
     arms_to_run: list[arms_mod.Arm],
@@ -136,6 +179,25 @@ def run_cycle(
     all_runs: list[dict] = _dedupe_last(_read_jsonl(runs_path)) if resume else []
     # Errored runs are NOT done: a resume after quota exhaustion re-runs them.
     done = {_key(r) for r in all_runs if not r.get("run_error")}
+
+    # Content-addressed keys for every slot this cycle could run. Also used to
+    # stamp run_key on fresh records so FUTURE rounds can adopt them.
+    run_keys = _compute_run_keys(arms_to_run, repos, repeats)
+
+    # Adopt prior-round records for slots whose key matches (see bench/reuse.py).
+    n_reused = 0
+    if config_mod.RUN_REUSE:
+        wanted = {
+            slot: key for slot, key in run_keys.items()
+            if key is not None and slot not in done
+        }
+        for slot, rec in sorted(
+            reuse_mod.find_reusable(results_dir.parent, results_dir, wanted).items()
+        ):
+            _append_jsonl(runs_path, rec)
+            all_runs.append(rec)
+            done.add(slot)
+            n_reused += 1
 
     consecutive_failures = 0
     abort = threading.Event()
@@ -175,6 +237,8 @@ def run_cycle(
                 repo_path=repo_path, transcripts_dir=tdir,
             )
             rec = _run_record(run, fixture.meta.repo, rep=rep)
+            rec["run_key"] = run_keys.get((_arm.name, q.id, rep))
+            rec["reused_from"] = None
             with write_lock:
                 if run.run_error:
                     consecutive_failures += 1
@@ -298,6 +362,7 @@ def run_cycle(
 
     return {
         "n_runs": len(all_runs),
+        "n_reused": n_reused,
         "n_judged": len(judge_records),
         "scores": all_scores,
         "aborted": abort.is_set(),

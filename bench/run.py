@@ -541,7 +541,9 @@ def cmd_full(args) -> int:
             file=sys.stderr,
         )
         return 3
-    print(f"completed {summary['n_runs']} runs; results in {results_dir}")
+    reused = summary.get("n_reused", 0)
+    reused_note = f" ({reused} reused from prior rounds)" if reused else ""
+    print(f"completed {summary['n_runs']} runs{reused_note}; results in {results_dir}")
     return 0
 
 

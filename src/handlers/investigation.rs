@@ -734,6 +734,39 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         }
     }
 
+    // Step 3.7.09: mine route mentions from evidence BODIES and inject their
+    // server handlers. R018 (8-rep probe on wolfmax-multi-hop-03): agents ask
+    // natural-language questions with no route token, so step 3.7.08 fired in
+    // 0/8 first calls -- but the client-side evidence it retrieved named the
+    // server route verbatim in a fetch URL. Resolving those mentions closes
+    // the client -> server hop that trace rubrics dock as a missing secondary
+    // citation. Runs after 3.7.08 so question-owned tokens and already-present
+    // symbols are excluded; injected rows get the same budget exemptions.
+    {
+        let secondary_locs: &[VerifiedLocation] = secondary
+            .as_ref()
+            .map(|s| s.locations.as_slice())
+            .unwrap_or(&[]);
+        let fresh = evidence_route_injections(
+            &state.sqlite,
+            &question,
+            &primary.locations,
+            secondary_locs,
+        )?;
+        if !fresh.is_empty() {
+            match secondary.as_mut() {
+                Some(s) => s.locations.extend(fresh),
+                None => {
+                    secondary = Some(SecondaryHop {
+                        via: "route_endpoint",
+                        raw: json!({"note": "route handlers resolved from endpoint paths mined out of evidence bodies"}),
+                        locations: fresh,
+                    })
+                }
+            }
+        }
+    }
+
     // Step 3.7.1: auto-include IPC boundary files for flow questions that
     // cross the renderer / preload / main process line. The supporting
     // modules lookup only finds files called BY the primary file; the
@@ -1198,36 +1231,104 @@ fn body_window(text: &str, symbol_start: u32, focus_line: u32, max_lines: usize)
     out
 }
 
-/// Resolve route mentions in the question ("the /proof endpoint") to the
-/// framework route patterns the indexer extracted, then to the symbols
-/// enclosing each registration site. R015 wolfmax-concept-03: the trace
-/// hop's edge budget starved on a script hub before its upward walk reached
-/// the HTTP entry points, so the answer cited only mid-chain helpers. Route
-/// handlers are exactly the must-cite rows endpoint-anchored rubrics demand,
-/// and `framework_patterns` already knows them by path; inject them as
-/// evidence instead of hoping the graph walk surfaces them. Shape-agnostic
-/// on purpose: endpoint-anchored concept questions classify as Discover,
-/// which has no secondary hop at all.
-fn route_endpoint_locations(
+/// Cap on tokens mined from evidence bodies. Bodies are noisier than
+/// questions (a router body registers many routes), and every token costs a
+/// framework_patterns lookup.
+const EVIDENCE_ROUTE_TOKEN_CAP: usize = 6;
+
+/// Route-path tokens mined from evidence bodies (client-side fetch URLs).
+///
+/// R018: agents ask ask_code natural-language questions with no route token,
+/// so the question-path injection can never fire on cross-boundary traces --
+/// but the CLIENT evidence it does retrieve names the server route verbatim
+/// (`fetch(`${authUrl}/api/desktop-auth/exchange`)`). Mining those mentions
+/// closes the client -> server handler hop.
+///
+/// Only multi-segment paths qualify: single-segment slash tokens in code
+/// bodies are too noisy (JSX closers, division, comment slashes), and the
+/// question path already covers "the /proof endpoint" phrasing. Dotted
+/// fragments are file paths or hostnames, never routes.
+fn evidence_route_tokens(bodies: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for body in bodies {
+        for fragment in
+            body.split(|c: char| !(c.is_alphanumeric() || matches!(c, '/' | ':' | '_' | '-' | '.')))
+        {
+            if !fragment.starts_with('/')
+                || fragment.contains('.')
+                || fragment.contains("//")
+                || fragment.matches('/').count() < 2
+                || !fragment.chars().any(|c| c.is_alphanumeric())
+            {
+                continue;
+            }
+            let token = fragment.trim_end_matches('/').to_lowercase();
+            if token.matches('/').count() < 2 {
+                continue;
+            }
+            if !out.contains(&token) {
+                out.push(token);
+                if out.len() >= EVIDENCE_ROUTE_TOKEN_CAP {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Resolve route-path tokens to the symbols enclosing their registration
+/// sites. Two matching passes per token:
+///
+/// 1. Substring match on the stored pattern path. Handles question tokens
+///    ("/proof") and frameworks that store full paths.
+/// 2. Suffix fallback for full client-side paths: extractors store routes
+///    MOUNT-RELATIVE ("/exchange" for `new Elysia({ prefix: "/api/..." })`),
+///    so "/api/desktop-auth/exchange" can never substring-match. Match the
+///    terminal segment instead, anchored by an earlier path segment (len >= 4,
+///    skipping mount noise like "api"/"v1") appearing in the registration
+///    file's path -- mounts conventionally mirror file naming
+///    ("desktop-auth" -> api/desktop-auth.ts), and the anchor keeps
+///    same-named routes on other routers from resolving.
+fn route_endpoint_locations_for_tokens(
     sqlite: &crate::storage::sqlite::SqliteStore,
-    question: &str,
+    tokens: &[String],
 ) -> Result<Vec<VerifiedLocation>> {
     use crate::handlers::framework_routes::is_route_pattern;
 
-    let tokens = endpoint_path_tokens(question);
-    if tokens.is_empty() {
-        return Ok(Vec::new());
-    }
     let mut seen_sites = HashSet::new();
     let mut seen_symbols = HashSet::new();
     let mut out = Vec::new();
-    for token in tokens.iter().take(3) {
-        let patterns =
-            sqlite.search_framework_patterns(None, None, None, Some(token), None, None, 50)?;
-        for pattern in patterns {
-            if !is_route_pattern(&pattern) {
-                continue;
+    for token in tokens.iter().take(EVIDENCE_ROUTE_TOKEN_CAP) {
+        let mut patterns: Vec<_> = sqlite
+            .search_framework_patterns(None, None, None, Some(token), None, None, 50)?
+            .into_iter()
+            .filter(is_route_pattern)
+            .collect();
+
+        if patterns.is_empty() {
+            let segments: Vec<&str> = token.split('/').filter(|s| !s.is_empty()).collect();
+            if let Some((last, earlier)) = segments.split_last() {
+                let anchors: Vec<&&str> = earlier
+                    .iter()
+                    .filter(|s| s.len() >= 4 && !s.starts_with(':'))
+                    .collect();
+                if !anchors.is_empty() {
+                    let suffix = format!("/{last}");
+                    patterns = sqlite
+                        .search_framework_patterns(None, None, None, Some(&suffix), None, None, 50)?
+                        .into_iter()
+                        .filter(is_route_pattern)
+                        .filter(|p| {
+                            let file = p.file_path.to_lowercase();
+                            anchors.iter().any(|a| file.contains(*a))
+                        })
+                        .collect();
+                }
             }
+        }
+
+        for pattern in patterns {
             if !seen_sites.insert((pattern.file_path.clone(), pattern.line)) {
                 continue;
             }
@@ -1261,6 +1362,55 @@ fn route_endpoint_locations(
         }
     }
     Ok(out)
+}
+
+/// Route-endpoint rows mined from evidence bodies, minus what the question
+/// pass already covers and what evidence already carries.
+fn evidence_route_injections(
+    sqlite: &crate::storage::sqlite::SqliteStore,
+    question: &str,
+    primary_locations: &[VerifiedLocation],
+    secondary_locations: &[VerifiedLocation],
+) -> Result<Vec<VerifiedLocation>> {
+    let bodies: Vec<&str> = primary_locations
+        .iter()
+        .chain(secondary_locations.iter())
+        .map(|l| l.body.as_str())
+        .collect();
+    let question_tokens = endpoint_path_tokens(question);
+    let tokens: Vec<String> = evidence_route_tokens(&bodies)
+        .into_iter()
+        .filter(|t| !question_tokens.contains(t))
+        .collect();
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let present: HashSet<&str> = primary_locations
+        .iter()
+        .chain(secondary_locations.iter())
+        .map(|l| l.symbol_id.as_str())
+        .collect();
+    Ok(route_endpoint_locations_for_tokens(sqlite, &tokens)?
+        .into_iter()
+        .filter(|l| !present.contains(l.symbol_id.as_str()))
+        .collect())
+}
+
+/// Resolve route mentions in the question ("the /proof endpoint") to the
+/// framework route patterns the indexer extracted, then to the symbols
+/// enclosing each registration site. R015 wolfmax-concept-03: the trace
+/// hop's edge budget starved on a script hub before its upward walk reached
+/// the HTTP entry points, so the answer cited only mid-chain helpers. Route
+/// handlers are exactly the must-cite rows endpoint-anchored rubrics demand,
+/// and `framework_patterns` already knows them by path; inject them as
+/// evidence instead of hoping the graph walk surfaces them. Shape-agnostic
+/// on purpose: endpoint-anchored concept questions classify as Discover,
+/// which has no secondary hop at all.
+fn route_endpoint_locations(
+    sqlite: &crate::storage::sqlite::SqliteStore,
+    question: &str,
+) -> Result<Vec<VerifiedLocation>> {
+    route_endpoint_locations_for_tokens(sqlite, &endpoint_path_tokens(question))
 }
 
 fn run_supporting_modules_lookup(
@@ -3645,6 +3795,186 @@ mod tests {
         assert!(route_endpoint_locations(&sqlite, "How does auth work?")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn evidence_route_tokens_extract_full_paths_from_bodies() {
+        // The R018 case: client-side evidence carries the server route inside
+        // a template-literal fetch URL.
+        let fetch_body = r#"const response = await authFetch(`${authUrl}/api/desktop-auth/exchange`, {
+            method: "POST",
+        });"#;
+        assert_eq!(
+            evidence_route_tokens(&[fetch_body]),
+            vec!["/api/desktop-auth/exchange"]
+        );
+
+        // Single-segment slash tokens are too noisy to mine from bodies
+        // (division, comments, JSX closers); only the question path handles
+        // those.
+        assert!(evidence_route_tokens(&["router.get(\"/proof\", handler)"]).is_empty());
+
+        // Dotted tokens are file paths or hostnames, never routes.
+        assert!(evidence_route_tokens(&["import x from \"/src/lib/a.ts\""]).is_empty());
+        assert!(evidence_route_tokens(&["fetch(\"https://api.example.com/v1/users\")"]).is_empty());
+
+        // Dedupe across bodies, preserve first-seen order.
+        let a = "fetch(`${base}/api/reports/lock`)";
+        let b = "await fetch(`${base}/api/reports/lock`); fetch(`${base}/api/epochs/latest`)";
+        assert_eq!(
+            evidence_route_tokens(&[a, b]),
+            vec!["/api/reports/lock", "/api/epochs/latest"]
+        );
+    }
+
+    #[test]
+    fn route_tokens_suffix_match_mount_relative_patterns() {
+        use crate::storage::sqlite::{FrameworkPatternRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let router = SymbolRow {
+            id: "router".to_string(),
+            file_path: "packages/backend/src/api/desktop-auth.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "const".to_string(),
+            name: "desktopAuthRouter".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 30,
+            end_line: 110,
+            text: (30..=110)
+                .map(|i| {
+                    if i == 68 {
+                        "\t.post(\"/exchange\", async ({ body }) => {".to_string()
+                    } else {
+                        format!("// line {i}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        sqlite.upsert_symbol(&router).unwrap();
+        sqlite
+            .batch_upsert_framework_patterns(&[FrameworkPatternRow {
+                id: "route:ex".to_string(),
+                file_path: "packages/backend/src/api/desktop-auth.ts".to_string(),
+                line: 68,
+                framework: "elysia".to_string(),
+                kind: "route".to_string(),
+                http_method: Some("POST".to_string()),
+                // Mount-relative, as the extractor stores it: the client-side
+                // full path "/api/desktop-auth/exchange" never appears here.
+                path: Some("/exchange".to_string()),
+                name: None,
+                handler: Some("<anonymous>".to_string()),
+                arguments: None,
+                parent_chain: None,
+                updated_at: 0,
+            }])
+            .unwrap();
+
+        // Full client-side path resolves via the last segment, anchored by an
+        // earlier segment ("desktop-auth") appearing in the registration file.
+        let locations = route_endpoint_locations_for_tokens(
+            &sqlite,
+            &["/api/desktop-auth/exchange".to_string()],
+        )
+        .unwrap();
+        assert_eq!(locations.len(), 1, "suffix match must resolve the handler");
+        assert_eq!(locations[0].symbol_name, "desktopAuthRouter");
+        assert_eq!(locations[0].via, "route_endpoint");
+        assert!(locations[0].body.contains("/exchange"));
+
+        // A different mount with the same terminal segment must NOT resolve
+        // here: no earlier segment of the token appears in the file path.
+        assert!(route_endpoint_locations_for_tokens(
+            &sqlite,
+            &["/api/billing/exchange".to_string()],
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn evidence_route_injections_close_the_client_to_server_hop() {
+        use crate::storage::sqlite::{FrameworkPatternRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let router = SymbolRow {
+            id: "router".to_string(),
+            file_path: "packages/backend/src/api/desktop-auth.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "const".to_string(),
+            name: "desktopAuthRouter".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 30,
+            end_line: 110,
+            text: "\t.post(\"/exchange\", async ({ body }) => {".to_string(),
+        };
+        sqlite.upsert_symbol(&router).unwrap();
+        sqlite
+            .batch_upsert_framework_patterns(&[FrameworkPatternRow {
+                id: "route:ex".to_string(),
+                file_path: "packages/backend/src/api/desktop-auth.ts".to_string(),
+                line: 30,
+                framework: "elysia".to_string(),
+                kind: "route".to_string(),
+                http_method: Some("POST".to_string()),
+                path: Some("/exchange".to_string()),
+                name: None,
+                handler: Some("<anonymous>".to_string()),
+                arguments: None,
+                parent_chain: None,
+                updated_at: 0,
+            }])
+            .unwrap();
+
+        // Client-side evidence row whose body names the server route.
+        let client = VerifiedLocation {
+            symbol_id: "client".to_string(),
+            symbol_name: "completeDesktopBrowserLogin".to_string(),
+            file_path: "packages/desktop/src/lib/desktop-auth-handoff.ts".to_string(),
+            kind: "function".to_string(),
+            start_line: 375,
+            end_line: 430,
+            via: "search",
+            body: "const response = await authFetch(`${authUrl}/api/desktop-auth/exchange`, { method: \"POST\" });".to_string(),
+            route_exposure: Vec::new(),
+        };
+
+        // Natural-language question, no route token: the question path finds
+        // nothing, the evidence path must.
+        let question = "How does the desktop app receive a session token after login?";
+        let fresh = evidence_route_injections(&sqlite, question, &[client.clone()], &[]).unwrap();
+        assert_eq!(fresh.len(), 1, "must resolve the server handler");
+        assert_eq!(fresh[0].symbol_name, "desktopAuthRouter");
+        assert_eq!(fresh[0].via, "route_endpoint");
+
+        // Handler already present in evidence: nothing to inject.
+        let present = fresh[0].clone();
+        assert!(
+            evidence_route_injections(&sqlite, question, &[client.clone()], &[present])
+                .unwrap()
+                .is_empty()
+        );
+
+        // Route token already in the question: the question path owns it,
+        // the evidence pass must not duplicate the lookup.
+        assert!(evidence_route_injections(
+            &sqlite,
+            "Trace from /api/desktop-auth/exchange to the DB.",
+            &[client],
+            &[],
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]

@@ -256,7 +256,6 @@ impl Default for StandaloneConfig {
                 "**/venv/**".to_string(),
                 "**/.tox/**".to_string(),
                 "**/vendor/**".to_string(),
-                "**/bench/state/repos/**".to_string(),
                 "**/dist/**".to_string(),
                 "**/build/**".to_string(),
                 "**/out/**".to_string(),
@@ -942,7 +941,6 @@ impl Config {
                 "**/venv/**",
                 "**/.tox/**",
                 "**/vendor/**",
-                "**/bench/state/repos/**",
                 "**/dist/**",
                 "**/build/**",
                 "**/out/**",
@@ -2179,13 +2177,7 @@ consent_required = false
 
     #[test]
     fn default_exclude_patterns_drop_virtualenvs_and_vendored_repos() {
-        let expected = [
-            "**/.venv/**",
-            "**/venv/**",
-            "**/.tox/**",
-            "**/vendor/**",
-            "**/bench/state/repos/**",
-        ];
+        let expected = ["**/.venv/**", "**/venv/**", "**/.tox/**", "**/vendor/**"];
         let standalone_excludes = StandaloneConfig::default().default_exclude_patterns;
 
         for pat in expected {

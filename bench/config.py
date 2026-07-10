@@ -53,7 +53,17 @@ MAX_TURNS = _env_int("BENCH_MAX_TURNS", 16)
 
 # Paths
 BENCH_DIR = REPO_ROOT / "bench"
-STATE_DIR = BENCH_DIR / "state"
+# Mutable bench state (fixture checkouts, per-variant daemon homes, indexes)
+# lives OUTSIDE the repo tree. Keeping it under bench/ required a bench-specific
+# "**/bench/state/repos/**" entry in the daemon's default exclude patterns (plus
+# a hand-edited server.toml override in every variant home to un-exclude the
+# fixtures' own files) and put ~27G of indexes inside the working copy. Fixture
+# definitions (bench/fixtures/) and results (bench/results/) stay in-repo.
+# NOTE: changing this path changes repo hashes, so all index caches invalidate
+# and `prep` rebuilds from scratch.
+STATE_DIR = Path(
+    _env("BENCH_STATE_DIR", str(Path.home() / ".code-intelligence-bench"))
+).expanduser()
 BENCH_HOME = STATE_DIR / "home"
 BENCH_INDEXES_DIR = BENCH_HOME / ".code-intelligence" / "repos"
 BENCH_REPOS_DIR = STATE_DIR / "repos"

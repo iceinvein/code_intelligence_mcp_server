@@ -97,32 +97,17 @@ def cmd_prep(args) -> int:
         meta = fixture.meta
         target = config.BENCH_REPOS_DIR / name
 
-        # Special case: local-path fixtures (upstream_url is an absolute path).
-        # Treat as already-checked-out; symlink rather than clone.
-        upstream_url = meta.upstream_url
-        if Path(upstream_url).is_absolute() and Path(upstream_url).exists():
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.symlink_to(upstream_url)
-                print(f"linked {name}: {target} -> {upstream_url}")
-            # Don't try to fetch / checkout SHA on a symlink; the user is responsible
-            # for the repo's local state matching meta.upstream_sha. Warn if it doesn't.
-            try:
-                head = _subprocess.run(
-                    ["git", "-C", str(target), "rev-parse", "HEAD"],
-                    check=True, capture_output=True,
-                ).stdout.decode().strip()
-                if head != meta.upstream_sha:
-                    print(
-                        f"warning: {name} HEAD is {head} but fixture pins {meta.upstream_sha}; "
-                        f"citations may not line up",
-                        file=sys.stderr,
-                    )
-            except _subprocess.CalledProcessError:
-                pass
-            continue
+        # Legacy layout: local-path fixtures used to be symlinked to the user's
+        # live working copy, which drifted from the pinned SHA and (worse) let a
+        # bench run read whatever half-edited state the workspace was in.
+        # Replace any leftover symlink with a real pinned clone below.
+        if target.is_symlink():
+            target.unlink()
+            print(f"removed legacy symlink for {name}; cloning a pinned checkout")
 
-        # Standard remote clone.
+        # Clone + pin. Works for remote URLs and local absolute paths alike
+        # (git clones local directories); the only requirement is that a local
+        # upstream still contains meta.upstream_sha.
         try:
             repos.ensure_repo_checkout(
                 name=name,

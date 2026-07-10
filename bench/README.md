@@ -69,8 +69,12 @@ bench/
 ├── orchestrator.py   end-to-end cycle (per-arm question runs, scoring, judging, write JSONL outputs)
 ├── report.py         aggregate + markdown render
 ├── tests/            53 unit tests covering every module
-├── state/            local-only: cloned repos, per-variant indexes (gitignored)
 └── results/RNNN/     committed: runs.jsonl, judge.jsonl, scores.json, report.md
+
+Mutable state (pinned fixture checkouts, per-variant daemon homes and indexes)
+lives OUTSIDE the repo at `~/.code-intelligence-bench/` (override: `BENCH_STATE_DIR`).
+Local-path fixtures are cloned and pinned like remote ones; the old live-workspace
+symlink layout is replaced on the next `prep`.
 ```
 
 ## Arms
@@ -153,7 +157,7 @@ Says nothing about overlay retrieval quality (producers are stubs → zero exter
 
 ### Operational notes from this run
 
-- The default `exclude_patterns` entry `**/bench/state/repos/**` zeroed the django index (django is checked out under `bench/state/repos/`; every file matched the exclude → 0 symbols). Worked around via a `[repos.defaults] exclude_patterns` override in the variant `server.toml`. **Proper fix pending:** drop that entry from the daemon default, or move fixtures outside `bench/state/repos/`. wolfmax dodged it only because it is a symlink to an external path.
+- The default `exclude_patterns` entry `**/bench/state/repos/**` zeroed the django index (django is checked out under `bench/state/repos/`; every file matched the exclude → 0 symbols). Worked around via a `[repos.defaults] exclude_patterns` override in the variant `server.toml`. RESOLVED 2026-07-10: fixtures moved out of the repo tree to `~/.code-intelligence-bench/` and the bench-specific entry was dropped from the daemon defaults; the server.toml override is no longer written.
 - The shallow-clone checkout does not honor the pinned SHA (a `git checkout <sha>` after `git fetch --depth=1` left HEAD unmoved). django was re-pinned to the actually-checked-out `2d4add11` to keep prep a no-op; revisit if an exact pinned SHA is required.
 
 ## R008 result (2026-06-14) — first external-overlay A/B
@@ -214,19 +218,18 @@ See `bench/fixtures/AUTHORING.md` for the rules.
 - Wire `cmd_arm`, `cmd_question`, `cmd_diff`, `cmd_clean` (stubs today).
 - Fix `cmd_report` so codegraph version + daemon SHA in the round header come from real run metadata instead of the placeholder `"?"`.
 - Investigate why the description worker stagnates around 90-95% on large repos. Either it is a real failure mode (some symbols never get described) or a timing issue with the 2-minute stagnant detection.
-- Move fixture checkouts out of `bench/state/repos/` (kills the `**/bench/state/repos/**` exclude-pattern trap AND the ancestor-CLAUDE.md leak into agent runs; note this changes repo hashes and invalidates cached indexes).
 - Content-addressed run reuse across rounds: key runs by (arm config, daemon SHA, question, repo SHA, agent model) so an unchanged baseline arm can be reused instead of re-run in A/B rounds.
 - Curate a ~15-question iteration fixture from the most discriminative questions in R005-R008; keep the full 40 for release rounds.
 - Re-prep and re-run the django external arm (the R008 django overlay used the wrong producer; the fix landed but the decisive Python-overlay A/B never ran).
 
 ## Re-running
 
-Indexes are cached in `bench/state/home/{full,no_desc}/.code-intelligence/repos/<hash>/`. Cache freshness is keyed on `(daemon_sha, repo_upstream_sha, variant, schema_version)`. Touching any of those (e.g. by rebuilding the daemon or moving a fixture's pinned SHA) invalidates the cache and triggers a rebuild.
+Indexes are cached in `~/.code-intelligence-bench/home/{full,no_desc}/.code-intelligence/repos/<hash>/`. Cache freshness is keyed on `(daemon_sha, repo_upstream_sha, variant, schema_version)`. Touching any of those (e.g. by rebuilding the daemon or moving a fixture's pinned SHA) invalidates the cache and triggers a rebuild.
 
 ```bash
 ./bench prep --check          # dry run; print what would be rebuilt
 ./bench prep                  # build whatever is stale
-./bench clean --indexes       # not yet implemented; for now: rm -rf bench/state/home
+./bench clean --indexes       # not yet implemented; for now: rm -rf ~/.code-intelligence-bench/home
 ```
 
 Full prep from cold against wolfmax + Django takes ~1.5-3 hours depending on how many descriptions the worker can generate before stagnating. Subsequent runs that only change daemon code re-index but skip the description backfill if the data dir is preserved (descriptions persist across reindexes for unchanged symbols).

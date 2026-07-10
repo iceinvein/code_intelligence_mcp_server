@@ -174,7 +174,7 @@ questions:
   - id: wolfmax-concept-03
     task_type: concept
     difficulty: hard
-    question: "Where is the OTS (OpenTimestamps) proof upgrade logic triggered on the read path? Trace from the /proof endpoint to the calendar poll."
+    question: "Where is the OTS (OpenTimestamps) proof upgrade logic triggered on the read path? Trace from the epoch proof endpoint (GET /:id/proof) to the calendar poll."
     rubric: |
       Must cite packages/backend/src/api/crypto/epochs.ts (the GET /:id/proof handler,
       around line 146) and packages/backend/src/api/crypto/upgrade-helper.ts
@@ -184,6 +184,10 @@ questions:
       calendars in parallel with a 5s budget.
       Bonus: notes that shouldAttemptUpgrade (upgrade-helper.ts line 11) applies a
       rate-limit guard so upgrades are not attempted on every request.
+      Note: reports.ts (GET /:uuid/proof -> upgradeReportLock) is a parallel on-demand
+      upgrade path for report locks; mentioning it is acceptable and should not be
+      penalized, but the epoch chain above is required. An answer covering ONLY the
+      reports.ts chain does not answer the question as asked.
       Penalize: attributing upgrades only to the Rust backend-worker (which handles
       batch upgrades, not on-demand), or omitting the rate-limit guard.
     expected:

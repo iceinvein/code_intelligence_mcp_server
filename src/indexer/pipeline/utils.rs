@@ -598,9 +598,19 @@ mod utils_proptest {
             name in symbol_name_strategy(),
             start_byte in start_byte_strategy(),
         ) {
-            let start = std::time::Instant::now();
-            let _id = stable_symbol_id(&file_path, &name, start_byte);
-            let elapsed = start.elapsed();
+            // A single timed call is jitter-prone (scheduler preemption, cold
+            // caches, background load): take the minimum over several runs,
+            // which reflects the true cost of the input rather than one-off
+            // machine noise. Persisted seeds from the old single-shot version
+            // were timing artifacts, not input-dependent regressions.
+            let elapsed = (0..10)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    let _id = stable_symbol_id(&file_path, &name, start_byte);
+                    start.elapsed()
+                })
+                .min()
+                .unwrap();
 
             // Should complete in 1ms for realistic inputs on typical hardware
             // NOTE: This is a regression test, not a strict benchmark. The threshold

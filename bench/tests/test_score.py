@@ -139,6 +139,19 @@ def test_url_with_port_is_not_a_citation(tmp_path):
     assert multiplier == 1.0
 
 
+def test_scheme_url_with_port_is_not_a_citation(tmp_path):
+    # R022/R023: answers describing the desktop OAuth handoff mention the
+    # loopback callback URL; the regex captured "//127.0.0.1" as a file and
+    # the port as a line number, flagging a true fact as a hallucination.
+    answer = (
+        "The web app redirects to http://127.0.0.1:47831/callback, "
+        "see https://tauri.app/v1/guides:8080 for background."
+    )
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert results == []
+    assert multiplier == 1.0
+
+
 def test_version_string_is_not_a_citation(tmp_path):
     answer = "This changed in release 4.5.0:2020 of the toolchain."
     multiplier, results = score.compute_citation_multiplier(answer, tmp_path)

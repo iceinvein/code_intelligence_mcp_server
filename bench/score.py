@@ -120,6 +120,12 @@ _CODE_EXTENSIONS = {
 
 
 def _looks_like_path(file: str) -> bool:
+    # URL captures, not paths: "http://127.0.0.1:47831" matches the citation
+    # regex as file "//127.0.0.1" + line 47831, and "https://x.dev/a:8080"
+    # as file "//x.dev/a". Loopback callback URLs are genuine facts in auth
+    # flows; flagging them conflated URLs with fabricated citations.
+    if file.startswith("//") or "://" in file:
+        return False
     if "/" in file:
         return True
     ext = file.rsplit(".", 1)[-1].lower()

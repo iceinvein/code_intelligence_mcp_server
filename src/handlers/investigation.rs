@@ -858,6 +858,115 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         }
     }
 
+    // Step 3.7.11: inject one representative evidence row per un-covered
+    // module for breadth/architecture questions. R027: injection-era agents
+    // answer arch questions from one ask_code call, so the split's other
+    // side (worker binaries, adapter layers) must ride the first response --
+    // arch-03 lost mech 0.57 -> 0.39 purely on file coverage while the
+    // judge stayed flat.
+    //
+    // Two passes share the MODULE_BREADTH_CAP slots:
+    //
+    // 1. Subsystem-scoped: the question names its subsystems ("the Rust
+    //    backend-worker", "`django.db.backends`") but their files can carry
+    //    ZERO question vocabulary (live wolfmax: no backend-worker file
+    //    mentions "anchoring"), so no ranking depth on the raw question
+    //    reaches them. Path segments ARE indexed, so a search scoped by the
+    //    subsystem token itself finds its files; each named-but-undelivered
+    //    subsystem gets reserved slots.
+    // 2. Generic: a wider search on the raw question (the primary hop keeps
+    //    only 5 hits), aggregated per-file, fills the remaining slots.
+    //
+    // Files already delivered as citable evidence (top-3 primary + injected
+    // rows) are skipped in both passes.
+    if shape == InvestigationShape::ModuleSurvey || is_module_breadth_question(&question) {
+        let mut covered: HashSet<String> = {
+            let secondary_locs: &[VerifiedLocation] = secondary
+                .as_ref()
+                .map(|s| s.locations.as_slice())
+                .unwrap_or(&[]);
+            primary
+                .locations
+                .iter()
+                .take(3)
+                .chain(secondary_locs.iter().filter(|l| is_injected_via_str(l.via)))
+                .map(|l| l.file_path.clone())
+                .collect()
+        };
+        let mut fresh: Vec<VerifiedLocation> = Vec::new();
+
+        // Pass 1: subsystem-scoped searches for named-but-undelivered
+        // subsystems.
+        let segments = path_segment_set(
+            state
+                .sqlite
+                .list_indexed_files()?
+                .iter()
+                .map(|(p, _)| p.as_str()),
+        );
+        let mut scoped_subsystems = 0usize;
+        for token in subsystem_candidate_tokens(&question) {
+            if scoped_subsystems >= MODULE_BREADTH_SUBSYSTEM_CAP {
+                break;
+            }
+            if !token_segments_indexed(&token, &segments) {
+                continue;
+            }
+            if covered.iter().any(|f| path_matches_subsystem(f, &token)) {
+                continue;
+            }
+            let scoped: Vec<crate::storage::sqlite::SymbolRow> =
+                run_module_breadth_search(state, &token, None)
+                    .await?
+                    .into_iter()
+                    .filter(|r| path_matches_subsystem(&r.file_path, &token))
+                    .collect();
+            let covered_refs: HashSet<&str> = covered.iter().map(|s| s.as_str()).collect();
+            let rows =
+                module_breadth_locations(scoped, &covered_refs, MODULE_BREADTH_ROWS_PER_SUBSYSTEM);
+            if rows.is_empty() {
+                continue;
+            }
+            scoped_subsystems += 1;
+            covered.extend(rows.iter().map(|l| l.file_path.clone()));
+            fresh.extend(rows);
+        }
+
+        // Pass 2: generic per-file aggregation of a wider question search.
+        if fresh.len() < MODULE_BREADTH_CAP {
+            let broad = run_module_breadth_search(state, &question, target).await?;
+            let covered_refs: HashSet<&str> = covered.iter().map(|s| s.as_str()).collect();
+            fresh.extend(module_breadth_locations(
+                broad,
+                &covered_refs,
+                MODULE_BREADTH_CAP - fresh.len(),
+            ));
+        }
+
+        if !fresh.is_empty() {
+            // Same replace semantics as 3.7.09: a representative that already
+            // rides as a primary-tail hit or anonymous trace node is doomed
+            // by the stage-4 cut and must not win the dedup.
+            let fresh_ids: HashSet<String> = fresh.iter().map(|l| l.symbol_id.clone()).collect();
+            primary
+                .locations
+                .retain(|l| !fresh_ids.contains(&l.symbol_id));
+            match secondary.as_mut() {
+                Some(s) => {
+                    s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
+                    s.locations.extend(fresh);
+                }
+                None => {
+                    secondary = Some(SecondaryHop {
+                        via: "module_breadth",
+                        raw: json!({"note": "one representative symbol per module matching the question"}),
+                        locations: fresh,
+                    })
+                }
+            }
+        }
+    }
+
     // Step 3.7.1: auto-include IPC boundary files for flow questions that
     // cross the renderer / preload / main process line. The supporting
     // modules lookup only finds files called BY the primary file; the
@@ -1664,6 +1773,275 @@ fn handler_dependency_locations(
             injected_location(row, "handler_dependency", HANDLER_DEPENDENCY_BODY_LINES)
         })
         .collect())
+}
+
+/// Cap for injected module-breadth evidence rows. Four covers a two-sided
+/// architecture split (2 modules per side) without flooding the response.
+const MODULE_BREADTH_CAP: usize = 4;
+const MODULE_BREADTH_BODY_LINES: usize = 24;
+/// At most this many named subsystems get a scoped search, each reserving
+/// up to MODULE_BREADTH_ROWS_PER_SUBSYSTEM of the MODULE_BREADTH_CAP slots.
+const MODULE_BREADTH_SUBSYSTEM_CAP: usize = 2;
+const MODULE_BREADTH_ROWS_PER_SUBSYSTEM: usize = 2;
+
+/// Breadth/architecture questions ask how responsibility is divided across
+/// modules, not how one flow executes. R027: injection-era agents answer
+/// arch questions from one ask_code call, so the first response must carry
+/// evidence for every side of the split (arch-03 mech 0.57 -> 0.39 purely
+/// on file coverage; judge flat).
+fn is_module_breadth_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    contains_any(
+        &q,
+        &[
+            "split between",
+            "split across",
+            "divided between",
+            "divided across",
+            "boundary between",
+            "which layer",
+            "which part of the system",
+            "architecture",
+            "responsibilities of each",
+            "how is the codebase organized",
+            "how is the project organized",
+        ],
+    )
+}
+
+/// Identifier-ish tokens from a breadth question that could name a module
+/// or subsystem. Punctuated tokens ("backend-worker", "django.db.backends")
+/// come first: naming a module with its real separator is the strongest
+/// signal the question is about that module. Plain words (length >= 4)
+/// follow in order of appearance; the caller filters both kinds against
+/// the indexed path segments, so ordinary prose words cost nothing.
+fn subsystem_candidate_tokens(question: &str) -> Vec<String> {
+    // Question-structure vocabulary that also names real directories in many
+    // repos (django has gis/gdal/layer.py; most repos have src/, tests/):
+    // the segment check alone cannot filter these, and each false candidate
+    // costs a scoped-search slot.
+    const STRUCTURAL_NOUNS: &[&str] = &[
+        "layer",
+        "layers",
+        "system",
+        "systems",
+        "module",
+        "modules",
+        "component",
+        "components",
+        "package",
+        "packages",
+        "part",
+        "parts",
+        "side",
+        "sides",
+        "file",
+        "files",
+        "folder",
+        "folders",
+        "directory",
+        "directories",
+        "code",
+        "codebase",
+        "test",
+        "tests",
+        "docs",
+        "project",
+        "repo",
+        "repository",
+    ];
+    let mut punctuated = Vec::new();
+    let mut plain = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in question.split_whitespace() {
+        let token = raw
+            .trim_matches(|c: char| !(c.is_alphanumeric() || matches!(c, '-' | '.' | '_')))
+            .to_lowercase();
+        if token.len() < 4 || token.contains('/') {
+            continue;
+        }
+        if STRUCTURAL_NOUNS.contains(&token.as_str()) {
+            continue;
+        }
+        if !token.chars().next().is_some_and(|c| c.is_alphabetic()) {
+            continue;
+        }
+        if !seen.insert(token.clone()) {
+            continue;
+        }
+        let has_separator = token
+            .chars()
+            .any(|c| matches!(c, '-' | '.' | '_'))
+            // A trailing dot is sentence punctuation, not a module path.
+            && !token.ends_with(['-', '.', '_']);
+        if has_separator {
+            // "django.db.backends" also names its parent "django.db".
+            if let Some((parent, _)) = token.rsplit_once('.') {
+                if parent.contains('.') && seen.insert(parent.to_string()) {
+                    punctuated.push(parent.to_string());
+                }
+            }
+            punctuated.push(token);
+        } else {
+            plain.push(token);
+        }
+    }
+    punctuated.extend(plain);
+    punctuated
+}
+
+/// Whether `file_path` belongs to the subsystem named by `token`.
+/// Whole-segment match only ("backend" must not match "backend-worker");
+/// dotted module paths match consecutive path segments; the file stem
+/// counts as a segment so "crypto.ts" belongs to subsystem "crypto".
+fn path_matches_subsystem(file_path: &str, token: &str) -> bool {
+    let wanted: Vec<&str> = token.split('.').filter(|s| !s.is_empty()).collect();
+    if wanted.is_empty() {
+        return false;
+    }
+    let segments: Vec<String> = file_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .enumerate()
+        .map(|(i, s)| {
+            let is_last = i == file_path.split('/').filter(|s| !s.is_empty()).count() - 1;
+            if is_last {
+                s.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(s)
+            } else {
+                s
+            }
+            .to_lowercase()
+        })
+        .collect();
+    segments
+        .windows(wanted.len())
+        .any(|w| w.iter().zip(&wanted).all(|(seg, want)| seg == want))
+}
+
+/// Lowercased path segments (directories + file stems) of the indexed tree.
+/// Candidate subsystem tokens are filtered against this set so prose words
+/// that name no real module never trigger a scoped search.
+fn path_segment_set<'a>(paths: impl Iterator<Item = &'a str>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for path in paths {
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        for (i, seg) in segments.iter().enumerate() {
+            let seg = if i == segments.len() - 1 {
+                seg.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(seg)
+            } else {
+                seg
+            };
+            out.insert(seg.to_lowercase());
+        }
+    }
+    out
+}
+
+/// Whether every dot-part of a candidate token names a real path segment.
+fn token_segments_indexed(token: &str, segments: &HashSet<String>) -> bool {
+    let mut parts = token.split('.').filter(|s| !s.is_empty()).peekable();
+    parts.peek().is_some() && parts.all(|p| segments.contains(p))
+}
+
+/// How deep the breadth aggregation looks into the ranked results. The
+/// primary hop keeps 5 hits; a two-sided architecture split needs the
+/// long tail where the minority side's files rank.
+const MODULE_BREADTH_SEARCH_LIMIT: u32 = 20;
+
+/// Re-run the hybrid search with a breadth-sized limit and resolve the hits
+/// to symbol rows in rank order. The primary hop's 5 hits cluster on the
+/// majority side of a split; per-file aggregation needs the full ranking.
+async fn run_module_breadth_search(
+    state: &AppState,
+    question: &str,
+    target: Option<&str>,
+) -> Result<Vec<crate::storage::sqlite::SymbolRow>> {
+    use crate::tools::SearchCodeTool;
+
+    let tool = SearchCodeTool {
+        query: target.unwrap_or(question).to_string(),
+        limit: Some(MODULE_BREADTH_SEARCH_LIMIT),
+        exported_only: None,
+        context: None,
+    };
+    let raw =
+        super::search::handle_search_code(&state.retriever, &state.config.db_path, tool).await?;
+    let mut out = Vec::new();
+    if let Some(hits) = raw.get("hits").and_then(|v| v.as_array()) {
+        for hit in hits {
+            let Some(id) = hit.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(row) = state.sqlite.get_symbol_by_id(id)? {
+                out.push(row);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One representative evidence row per distinct file in the ranked search
+/// results, skipping files the response already delivers. Files are ordered
+/// by distinct-hit count (more matching symbols = bigger share of the
+/// answer), then by their best rank. Within a file the representative is the
+/// best-ranked exported symbol (the module's citable surface), falling back
+/// to the best-ranked hit.
+fn module_breadth_locations(
+    ranked_hits: Vec<crate::storage::sqlite::SymbolRow>,
+    covered_files: &HashSet<&str>,
+    cap: usize,
+) -> Vec<VerifiedLocation> {
+    struct FileAgg {
+        representative: crate::storage::sqlite::SymbolRow,
+        distinct_hits: usize,
+        best_rank: usize,
+    }
+    let mut files: Vec<(String, FileAgg)> = Vec::new();
+    for (rank, row) in ranked_hits.into_iter().enumerate() {
+        if covered_files.contains(row.file_path.as_str())
+            || crate::classify::is_generated_output_path(&row.file_path)
+            || crate::classify::is_test_file(&row.file_path)
+        {
+            continue;
+        }
+        let file_name = row.file_path.rsplit('/').next().unwrap_or(&row.file_path);
+        if file_name == "index.ts" || file_name == "index.tsx" {
+            continue;
+        }
+        match files.iter_mut().find(|(f, _)| *f == row.file_path) {
+            Some((_, agg)) => {
+                agg.distinct_hits += 1;
+                if row.exported && !agg.representative.exported {
+                    agg.representative = row;
+                }
+            }
+            None => files.push((
+                row.file_path.clone(),
+                FileAgg {
+                    representative: row,
+                    distinct_hits: 1,
+                    best_rank: rank,
+                },
+            )),
+        }
+    }
+    files.sort_by(|a, b| {
+        b.1.distinct_hits
+            .cmp(&a.1.distinct_hits)
+            .then_with(|| a.1.best_rank.cmp(&b.1.best_rank))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    files
+        .into_iter()
+        .take(cap)
+        .map(|(_, agg)| {
+            injected_location(
+                agg.representative,
+                "module_breadth",
+                MODULE_BREADTH_BODY_LINES,
+            )
+        })
+        .collect()
 }
 
 fn run_supporting_modules_lookup(
@@ -2654,7 +3032,11 @@ fn is_injected_via(via: &Value) -> bool {
 pub(crate) fn is_injected_via_str(via: &str) -> bool {
     matches!(
         via,
-        "supporting_definition" | "route_endpoint" | "sibling_route" | "handler_dependency"
+        "supporting_definition"
+            | "route_endpoint"
+            | "sibling_route"
+            | "handler_dependency"
+            | "module_breadth"
     )
 }
 
@@ -3062,7 +3444,8 @@ fn apply_response_budget(response: &mut Value) {
                     SUPPORTING_DEFINITION_CAP
                         + ROUTE_ENDPOINT_CAP
                         + SIBLING_ROUTE_CAP
-                        + HANDLER_DEPENDENCY_CAP,
+                        + HANDLER_DEPENDENCY_CAP
+                        + MODULE_BREADTH_CAP,
                 )
                 .cloned()
                 .collect();
@@ -4098,6 +4481,303 @@ mod tests {
     }
 
     #[test]
+    fn module_breadth_question_detection() {
+        // The two arch-probe questions (R027 baseline) must fire.
+        assert!(is_module_breadth_question(
+            "How is the crypto anchoring system split between the TypeScript backend and the Rust backend-worker? Which layer does what?"
+        ));
+        assert!(is_module_breadth_question(
+            "What is the boundary between `django.db` and `django.db.backends`? Which layer knows about SQL and which layer is database-agnostic?"
+        ));
+        assert!(is_module_breadth_question(
+            "Describe the architecture of the sync engine."
+        ));
+        // Trace and callsite questions keep their existing evidence mix.
+        assert!(!is_module_breadth_question(
+            "Trace how a report upload flows through the pipeline."
+        ));
+        assert!(!is_module_breadth_question("Who calls createSession?"));
+    }
+
+    #[test]
+    fn subsystem_candidate_tokens_punctuated_first() {
+        // wolfmax-arch-03: "backend-worker" is the punctuated module name;
+        // plain words follow in order of appearance.
+        let tokens = subsystem_candidate_tokens(
+            "How is the crypto anchoring system split between the TypeScript backend and the Rust backend-worker? Which layer does what?",
+        );
+        assert_eq!(tokens[0], "backend-worker");
+        assert!(tokens.contains(&"crypto".to_string()));
+        assert!(tokens.contains(&"backend".to_string()));
+        // Punctuated tokens outrank every plain word.
+        let bw = tokens.iter().position(|t| t == "backend-worker").unwrap();
+        let crypto = tokens.iter().position(|t| t == "crypto").unwrap();
+        assert!(bw < crypto);
+    }
+
+    #[test]
+    fn subsystem_candidate_tokens_dotted_module_paths() {
+        // django-arch-01: backtick-quoted dotted module paths.
+        let tokens = subsystem_candidate_tokens(
+            "What is the boundary between `django.db` and `django.db.backends`? Which layer knows about SQL and which layer is database-agnostic?",
+        );
+        assert!(tokens.contains(&"django.db".to_string()));
+        assert!(tokens.contains(&"django.db.backends".to_string()));
+    }
+
+    #[test]
+    fn subsystem_candidate_tokens_skip_routes_and_short_words() {
+        let tokens = subsystem_candidate_tokens("Trace the /api/users flow in the db and app");
+        assert!(
+            !tokens.iter().any(|t| t.contains('/')),
+            "route mentions are not subsystems: {tokens:?}"
+        );
+        assert!(
+            !tokens.contains(&"db".to_string()),
+            "words under 4 chars are noise: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn subsystem_candidate_tokens_skip_structural_nouns() {
+        // "Which layer knows about SQL" names no subsystem, but django has a
+        // gis/gdal/layer.py: the segment check alone cannot filter question-
+        // structure vocabulary (live django-arch-01 spent a scoped-search
+        // slot on it).
+        let tokens = subsystem_candidate_tokens(
+            "Which layer of the system owns this module? Compare the code in each file.",
+        );
+        for noise in ["layer", "system", "module", "code", "file"] {
+            assert!(
+                !tokens.contains(&noise.to_string()),
+                "structural noun {noise:?} must be filtered: {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_matches_subsystem_segment_rules() {
+        // Whole-segment match only: "backend" must not match backend-worker.
+        assert!(path_matches_subsystem(
+            "packages/backend-worker/src/main.rs",
+            "backend-worker"
+        ));
+        assert!(!path_matches_subsystem(
+            "packages/backend-worker/src/main.rs",
+            "backend"
+        ));
+        assert!(path_matches_subsystem(
+            "packages/backend/src/api/crypto/epochs.ts",
+            "crypto"
+        ));
+        // Dotted module paths match consecutive path segments.
+        assert!(path_matches_subsystem(
+            "django/db/models/query.py",
+            "django.db"
+        ));
+        assert!(path_matches_subsystem(
+            "django/db/backends/base/base.py",
+            "django.db.backends"
+        ));
+        assert!(!path_matches_subsystem(
+            "django/db/models/query.py",
+            "django.db.backends"
+        ));
+        // File stem counts as a segment ("crypto.ts" is subsystem "crypto").
+        assert!(path_matches_subsystem("src/api/crypto.ts", "crypto"));
+    }
+
+    #[test]
+    fn path_segment_set_and_token_filter() {
+        let segments = path_segment_set(
+            [
+                "packages/backend-worker/src/main.rs",
+                "packages/backend/src/api/crypto/epochs.ts",
+                "django/db/backends/base/base.py",
+            ]
+            .into_iter(),
+        );
+        // Directory segments and file stems are indexed.
+        assert!(token_segments_indexed("backend-worker", &segments));
+        assert!(token_segments_indexed("crypto", &segments));
+        assert!(token_segments_indexed("epochs", &segments));
+        assert!(token_segments_indexed("django.db.backends", &segments));
+        // Prose words that name no path segment are filtered out.
+        assert!(!token_segments_indexed("anchoring", &segments));
+        assert!(!token_segments_indexed("typescript", &segments));
+        assert!(!token_segments_indexed("django.db.oracle", &segments));
+    }
+
+    fn mk_breadth_row(
+        id: &str,
+        file: &str,
+        name: &str,
+        exported: bool,
+    ) -> crate::storage::sqlite::SymbolRow {
+        crate::storage::sqlite::SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "typescript".to_string(),
+            kind: "function".to_string(),
+            name: name.to_string(),
+            exported,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 10,
+            end_line: 40,
+            text: format!("body of {name}"),
+        }
+    }
+
+    #[test]
+    fn module_breadth_locations_one_row_per_file_ranked_by_distinct_hits() {
+        // worker.rs has two distinct hits, signer.ts one at a better rank:
+        // the file with more distinct symbols represents a bigger share of
+        // the answer and must ride first.
+        let hits = vec![
+            mk_breadth_row("s1", "packages/backend/src/signer.ts", "signReceipt", true),
+            mk_breadth_row("w1", "packages/backend-worker/src/main.rs", "main", false),
+            mk_breadth_row(
+                "w2",
+                "packages/backend-worker/src/main.rs",
+                "run_loop",
+                true,
+            ),
+        ];
+        let locations = module_breadth_locations(hits, &HashSet::new(), MODULE_BREADTH_CAP);
+
+        assert_eq!(locations.len(), 2, "one row per file");
+        assert_eq!(
+            locations[0].file_path,
+            "packages/backend-worker/src/main.rs"
+        );
+        assert_eq!(locations[1].file_path, "packages/backend/src/signer.ts");
+        for l in &locations {
+            assert_eq!(l.via, "module_breadth");
+            assert!(!l.body.is_empty(), "injected rows must carry bodies");
+        }
+    }
+
+    #[test]
+    fn module_breadth_locations_prefer_exported_representative() {
+        // run_loop is exported; main is the better-ranked hit but private.
+        // The exported symbol is the module's citable surface.
+        let hits = vec![
+            mk_breadth_row("w1", "packages/backend-worker/src/main.rs", "main", false),
+            mk_breadth_row(
+                "w2",
+                "packages/backend-worker/src/main.rs",
+                "run_loop",
+                true,
+            ),
+        ];
+        let locations = module_breadth_locations(hits, &HashSet::new(), MODULE_BREADTH_CAP);
+
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].symbol_name, "run_loop");
+    }
+
+    #[test]
+    fn module_breadth_locations_exclude_covered_glue_and_tests() {
+        let mut covered = HashSet::new();
+        covered.insert("packages/backend/src/api/crypto/epochs.ts");
+        let hits = vec![
+            // Already delivered by primary/injected rows: skip.
+            mk_breadth_row(
+                "c1",
+                "packages/backend/src/api/crypto/epochs.ts",
+                "sealEpoch",
+                true,
+            ),
+            // Barrel re-export glue: skip.
+            mk_breadth_row("b1", "packages/backend/src/db/index.ts", "db", true),
+            // Test files never answer architecture questions: skip.
+            mk_breadth_row(
+                "t1",
+                "packages/backend/src/__tests__/epochs.test.ts",
+                "testSeal",
+                false,
+            ),
+            // Generated output: skip.
+            mk_breadth_row("g1", "packages/backend/dist/epochs.js", "sealEpoch", true),
+            mk_breadth_row("w1", "packages/backend-worker/src/main.rs", "main", true),
+        ];
+        let locations = module_breadth_locations(hits, &covered, MODULE_BREADTH_CAP);
+
+        assert_eq!(locations.len(), 1, "only the worker file must ride");
+        assert_eq!(
+            locations[0].file_path,
+            "packages/backend-worker/src/main.rs"
+        );
+    }
+
+    #[test]
+    fn module_breadth_locations_cap() {
+        let hits: Vec<crate::storage::sqlite::SymbolRow> = (0..8)
+            .map(|i| {
+                mk_breadth_row(
+                    &format!("s{i}"),
+                    &format!("src/mod{i}.ts"),
+                    &format!("fn{i}"),
+                    true,
+                )
+            })
+            .collect();
+        let locations = module_breadth_locations(hits, &HashSet::new(), MODULE_BREADTH_CAP);
+        assert_eq!(locations.len(), MODULE_BREADTH_CAP);
+    }
+
+    #[test]
+    fn budget_truncation_preserves_module_breadth() {
+        // Breadth rows ride at the end of the location list like the other
+        // injected vias; the stage-4 cut and stage-2 body drop must keep
+        // them, or arch answers lose exactly the cross-module files the
+        // injection exists to deliver.
+        let mk = |i: usize, via: &str| {
+            json!({
+                "symbol_id": format!("s{i}"),
+                "symbol_name": format!("sym{i}"),
+                "file_path": "src/x.ts",
+                "kind": "function",
+                "start_line": 1,
+                "end_line": 2,
+                "via": via,
+                "body": "b".repeat(1000),
+            })
+        };
+        let mut locs: Vec<Value> = (0..38).map(|i| mk(i, "search_code")).collect();
+        locs.push(mk(97, "module_breadth"));
+        locs.push(mk(98, "module_breadth"));
+        locs.push(mk(99, "module_breadth"));
+        let mut response = json!({
+            "question": "q",
+            "context_chain": "",
+            "plan": {},
+            "verified_locations": locs,
+            "pack": {"rows": [{"role": "primary", "evidence": "e".repeat(40_000)}]},
+        });
+
+        apply_response_budget(&mut response);
+
+        let kept_rows = response["verified_locations"].as_array().unwrap().clone();
+        for l in kept_rows.iter().filter(|l| l["via"] == "module_breadth") {
+            assert!(
+                !l["body"].as_str().unwrap_or("").is_empty(),
+                "module breadth bodies must be preserved"
+            );
+        }
+        assert!(kept_rows.len() <= 8);
+        assert_eq!(
+            kept_rows
+                .iter()
+                .filter(|l| l["via"] == "module_breadth")
+                .count(),
+            3,
+            "module breadth rows must survive budget truncation"
+        );
+    }
+
+    #[test]
     fn endpoint_path_tokens_extract_route_mentions() {
         assert_eq!(
             endpoint_path_tokens("Trace from the /proof endpoint to the calendar poll."),
@@ -4850,18 +5530,23 @@ mod tests {
         // Natural-language question, no route token: the question path finds
         // nothing, the evidence path must.
         let question = "How does the desktop app receive a session token after login?";
-        let fresh = evidence_route_injections(&sqlite, question, &[client.clone()], &[]).unwrap();
+        let fresh =
+            evidence_route_injections(&sqlite, question, std::slice::from_ref(&client), &[])
+                .unwrap();
         assert_eq!(fresh.len(), 1, "must resolve the server handler");
         assert_eq!(fresh[0].symbol_name, "desktopAuthRouter");
         assert_eq!(fresh[0].via, "route_endpoint");
 
         // Handler already present in evidence: nothing to inject.
         let present = fresh[0].clone();
-        assert!(
-            evidence_route_injections(&sqlite, question, &[client.clone()], &[present])
-                .unwrap()
-                .is_empty()
-        );
+        assert!(evidence_route_injections(
+            &sqlite,
+            question,
+            std::slice::from_ref(&client),
+            &[present]
+        )
+        .unwrap()
+        .is_empty());
 
         // Route token already in the question: the question path owns it,
         // the evidence pass must not duplicate the lookup.

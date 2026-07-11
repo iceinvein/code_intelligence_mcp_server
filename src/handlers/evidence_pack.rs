@@ -602,6 +602,39 @@ mod tests {
     }
 
     #[test]
+    fn symbol_lookup_pack_preserves_module_breadth_role() {
+        // Arch questions classify as Discover, whose pack kind is
+        // symbol_lookup; the breadth rows must keep their provenance role
+        // there too (roles ARE the citation signal, R025).
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "How is anchoring split between the backend and the worker?".to_string(),
+            target: "anchoring".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "sealEpoch();")],
+            secondary: vec![location_via(
+                55,
+                "fn main() { run_loop() }",
+                Some("module_breadth"),
+            )],
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        let roles: Vec<String> = value["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["role"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            roles.contains(&"module_breadth".to_string()),
+            "module_breadth rows must keep their via as the pack role: {roles:?}"
+        );
+    }
+
+    #[test]
     fn callsite_pack_keeps_two_distinct_lines() {
         let pack = build_evidence_pack(EvidencePackInput {
             question: "who calls target_fn".to_string(),

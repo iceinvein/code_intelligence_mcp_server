@@ -767,6 +767,41 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         }
     }
 
+    // Step 3.7.10: inject the cross-file dependencies CALLED BY the route
+    // handlers steps 3.7.08/3.7.09 injected. R022 residual: agents stop
+    // after one ask_code call, so the handler's callees (the rubric's
+    // remaining secondary citations) never surface -- step 3.7.05 only walks
+    // the primary hit's file. See handler_dependency_locations.
+    {
+        let handler_ids: Vec<String> = secondary
+            .as_ref()
+            .map(|s| {
+                s.locations
+                    .iter()
+                    .filter(|l| l.via == "route_endpoint")
+                    .map(|l| l.symbol_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !handler_ids.is_empty() {
+            let fresh = {
+                let present: HashSet<&str> = primary
+                    .locations
+                    .iter()
+                    .chain(secondary.iter().flat_map(|s| s.locations.iter()))
+                    .map(|l| l.symbol_id.as_str())
+                    .collect();
+                handler_dependency_locations(&state.sqlite, &handler_ids, &present)?
+            };
+            if !fresh.is_empty() {
+                match secondary.as_mut() {
+                    Some(s) => s.locations.extend(fresh),
+                    None => unreachable!("handler_ids came from secondary"),
+                }
+            }
+        }
+    }
+
     // Step 3.7.1: auto-include IPC boundary files for flow questions that
     // cross the renderer / preload / main process line. The supporting
     // modules lookup only finds files called BY the primary file; the
@@ -1141,28 +1176,42 @@ fn supporting_definition_locations(
     defs.into_iter()
         .take(cap)
         .map(|(row, _count)| {
-            let mut body: String = row
-                .text
-                .lines()
-                .take(SUPPORTING_DEFINITION_BODY_LINES)
-                .collect::<Vec<_>>()
-                .join("\n");
-            if row.text.lines().count() > SUPPORTING_DEFINITION_BODY_LINES {
-                body.push_str("\n// ... truncated");
-            }
-            VerifiedLocation {
-                symbol_id: row.id,
-                symbol_name: row.name,
-                file_path: row.file_path,
-                kind: row.kind,
-                start_line: row.start_line,
-                end_line: row.end_line,
-                via: "supporting_definition",
-                body,
-                route_exposure: Vec::new(),
-            }
+            injected_location(
+                row,
+                "supporting_definition",
+                SUPPORTING_DEFINITION_BODY_LINES,
+            )
         })
         .collect()
+}
+
+/// Shape a symbol row into an injected evidence row with a head-trimmed
+/// body. Shared by the supporting_definition and handler_dependency shapers.
+fn injected_location(
+    row: crate::storage::sqlite::SymbolRow,
+    via: &'static str,
+    body_lines: usize,
+) -> VerifiedLocation {
+    let mut body: String = row
+        .text
+        .lines()
+        .take(body_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if row.text.lines().count() > body_lines {
+        body.push_str("\n// ... truncated");
+    }
+    VerifiedLocation {
+        symbol_id: row.id,
+        symbol_name: row.name,
+        file_path: row.file_path,
+        kind: row.kind,
+        start_line: row.start_line,
+        end_line: row.end_line,
+        via,
+        body,
+        route_exposure: Vec::new(),
+    }
 }
 
 /// Cap for injected route-endpoint evidence rows. Multiple routes can match
@@ -1411,6 +1460,88 @@ fn route_endpoint_locations(
     question: &str,
 ) -> Result<Vec<VerifiedLocation>> {
     route_endpoint_locations_for_tokens(sqlite, &endpoint_path_tokens(question))
+}
+
+/// Cap for injected handler-dependency evidence rows. Small like the other
+/// injection caps: they supplement the trace, they must not displace it.
+const HANDLER_DEPENDENCY_CAP: usize = 3;
+const HANDLER_DEPENDENCY_BODY_LINES: usize = 24;
+
+/// Cross-file callees of injected route handlers, shaped as evidence rows.
+/// R022 residual on wolfmax-multi-hop-03: agents stop after one ask_code
+/// call, so the files the injected handler CALLS (user-keys.ts,
+/// transaction.ts) never get cited -- step 3.7.05 walks only the primary
+/// hit's file, and injected handlers live in secondary. Ranking is use-count
+/// only (summed edge evidence_count): the targets here are service
+/// functions, which the 3.7.05 data-first kind bias would bury beneath
+/// consts and types.
+fn handler_dependency_locations(
+    sqlite: &crate::storage::sqlite::SqliteStore,
+    handler_ids: &[String],
+    present: &HashSet<&str>,
+) -> Result<Vec<VerifiedLocation>> {
+    let mut targets: std::collections::HashMap<String, (crate::storage::sqlite::SymbolRow, usize)> =
+        std::collections::HashMap::new();
+    for id in handler_ids {
+        let Some(handler) = sqlite.get_symbol_by_id(id)? else {
+            continue;
+        };
+        for edge in sqlite.list_edges_from(id, 64)? {
+            let Some(callee) = sqlite.get_symbol_by_id(&edge.to_symbol_id)? else {
+                continue;
+            };
+            if !is_supporting_edge(&edge.edge_type, &callee.kind) {
+                continue;
+            }
+            if callee.file_path == handler.file_path {
+                continue;
+            }
+            if crate::classify::is_generated_output_path(&callee.file_path) {
+                continue;
+            }
+            // Barrel-file callees (`db` in db/index.ts) are re-export glue,
+            // never a citable flow dependency. Same file-name rule as the
+            // glue-code filter in ranking/score.rs.
+            let file_name = callee
+                .file_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&callee.file_path);
+            if file_name == "index.ts" || file_name == "index.tsx" {
+                continue;
+            }
+            if present.contains(callee.id.as_str()) {
+                continue;
+            }
+            let uses = edge.evidence_count.max(1) as usize;
+            targets
+                .entry(callee.id.clone())
+                .and_modify(|(_, c)| *c += uses)
+                .or_insert((callee, uses));
+        }
+    }
+    // Error classes rank last, not out: handlers reach them by call
+    // (constructor throw) AND reference edges, so their summed count beats
+    // every flow callee (live wolfmax: AuthenticationError outscored the
+    // schema table the rubric required). They stay eligible for spare slots
+    // since error-handling questions can legitimately want them.
+    fn is_error_like(row: &crate::storage::sqlite::SymbolRow) -> bool {
+        row.name.ends_with("Error") && matches!(row.kind.as_str(), "class" | "function")
+    }
+    let mut defs: Vec<_> = targets.into_values().collect();
+    defs.sort_by(|a, b| {
+        is_error_like(&a.0)
+            .cmp(&is_error_like(&b.0))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.name.cmp(&b.0.name))
+    });
+    Ok(defs
+        .into_iter()
+        .take(HANDLER_DEPENDENCY_CAP)
+        .map(|(row, _count)| {
+            injected_location(row, "handler_dependency", HANDLER_DEPENDENCY_BODY_LINES)
+        })
+        .collect())
 }
 
 fn run_supporting_modules_lookup(
@@ -2395,7 +2526,7 @@ fn summarize_secondary(raw: &Value, via: &str) -> Value {
 /// Budget stages must not drop them: they ride at the end of the location
 /// list and their bodies are pre-trimmed small.
 fn is_injected_via(via: &Value) -> bool {
-    via == "supporting_definition" || via == "route_endpoint"
+    via == "supporting_definition" || via == "route_endpoint" || via == "handler_dependency"
 }
 
 /// Trim the response to fit `RESPONSE_BUDGET_BYTES`. Degrades in stages:
@@ -2698,8 +2829,8 @@ fn apply_response_budget(response: &mut Value) {
     // Stage 2: drop bodies past index 2. The top 3 hits are the ones the
     // agent will cite most often, so they keep their bodies even when
     // those bodies are large. Injected rows (supporting_definition,
-    // route_endpoint) are exempt: their bodies are pre-trimmed small and a
-    // bodyless injected row is not citable evidence.
+    // route_endpoint, handler_dependency) are exempt: their bodies are
+    // pre-trimmed small and a bodyless injected row is not citable evidence.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
@@ -2748,9 +2879,9 @@ fn apply_response_budget(response: &mut Value) {
     }
 
     // Stage 4: truncate verified_locations to 8, preserving injected rows
-    // (supporting_definition, route_endpoint): they ride at the end of the
-    // list and a keep-first-8 cut would silently drop exactly the rows the
-    // injections exist to deliver.
+    // (supporting_definition, route_endpoint, handler_dependency): they ride
+    // at the end of the list and a keep-first-8 cut would silently drop
+    // exactly the rows the injections exist to deliver.
     if let Some(arr) = response
         .get_mut("verified_locations")
         .and_then(|v| v.as_array_mut())
@@ -2759,7 +2890,7 @@ fn apply_response_budget(response: &mut Value) {
             let injected: Vec<Value> = arr
                 .iter()
                 .filter(|l| is_injected_via(&l["via"]))
-                .take(SUPPORTING_DEFINITION_CAP + ROUTE_ENDPOINT_CAP)
+                .take(SUPPORTING_DEFINITION_CAP + ROUTE_ENDPOINT_CAP + HANDLER_DEPENDENCY_CAP)
                 .cloned()
                 .collect();
             let keep_others = 8usize.saturating_sub(injected.len());
@@ -3689,6 +3820,59 @@ mod tests {
     }
 
     #[test]
+    fn budget_truncation_preserves_handler_dependencies() {
+        // Handler-dependency rows ride at the end of the location list like
+        // the other injected vias; the stage-4 cut and stage-2 body drop must
+        // keep them (R022 residual: the handler's callees never reached the
+        // agent because it stops after one call).
+        let mk = |i: usize, via: &str| {
+            json!({
+                "symbol_id": format!("s{i}"),
+                "symbol_name": format!("sym{i}"),
+                "file_path": "src/x.ts",
+                "kind": "function",
+                "start_line": 1,
+                "end_line": 2,
+                "via": via,
+                "body": "b".repeat(1000),
+            })
+        };
+        let mut locs: Vec<Value> = (0..38).map(|i| mk(i, "search_code")).collect();
+        locs.push(mk(97, "route_endpoint"));
+        locs.push(mk(98, "handler_dependency"));
+        locs.push(mk(99, "handler_dependency"));
+        let mut response = json!({
+            "question": "q",
+            "context_chain": "",
+            "plan": {},
+            "verified_locations": locs,
+            "pack": {"rows": [{"role": "primary", "evidence": "e".repeat(40_000)}]},
+        });
+
+        apply_response_budget(&mut response);
+
+        let kept_rows = response["verified_locations"].as_array().unwrap().clone();
+        for l in kept_rows
+            .iter()
+            .filter(|l| l["via"] == "handler_dependency")
+        {
+            assert!(
+                !l["body"].as_str().unwrap_or("").is_empty(),
+                "handler dependency bodies must be preserved"
+            );
+        }
+        assert!(kept_rows.len() <= 8);
+        assert_eq!(
+            kept_rows
+                .iter()
+                .filter(|l| l["via"] == "handler_dependency")
+                .count(),
+            2,
+            "handler dependencies must survive budget truncation"
+        );
+    }
+
+    #[test]
     fn endpoint_path_tokens_extract_route_mentions() {
         assert_eq!(
             endpoint_path_tokens("Trace from the /proof endpoint to the calendar poll."),
@@ -3896,6 +4080,257 @@ mod tests {
         )
         .unwrap()
         .is_empty());
+    }
+
+    #[test]
+    fn handler_dependency_locations_rank_by_use_count() {
+        use crate::storage::sqlite::{EdgeRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let mk_sym = |id: &str, file: &str, kind: &str, name: &str| SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "typescript".to_string(),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 10,
+            end_line: 40,
+            text: format!("body of {name}"),
+        };
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "h",
+                "packages/backend/src/api/desktop-auth.ts",
+                "const",
+                "desktopAuthRouter",
+            ))
+            .unwrap();
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "vk",
+                "packages/backend/src/lib/user-keys.ts",
+                "function",
+                "verifyUserKey",
+            ))
+            .unwrap();
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "sc",
+                "packages/backend/src/db/schema.ts",
+                "const",
+                "apiKeys",
+            ))
+            .unwrap();
+
+        // verifyUserKey is called twice from the handler; the schema const is
+        // referenced once. Use-count-only ranking must put the function first:
+        // the 3.7.05 data-first kind bias would bury exactly the service
+        // functions trace rubrics require.
+        sqlite
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "h".to_string(),
+                to_symbol_id: "vk".to_string(),
+                edge_type: "call".to_string(),
+                at_file: Some("packages/backend/src/api/desktop-auth.ts".to_string()),
+                at_line: Some(15),
+                confidence: 1.0,
+                evidence_count: 2,
+                resolution: "exact".to_string(),
+            })
+            .unwrap();
+        sqlite
+            .upsert_edge(&EdgeRow {
+                from_symbol_id: "h".to_string(),
+                to_symbol_id: "sc".to_string(),
+                edge_type: "reference".to_string(),
+                at_file: Some("packages/backend/src/api/desktop-auth.ts".to_string()),
+                at_line: Some(20),
+                confidence: 1.0,
+                evidence_count: 1,
+                resolution: "exact".to_string(),
+            })
+            .unwrap();
+
+        let locations =
+            handler_dependency_locations(&sqlite, &["h".to_string()], &HashSet::new()).unwrap();
+
+        assert_eq!(locations.len(), 2, "both cross-file callees must ride");
+        assert_eq!(locations[0].symbol_name, "verifyUserKey");
+        assert_eq!(locations[1].symbol_name, "apiKeys");
+        for l in &locations {
+            assert_eq!(l.via, "handler_dependency");
+            assert!(!l.body.is_empty(), "injected rows must carry bodies");
+        }
+    }
+
+    #[test]
+    fn handler_dependency_locations_demote_errors_and_skip_barrels() {
+        use crate::storage::sqlite::{EdgeRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let mk_sym = |id: &str, file: &str, kind: &str, name: &str| SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "typescript".to_string(),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 10,
+            end_line: 40,
+            text: format!("body of {name}"),
+        };
+        let mk_edge = |from: &str, to: &str, edge_type: &str, count: u32| EdgeRow {
+            from_symbol_id: from.to_string(),
+            to_symbol_id: to.to_string(),
+            edge_type: edge_type.to_string(),
+            at_file: None,
+            at_line: Some(15),
+            confidence: 1.0,
+            evidence_count: count,
+            resolution: "exact".to_string(),
+        };
+        let handler_file = "packages/backend/src/api/desktop-auth.ts";
+        sqlite
+            .upsert_symbol(&mk_sym("h", handler_file, "const", "desktopAuthRouter"))
+            .unwrap();
+        // The live wolfmax shape: an error class reached by BOTH a call
+        // (constructor throw) and a reference edge, so its summed use count
+        // beats every flow callee.
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "err",
+                "packages/backend/src/errors/types.ts",
+                "class",
+                "AuthenticationError",
+            ))
+            .unwrap();
+        // A barrel-file const (`db` in db/index.ts): re-export glue, never a
+        // citable flow dependency.
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "db",
+                "packages/backend/src/db/index.ts",
+                "const",
+                "db",
+            ))
+            .unwrap();
+        // The rubric target: a schema table referenced once.
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "tbl",
+                "packages/backend/src/db/schema/user-keys.ts",
+                "const",
+                "desktopAuthExchangeCodes",
+            ))
+            .unwrap();
+        sqlite.upsert_edge(&mk_edge("h", "err", "call", 1)).unwrap();
+        sqlite
+            .upsert_edge(&mk_edge("h", "err", "reference", 1))
+            .unwrap();
+        sqlite
+            .upsert_edge(&mk_edge("h", "db", "reference", 1))
+            .unwrap();
+        sqlite
+            .upsert_edge(&mk_edge("h", "tbl", "reference", 1))
+            .unwrap();
+
+        let locations =
+            handler_dependency_locations(&sqlite, &["h".to_string()], &HashSet::new()).unwrap();
+
+        let names: Vec<&str> = locations.iter().map(|l| l.symbol_name.as_str()).collect();
+        assert!(
+            !names.contains(&"db"),
+            "barrel-file callees must be excluded: {names:?}"
+        );
+        assert_eq!(
+            names,
+            vec!["desktopAuthExchangeCodes", "AuthenticationError"],
+            "error classes must rank after flow callees despite higher use count"
+        );
+    }
+
+    #[test]
+    fn handler_dependency_locations_exclude_present_and_same_file() {
+        use crate::storage::sqlite::{EdgeRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let mk_sym = |id: &str, file: &str, kind: &str, name: &str| SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "typescript".to_string(),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 10,
+            end_line: 40,
+            text: format!("body of {name}"),
+        };
+        let mk_call = |from: &str, to: &str| EdgeRow {
+            from_symbol_id: from.to_string(),
+            to_symbol_id: to.to_string(),
+            edge_type: "call".to_string(),
+            at_file: None,
+            at_line: Some(15),
+            confidence: 1.0,
+            evidence_count: 1,
+            resolution: "exact".to_string(),
+        };
+        let handler_file = "packages/backend/src/api/desktop-auth.ts";
+        sqlite
+            .upsert_symbol(&mk_sym("h", handler_file, "const", "desktopAuthRouter"))
+            .unwrap();
+        // Same-file helper: excluded (the handler row's body already shows it).
+        sqlite
+            .upsert_symbol(&mk_sym("sf", handler_file, "function", "localHelper"))
+            .unwrap();
+        // Already present in the evidence: excluded, dedup would drop it later
+        // after it displaced a genuinely new row.
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "pr",
+                "packages/backend/src/lib/transaction.ts",
+                "function",
+                "runTransaction",
+            ))
+            .unwrap();
+        // Fresh cross-file callee: the only survivor.
+        sqlite
+            .upsert_symbol(&mk_sym(
+                "vk",
+                "packages/backend/src/lib/user-keys.ts",
+                "function",
+                "verifyUserKey",
+            ))
+            .unwrap();
+        for to in ["sf", "pr", "vk"] {
+            sqlite.upsert_edge(&mk_call("h", to)).unwrap();
+        }
+
+        let present: HashSet<&str> = ["pr"].into_iter().collect();
+        let locations =
+            handler_dependency_locations(&sqlite, &["h".to_string()], &present).unwrap();
+
+        assert_eq!(
+            locations
+                .iter()
+                .map(|l| l.symbol_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["verifyUserKey"],
+            "same-file and already-present callees must be excluded"
+        );
     }
 
     #[test]

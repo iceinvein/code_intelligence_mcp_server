@@ -61,6 +61,29 @@ def _cite_appears(c: Citation, answer: str) -> bool:
     return False
 
 
+def _file_mentioned(expected: str, answer_lower: str) -> bool:
+    """True when the answer names `expected` as a full path or a '/'-boundary
+    suffix with at least two segments.
+
+    The server's `cite` field hands agents short unique path forms
+    ("lib/receipt-signer.ts"), so suffix mentions are genuine file coverage.
+    Bare basenames stay excluded: they match too many files to be evidence.
+    """
+    expected = expected.lower()
+    parts = expected.split("/")
+    # Longest first so the common case (full path) exits early.
+    suffixes = ["/".join(parts[-k:]) for k in range(len(parts), 1, -1)]
+    if not suffixes:  # single-segment expected path: full-path match only
+        suffixes = [expected]
+    for suffix in suffixes:
+        # Left boundary: the char before the match must not extend the path
+        # ("mylib/receipt-signer.ts" must not satisfy "lib/receipt-signer.ts").
+        pat = re.compile(r"(?<![\w./-])" + re.escape(suffix))
+        if pat.search(answer_lower):
+            return True
+    return False
+
+
 def mech_score(q: Question, answer: str) -> dict:
     if not answer.strip():
         return {
@@ -81,7 +104,7 @@ def mech_score(q: Question, answer: str) -> dict:
 
     # 2. File coverage. Empty files list = no required files -> vacuously 1.0.
     if q.expected.files:
-        file_hits = sum(1 for f in q.expected.files if f.lower() in a)
+        file_hits = sum(1 for f in q.expected.files if _file_mentioned(f, a))
         file_score = file_hits / len(q.expected.files)
     else:
         file_score = 1.0

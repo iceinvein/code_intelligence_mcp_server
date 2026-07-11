@@ -44,6 +44,40 @@ def test_answer_with_no_citation_caps_at_half():
     assert result["raw"] == pytest.approx(0.5)
 
 
+def test_file_score_accepts_multi_segment_suffix_mention():
+    # R030: the server's `cite` field pushes agents toward short unique path
+    # forms ("lib/receipt-signer.ts"); those must count as file coverage for
+    # the full expected path.
+    q = _q(
+        files=["packages/backend/src/lib/receipt-signer.ts"],
+        facts=["signer"],
+        citations=[],
+    )
+    answer = "Receipts are signed in lib/receipt-signer.ts:170 by the signer."
+    result = score.mech_score(q, answer)
+    assert result["file_score"] == 1.0
+
+
+def test_file_score_rejects_bare_basename_mention():
+    # A bare basename is not path evidence: "operations.py" matches a dozen
+    # files in django and must not earn file coverage on its own.
+    q = _q(
+        files=["django/db/backends/base/operations.py"],
+        facts=["ops"],
+        citations=[],
+    )
+    answer = "See operations.py for the ops."
+    result = score.mech_score(q, answer)
+    assert result["file_score"] == 0.0
+
+
+def test_file_score_rejects_non_suffix_path():
+    q = _q(files=["django/db/backends/base/operations.py"], facts=["ops"], citations=[])
+    answer = "See mysql/operations.py for the ops."
+    result = score.mech_score(q, answer)
+    assert result["file_score"] == 0.0
+
+
 def test_fact_or_alternatives_satisfied_by_either():
     q = _q(facts=[["create session", "createSession"]])
     answer = "src/foo.rs:10 contains createSession."

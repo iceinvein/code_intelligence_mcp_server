@@ -35,6 +35,9 @@ pub struct EvidenceItem {
     pub start_line: u32,
     pub end_line: u32,
     pub body: String,
+    /// Shortest repo-unique path form plus line range, carried through from
+    /// the investigate response for copy-paste citation.
+    pub cite: Option<String>,
 }
 
 /// One citation extracted from the LLM's answer text.
@@ -370,6 +373,7 @@ mod tests {
             start_line: start,
             end_line: end,
             body: "fn fn_x() { /* body */ }".to_string(),
+            cite: None,
         }
     }
 

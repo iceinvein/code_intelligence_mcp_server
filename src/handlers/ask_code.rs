@@ -243,6 +243,7 @@ fn extract_evidence_from_investigate(response: &Value, max_evidence: u32) -> Vec
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string(),
+                cite: obj.get("cite").and_then(|x| x.as_str()).map(str::to_string),
             })
         })
         .collect()
@@ -252,7 +253,7 @@ fn evidence_to_json(evidence: &[EvidenceItem]) -> Vec<Value> {
     evidence
         .iter()
         .map(|e| {
-            json!({
+            let mut v = json!({
                 "symbol_id": e.symbol_id,
                 "symbol_name": e.symbol_name,
                 "file_path": e.file_path,
@@ -260,7 +261,11 @@ fn evidence_to_json(evidence: &[EvidenceItem]) -> Vec<Value> {
                 "start_line": e.start_line,
                 "end_line": e.end_line,
                 "body": e.body,
-            })
+            });
+            if let Some(cite) = e.cite.as_deref() {
+                v["cite"] = json!(cite);
+            }
+            v
         })
         .collect()
 }
@@ -586,6 +591,7 @@ mod tests {
             start_line: start,
             end_line: end,
             body: "body".to_string(),
+            cite: None,
         }
     }
 

@@ -46,6 +46,13 @@ pub struct EvidenceRow {
     pub end_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enclosing_symbol: Option<String>,
+    /// Copy-paste citation form: the shortest '/'-boundary path suffix that is
+    /// unique across the indexed file list, plus the row's line range.
+    /// Agents shorten long paths in prose; when two files share a basename the
+    /// shortened cite is ambiguous to a reader. This field gives them a short
+    /// form that stays unambiguous (R028).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cite: Option<String>,
     pub evidence: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -238,9 +245,75 @@ fn row_from_location(
         line,
         end_line: location.end_line,
         enclosing_symbol: None,
+        cite: None,
         evidence,
         reason: location.kind,
         risk,
+    }
+}
+
+/// Shortest '/'-boundary suffix (at least two segments) that is unique across
+/// `files`, per file. Two segments minimum so the form still reads as a path;
+/// single-segment paths keep the full path.
+pub fn short_cite_forms(files: &[String]) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for file in files {
+        for suffix in multi_segment_suffixes(file) {
+            *counts.entry(suffix).or_insert(0) += 1;
+        }
+    }
+
+    files
+        .iter()
+        .map(|file| {
+            let form = multi_segment_suffixes(file)
+                .find(|s| counts.get(s) == Some(&1))
+                .unwrap_or(file.as_str());
+            (file.clone(), form.to_string())
+        })
+        .collect()
+}
+
+/// Suffixes of `path` on '/' boundaries with >= 2 segments, shortest first,
+/// ending with the full path. A single-segment path yields only itself.
+fn multi_segment_suffixes(path: &str) -> impl Iterator<Item = &str> {
+    let mut starts: Vec<usize> = path.match_indices('/').map(|(i, _)| i + 1).collect();
+    // Drop the last-segment start: a bare basename is not a path form.
+    starts.pop();
+    starts.reverse(); // largest start = shortest suffix first
+    starts.push(0); // full path last
+    starts.into_iter().map(move |s| &path[s..])
+}
+
+/// Fill each row's `cite` from the short-form map, appending the line range.
+/// Files missing from the map (e.g. synthetic locations) fall back to the
+/// full path, which is always a valid citation.
+pub fn apply_cite_forms(
+    pack: &mut EvidencePack,
+    forms: &std::collections::HashMap<String, String>,
+) {
+    let mut applied = false;
+    for row in &mut pack.rows {
+        let Some(file) = row.file_path.as_deref() else {
+            continue;
+        };
+        let short = forms.get(file).map(String::as_str).unwrap_or(file);
+        row.cite = Some(match (row.line, row.end_line) {
+            (Some(line), Some(end)) if end > line => format!("{short}:{line}-{end}"),
+            (Some(line), _) => format!("{short}:{line}"),
+            (None, _) => short.to_string(),
+        });
+        applied = true;
+    }
+    if applied {
+        pack.answer_guidance.insert(
+            0,
+            "Cite locations by copying each row's `cite` value verbatim; it is \
+             the shortest path form that stays unambiguous in this repo."
+                .to_string(),
+        );
     }
 }
 
@@ -1293,6 +1366,82 @@ mod tests {
             assert_ne!(production.role, config.role);
             assert_ne!(test.role, config.role);
         }
+    }
+
+    #[test]
+    fn short_cite_forms_pick_shortest_unique_suffix() {
+        // R028: agents shorten long paths in prose ("aggregation.rs:23") and
+        // collide when two files share a basename, halving mech via the
+        // ambiguous_path flag. The cite form is the shortest '/'-boundary
+        // suffix (>= 2 segments) unique across the indexed file list.
+        let files = vec![
+            "packages/backend-worker/src/aggregation.rs".to_string(),
+            "packages/desktop/src/aggregation.rs".to_string(),
+            "packages/backend/src/lib/receipt-signer.ts".to_string(),
+            "src/main.rs".to_string(),
+            "build.rs".to_string(),
+        ];
+        let forms = short_cite_forms(&files);
+
+        // Both aggregation.rs end in "src/aggregation.rs" -> 3 segments needed.
+        assert_eq!(
+            forms["packages/backend-worker/src/aggregation.rs"],
+            "backend-worker/src/aggregation.rs"
+        );
+        assert_eq!(
+            forms["packages/desktop/src/aggregation.rs"],
+            "desktop/src/aggregation.rs"
+        );
+        // Unique basename still gets >= 2 segments so it reads as a path.
+        assert_eq!(
+            forms["packages/backend/src/lib/receipt-signer.ts"],
+            "lib/receipt-signer.ts"
+        );
+        assert_eq!(forms["src/main.rs"], "src/main.rs");
+        // Single-segment path: the full path is the only form.
+        assert_eq!(forms["build.rs"], "build.rs");
+    }
+
+    #[test]
+    fn apply_cite_forms_sets_row_cite_with_line_range() {
+        let mut pack = build_evidence_pack(EvidencePackInput {
+            question: "what is handler".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "handler();")],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let forms = short_cite_forms(&["src/app.rs".to_string(), "other/app.rs".to_string()]);
+        apply_cite_forms(&mut pack, &forms);
+
+        let row = &pack.rows[0];
+        // location() uses src/app.rs lines 10-11; evidence-line offset keeps
+        // line at 10 here.
+        assert_eq!(row.cite.as_deref(), Some("src/app.rs:10-11"));
+
+        let value = pack_to_value(&pack);
+        assert_eq!(value["rows"][0]["cite"], "src/app.rs:10-11");
+    }
+
+    #[test]
+    fn apply_cite_forms_falls_back_to_full_path_for_unknown_files() {
+        let mut pack = build_evidence_pack(EvidencePackInput {
+            question: "what is handler".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location(10, "handler();")],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+
+        let forms = short_cite_forms(&["unrelated/file.rs".to_string()]);
+        apply_cite_forms(&mut pack, &forms);
+
+        assert_eq!(pack.rows[0].cite.as_deref(), Some("src/app.rs:10-11"));
     }
 
     #[test]

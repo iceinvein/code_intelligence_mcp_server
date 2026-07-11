@@ -847,7 +847,13 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
                     .chain(secondary.iter().flat_map(|s| s.locations.iter()))
                     .map(|l| l.symbol_id.as_str())
                     .collect();
-                handler_dependency_locations(&state.sqlite, &handler_ids, &present)?
+                handler_dependency_locations(
+                    &state.sqlite,
+                    &handler_ids,
+                    &present,
+                    "handler_dependency",
+                    HANDLER_DEPENDENCY_CAP,
+                )?
             };
             if !fresh.is_empty() {
                 match secondary.as_mut() {
@@ -967,6 +973,49 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         }
     }
 
+    // Step 3.7.12: inject the cross-file dependencies CALLED BY the
+    // module-breadth representatives step 3.7.11 injected. R028 residual on
+    // arch-03: the rubric wants lib/receipt-signer.ts but nothing in the
+    // question names lib/ or receipts, so neither the raw search nor the
+    // subsystem pass reaches it. It IS a direct callee of the injected
+    // api/crypto handler (cryptoEpochsRouter -> getReceiptSigner), so the
+    // 3.7.10 edge-walk pattern anchored on breadth rows surfaces it.
+    {
+        let breadth_ids: Vec<String> = secondary
+            .as_ref()
+            .map(|s| {
+                s.locations
+                    .iter()
+                    .filter(|l| l.via == "module_breadth")
+                    .map(|l| l.symbol_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !breadth_ids.is_empty() {
+            let fresh = {
+                let present: HashSet<&str> = primary
+                    .locations
+                    .iter()
+                    .chain(secondary.iter().flat_map(|s| s.locations.iter()))
+                    .map(|l| l.symbol_id.as_str())
+                    .collect();
+                handler_dependency_locations(
+                    &state.sqlite,
+                    &breadth_ids,
+                    &present,
+                    "breadth_dependency",
+                    BREADTH_DEPENDENCY_CAP,
+                )?
+            };
+            if !fresh.is_empty() {
+                match secondary.as_mut() {
+                    Some(s) => s.locations.extend(fresh),
+                    None => unreachable!("breadth_ids came from secondary"),
+                }
+            }
+        }
+    }
+
     // Step 3.7.1: auto-include IPC boundary files for flow questions that
     // cross the renderer / preload / main process line. The supporting
     // modules lookup only finds files called BY the primary file; the
@@ -998,6 +1047,16 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         })
         .unwrap_or_default();
 
+    let cite_forms = {
+        let files: Vec<String> = state
+            .sqlite
+            .list_indexed_files()?
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        super::evidence_pack::short_cite_forms(&files)
+    };
+
     let mut bundle = build_response(
         &question,
         shape,
@@ -1009,6 +1068,7 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         supporting_modules,
         non_callgraph_candidates,
         max_hops,
+        &cite_forms,
     );
 
     // Step 3.8: append a conciseness directive for scalar-value lookups
@@ -1697,6 +1757,11 @@ fn sibling_route_locations(
 /// injection caps: they supplement the trace, they must not displace it.
 const HANDLER_DEPENDENCY_CAP: usize = 3;
 const HANDLER_DEPENDENCY_BODY_LINES: usize = 24;
+/// Cap for step 3.7.12 (callees of module-breadth rows). Tighter than the
+/// handler walk: breadth packs already carry MODULE_BREADTH_CAP extra rows,
+/// and the walk's job is the one shared library the split's sides call into
+/// (receipt-signer.ts on arch-03), not another module list.
+const BREADTH_DEPENDENCY_CAP: usize = 2;
 
 /// Cross-file callees of injected route handlers, shaped as evidence rows.
 /// R022 residual on wolfmax-multi-hop-03: agents stop after one ask_code
@@ -1710,6 +1775,8 @@ fn handler_dependency_locations(
     sqlite: &crate::storage::sqlite::SqliteStore,
     handler_ids: &[String],
     present: &HashSet<&str>,
+    via: &'static str,
+    cap: usize,
 ) -> Result<Vec<VerifiedLocation>> {
     let mut targets: std::collections::HashMap<String, (crate::storage::sqlite::SymbolRow, usize)> =
         std::collections::HashMap::new();
@@ -1768,10 +1835,8 @@ fn handler_dependency_locations(
     });
     Ok(defs
         .into_iter()
-        .take(HANDLER_DEPENDENCY_CAP)
-        .map(|(row, _count)| {
-            injected_location(row, "handler_dependency", HANDLER_DEPENDENCY_BODY_LINES)
-        })
+        .take(cap)
+        .map(|(row, _count)| injected_location(row, via, HANDLER_DEPENDENCY_BODY_LINES))
         .collect())
 }
 
@@ -2811,12 +2876,33 @@ fn build_response(
     supporting_modules: Option<SupportingModules>,
     non_callgraph_candidates: Vec<PackLocation>,
     max_hops: u32,
+    cite_forms: &std::collections::HashMap<String, String>,
 ) -> Value {
     let mut all_locations = primary.locations.clone();
     if let Some(s) = secondary.as_ref() {
         all_locations.extend(s.locations.clone());
     }
     let dedup = dedup_locations(all_locations);
+    // Serialize verified_locations with a `cite` per entry: the shortest
+    // repo-unique path form plus line range, so agents copying it never
+    // produce an ambiguous shortened citation (R028).
+    let dedup: Vec<Value> = dedup
+        .into_iter()
+        .map(|l| {
+            let short = cite_forms
+                .get(&l.file_path)
+                .map(String::as_str)
+                .unwrap_or(l.file_path.as_str());
+            let cite = if l.end_line > l.start_line {
+                format!("{short}:{}-{}", l.start_line, l.end_line)
+            } else {
+                format!("{short}:{}", l.start_line)
+            };
+            let mut v = serde_json::to_value(&l).expect("location should serialize");
+            v["cite"] = json!(cite);
+            v
+        })
+        .collect();
 
     let primary_symbol = primary.locations.first().map(|l| {
         json!({
@@ -2857,7 +2943,7 @@ fn build_response(
         .first()
         .map(|loc| loc.symbol_name.clone())
         .unwrap_or_else(|| question.to_string());
-    let pack = build_evidence_pack(EvidencePackInput {
+    let mut pack = build_evidence_pack(EvidencePackInput {
         question: question.to_string(),
         target: pack_target,
         shape,
@@ -2869,6 +2955,7 @@ fn build_response(
         secondary_via: secondary.as_ref().map(|s| s.via.to_string()),
         extra_candidates: non_callgraph_candidates,
     });
+    super::evidence_pack::apply_cite_forms(&mut pack, cite_forms);
 
     let test_coverage_value = test_coverage.as_ref().map(|tc| {
         let mut tc_json = json!({
@@ -2923,7 +3010,10 @@ fn build_response(
         "pack": pack_to_value(&pack),
         "context_chain": context_chain,
         "answer_hint": "Cite only entries from `verified_locations` or `pack.rows` \
-            with line-level file evidence. Respect `pack.coverage.status`: `partial` \
+            with line-level file evidence. When citing, copy the entry's `cite` \
+            value verbatim -- it is the shortest path form that stays unambiguous \
+            in this repo; shortening it further can collide with a same-named \
+            file. Respect `pack.coverage.status`: `partial` \
             means returned rows are candidates or a truncated subset, not exhaustive \
             proof. Identifiers mentioned inside `body` text or in `context_chain` but \
             NOT listed in verified_locations or pack.rows are NOT verified locations - \
@@ -3037,6 +3127,7 @@ pub(crate) fn is_injected_via_str(via: &str) -> bool {
             | "sibling_route"
             | "handler_dependency"
             | "module_breadth"
+            | "breadth_dependency"
     )
 }
 
@@ -3960,6 +4051,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
 
         assert_eq!(response["pack"]["kind"], "callsite_enumeration");
@@ -4016,6 +4108,7 @@ mod tests {
                 ),
             }],
             3,
+            &Default::default(),
         );
 
         assert!(response["pack"]["rows"]
@@ -4125,6 +4218,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
 
         let rows = response["pack"]["rows"].as_array().expect("pack rows");
@@ -4190,6 +4284,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
         let serialized = serde_json::to_string(&response).expect("response should serialize");
 
@@ -4247,6 +4342,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
 
         assert_eq!(response["pack"]["rows_truncated"], true);
@@ -5209,8 +5305,14 @@ mod tests {
             })
             .unwrap();
 
-        let locations =
-            handler_dependency_locations(&sqlite, &["h".to_string()], &HashSet::new()).unwrap();
+        let locations = handler_dependency_locations(
+            &sqlite,
+            &["h".to_string()],
+            &HashSet::new(),
+            "handler_dependency",
+            HANDLER_DEPENDENCY_CAP,
+        )
+        .unwrap();
 
         assert_eq!(locations.len(), 2, "both cross-file callees must ride");
         assert_eq!(locations[0].symbol_name, "verifyUserKey");
@@ -5219,6 +5321,20 @@ mod tests {
             assert_eq!(l.via, "handler_dependency");
             assert!(!l.body.is_empty(), "injected rows must carry bodies");
         }
+
+        // Step 3.7.12 reuses the walk with its own via + tighter cap; the
+        // via must be one the budget stages exempt from truncation.
+        let breadth = handler_dependency_locations(
+            &sqlite,
+            &["h".to_string()],
+            &HashSet::new(),
+            "breadth_dependency",
+            1,
+        )
+        .unwrap();
+        assert_eq!(breadth.len(), 1, "cap must bound the walk");
+        assert_eq!(breadth[0].via, "breadth_dependency");
+        assert!(is_injected_via_str("breadth_dependency"));
     }
 
     #[test]
@@ -5296,8 +5412,14 @@ mod tests {
             .upsert_edge(&mk_edge("h", "tbl", "reference", 1))
             .unwrap();
 
-        let locations =
-            handler_dependency_locations(&sqlite, &["h".to_string()], &HashSet::new()).unwrap();
+        let locations = handler_dependency_locations(
+            &sqlite,
+            &["h".to_string()],
+            &HashSet::new(),
+            "handler_dependency",
+            HANDLER_DEPENDENCY_CAP,
+        )
+        .unwrap();
 
         let names: Vec<&str> = locations.iter().map(|l| l.symbol_name.as_str()).collect();
         assert!(
@@ -5373,8 +5495,14 @@ mod tests {
         }
 
         let present: HashSet<&str> = ["pr"].into_iter().collect();
-        let locations =
-            handler_dependency_locations(&sqlite, &["h".to_string()], &present).unwrap();
+        let locations = handler_dependency_locations(
+            &sqlite,
+            &["h".to_string()],
+            &present,
+            "handler_dependency",
+            HANDLER_DEPENDENCY_CAP,
+        )
+        .unwrap();
 
         assert_eq!(
             locations
@@ -5669,6 +5797,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
 
         assert!(response["context_chain"]
@@ -6129,6 +6258,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
 
         let block = response.get("callsites").expect("callsites block present");
@@ -6210,6 +6340,7 @@ mod tests {
             Some(supporting),
             Vec::new(),
             3,
+            &Default::default(),
         );
         let block = response
             .get("supporting_modules")
@@ -6246,6 +6377,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
         assert!(
             response.get("supporting_modules").is_none(),
@@ -6270,6 +6402,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
         assert!(
             response.get("callsites").is_none(),
@@ -6311,6 +6444,7 @@ mod tests {
             None,
             Vec::new(),
             3,
+            &Default::default(),
         );
 
         // Budget cascade must have fired: context_chain truncated.

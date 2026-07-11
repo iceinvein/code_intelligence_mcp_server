@@ -617,7 +617,7 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
     )?)?;
 
     // Step 2: run the first specialist hop (search_code + bodies).
-    let primary = run_primary_hop(state, &question, target, file_path).await?;
+    let mut primary = run_primary_hop(state, &question, target, file_path).await?;
 
     // Step 3: run the shape-driven second hop, if any.
     let secondary = if max_hops >= 2 {
@@ -754,8 +754,18 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
             secondary_locs,
         )?;
         if !fresh.is_empty() {
+            // The injected copy REPLACES doomed duplicates (primary tails,
+            // anonymous trace nodes): dedup is keep-first, so a leftover
+            // earlier copy would win and then die in the stage-4 cut.
+            let fresh_ids: HashSet<String> = fresh.iter().map(|l| l.symbol_id.clone()).collect();
+            primary
+                .locations
+                .retain(|l| !fresh_ids.contains(&l.symbol_id));
             match secondary.as_mut() {
-                Some(s) => s.locations.extend(fresh),
+                Some(s) => {
+                    s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
+                    s.locations.extend(fresh);
+                }
                 None => {
                     secondary = Some(SecondaryHop {
                         via: "route_endpoint",
@@ -767,18 +777,64 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         }
     }
 
+    // Step 3.7.095: inject same-file sibling route handlers of the routes
+    // steps 3.7.08/3.7.09 resolved. R023: transaction.ts rode only when the
+    // /exchange router was itself injected (2/8 -- needs the exchange fetch
+    // URL in evidence); siblings of a resolved handler are the flow's other
+    // steps. See sibling_route_locations.
+    {
+        let route_rows: Vec<VerifiedLocation> = secondary
+            .as_ref()
+            .map(|s| {
+                s.locations
+                    .iter()
+                    .filter(|l| l.via == "route_endpoint")
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !route_rows.is_empty() {
+            let fresh = {
+                let secondary_locs: &[VerifiedLocation] = secondary
+                    .as_ref()
+                    .map(|s| s.locations.as_slice())
+                    .unwrap_or(&[]);
+                let present = delivered_ids(&primary.locations, secondary_locs);
+                sibling_route_locations(&state.sqlite, &route_rows, &present)?
+            };
+            if !fresh.is_empty() {
+                // Same replace semantics as 3.7.09: a sibling that already
+                // rides as a primary-tail hit or anonymous trace node is
+                // doomed by the stage-4 cut and must not win the dedup.
+                let fresh_ids: HashSet<String> =
+                    fresh.iter().map(|l| l.symbol_id.clone()).collect();
+                primary
+                    .locations
+                    .retain(|l| !fresh_ids.contains(&l.symbol_id));
+                match secondary.as_mut() {
+                    Some(s) => {
+                        s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
+                        s.locations.extend(fresh);
+                    }
+                    None => unreachable!("route_rows came from secondary"),
+                }
+            }
+        }
+    }
+
     // Step 3.7.10: inject the cross-file dependencies CALLED BY the route
-    // handlers steps 3.7.08/3.7.09 injected. R022 residual: agents stop
-    // after one ask_code call, so the handler's callees (the rubric's
-    // remaining secondary citations) never surface -- step 3.7.05 only walks
-    // the primary hit's file. See handler_dependency_locations.
+    // handlers steps 3.7.08/3.7.09 injected (and their 3.7.095 siblings).
+    // R022 residual: agents stop after one ask_code call, so the handler's
+    // callees (the rubric's remaining secondary citations) never surface --
+    // step 3.7.05 only walks the primary hit's file. See
+    // handler_dependency_locations.
     {
         let handler_ids: Vec<String> = secondary
             .as_ref()
             .map(|s| {
                 s.locations
                     .iter()
-                    .filter(|l| l.via == "route_endpoint")
+                    .filter(|l| l.via == "route_endpoint" || l.via == "sibling_route")
                     .map(|l| l.symbol_id.clone())
                     .collect()
             })
@@ -1434,11 +1490,9 @@ fn evidence_route_injections(
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
-    let present: HashSet<&str> = primary_locations
-        .iter()
-        .chain(secondary_locations.iter())
-        .map(|l| l.symbol_id.as_str())
-        .collect();
+    // Defer only to rows the budget stages will actually deliver; doomed
+    // primary-tail and trace copies are replaced by the wiring instead.
+    let present = delivered_ids(primary_locations, secondary_locations);
     Ok(route_endpoint_locations_for_tokens(sqlite, &tokens)?
         .into_iter()
         .filter(|l| !present.contains(l.symbol_id.as_str()))
@@ -1460,6 +1514,74 @@ fn route_endpoint_locations(
     question: &str,
 ) -> Result<Vec<VerifiedLocation>> {
     route_endpoint_locations_for_tokens(sqlite, &endpoint_path_tokens(question))
+}
+
+/// Cap for injected sibling-route evidence rows. Two covers the common
+/// paired-endpoint pattern (initiate + complete, store + exchange) without
+/// flooding the response on many-route files, where selection past the cap
+/// is registration-order arbitrary anyway.
+const SIBLING_ROUTE_CAP: usize = 2;
+
+/// Same-file sibling route handlers of injected route rows. R023 residual:
+/// transaction.ts only rode when the /exchange router was itself injected,
+/// and that required the exchange fetch URL to appear in retrieved evidence
+/// (2/8 reps). Endpoints registered in one file are one flow surface --
+/// injecting the siblings of a resolved handler covers the flow's other
+/// steps and gives step 3.7.10 their callees to walk.
+fn sibling_route_locations(
+    sqlite: &crate::storage::sqlite::SqliteStore,
+    injected_routes: &[VerifiedLocation],
+    present: &HashSet<&str>,
+) -> Result<Vec<VerifiedLocation>> {
+    use crate::handlers::framework_routes::{is_route_pattern, route_exposures_for_symbol};
+
+    let mut seen_files = HashSet::new();
+    let mut seen_symbols = HashSet::new();
+    let mut out = Vec::new();
+    for route_row in injected_routes {
+        if !seen_files.insert(route_row.file_path.as_str()) {
+            continue;
+        }
+        let patterns = sqlite.search_framework_patterns(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&route_row.file_path),
+            50,
+        )?;
+        for pattern in patterns.into_iter().filter(is_route_pattern) {
+            let Some(row) = enclosing_symbol_at(sqlite, &pattern.file_path, pattern.line)? else {
+                continue;
+            };
+            if present.contains(row.id.as_str()) || !seen_symbols.insert(row.id.clone()) {
+                continue;
+            }
+            let body = body_window(
+                &row.text,
+                row.start_line,
+                pattern.line,
+                ROUTE_ENDPOINT_BODY_LINES,
+            );
+            let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
+            out.push(VerifiedLocation {
+                symbol_id: row.id,
+                symbol_name: row.name,
+                file_path: row.file_path,
+                kind: row.kind,
+                start_line: row.start_line,
+                end_line: row.end_line,
+                via: "sibling_route",
+                body,
+                route_exposure,
+            });
+            if out.len() >= SIBLING_ROUTE_CAP {
+                return Ok(out);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Cap for injected handler-dependency evidence rows. Small like the other
@@ -2526,7 +2648,34 @@ fn summarize_secondary(raw: &Value, via: &str) -> Value {
 /// Budget stages must not drop them: they ride at the end of the location
 /// list and their bodies are pre-trimmed small.
 fn is_injected_via(via: &Value) -> bool {
-    via == "supporting_definition" || via == "route_endpoint" || via == "handler_dependency"
+    via.as_str().is_some_and(is_injected_via_str)
+}
+
+fn is_injected_via_str(via: &str) -> bool {
+    matches!(
+        via,
+        "supporting_definition" | "route_endpoint" | "sibling_route" | "handler_dependency"
+    )
+}
+
+/// Ids of rows the budget stages guarantee to deliver as citable evidence:
+/// the top 3 primary hits (stage 2 keeps their bodies) and injected rows
+/// (budget-exempt). Copies outside this set -- primary tails, anonymous
+/// trace nodes -- are doomed by the stage-4 positional cut, so an injection
+/// pass must not defer to them (live-verified: exchangeDesktopAuthRouter at
+/// primary rank 4 blocked the evidence and sibling passes, and the doomed
+/// copy never reached the agent). The wiring replaces such copies with the
+/// injected row instead.
+fn delivered_ids<'a>(
+    primary: &'a [VerifiedLocation],
+    secondary: &'a [VerifiedLocation],
+) -> HashSet<&'a str> {
+    primary
+        .iter()
+        .take(3)
+        .chain(secondary.iter().filter(|l| is_injected_via_str(l.via)))
+        .map(|l| l.symbol_id.as_str())
+        .collect()
 }
 
 /// Trim the response to fit `RESPONSE_BUDGET_BYTES`. Degrades in stages:
@@ -2890,7 +3039,12 @@ fn apply_response_budget(response: &mut Value) {
             let injected: Vec<Value> = arr
                 .iter()
                 .filter(|l| is_injected_via(&l["via"]))
-                .take(SUPPORTING_DEFINITION_CAP + ROUTE_ENDPOINT_CAP + HANDLER_DEPENDENCY_CAP)
+                .take(
+                    SUPPORTING_DEFINITION_CAP
+                        + ROUTE_ENDPOINT_CAP
+                        + SIBLING_ROUTE_CAP
+                        + HANDLER_DEPENDENCY_CAP,
+                )
                 .cloned()
                 .collect();
             let keep_others = 8usize.saturating_sub(injected.len());
@@ -3838,7 +3992,8 @@ mod tests {
             })
         };
         let mut locs: Vec<Value> = (0..38).map(|i| mk(i, "search_code")).collect();
-        locs.push(mk(97, "route_endpoint"));
+        locs.push(mk(96, "route_endpoint"));
+        locs.push(mk(97, "sibling_route"));
         locs.push(mk(98, "handler_dependency"));
         locs.push(mk(99, "handler_dependency"));
         let mut response = json!({
@@ -3869,6 +4024,14 @@ mod tests {
                 .count(),
             2,
             "handler dependencies must survive budget truncation"
+        );
+        assert_eq!(
+            kept_rows
+                .iter()
+                .filter(|l| l["via"] == "sibling_route")
+                .count(),
+            1,
+            "sibling routes must survive budget truncation"
         );
     }
 
@@ -4008,6 +4171,154 @@ mod tests {
         assert_eq!(
             evidence_route_tokens(&[a, b]),
             vec!["/api/reports/lock", "/api/epochs/latest"]
+        );
+    }
+
+    #[test]
+    fn sibling_route_locations_inject_same_file_routes() {
+        use crate::storage::sqlite::{FrameworkPatternRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let file = "packages/backend/src/api/desktop-auth.ts";
+        let mk_router = |id: &str, name: &str, start: u32, end: u32, reg: &str| SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "typescript".to_string(),
+            kind: "const".to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: start,
+            end_line: end,
+            text: (start..=end)
+                .map(|i| {
+                    if i == start {
+                        reg.to_string()
+                    } else {
+                        format!("// line {i}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        let mk_pattern = |id: &str, line: u32, path: &str| FrameworkPatternRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            line,
+            framework: "elysia".to_string(),
+            kind: "route".to_string(),
+            http_method: Some("POST".to_string()),
+            path: Some(path.to_string()),
+            name: None,
+            handler: Some("<anonymous>".to_string()),
+            arguments: None,
+            parent_chain: None,
+            updated_at: 0,
+        };
+        sqlite
+            .upsert_symbol(&mk_router(
+                "complete",
+                "authenticatedDesktopAuthRouter",
+                37,
+                66,
+                "\t.post(\"/complete\", async ({ body }) => {",
+            ))
+            .unwrap();
+        sqlite
+            .upsert_symbol(&mk_router(
+                "exchange",
+                "exchangeDesktopAuthRouter",
+                68,
+                101,
+                "\t.post(\"/exchange\", async ({ body }) => {",
+            ))
+            .unwrap();
+        sqlite
+            .batch_upsert_framework_patterns(&[
+                mk_pattern("route:complete", 37, "/complete"),
+                mk_pattern("route:exchange", 68, "/exchange"),
+            ])
+            .unwrap();
+
+        // The /complete router was injected (route_endpoint); its same-file
+        // sibling /exchange must ride so the trace covers both endpoints and
+        // step 3.7.10 walks the sibling's callees too.
+        let injected = vec![injected_location(
+            sqlite.get_symbol_by_id("complete").unwrap().unwrap(),
+            "route_endpoint",
+            ROUTE_ENDPOINT_BODY_LINES,
+        )];
+        let present: HashSet<&str> = ["complete"].into_iter().collect();
+        let siblings = sibling_route_locations(&sqlite, &injected, &present).unwrap();
+
+        assert_eq!(siblings.len(), 1, "exactly the one sibling: {siblings:?}");
+        let s = &siblings[0];
+        assert_eq!(s.symbol_name, "exchangeDesktopAuthRouter");
+        assert_eq!(s.via, "sibling_route");
+        assert!(
+            s.body.contains("/exchange"),
+            "body must show the sibling's registration site"
+        );
+    }
+
+    #[test]
+    fn sibling_route_locations_respect_cap() {
+        use crate::storage::sqlite::{FrameworkPatternRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let file = "packages/backend/src/api/big-routes.ts";
+        for i in 0..5u32 {
+            let start = 10 + i * 10;
+            sqlite
+                .upsert_symbol(&SymbolRow {
+                    id: format!("r{i}"),
+                    file_path: file.to_string(),
+                    language: "typescript".to_string(),
+                    kind: "const".to_string(),
+                    name: format!("router{i}"),
+                    exported: true,
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_line: start,
+                    end_line: start + 5,
+                    text: format!(".post(\"/r{i}\", handler)"),
+                })
+                .unwrap();
+            sqlite
+                .batch_upsert_framework_patterns(&[FrameworkPatternRow {
+                    id: format!("route:{i}"),
+                    file_path: file.to_string(),
+                    line: start,
+                    framework: "elysia".to_string(),
+                    kind: "route".to_string(),
+                    http_method: Some("GET".to_string()),
+                    path: Some(format!("/r{i}")),
+                    name: None,
+                    handler: None,
+                    arguments: None,
+                    parent_chain: None,
+                    updated_at: 0,
+                }])
+                .unwrap();
+        }
+
+        let injected = vec![injected_location(
+            sqlite.get_symbol_by_id("r0").unwrap().unwrap(),
+            "route_endpoint",
+            ROUTE_ENDPOINT_BODY_LINES,
+        )];
+        let present: HashSet<&str> = ["r0"].into_iter().collect();
+        let siblings = sibling_route_locations(&sqlite, &injected, &present).unwrap();
+
+        assert_eq!(
+            siblings.len(),
+            SIBLING_ROUTE_CAP,
+            "sibling injection must stay capped on many-route files"
         );
     }
 
@@ -4330,6 +4641,96 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["verifyUserKey"],
             "same-file and already-present callees must be excluded"
+        );
+    }
+
+    #[test]
+    fn evidence_route_injections_ignore_doomed_primary_tail_copies() {
+        use crate::storage::sqlite::{FrameworkPatternRow, SqliteStore, SymbolRow};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let router = SymbolRow {
+            id: "router".to_string(),
+            file_path: "packages/backend/src/api/desktop-auth.ts".to_string(),
+            language: "typescript".to_string(),
+            kind: "const".to_string(),
+            name: "exchangeDesktopAuthRouter".to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 0,
+            start_line: 68,
+            end_line: 101,
+            text: "\t.post(\"/exchange\", async ({ body }) => {".to_string(),
+        };
+        sqlite.upsert_symbol(&router).unwrap();
+        sqlite
+            .batch_upsert_framework_patterns(&[FrameworkPatternRow {
+                id: "route:ex".to_string(),
+                file_path: "packages/backend/src/api/desktop-auth.ts".to_string(),
+                line: 68,
+                framework: "elysia".to_string(),
+                kind: "route".to_string(),
+                http_method: Some("POST".to_string()),
+                path: Some("/exchange".to_string()),
+                name: None,
+                handler: Some("<anonymous>".to_string()),
+                arguments: None,
+                parent_chain: None,
+                updated_at: 0,
+            }])
+            .unwrap();
+
+        let mk_client = |i: usize, body: &str| VerifiedLocation {
+            symbol_id: format!("client{i}"),
+            symbol_name: format!("clientFn{i}"),
+            file_path: "packages/web/src/routes/desktop-login.tsx".to_string(),
+            kind: "function".to_string(),
+            start_line: 10,
+            end_line: 20,
+            via: "search_code",
+            body: body.to_string(),
+            route_exposure: Vec::new(),
+        };
+        let mut primary: Vec<VerifiedLocation> = (0..3)
+            .map(|i| mk_client(i, "await authFetch(`${authUrl}/api/desktop-auth/exchange`)"))
+            .collect();
+        // The router itself rode in as a rank-4 primary hit. Stage-4 keeps
+        // only the leading non-injected rows, so this copy is doomed -- it
+        // must not block the budget-exempt injected copy (live-verified:
+        // exchangeDesktopAuthRouter at primary rank 4 blocked both the
+        // evidence pass and the sibling pass, and never reached the agent).
+        primary.push(VerifiedLocation {
+            symbol_id: "router".to_string(),
+            symbol_name: "exchangeDesktopAuthRouter".to_string(),
+            file_path: "packages/backend/src/api/desktop-auth.ts".to_string(),
+            kind: "const".to_string(),
+            start_line: 68,
+            end_line: 101,
+            via: "search_code",
+            body: String::new(),
+            route_exposure: Vec::new(),
+        });
+
+        let question = "How does the desktop app receive a session token after login?";
+        let fresh = evidence_route_injections(&sqlite, question, &primary, &[]).unwrap();
+        assert_eq!(
+            fresh
+                .iter()
+                .map(|l| l.symbol_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["exchangeDesktopAuthRouter"],
+            "a doomed primary-tail copy must not block the injection"
+        );
+
+        // Same symbol inside the protected top 3: genuinely delivered, skip.
+        let protected = vec![primary[3].clone(), primary[0].clone(), primary[1].clone()];
+        assert!(
+            evidence_route_injections(&sqlite, question, &protected, &[])
+                .unwrap()
+                .is_empty(),
+            "a top-3 primary copy is delivered with a full body; defer to it"
         );
     }
 

@@ -57,6 +57,25 @@ def test_rescore_recomputes_mech_and_preserves_judge(tmp_path):
     assert summary["n_rescored"] == 1
 
 
+def test_rescore_preserves_judge_on_every_repeat(tmp_path):
+    # R022/R023 regression: with 8 repeats, the judge merge keyed on
+    # (arm, question_id) only, so the last rep's score record absorbed every
+    # judge row and reps 0-6 lost their judge medians.
+    q = _smoke_qid()
+    runs = [{**_smoke_run(qid=q.id), "rep": rep} for rep in range(3)]
+    judges = [{"arm": "default", "question_id": q.id, "repo": "smoke", "rep": rep,
+               "scores": {"haiku": 5 + rep}, "justifications": {},
+               "median": float(5 + rep), "range": 0}
+              for rep in range(3)]
+    round_dir = _write_round(tmp_path, runs, judges=judges)
+
+    rescore.rescore_round(round_dir)
+
+    rows = [json.loads(l) for l in (round_dir / "scores.json").read_text().splitlines()]
+    medians = {r["rep"]: r["judge_median"] for r in rows}
+    assert medians == {0: 5.0, 1: 6.0, 2: 7.0}
+
+
 def test_rescore_backs_up_previous_scores(tmp_path):
     q = _smoke_qid()
     old_scores = [{"question_id": q.id, "arm": "default", "mech": 0.1}]

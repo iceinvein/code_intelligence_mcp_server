@@ -131,7 +131,7 @@ def rescore_round(round_dir: Path) -> dict:
             qmap[(name, q.id)] = q
 
     new_scores: list[dict] = []
-    score_by_key: dict[tuple[str, str], dict] = {}
+    score_by_key: dict[tuple[str, str, int], dict] = {}
     for rec in runs:
         repo_name = rec.get("repo") or rec["question_id"].split("-")[0]
         q = qmap.get((repo_name, rec["question_id"]))
@@ -143,10 +143,10 @@ def rescore_round(round_dir: Path) -> dict:
         rec = {**rec, "repo": repo_name}
         s = _score_record(q, rec, repo_path, read_lines=reader, list_files=lister)
         new_scores.append(s)
-        score_by_key[(rec["arm"], rec["question_id"])] = s
+        score_by_key[(rec["arm"], rec["question_id"], rec.get("rep", 0))] = s
 
     for jrec in judges:
-        s = score_by_key.get((jrec["arm"], jrec["question_id"]))
+        s = score_by_key.get((jrec["arm"], jrec["question_id"], jrec.get("rep", 0)))
         if s is None:
             continue
         if _legacy_casualty(jrec):

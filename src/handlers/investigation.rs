@@ -2651,7 +2651,7 @@ fn is_injected_via(via: &Value) -> bool {
     via.as_str().is_some_and(is_injected_via_str)
 }
 
-fn is_injected_via_str(via: &str) -> bool {
+pub(crate) fn is_injected_via_str(via: &str) -> bool {
     matches!(
         via,
         "supporting_definition" | "route_endpoint" | "sibling_route" | "handler_dependency"
@@ -2788,7 +2788,26 @@ fn apply_response_budget(response: &mut Value) {
             return false;
         }
 
-        rows.truncate(limit);
+        // Injected rows ride at the end of the row list (after the trace
+        // rows) and keep their via as the role; a keep-first cut would drop
+        // exactly the rows the injections exist to deliver (R024: agents
+        // outline from pack.rows, and the injected evidence never made the
+        // first 20).
+        let injected: Vec<Value> = rows
+            .iter()
+            .filter(|r| is_injected_via(&r["role"]))
+            .take(limit)
+            .cloned()
+            .collect();
+        let keep_others = limit.saturating_sub(injected.len());
+        let mut kept: Vec<Value> = rows
+            .iter()
+            .filter(|r| !is_injected_via(&r["role"]))
+            .take(keep_others)
+            .cloned()
+            .collect();
+        kept.extend(injected);
+        *rows = kept;
         mark_pack_rows_truncated(response, original_count);
         true
     }
@@ -3971,6 +3990,49 @@ mod tests {
             2,
             "route endpoints must survive budget truncation"
         );
+    }
+
+    #[test]
+    fn pack_row_truncation_preserves_injected_roles() {
+        // R024: stage 5 kept the FIRST 20 pack rows; injected rows ride at
+        // the end of the row list (after ~30 trace rows), so the pack the
+        // agent outlines from never carried them.
+        let mk_row = |i: usize, role: &str| {
+            json!({
+                "role": role,
+                "symbol_name": format!("sym{i}"),
+                "file_path": "src/x.ts",
+                "line": i,
+                "evidence": "e".repeat(280),
+            })
+        };
+        let mut rows: Vec<Value> = (0..150).map(|i| mk_row(i, "transform")).collect();
+        rows.push(mk_row(997, "route_endpoint"));
+        rows.push(mk_row(998, "sibling_route"));
+        rows.push(mk_row(999, "handler_dependency"));
+        let mut response = json!({
+            "question": "q",
+            "context_chain": "",
+            "plan": {},
+            "verified_locations": [],
+            "pack": {"kind": "pipeline_trace", "coverage": {"status": "full"}, "rows": rows},
+        });
+
+        apply_response_budget(&mut response);
+
+        let kept: Vec<String> = response["pack"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["role"].as_str().unwrap().to_string())
+            .collect();
+        assert!(kept.len() <= 20, "row cap must still hold: {}", kept.len());
+        for role in ["route_endpoint", "sibling_route", "handler_dependency"] {
+            assert!(
+                kept.iter().any(|r| r == role),
+                "injected pack rows must survive row truncation: {kept:?}"
+            );
+        }
     }
 
     #[test]

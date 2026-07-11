@@ -197,15 +197,27 @@ fn row_from_location(
         (Some(start_line), None) => Some(start_line),
         (None, _) => None,
     };
-    let role = match kind {
-        EvidencePackKind::CallsiteEnumeration => callsite_role(location.via.as_deref()),
-        EvidencePackKind::PipelineTrace => infer_pipeline_role(body.unwrap_or(&evidence)),
-        EvidencePackKind::ImpactRadius => impact_role(
-            location.file_path.as_deref(),
-            location.kind.as_deref(),
-            fallback_role,
-        ),
-        _ => location.via.as_deref().unwrap_or(fallback_role).to_string(),
+    // Injected rows keep their via as the role in every pack kind: the via
+    // is the provenance the agent needs for citation, kind-specific role
+    // inference would relabel them as pipeline stages or callsites, and the
+    // budget stages key their truncation exemption on these role names.
+    let injected_via = location
+        .via
+        .as_deref()
+        .filter(|v| crate::handlers::investigation::is_injected_via_str(v));
+    let role = if let Some(via) = injected_via {
+        via.to_string()
+    } else {
+        match kind {
+            EvidencePackKind::CallsiteEnumeration => callsite_role(location.via.as_deref()),
+            EvidencePackKind::PipelineTrace => infer_pipeline_role(body.unwrap_or(&evidence)),
+            EvidencePackKind::ImpactRadius => impact_role(
+                location.file_path.as_deref(),
+                location.kind.as_deref(),
+                fallback_role,
+            ),
+            _ => location.via.as_deref().unwrap_or(fallback_role).to_string(),
+        }
     };
     let ordinal = match kind {
         EvidencePackKind::PipelineTrace => pipeline_ordinal(&role),
@@ -544,6 +556,49 @@ mod tests {
             via: via.map(str::to_string),
             body: Some(body.to_string()),
         }
+    }
+
+    #[test]
+    fn pipeline_pack_preserves_injected_via_as_role() {
+        // R024: injected route/dependency rows entered pipeline_trace packs
+        // with an inferred stage role ("dispatcher"), losing their provenance
+        // and their truncation exemption; agents outlining from pack.rows
+        // described the evidence but never cited the files.
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace how the desktop app receives a session token".to_string(),
+            target: "login".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![location(10, "login();")],
+            secondary: vec![
+                location_via(
+                    37,
+                    ".post(\"/exchange\", async ({ body }) => {",
+                    Some("route_endpoint"),
+                ),
+                location_via(
+                    68,
+                    "export async function withTransaction(fn) {",
+                    Some("handler_dependency"),
+                ),
+            ],
+            secondary_via: Some("get_call_hierarchy".to_string()),
+            extra_candidates: Vec::new(),
+        });
+
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["kind"], "pipeline_trace");
+        let roles: Vec<String> = value["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["role"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            roles.contains(&"route_endpoint".to_string())
+                && roles.contains(&"handler_dependency".to_string()),
+            "injected rows must keep their via as the pack role: {roles:?}"
+        );
     }
 
     #[test]

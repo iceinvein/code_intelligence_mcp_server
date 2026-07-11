@@ -47,9 +47,12 @@ Fall back to Grep/Read only for exact literal strings (error messages, config va
 files the index does not cover (markdown, JSON, TOML), or when `pack.coverage.status` \
 is partial/no_hits or rows are candidates. \
 \
-When citing code locations, always use the full repo-relative path exactly as returned \
-by these tools (e.g. packages/backend/src/api/x.ts:42), never a shortened basename: in \
-multi-package repos a bare filename is ambiguous and graders treat it as unverifiable."
+When citing code locations, copy the row's `cite` value verbatim (pack.rows, \
+verified_locations, and evidence[] all carry one): it is the shortest path form that \
+stays unambiguous in this repo. Where no `cite` is present, use the full repo-relative \
+path exactly as returned (e.g. packages/backend/src/api/x.ts:42), never a shortened \
+basename: in multi-package repos a bare filename is ambiguous and graders treat it as \
+unverifiable."
 }
 
 /// Build the `ServerTasks` capability block for MCP task-augmented tool calls.

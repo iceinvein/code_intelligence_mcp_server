@@ -1,0 +1,4 @@
+{
+  "description": "R026 regression follow-up: the two questions whose R026 drop plausibly intersects the injection series (arch-01 carries supporting_definition rows, arch-03 carries route_endpoint + handler_dependency rows).",
+  "questions": ["django-arch-01", "wolfmax-arch-03"]
+}

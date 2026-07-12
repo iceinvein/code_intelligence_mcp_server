@@ -81,9 +81,13 @@ def main() -> int:
             return 1
 
     judge_rows = _load_jsonl(jpath)
-    run_by = {(r["arm"], r["question_id"]): r for r in _load_jsonl(rpath)}
+    # rep belongs in the key: with --repeats > 1 an (arm, question) pair has
+    # one run per rep, and a rep-less key silently judges every casualty
+    # against whichever rep's answer won the dict insert (R030: six django
+    # casualties judged on one answer).
+    run_by = {(r["arm"], r["question_id"], r.get("rep", 0)): r for r in _load_jsonl(rpath)}
     scores = _load_jsonl(spath)
-    score_by = {(s["arm"], s["question_id"]): s for s in scores}
+    score_by = {(s["arm"], s["question_id"], s.get("rep", 0)): s for s in scores}
     qmap = _load_fixture_questions()
 
     casualties = [r for r in judge_rows if _is_casualty(r)]
@@ -102,7 +106,7 @@ def main() -> int:
     for row in judge_rows:
         if not _is_casualty(row):
             continue
-        key = (row["arm"], row["question_id"])
+        key = (row["arm"], row["question_id"], row.get("rep", 0))
         q = qmap.get(row["question_id"])
         run = run_by.get(key)
         srec = score_by.get(key)
@@ -141,6 +145,9 @@ def main() -> int:
         row["scores"], row["justifications"] = sc, js
         row["median"] = statistics.median(sc.values())
         row["range"] = max(sc.values()) - min(sc.values())
+        # Clear the explicit flag: rescore trusts it over the score shape and
+        # would otherwise keep dropping the repaired median.
+        row["casualty"] = False
         srec["judge_median"] = row["median"]
         srec["judge_range"] = row["range"]
         fixed += 1

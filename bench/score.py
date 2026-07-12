@@ -225,13 +225,18 @@ def _fs_file_lister(repo_path: Path):
 
 
 def _resolve_by_suffix(
-    file: str, start: int, read_lines, list_files,
+    file: str, start: int, read_lines, list_files, answer: str = "",
 ) -> tuple[str | None, str]:
     """Try to resolve a shortened path. Returns (resolved_file, failure_reason).
 
     A citation resolves when exactly one repo file matches the cited path as a
-    suffix AND contains the cited start line. Multiple viable candidates are
-    genuinely ambiguous; zero candidates means the path is fabricated.
+    suffix AND contains the cited start line. Multiple viable candidates fall
+    back to answer context: agents name the full path once, then repeat a
+    short form in prose (R030 django: django/db/backends/base/operations.py
+    in the file list, "base/operations.py:18" in the body). A reader of the
+    whole answer resolves the repeat, so when exactly one viable candidate's
+    full path appears elsewhere in the answer, the citation resolves to it.
+    Zero candidates means the path is fabricated.
     """
     candidates = [f for f in list_files() if _is_suffix_of(file, f)]
     if not candidates:
@@ -244,7 +249,14 @@ def _resolve_by_suffix(
     if len(viable) == 1:
         return viable[0], ""
     if len(viable) > 1:
-        return None, "ambiguous_path"
+        answer_lower = answer.lower()
+        mentioned = [
+            c for c in viable
+            if re.search(r"(?<![\w./-])" + re.escape(c.lower()), answer_lower)
+        ]
+        if len(mentioned) == 1:
+            return mentioned[0], ""
+        return None, "ambiguous_suffix"
     return None, "line_out_of_range"
 
 
@@ -279,12 +291,25 @@ def compute_citation_multiplier(
     for file, start, end in cites:
         lines = read_lines(file)
         if lines is None:
-            resolved, reason = _resolve_by_suffix(file, start, read_lines, list_files)
+            resolved, reason = _resolve_by_suffix(file, start, read_lines, list_files, answer)
             if resolved is not None:
                 results.append(CitationVerification(
                     raw_match=f"{file}:{start}-{end}",
                     file=file, start_line=start, end_line=end,
                     ok=True, imprecise=True, resolved_file=resolved,
+                ))
+            elif reason == "ambiguous_suffix":
+                # The cited path matches >= 2 files that all contain the line
+                # and the answer names neither in full. That is citation
+                # STYLE, not fabrication: the file exists and the agent read
+                # one of the candidates (R010-R012 diagnosis found ~0 true
+                # fabrications; every flag since was a shortened cite). Count
+                # it imprecise, keep the reason for diagnostics, and reserve
+                # the multiplier for paths that resolve to nothing.
+                results.append(CitationVerification(
+                    raw_match=f"{file}:{start}-{end}",
+                    file=file, start_line=start, end_line=end,
+                    ok=True, imprecise=True, reason=reason,
                 ))
             else:
                 results.append(CitationVerification(

@@ -240,16 +240,62 @@ def test_ambiguous_suffix_resolves_when_only_one_has_the_line(tmp_path):
     assert results[0].resolved_file == "packages/backend/src/api/upgrade-helper.ts"
 
 
-def test_ambiguous_suffix_with_multiple_candidates_stays_hallucinated(tmp_path):
+def test_ambiguous_suffix_with_multiple_candidates_is_style_not_hallucination(tmp_path):
+    # The cited file exists (twice) with the line in range: that is citation
+    # style, not fabrication. Tracked as imprecise, multiplier untouched.
     _monorepo(tmp_path)
     other = tmp_path / "packages" / "frontend" / "upgrade-helper.ts"
     other.parent.mkdir(parents=True)
     other.write_text("line\n" * 100)  # both candidates contain line 15
     answer = "See upgrade-helper.ts:15."
     multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
-    assert multiplier == 0.0
-    assert not results[0].ok
-    assert results[0].reason == "ambiguous_path"
+    assert multiplier == 1.0
+    assert results[0].ok
+    assert results[0].imprecise
+    assert results[0].resolved_file is None
+    assert results[0].reason == "ambiguous_suffix"
+
+
+def test_ambiguous_suffix_resolves_via_answer_context(tmp_path):
+    # R030: django answers name django/db/backends/base/operations.py in
+    # full once, then repeat "base/operations.py:18" in prose. The repeat is
+    # ambiguous against the contrib/gis shadow tree in isolation, but a
+    # reader of the whole answer resolves it; the scorer must too.
+    _monorepo(tmp_path)
+    other = tmp_path / "packages" / "frontend" / "upgrade-helper.ts"
+    other.parent.mkdir(parents=True)
+    other.write_text("line\n" * 100)  # both candidates contain line 15
+    answer = (
+        "The helper lives in packages/backend/src/api/upgrade-helper.ts. "
+        "Rotation happens at upgrade-helper.ts:15."
+    )
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert multiplier == 1.0
+    bad = [r for r in results if not r.ok]
+    assert not bad
+    resolved = [r for r in results if r.imprecise and r.resolved_file]
+    assert any(
+        r.resolved_file == "packages/backend/src/api/upgrade-helper.ts" for r in resolved
+    )
+
+
+def test_ambiguous_suffix_with_both_candidates_mentioned_stays_unresolved(tmp_path):
+    # Context resolution must not pick a side when the answer names both
+    # candidates; the cite stays imprecise with no resolved_file.
+    _monorepo(tmp_path)
+    other = tmp_path / "packages" / "frontend" / "upgrade-helper.ts"
+    other.parent.mkdir(parents=True)
+    other.write_text("line\n" * 100)
+    answer = (
+        "Both packages/backend/src/api/upgrade-helper.ts and "
+        "packages/frontend/upgrade-helper.ts exist; see upgrade-helper.ts:15."
+    )
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert multiplier == 1.0
+    assert results[-1].ok
+    assert results[-1].imprecise
+    assert results[-1].resolved_file is None
+    assert results[-1].reason == "ambiguous_suffix"
 
 
 def test_fabricated_path_stays_hallucinated(tmp_path):

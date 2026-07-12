@@ -52,7 +52,10 @@ verified_locations, and evidence[] all carry one): it is the shortest path form 
 stays unambiguous in this repo. Where no `cite` is present, use the full repo-relative \
 path exactly as returned (e.g. packages/backend/src/api/x.ts:42), never a shortened \
 basename: in multi-package repos a bare filename is ambiguous and graders treat it as \
-unverifiable."
+unverifiable. A citation locates the answer; it is not the answer. Even for 'where is \
+X defined' questions, say in 1-3 sentences what the cited code does (key calls, \
+settings it reads, errors it raises) -- a bare file:line with no account of the code \
+loses grader credit."
 }
 
 /// Build the `ServerTasks` capability block for MCP task-augmented tool calls.

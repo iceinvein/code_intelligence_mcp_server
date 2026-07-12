@@ -13,8 +13,11 @@ from bench.fixtures_io import Citation, Question
 # Matches: "src/foo.rs:42", "src/foo.rs:42-88", "[src/foo.rs:42]",
 # "src/foo.rs line 42", "src/foo.rs at line 42-88"
 _CITATION_PATTERNS = [
-    re.compile(r"(?P<file>[\w./\-]+\.\w+):(?P<start>\d+)(?:-(?P<end>\d+))?"),
-    re.compile(r"(?P<file>[\w./\-]+\.\w+)\s+(?:at\s+)?lines?\s+(?P<start>\d+)(?:-(?P<end>\d+))?"),
+    re.compile(r"(?P<file>[\w./\-]+\.\w+):(?P<start>\d+)(?:[-–—](?P<end>\d+))?"),
+    re.compile(
+        r"(?P<file>[\w./\-]+\.\w+)\s*,?\s+(?:at\s+)?lines?\s+"
+        r"(?P<start>\d+)(?:[-–—](?P<end>\d+))?"
+    ),
 ]
 
 
@@ -38,9 +41,20 @@ def _is_suffix_of(cited: str, full: str) -> bool:
     return cited == full or full.endswith("/" + cited)
 
 
+def _strip_markdown_emphasis(answer: str) -> str:
+    """Drop asterisks and backticks so "**`x.py`**, line **183**" parses.
+
+    Neither character can appear in a path or line number, and citation
+    extraction works on values, not offsets, so a global strip is safe.
+    Underscores stay: they are real path characters (__init__.py).
+    """
+    return re.sub(r"[*`]", "", answer)
+
+
 def _cite_appears(c: Citation, answer: str) -> bool:
     """True when the answer cites c.file (full path, or an unambiguous path
     suffix) with a line number overlapping c.line_range."""
+    answer = _strip_markdown_emphasis(answer)
     a = answer.lower()
     if c.file.lower() in a:
         pat = re.compile(
@@ -157,6 +171,7 @@ def _looks_like_path(file: str) -> bool:
 
 def _extract_citations(answer: str) -> list[tuple[str, int, int]]:
     """Yield (file, start_line, end_line) tuples from cited file:line patterns."""
+    answer = _strip_markdown_emphasis(answer)
     seen: set[tuple[str, int, int]] = set()
     out: list[tuple[str, int, int]] = []
     for pat in _CITATION_PATTERNS:

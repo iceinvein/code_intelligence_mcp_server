@@ -1,0 +1,4 @@
+{
+  "description": "R031 regression follow-up: symbol-03 went bare-file:line under the cite emphasis (judge 9 -> 5.5); arch-03 lost deprecation.py; impact-03 judge-only dip; arch-01 known bimodal. Probe the citations-are-not-the-answer instruction (57eb7d9).",
+  "questions": ["django-symbol-03", "django-arch-03", "django-impact-03", "wolfmax-arch-01"]
+}

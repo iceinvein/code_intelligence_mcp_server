@@ -138,6 +138,43 @@ def test_citation_verification_partial_hallucination(tmp_path):
     assert multiplier == 0.5  # at least one hallucination, not all
 
 
+def test_citation_hit_survives_markdown_emphasis():
+    # R032: agents write "**`django/.../__init__.py`**, line **183**"; the
+    # bold markers around the digits broke both citation patterns and cost
+    # citation_hit on otherwise correct answers.
+    q = _q(
+        citations=[fixtures_io.Citation(
+            file="django/contrib/auth/__init__.py", line_range=(183, 197), symbol="gum",
+        )],
+        files=["django/contrib/auth/__init__.py"],
+        facts=["get_user_model"],
+    )
+    answer = (
+        "`get_user_model` is defined in **`django/contrib/auth/__init__.py`**, "
+        "line **183**."
+    )
+    result = score.mech_score(q, answer)
+    assert result["citation_hit"] is True
+
+
+def test_extract_citations_strips_markdown_emphasis(tmp_path):
+    _monorepo(tmp_path)
+    answer = "See **`packages/backend/src/api/upgrade-helper.ts`**, line **15**."
+    multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert len(results) == 1
+    assert results[0].file == "packages/backend/src/api/upgrade-helper.ts"
+    assert results[0].start_line == 15
+    assert results[0].ok
+
+
+def test_extract_citations_parses_en_dash_ranges(tmp_path):
+    _monorepo(tmp_path)
+    answer = "See packages/backend/src/api/upgrade-helper.ts, lines 12–15."
+    _multiplier, results = score.compute_citation_multiplier(answer, tmp_path)
+    assert len(results) == 1
+    assert (results[0].start_line, results[0].end_line) == (12, 15)
+
+
 def test_citation_hit_matches_plural_lines():
     q = _q()
     answer = "The bar function is defined in src/foo.rs, lines 12-28."

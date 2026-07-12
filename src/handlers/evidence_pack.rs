@@ -255,6 +255,12 @@ fn row_from_location(
 /// Shortest '/'-boundary suffix (at least two segments) that is unique across
 /// `files`, per file. Two segments minimum so the form still reads as a path;
 /// single-segment paths keep the full path.
+///
+/// Among unique suffixes, prefer the shortest whose LEADING segment is not a
+/// generic directory name: R030 showed agents copy "backend-worker/src/x.rs"
+/// verbatim but strip the head off "src/x.rs" (it reads as noise), landing
+/// back on an ambiguous basename. A package-anchored form also degrades
+/// gracefully: dropping its head still leaves a unique "src/x.rs".
 pub fn short_cite_forms(files: &[String]) -> std::collections::HashMap<String, String> {
     use std::collections::HashMap;
 
@@ -268,12 +274,42 @@ pub fn short_cite_forms(files: &[String]) -> std::collections::HashMap<String, S
     files
         .iter()
         .map(|file| {
+            let unique = |s: &&str| counts.get(*s) == Some(&1);
             let form = multi_segment_suffixes(file)
-                .find(|s| counts.get(s) == Some(&1))
+                .filter(unique)
+                .find(|s| !has_generic_lead(s))
+                .or_else(|| multi_segment_suffixes(file).find(unique))
                 .unwrap_or(file.as_str());
             (file.clone(), form.to_string())
         })
         .collect()
+}
+
+/// Directory names too common to anchor a citation: an agent reading
+/// "src/aggregation.rs" sees no information in "src/" and drops it.
+fn has_generic_lead(suffix: &str) -> bool {
+    let lead = suffix.split('/').next().unwrap_or(suffix);
+    matches!(
+        lead,
+        "src"
+            | "lib"
+            | "source"
+            | "app"
+            | "core"
+            | "base"
+            | "common"
+            | "internal"
+            | "pkg"
+            | "mod"
+            | "utils"
+            | "util"
+            | "helpers"
+            | "test"
+            | "tests"
+            | "dist"
+            | "build"
+            | "bin"
+    )
 }
 
 /// Suffixes of `path` on '/' boundaries with >= 2 segments, shortest first,
@@ -1392,14 +1428,37 @@ mod tests {
             forms["packages/desktop/src/aggregation.rs"],
             "desktop/src/aggregation.rs"
         );
-        // Unique basename still gets >= 2 segments so it reads as a path.
+        // Unique basename still gets >= 2 segments so it reads as a path,
+        // extended past generic directories (lib/, src/) to a package anchor.
         assert_eq!(
             forms["packages/backend/src/lib/receipt-signer.ts"],
-            "lib/receipt-signer.ts"
+            "backend/src/lib/receipt-signer.ts"
         );
+        // Generic lead is acceptable when no longer unique form improves it.
         assert_eq!(forms["src/main.rs"], "src/main.rs");
         // Single-segment path: the full path is the only form.
         assert_eq!(forms["build.rs"], "build.rs");
+    }
+
+    #[test]
+    fn short_cite_forms_skip_generic_leading_segments() {
+        // R030: agents copied "backend-worker/src/aggregation.rs" verbatim
+        // but stripped the head off "src/aggregation.rs", landing on an
+        // ambiguous bare basename. Prefer the package-anchored form even
+        // when the src/-led suffix is already unique.
+        let files = vec![
+            "packages/backend-worker/src/aggregation.rs".to_string(),
+            "packages/desktop/src-tauri/commands/report/aggregation.rs".to_string(),
+        ];
+        let forms = short_cite_forms(&files);
+        assert_eq!(
+            forms["packages/backend-worker/src/aggregation.rs"],
+            "backend-worker/src/aggregation.rs"
+        );
+        assert_eq!(
+            forms["packages/desktop/src-tauri/commands/report/aggregation.rs"],
+            "report/aggregation.rs"
+        );
     }
 
     #[test]

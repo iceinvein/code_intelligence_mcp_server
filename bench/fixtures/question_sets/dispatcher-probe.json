@@ -1,0 +1,4 @@
+{
+  "description": "R033 residual: django-arch-03 dispatcher-flood pack. Probes the call-hierarchy direction-separation fix (no callers-of-callees) plus pack row dedup (symbol_id keep-first, covered line anchors).",
+  "questions": ["django-arch-03"]
+}

@@ -104,37 +104,23 @@ pub struct EvidencePackInput {
 
 pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
     let kind = pack_kind(&input.question, input.shape);
-    let mut rows = Vec::with_capacity(
+    let secondary_role = input.secondary_via.as_deref().unwrap_or("secondary");
+
+    let mut channeled = Vec::with_capacity(
         input.primary.len() + input.secondary.len() + input.extra_candidates.len(),
     );
+    channeled.extend(input.primary.into_iter().map(|l| (l, "primary")));
+    channeled.extend(input.secondary.into_iter().map(|l| (l, secondary_role)));
+    channeled.extend(input.extra_candidates.into_iter().map(|l| (l, "candidate")));
+    let channeled = dedup_pack_locations(channeled);
 
-    for location in input.primary {
+    let mut rows = Vec::with_capacity(channeled.len());
+    for (location, fallback_role) in channeled {
         rows.push(row_from_location(
             location,
             &input.target,
             kind,
-            "primary",
-            rows.len() as u32 + 1,
-        ));
-    }
-
-    let secondary_role = input.secondary_via.as_deref().unwrap_or("secondary");
-    for location in input.secondary {
-        rows.push(row_from_location(
-            location,
-            &input.target,
-            kind,
-            secondary_role,
-            rows.len() as u32 + 1,
-        ));
-    }
-
-    for location in input.extra_candidates {
-        rows.push(row_from_location(
-            location,
-            &input.target,
-            kind,
-            "candidate",
+            fallback_role,
             rows.len() as u32 + 1,
         ));
     }
@@ -159,6 +145,77 @@ pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
 
 pub fn pack_to_value(pack: &EvidencePack) -> Value {
     serde_json::to_value(pack).expect("evidence pack should serialize")
+}
+
+/// Drop redundant pack rows before role assignment. Two rules, both from the
+/// django-arch-03 pack audit (R029-R033):
+/// - one row per symbol_id: the pivot rode as the primary search hit AND the
+///   secondary call-hierarchy root. The first copy keeps its position; a
+///   later copy with a verified via (find_references / call hierarchy)
+///   donates its via so callsite packs still mark the row verified.
+/// - a single-line anchor of a symbol whose full row already shows that line
+///   (same file, same symbol, line within the UNTRUNCATED body) repeats
+///   visible evidence. Anchors past a truncated body still carry unseen
+///   lines and ride.
+fn dedup_pack_locations(channeled: Vec<(PackLocation, &str)>) -> Vec<(PackLocation, &str)> {
+    let mut kept: Vec<(PackLocation, &str)> = Vec::with_capacity(channeled.len());
+
+    for (location, role) in channeled {
+        if location.symbol_id.is_some() {
+            if let Some((existing, _)) = kept
+                .iter_mut()
+                .find(|(k, _)| k.symbol_id == location.symbol_id)
+            {
+                let existing_verified = existing
+                    .via
+                    .as_deref()
+                    .is_some_and(is_verified_callsite_source);
+                let new_verified = location
+                    .via
+                    .as_deref()
+                    .is_some_and(is_verified_callsite_source);
+                if !existing_verified && new_verified {
+                    existing.via = location.via;
+                }
+                continue;
+            }
+        }
+
+        let single_line = location.start_line.is_some() && location.start_line == location.end_line;
+        if single_line {
+            let line = location.start_line.expect("checked above");
+            let covered = kept.iter().any(|(k, _)| {
+                k.file_path == location.file_path
+                    && k.symbol_name == location.symbol_name
+                    && visible_body_contains(k, line)
+            });
+            if covered {
+                continue;
+            }
+        }
+
+        kept.push((location, role));
+    }
+
+    kept
+}
+
+/// Whether `line` falls inside the portion of `location`'s body that actually
+/// rides in the pack. `body_with_cap` truncation appends a "// ... N more
+/// lines" marker; lines past the kept window are NOT visible even though the
+/// symbol's line range covers them.
+fn visible_body_contains(location: &PackLocation, line: u32) -> bool {
+    let (Some(start), Some(body)) = (location.start_line, location.body.as_deref()) else {
+        return false;
+    };
+    let visible_lines = body
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("// ..."))
+        .count() as u32;
+    if visible_lines == 0 {
+        return false;
+    }
+    line >= start && line < start + visible_lines
 }
 
 fn pack_kind(question: &str, shape: InvestigationShape) -> EvidencePackKind {
@@ -656,7 +713,9 @@ mod tests {
 
     fn location_via(start_line: u32, body: &str, via: Option<&str>) -> PackLocation {
         PackLocation {
-            symbol_id: Some("sym-1".to_string()),
+            // Line-derived so fixtures model production, where symbol_id is
+            // unique per symbol: the pack dedups exact symbol_id repeats.
+            symbol_id: Some(format!("sym-{start_line}")),
             symbol_name: Some("handler".to_string()),
             file_path: Some("src/app.rs".to_string()),
             kind: Some("function".to_string()),
@@ -740,6 +799,120 @@ mod tests {
         assert!(
             roles.contains(&"module_breadth".to_string()),
             "module_breadth rows must keep their via as the pack role: {roles:?}"
+        );
+    }
+
+    #[test]
+    fn pack_dedups_same_symbol_across_channels() {
+        // django-arch-03: load_middleware rode once as the primary search hit
+        // and again as the secondary call-hierarchy root node. Keep-first so
+        // the primary copy (full body, top position) wins.
+        let mut primary_loc = location(26, "def load_middleware(self):");
+        primary_loc.symbol_id = Some("sym-lm".to_string());
+        let mut secondary_loc = location(26, "def load_middleware(self):");
+        secondary_loc.symbol_id = Some("sym-lm".to_string());
+        secondary_loc.via = Some("get_call_hierarchy".to_string());
+
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace how middleware is assembled".to_string(),
+            target: "load_middleware".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![primary_loc],
+            secondary: vec![secondary_loc],
+            secondary_via: Some("get_call_hierarchy".to_string()),
+            extra_candidates: Vec::new(),
+        });
+
+        assert_eq!(pack.rows.len(), 1, "same symbol_id must ride once");
+    }
+
+    #[test]
+    fn pack_drops_line_anchor_covered_by_visible_body() {
+        // Four single-line "callback_producer" anchors of load_middleware
+        // rode alongside its complete 76-line body row: pure redundancy
+        // when the covering body is untruncated.
+        let mut full = PackLocation {
+            symbol_id: Some("sym-lm".to_string()),
+            symbol_name: Some("load_middleware".to_string()),
+            file_path: Some("src/base.py".to_string()),
+            kind: Some("function".to_string()),
+            start_line: Some(26),
+            end_line: Some(30),
+            via: None,
+            body: Some("def load_middleware(self):\n  a\n  b\n  handler = x\n  done".to_string()),
+        };
+        full.via = Some("search_code".to_string());
+        let anchor = PackLocation {
+            symbol_id: Some("sym-lm:callback_producer:29".to_string()),
+            symbol_name: Some("load_middleware".to_string()),
+            file_path: Some("src/base.py".to_string()),
+            kind: Some("callback_producer".to_string()),
+            start_line: Some(29),
+            end_line: Some(29),
+            via: Some("non_callgraph_edges".to_string()),
+            body: Some("handler = x".to_string()),
+        };
+
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace how middleware is assembled".to_string(),
+            target: "load_middleware".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![full],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: vec![anchor],
+        });
+
+        assert_eq!(
+            pack.rows.len(),
+            1,
+            "anchor inside a visible body must be dropped: {:?}",
+            pack.rows
+                .iter()
+                .map(|r| (r.symbol_name.clone(), r.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pack_keeps_line_anchor_beyond_truncated_body() {
+        // A truncated covering body hides the anchored line, so the anchor
+        // still carries unseen evidence and must ride.
+        let full = PackLocation {
+            symbol_id: Some("sym-big".to_string()),
+            symbol_name: Some("Options".to_string()),
+            file_path: Some("src/options.py".to_string()),
+            kind: Some("class".to_string()),
+            start_line: Some(1),
+            end_line: Some(1025),
+            via: Some("search_code".to_string()),
+            body: Some("class Options:\n  a\n  b\n// ... 1022 more lines".to_string()),
+        };
+        let anchor = PackLocation {
+            symbol_id: Some("sym-big:callback_producer:500".to_string()),
+            symbol_name: Some("Options".to_string()),
+            file_path: Some("src/options.py".to_string()),
+            kind: Some("callback_producer".to_string()),
+            start_line: Some(500),
+            end_line: Some(500),
+            via: Some("non_callgraph_edges".to_string()),
+            body: Some("register(Options)".to_string()),
+        };
+
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace how options are registered".to_string(),
+            target: "Options".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![full],
+            secondary: vec![],
+            secondary_via: None,
+            extra_candidates: vec![anchor],
+        });
+
+        assert_eq!(
+            pack.rows.len(),
+            2,
+            "anchor beyond the visible body must survive"
         );
     }
 

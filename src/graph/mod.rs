@@ -246,17 +246,24 @@ pub fn build_call_hierarchy(
 
     let do_callers = direction == "callers" || direction == "both";
     let do_callees = direction == "callees" || direction == "both";
-    let mut frontier = vec![root.id.clone()];
+    // Each direction keeps its own frontier. A shared frontier flips
+    // direction mid-walk: a callee like a widely-used utility gets expanded
+    // in the caller direction at the next level, and its dozens of unrelated
+    // callers flood the hierarchy (django-arch-03: load_middleware ->
+    // import_string -> every dynamic-import site in the repo). Levels stay
+    // interleaved so node order still means distance from the pivot.
+    let mut caller_frontier = vec![root.id.clone()];
+    let mut callee_frontier = vec![root.id.clone()];
     for _ in 0..depth {
-        if edges.len() >= limit || frontier.is_empty() {
+        if edges.len() >= limit || (caller_frontier.is_empty() && callee_frontier.is_empty()) {
             break;
         }
-        let mut next = Vec::new();
-        for current_id in frontier {
-            if edges.len() >= limit {
-                break;
-            }
-            if do_callers {
+        if do_callers {
+            let mut next = Vec::new();
+            for current_id in caller_frontier.drain(..) {
+                if edges.len() >= limit {
+                    break;
+                }
                 let incoming = sqlite.list_edges_to(&current_id, limit)?;
                 for e in incoming {
                     if edges.len() >= limit {
@@ -283,7 +290,14 @@ pub fn build_call_hierarchy(
                     }
                 }
             }
-            if do_callees {
+            caller_frontier = next;
+        }
+        if do_callees {
+            let mut next = Vec::new();
+            for current_id in callee_frontier.drain(..) {
+                if edges.len() >= limit {
+                    break;
+                }
                 let outgoing = sqlite.list_edges_from(&current_id, limit)?;
                 for e in outgoing {
                     if edges.len() >= limit {
@@ -310,8 +324,8 @@ pub fn build_call_hierarchy(
                     }
                 }
             }
+            callee_frontier = next;
         }
-        frontier = next;
     }
 
     Ok(json!({
@@ -570,6 +584,66 @@ mod tests {
         let nodes = graph.get("nodes").unwrap().as_array().unwrap();
         assert_eq!(nodes[0]["id"], "root");
         assert_eq!(nodes.len(), 3);
+    }
+
+    #[test]
+    fn call_hierarchy_both_does_not_flip_direction_mid_walk() {
+        // django-arch-03 (R029-R033): load_middleware calls import_string, a
+        // utility with dozens of unrelated callers. A shared both-direction
+        // frontier expanded import_string in the CALLER direction at level 2,
+        // flooding the pack with redis/hashers/jinja2 symbols. Each direction
+        // must keep its own frontier: callers-of-callees and callees-of-callers
+        // are not part of the hierarchy.
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let root = sym("root", "load_middleware");
+        let util = sym("util", "import_string");
+        let unrelated = sym("unrelated", "RedisCacheClient");
+        let caller = sym("caller", "WSGIHandler.__init__");
+        let sibling = sym("sibling", "get_response");
+        for s in [&root, &util, &unrelated, &caller, &sibling] {
+            sqlite.upsert_symbol(s).unwrap();
+        }
+
+        for (from, to) in [
+            ("root", "util"),      // callee chain: root -> util
+            ("unrelated", "util"), // noise: caller of the callee
+            ("caller", "root"),    // caller chain: caller -> root
+            ("caller", "sibling"), // noise: callee of the caller
+        ] {
+            sqlite
+                .upsert_edge(&EdgeRow {
+                    from_symbol_id: from.to_string(),
+                    to_symbol_id: to.to_string(),
+                    edge_type: "call".to_string(),
+                    at_file: Some("src/a.ts".to_string()),
+                    at_line: Some(1),
+                    confidence: 1.0,
+                    evidence_count: 1,
+                    resolution: "local".to_string(),
+                })
+                .unwrap();
+        }
+
+        let g = build_call_hierarchy(&sqlite, &root, "both", 3, 100).unwrap();
+        let node_ids: Vec<&str> = g["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
+
+        assert!(node_ids.contains(&"util"), "direct callee must ride");
+        assert!(node_ids.contains(&"caller"), "direct caller must ride");
+        assert!(
+            !node_ids.contains(&"unrelated"),
+            "caller of a callee must not ride: {node_ids:?}"
+        );
+        assert!(
+            !node_ids.contains(&"sibling"),
+            "callee of a caller must not ride: {node_ids:?}"
+        );
     }
 
     #[test]

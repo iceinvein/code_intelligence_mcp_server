@@ -1016,6 +1016,74 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         }
     }
 
+    // Step 3.7.13: inject hub type definitions named by the question. R034
+    // residual on django-arch-03: MiddlewareMixin (django/utils/deprecation.py)
+    // is structurally unreachable from the traced flow -- load_middleware
+    // instantiates middleware classes from settings strings via import_string,
+    // so no call/extends path leads to the adapter base class. The question
+    // itself names the subsystem ("middleware"); the class most subclassed /
+    // type-referenced under that name IS the concept's definition surface
+    // (MiddlewareMixin 28 vs CsrfViewMiddleware 9 by type-kind fan-in; same
+    // shape ranks View for "view", Storage hubs for "storage").
+    if is_system_mechanics_question(&question)
+        || is_module_breadth_question(&question)
+        || should_include_supporting_modules(&question, shape)
+    {
+        let present: HashSet<&str> = primary
+            .locations
+            .iter()
+            .chain(secondary.iter().flat_map(|s| s.locations.iter()))
+            .map(|l| l.symbol_id.as_str())
+            .collect();
+        // Same subsystem-reality filter module_breadth uses: a token must
+        // name an indexed path segment. R035: "does" (from "how does it
+        // wrap") substring-matched TemplateDoesNotExist, and junk tokens
+        // ("assembled", "startup") crowded real ones out of the cap.
+        let segments = {
+            let files = state.sqlite.list_indexed_files()?;
+            path_segment_set(files.iter().map(|(path, _)| path.as_str()))
+        };
+        let mut hubs: Vec<(crate::storage::sqlite::SymbolRow, u64)> = Vec::new();
+        for token in subsystem_candidate_tokens(&question)
+            .into_iter()
+            .filter(|t| token_segments_indexed(t, &segments))
+            .take(HUB_TYPE_TOKENS_CAP)
+        {
+            for (row, fan_in) in state.sqlite.list_hub_types_matching(
+                &token,
+                HUB_TYPE_MIN_FAN_IN,
+                HUB_TYPE_CAP * 2,
+            )? {
+                if present.contains(row.id.as_str())
+                    || crate::classify::is_test_file(&row.file_path)
+                    || crate::classify::is_generated_output_path(&row.file_path)
+                    || hubs.iter().any(|(seen, _)| seen.id == row.id)
+                {
+                    continue;
+                }
+                hubs.push((row, fan_in));
+            }
+        }
+        hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
+        let fresh: Vec<VerifiedLocation> = hubs
+            .into_iter()
+            .take(HUB_TYPE_CAP)
+            .map(|(row, _)| injected_location(row, "hub_type", MODULE_BREADTH_BODY_LINES))
+            .collect();
+        if !fresh.is_empty() {
+            match secondary.as_mut() {
+                Some(s) => s.locations.extend(fresh),
+                None => {
+                    secondary = Some(SecondaryHop {
+                        via: "hub_type",
+                        raw: json!({"note": "widely-implemented type definitions matching the question's subject"}),
+                        locations: fresh,
+                    })
+                }
+            }
+        }
+    }
+
     // Step 3.7.1: auto-include IPC boundary files for flow questions that
     // cross the renderer / preload / main process line. The supporting
     // modules lookup only finds files called BY the primary file; the
@@ -1854,6 +1922,39 @@ const MODULE_BREADTH_ROWS_PER_SUBSYSTEM: usize = 2;
 /// arch questions from one ask_code call, so the first response must carry
 /// evidence for every side of the split (arch-03 mech 0.57 -> 0.39 purely
 /// on file coverage; judge flat).
+/// Rows injected by step 3.7.13. Two is enough to carry the concept's base
+/// type plus one adjacent hub without diluting the pack.
+const HUB_TYPE_CAP: usize = 2;
+/// A type must be pointed at by at least this many distinct type-kind
+/// symbols to count as a hub; filters ordinary classes that happen to match
+/// a question word.
+const HUB_TYPE_MIN_FAN_IN: usize = 3;
+/// Subsystem tokens tried against the hub query; each is one indexed SQL
+/// lookup.
+const HUB_TYPE_TOKENS_CAP: usize = 8;
+
+/// Architecture-mechanics phrasings ("How does the middleware system work?",
+/// "How is the chain assembled at startup?") that the walkthrough and
+/// breadth gates miss: they name no pipeline verb and no split/boundary
+/// vocabulary, but the answer still lives partly in a concept-defining type.
+fn is_system_mechanics_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    (q.contains("how does") || q.contains("how is") || q.contains("how are"))
+        && contains_any(
+            &q,
+            &[
+                "work",
+                "assembled",
+                "constructed",
+                "wired",
+                "built",
+                "architectur",
+                "organized",
+                "organised",
+            ],
+        )
+}
+
 fn is_module_breadth_question(question: &str) -> bool {
     let q = question.to_lowercase();
     contains_any(
@@ -2566,7 +2667,14 @@ fn run_call_hierarchy_hop(
         file: file_path.map(ToOwned::to_owned),
     };
     let raw = super::graph::handle_get_call_hierarchy(state, tool)?;
-    let locations = extract_locations_from_graph_nodes(state, &raw, "get_call_hierarchy")?;
+    // Test callers are real hierarchy nodes (they stay in `raw`) but poor
+    // pack evidence: R035 rep0's trace pivoted on a decorator utility and a
+    // third of the pack was CacheMiddlewareTest rows. Same exclusion
+    // module_breadth applies.
+    let locations = extract_locations_from_graph_nodes(state, &raw, "get_call_hierarchy")?
+        .into_iter()
+        .filter(|l| !crate::classify::is_test_file(&l.file_path))
+        .collect();
     Ok(Some(SecondaryHop {
         via: "get_call_hierarchy",
         raw,
@@ -3128,6 +3236,7 @@ pub(crate) fn is_injected_via_str(via: &str) -> bool {
             | "handler_dependency"
             | "module_breadth"
             | "breadth_dependency"
+            | "hub_type"
     )
 }
 
@@ -4593,6 +4702,125 @@ mod tests {
             "Trace how a report upload flows through the pipeline."
         ));
         assert!(!is_module_breadth_question("Who calls createSession?"));
+    }
+
+    #[test]
+    fn system_mechanics_question_detection() {
+        // Both django-arch-03 phrasings (fixture + the agent's rewording).
+        assert!(is_system_mechanics_question(
+            "How does Django's middleware system work architecturally? How is the middleware chain assembled at startup and how does it wrap the view layer?"
+        ));
+        assert!(is_system_mechanics_question(
+            "How is Django's middleware chain assembled at startup and how does it wrap the view layer?"
+        ));
+        // Lookups and traces stay out: their packs are already shaped.
+        assert!(!is_system_mechanics_question("Who calls createSession?"));
+        assert!(!is_system_mechanics_question(
+            "How does load_middleware handle MiddlewareNotUsed?"
+        ));
+        assert!(!is_system_mechanics_question(
+            "Where is the session token validated?"
+        ));
+    }
+
+    #[test]
+    fn hub_type_query_ranks_by_type_kind_fan_in() {
+        use crate::storage::sqlite::{EdgeRow, SqliteStore};
+
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let mk = |id: &str, name: &str, kind: &str, file: &str| crate::storage::sqlite::SymbolRow {
+            id: id.to_string(),
+            file_path: file.to_string(),
+            language: "python".to_string(),
+            kind: kind.to_string(),
+            name: name.to_string(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 1,
+            start_line: 1,
+            end_line: 10,
+            text: format!("class {name}: ..."),
+        };
+
+        // The hub: subclass declarations reference it (Python emits no
+        // extends edges).
+        sqlite
+            .upsert_symbol(&mk(
+                "mixin",
+                "MiddlewareMixin",
+                "class",
+                "django/utils/deprecation.py",
+            ))
+            .unwrap();
+        // Popular but not a hub: referenced by functions, not by classes.
+        sqlite
+            .upsert_symbol(&mk(
+                "csrf",
+                "CsrfViewMiddleware",
+                "class",
+                "django/middleware/csrf.py",
+            ))
+            .unwrap();
+        for i in 0..4 {
+            let sub = mk(
+                &format!("sub{i}"),
+                &format!("SubMiddleware{i}"),
+                "class",
+                "django/middleware/x.py",
+            );
+            sqlite.upsert_symbol(&sub).unwrap();
+            sqlite
+                .upsert_edge(&EdgeRow {
+                    from_symbol_id: sub.id.clone(),
+                    to_symbol_id: "mixin".to_string(),
+                    edge_type: "reference".to_string(),
+                    at_file: Some(sub.file_path.clone()),
+                    at_line: Some(1),
+                    confidence: 1.0,
+                    evidence_count: 1,
+                    resolution: "local".to_string(),
+                })
+                .unwrap();
+        }
+        for i in 0..6 {
+            let f = mk(
+                &format!("fn{i}"),
+                &format!("view_fn{i}"),
+                "function",
+                "django/views/v.py",
+            );
+            sqlite.upsert_symbol(&f).unwrap();
+            sqlite
+                .upsert_edge(&EdgeRow {
+                    from_symbol_id: f.id.clone(),
+                    to_symbol_id: "csrf".to_string(),
+                    edge_type: "reference".to_string(),
+                    at_file: Some(f.file_path.clone()),
+                    at_line: Some(1),
+                    confidence: 1.0,
+                    evidence_count: 1,
+                    resolution: "local".to_string(),
+                })
+                .unwrap();
+        }
+
+        let hubs = sqlite.list_hub_types_matching("middleware", 3, 4).unwrap();
+        assert_eq!(hubs.len(), 1, "function-kind references must not count");
+        assert_eq!(hubs[0].0.name, "MiddlewareMixin");
+        assert_eq!(hubs[0].1, 4);
+
+        // Below the fan-in floor nothing rides.
+        assert!(sqlite
+            .list_hub_types_matching("middleware", 5, 4)
+            .unwrap()
+            .is_empty());
+        // Token must match the name.
+        assert!(sqlite
+            .list_hub_types_matching("storage", 1, 4)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

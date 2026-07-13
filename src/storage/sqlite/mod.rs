@@ -56,6 +56,16 @@ impl SqliteStore {
         queries::symbols::get_symbol_by_id(&conn, id)
     }
 
+    pub fn list_hub_types_matching(
+        &self,
+        token_lower: &str,
+        min_fan_in: usize,
+        limit: usize,
+    ) -> Result<Vec<(SymbolRow, u64)>> {
+        let conn = self.read()?;
+        queries::symbols::list_hub_types_matching(&conn, token_lower, min_fan_in, limit)
+    }
+
     pub fn list_symbol_headers_by_file(
         &self,
         file_path: &str,

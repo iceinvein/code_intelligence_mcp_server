@@ -228,6 +228,65 @@ LIMIT ?2
     Ok(out)
 }
 
+/// Type definitions whose name contains `token_lower`, ranked by how many
+/// DISTINCT type-kind symbols point at them (extends / implements /
+/// reference / type edges). Counting only type-kind sources separates
+/// base-class hubs (MiddlewareMixin: referenced by every subclass
+/// declaration) from merely popular symbols (CsrfViewMiddleware: imported
+/// everywhere but subclassed rarely). Python emits no extends edges, so a
+/// subclass declaration surfaces as a reference edge from the subclass
+/// symbol; the source-kind filter is what makes that signal usable.
+pub fn list_hub_types_matching(
+    conn: &Connection,
+    token_lower: &str,
+    min_fan_in: usize,
+    limit: usize,
+) -> Result<Vec<(SymbolRow, u64)>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+SELECT
+  s.id, s.file_path, s.language, s.kind, s.name, s.exported,
+  s.start_byte, s.end_byte, s.start_line, s.end_line, s.text,
+  COUNT(DISTINCT e.from_symbol_id) AS fan_in
+FROM symbols s
+JOIN edges e ON e.to_symbol_id = s.id
+  AND e.edge_type IN ('extends', 'implements', 'reference', 'type')
+JOIN symbols src ON src.id = e.from_symbol_id
+  AND src.kind IN ('class', 'struct', 'interface', 'trait', 'enum', 'impl')
+WHERE s.kind IN ('class', 'struct', 'interface', 'trait')
+  AND instr(lower(s.name), ?1) > 0
+GROUP BY s.id
+HAVING COUNT(DISTINCT e.from_symbol_id) >= ?2
+ORDER BY fan_in DESC, s.exported DESC, s.name ASC
+LIMIT ?3
+"#,
+        )
+        .context("Failed to prepare list_hub_types_matching")?;
+
+    let mut rows = stmt.query(params![token_lower, min_fan_in as i64, limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push((
+            SymbolRow {
+                id: row.get(0)?,
+                file_path: row.get(1)?,
+                language: row.get(2)?,
+                kind: row.get(3)?,
+                name: row.get(4)?,
+                exported: row.get::<_, i64>(5)? != 0,
+                start_byte: row.get::<_, i64>(6)? as u32,
+                end_byte: row.get::<_, i64>(7)? as u32,
+                start_line: row.get::<_, i64>(8)? as u32,
+                end_line: row.get::<_, i64>(9)? as u32,
+                text: row.get(10)?,
+            },
+            row.get::<_, i64>(11)? as u64,
+        ));
+    }
+    Ok(out)
+}
+
 pub fn get_symbol_by_id(conn: &Connection, id: &str) -> Result<Option<SymbolRow>> {
     conn.query_row(
         r#"

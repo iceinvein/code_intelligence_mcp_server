@@ -225,6 +225,7 @@ pub fn extract_edges_for_symbol(
     id_to_symbol: &HashMap<String, &SymbolRow>,
     imports: &[Import],
     type_edges: &[(String, String)],
+    extends_edges: &[(String, String)],
     dataflow_edges: &[DataFlowEdge],
     get_package_fn: Option<&PackageLookupFn<'_>>,
     conn: Option<&Connection>,
@@ -460,6 +461,73 @@ pub fn extract_edges_for_symbol(
                             .collect(),
                     ));
                 }
+            }
+        }
+    }
+
+    // Extractor-provided inheritance pairs (Python class bases). TS/Java
+    // reach the same edge type through parse_type_relations on the symbol
+    // text; `used_edges` dedups any overlap.
+    for (subclass_name, base_name) in extends_edges {
+        if subclass_name != &row.name {
+            continue;
+        }
+        let (to_id, was_import, evidence_name) =
+            if let Some((receiver, attr)) = base_name.rsplit_once('.') {
+                // Dotted base ("models.Model"): the import binding is the
+                // receiver module; resolve the class through its source.
+                if let Some(imp) = import_map.get(receiver) {
+                    let synthesized = Import {
+                        name: attr.to_string(),
+                        source: imp.source.clone(),
+                        alias: None,
+                    };
+                    (resolve_import(&row.file_path, &synthesized), true, attr)
+                } else {
+                    (None, false, attr)
+                }
+            } else if let Some(local_id) = name_to_id.get(base_name.as_str()) {
+                if local_id == &row.id {
+                    continue;
+                }
+                (Some(local_id.clone()), false, base_name.as_str())
+            } else if let Some(imp) = import_map.get(base_name.as_str()) {
+                (
+                    resolve_import(&row.file_path, imp),
+                    true,
+                    base_name.as_str(),
+                )
+            } else {
+                (None, false, base_name.as_str())
+            };
+
+        if let Some(id) = to_id {
+            if used_edges.insert(("extends".to_string(), id.clone())) {
+                let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
+                let (count, at_line, evidence_rows) = evidence_for(evidence_name);
+                out.push((
+                    EdgeRow {
+                        from_symbol_id: row.id.clone(),
+                        to_symbol_id: id.clone(),
+                        edge_type: "extends".to_string(),
+                        at_file: Some(row.file_path.clone()),
+                        at_line: Some(at_line),
+                        confidence: confidence_for("extends"),
+                        evidence_count: count,
+                        resolution,
+                    },
+                    evidence_rows
+                        .into_iter()
+                        .map(|(line, c)| EdgeEvidenceRow {
+                            from_symbol_id: row.id.clone(),
+                            to_symbol_id: id.clone(),
+                            edge_type: "extends".to_string(),
+                            at_file: row.file_path.clone(),
+                            at_line: line,
+                            count: c,
+                        })
+                        .collect(),
+                ));
             }
         }
     }
@@ -721,6 +789,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &[],
+            &[], // extends_edges
             &[],
             None,
             Some(&conn),
@@ -732,6 +801,118 @@ mod tests {
         assert!(
             call_edge.is_some(),
             "expected a call edge to src/main/session-manager.ts::createSession; got edges: {:?}",
+            edges
+                .iter()
+                .map(|(e, _)| (e.edge_type.clone(), e.to_symbol_id.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Python inheritance: extractor-provided (subclass, base) pairs become
+    /// "extends" edges. A plain base resolves through the file-local name
+    /// map; a dotted base ("models.Model") resolves through the import map
+    /// with the DB exact-name fallback that Python's absolute module
+    /// sources rely on.
+    #[test]
+    fn python_extends_edges_resolve_local_and_imported_bases() {
+        use crate::storage::sqlite::queries;
+        use crate::storage::sqlite::schema::SCHEMA_SQL;
+        use rusqlite::Connection;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+
+        // Seed the base class that lives in another module.
+        let model = symbol(
+            "model_id",
+            "Model",
+            "class",
+            "class Model:\n    pass",
+            "django/db/models/base.py",
+        );
+        queries::symbols::batch_upsert_symbols(&conn, std::slice::from_ref(&model)).unwrap();
+
+        let row = symbol(
+            "article_id",
+            "Article",
+            "class",
+            "class Article(models.Model, Registry):\n    pass",
+            "app/models.py",
+        );
+        let mut name_to_id = HashMap::new();
+        name_to_id.insert("Registry".to_string(), "registry_id".to_string());
+        let id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+        let imports = vec![Import {
+            name: "models".to_string(),
+            source: "django.db".to_string(),
+            alias: None,
+        }];
+        let extends_edges = vec![
+            ("Article".to_string(), "models.Model".to_string()),
+            ("Article".to_string(), "Registry".to_string()),
+        ];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &imports,
+            &[],
+            &extends_edges,
+            &[],
+            None,
+            Some(&conn),
+        );
+
+        let extends: Vec<_> = edges
+            .iter()
+            .filter(|(e, _)| e.edge_type == "extends")
+            .map(|(e, _)| e.to_symbol_id.clone())
+            .collect();
+        assert!(
+            extends.contains(&"registry_id".to_string()),
+            "local base Registry should resolve, got extends edges: {:?}",
+            extends
+        );
+        assert!(
+            extends.contains(&"model_id".to_string()),
+            "dotted base models.Model should resolve via import fallback, got: {:?}",
+            extends
+        );
+    }
+
+    /// Pairs belonging to a different symbol in the same file must not
+    /// attach to this row.
+    #[test]
+    fn extends_edges_only_attach_to_their_subclass() {
+        let row = symbol(
+            "article_id",
+            "Article",
+            "class",
+            "class Article(Registry):\n    pass",
+            "app/models.py",
+        );
+        let mut name_to_id = HashMap::new();
+        name_to_id.insert("Registry".to_string(), "registry_id".to_string());
+        name_to_id.insert("Other".to_string(), "other_id".to_string());
+        let id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
+        let extends_edges = vec![("Comment".to_string(), "Other".to_string())];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &extends_edges,
+            &[],
+            None,
+            None,
+        );
+
+        assert!(
+            !edges.iter().any(|(e, _)| e.edge_type == "extends"),
+            "Comment's base must not attach to Article: {:?}",
             edges
                 .iter()
                 .map(|(e, _)| (e.edge_type.clone(), e.to_symbol_id.clone()))
@@ -769,6 +950,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
+            &[], // extends_edges
             &dataflow_edges,
             None,
             None, // No sqlite in tests
@@ -817,6 +999,7 @@ mod tests {
             &HashMap::new(),
             &imports,
             &[],
+            &[], // extends_edges
             &[],
             None,
             None,
@@ -887,6 +1070,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
+            &[], // extends_edges
             &dataflow_edges,
             Some(&get_package_fn),
             None, // No sqlite in tests
@@ -940,6 +1124,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
+            &[], // extends_edges
             &dataflow_edges,
             None,
             None, // No sqlite in tests
@@ -1003,6 +1188,7 @@ mod tests {
             &id_to_symbol,
             &[], // no imports
             &[], // no type edges
+            &[], // extends_edges
             &dataflow_edges,
             None, // no package lookup
             None, // no sqlite
@@ -1063,6 +1249,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
+            &[], // extends_edges
             &dataflow_edges,
             None,
             None,
@@ -1123,6 +1310,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
+            &[], // extends_edges
             &dataflow_edges,
             Some(&get_package_fn),
             None, // No sqlite in tests
@@ -1175,6 +1363,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
+            &[], // extends_edges
             &dataflow_edges,
             None,
             None,
@@ -1234,6 +1423,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
+            &[], // extends_edges
             &dataflow_edges,
             None,
             None,
@@ -1293,6 +1483,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
+            &[], // extends_edges
             &dataflow_edges,
             None,
             None,
@@ -1348,6 +1539,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
+            &[], // extends_edges
             &dataflow_edges,
             None,
             None,

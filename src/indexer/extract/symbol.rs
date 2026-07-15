@@ -203,6 +203,9 @@ pub struct ExtractedFile {
     pub symbols: Vec<ExtractedSymbol>,
     pub imports: Vec<Import>,
     pub type_edges: Vec<(String, String)>, // (parent_symbol_name, type_name)
+    /// Inheritance edges: (subclass_name, base_name). The base keeps its
+    /// dotted form ("models.Model") so edge resolution can use the import map.
+    pub extends_edges: Vec<(String, String)>,
     pub dataflow_edges: Vec<DataFlowEdge>, // Data flow edges (reads/writes)
     /// TODO/FIXME comments extracted from this file (LANG-03)
     pub todos: Vec<TodoEntry>,

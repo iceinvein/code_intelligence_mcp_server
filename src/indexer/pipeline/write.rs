@@ -336,6 +336,7 @@ mod tests {
             is_test_file: false,
             imports: vec![],
             type_edges: vec![],
+            extends_edges: vec![],
             dataflow_edges: vec![],
         };
 
@@ -423,6 +424,7 @@ mod tests {
                 is_test_file: false,
                 imports: vec![],
                 type_edges: vec![],
+                extends_edges: vec![],
                 dataflow_edges: vec![],
             });
         }
@@ -532,6 +534,7 @@ mod tests {
             is_test_file: false,
             imports: vec![],
             type_edges: vec![],
+            extends_edges: vec![],
             dataflow_edges: vec![],
         };
 
@@ -590,6 +593,7 @@ mod tests {
             is_test_file: false,
             imports: vec![],
             type_edges: vec![],
+            extends_edges: vec![],
             dataflow_edges: vec![],
         };
 

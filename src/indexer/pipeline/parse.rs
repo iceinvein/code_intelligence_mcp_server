@@ -65,6 +65,7 @@ pub struct ParsedFile {
     pub is_test_file: bool,
     pub imports: Vec<Import>,
     pub type_edges: Vec<(String, String)>,
+    pub extends_edges: Vec<(String, String)>,
     pub dataflow_edges: Vec<DataFlowEdge>,
 }
 
@@ -332,6 +333,7 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         is_test_file,
         imports: extracted.imports,
         type_edges: extracted.type_edges,
+        extends_edges: extracted.extends_edges,
         dataflow_edges: extracted.dataflow_edges,
     }))
 }
@@ -371,6 +373,7 @@ pub fn extract_edges_for_parsed_file(parsed: &ParsedFile, conn: &Connection) -> 
             &id_to_symbol,
             &parsed.imports,
             &parsed.type_edges,
+            &parsed.extends_edges,
             &parsed.dataflow_edges,
             package_lookup_ref,
             Some(conn),

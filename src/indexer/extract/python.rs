@@ -24,6 +24,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut type_edges: Vec<(String, String)> = Vec::new();
+    let mut extends_edges: Vec<(String, String)> = Vec::new();
     let mut dataflow_edges: Vec<DataFlowEdge> = Vec::new();
 
     walk(cursor, &mut |node| match node.kind() {
@@ -75,12 +76,12 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                     node,
                 ));
 
-                // Extract superclass type edges from the argument_list after the class name.
+                // Extract inheritance edges from the argument_list after the class name.
                 if let Some(superclasses) = node.child_by_field_name("superclasses") {
                     let mut sc_cursor = superclasses.walk();
                     for child in superclasses.children(&mut sc_cursor) {
-                        if let Some(type_name) = extract_python_type_name(child, source) {
-                            type_edges.push((name.clone(), type_name));
+                        if let Some(base) = extract_python_base_name(child, source) {
+                            extends_edges.push((name.clone(), base));
                         }
                     }
                 }
@@ -189,6 +190,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         symbols,
         imports,
         type_edges,
+        extends_edges,
         dataflow_edges,
         todos,
         jsdoc_entries: Vec::new(),
@@ -794,6 +796,33 @@ fn is_python_keyword(name: &str) -> bool {
 /// - Recurses through `type` wrapper nodes transparently
 ///
 /// Returns `None` for primitive types or unrecognised node kinds.
+/// Extract a base-class name from one child of a `superclasses` argument
+/// list. Unlike `extract_python_type_name`, dotted bases keep their full
+/// form ("models.Model") so edge resolution can walk the import map via
+/// the receiver module. Keyword arguments (metaclass=...) are not bases.
+fn extract_python_base_name(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => {
+            let name = node.utf8_text(source.as_bytes()).ok()?.to_string();
+            // object/type are implicit universal bases; no structural signal.
+            match name.as_str() {
+                "object" | "type" => None,
+                _ => Some(name),
+            }
+        }
+        "attribute" => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string()),
+        // Generic[T] / Protocol[T] -> take the outer type.
+        "generic_type" | "subscript" => {
+            let first = node.child(0)?;
+            extract_python_base_name(first, source)
+        }
+        _ => None,
+    }
+}
+
 fn extract_python_type_name(node: Node<'_>, source: &str) -> Option<String> {
     match node.kind() {
         "identifier" => {
@@ -1191,21 +1220,80 @@ class Child(Parent, Mixin):
             extracted.type_edges
         );
 
-        // Inheritance
+        // Inheritance now lives on the dedicated extends channel.
         assert!(
             extracted
-                .type_edges
+                .extends_edges
                 .iter()
                 .any(|e| e.0 == "Child" && e.1 == "Parent"),
-            "Expected type edge Child->Parent, got: {:?}",
-            extracted.type_edges
+            "Expected extends edge Child->Parent, got: {:?}",
+            extracted.extends_edges
         );
         assert!(
             extracted
-                .type_edges
+                .extends_edges
                 .iter()
                 .any(|e| e.0 == "Child" && e.1 == "Mixin"),
-            "Expected type edge Child->Mixin, got: {:?}",
+            "Expected extends edge Child->Mixin, got: {:?}",
+            extracted.extends_edges
+        );
+    }
+
+    #[test]
+    fn test_python_extends_edges() {
+        let source = r#"
+class Child(Parent, Mixin):
+    pass
+
+class Article(models.Model, metaclass=ABCMeta):
+    pass
+
+class Plain:
+    pass
+
+class Legacy(object):
+    pass
+"#;
+        let extracted = extract_python_symbols(source).unwrap();
+
+        for expected in [
+            ("Child", "Parent"),
+            ("Child", "Mixin"),
+            ("Article", "models.Model"),
+        ] {
+            assert!(
+                extracted
+                    .extends_edges
+                    .iter()
+                    .any(|e| e.0 == expected.0 && e.1 == expected.1),
+                "Expected extends edge {:?}, got: {:?}",
+                expected,
+                extracted.extends_edges
+            );
+        }
+
+        // metaclass= is a keyword argument, not a base
+        assert!(
+            !extracted.extends_edges.iter().any(|e| e.1 == "ABCMeta"),
+            "metaclass keyword argument must not become a base: {:?}",
+            extracted.extends_edges
+        );
+        // no parens / object-only bases carry no structural information
+        assert!(
+            !extracted
+                .extends_edges
+                .iter()
+                .any(|e| e.0 == "Plain" || e.0 == "Legacy"),
+            "Plain/Legacy should have no extends edges: {:?}",
+            extracted.extends_edges
+        );
+        // bases no longer masquerade as type edges
+        assert!(
+            !extracted
+                .type_edges
+                .iter()
+                .any(|e| e.0 == "Child" && (e.1 == "Parent" || e.1 == "Mixin")),
+            "superclasses must move out of type_edges: {:?}",
             extracted.type_edges
         );
     }

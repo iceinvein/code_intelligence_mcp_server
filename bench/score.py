@@ -357,41 +357,103 @@ def compute_citation_multiplier(
     return multiplier, results
 
 
-# A forbidden-term mention is only a hit when it is affirmative. Correct answers to
-# negative questions ("Is there a RedisCache?") must name the term while denying it
-# ("there is no RedisCache"), so bare substring matching zeroes exactly the answers
-# the fixture wants to reward.
+# A forbidden-term mention is only a hit when it asserts the forbidden thing
+# exists in THIS codebase. Correct answers to negative questions ("Is there a
+# RedisCache?") must name the term while denying it ("there is no RedisCache",
+# "search returned zero matches"), analogies ("Elysia's equivalent of app.use()
+# in Express") compare rather than claim, and third-party attribution ("simplejwt
+# provides JWTAuthentication") is the pointer the rubric asks for. Bare substring
+# matching zeroes exactly the answers the fixture wants to reward.
 _NEGATION_MARKERS = (
     "no ", "not ", "n't", "never", "without", "neither", "nor ",
     "absent", "lacks", "lack of", "instead of", "rather than",
+    "zero ", "no match", "none",
+    # analogy: the term is a comparison point, not a claim about this repo
+    "equivalent", "similar to", "analogous", "akin to", "unlike",
+    "counterpart", "as opposed to",
+    # third-party attribution: naming what an external package provides
+    "third-party", "third party", "github.com/", "pip install",
+    "external package",
 )
-_SENTENCE_BOUNDARIES = (".", "!", "?", "\n", ";")
+_SENTENCE_END = (".", "!", "?", ";")
 
 
-def _is_negated_mention(answer_lower: str, idx: int, window: int = 80) -> bool:
-    """True when a negation marker precedes idx within the same sentence."""
-    ctx = answer_lower[max(0, idx - window):idx]
-    for b in _SENTENCE_BOUNDARIES:
-        p = ctx.rfind(b)
-        if p != -1:
-            ctx = ctx[p + 1:]
-    return any(m in ctx for m in _NEGATION_MARKERS)
+def _sentence_around(answer_lower: str, idx: int, end: int, window: int = 120) -> str:
+    """The sentence containing answer_lower[idx:end], clipped to +/- window chars.
+
+    A '.', '!', '?', or ';' only ends a sentence when followed by whitespace or
+    end-of-text, so code tokens like `app.use()` or `.py` do not truncate the
+    scan. Newlines always end a sentence (list bullets are scored alone).
+    """
+    lo = max(0, idx - window)
+    hi = min(len(answer_lower), end + window)
+    start = lo
+    for i in range(idx - 1, lo - 1, -1):
+        c = answer_lower[i]
+        if c == "\n" or (
+            c in _SENTENCE_END
+            and (i + 1 >= len(answer_lower) or answer_lower[i + 1].isspace())
+        ):
+            start = i + 1
+            break
+    stop = hi
+    for i in range(end, hi):
+        c = answer_lower[i]
+        if c == "\n" or (
+            c in _SENTENCE_END
+            and (i + 1 >= len(answer_lower) or answer_lower[i + 1].isspace())
+        ):
+            stop = i + 1
+            break
+    return answer_lower[start:stop]
+
+
+# A repo path token: an optional slash path ending in a filename with a code
+# extension (src/foo/bar.rs, cache.py). Requiring the extension keeps prose
+# slashes ("token obtain/refresh/verify") from reading as locations. URLs are
+# stripped first so docs links do not read as in-repo locations.
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+")
+_PATH_TOKEN_RE = re.compile(
+    r"\b[\w.-]+(?:/[\w.-]+)*"
+    r"\.(?:py|rs|ts|tsx|js|jsx|go|java|rb|c|cc|cpp|h|hpp|cs|kt|swift)\b"
+)
+
+
+def _locates_in_repo(sentence_lower: str) -> bool:
+    return bool(_PATH_TOKEN_RE.search(_URL_RE.sub(" ", sentence_lower)))
 
 
 def forbidden_hits(q: Question, answer: str) -> list[str]:
+    """Forbidden terms the answer affirmatively claims exist in this repo.
+
+    Once a term has at least one denied mention, the answer has established
+    the term does not exist here; later affirmative mentions (third-party
+    attribution, qualified paths of external packages) only count when their
+    sentence locates the term in the repo via a path token.
+    """
     a = answer.lower()
     hits: list[str] = []
     for f in q.expected.forbidden:
         fl = f.lower()
+        mentions: list[tuple[bool, str]] = []  # (negated, sentence)
         idx = 0
         while True:
             i = a.find(fl, idx)
             if i == -1:
                 break
-            if not _is_negated_mention(a, i):
-                hits.append(f)
-                break
+            sentence = _sentence_around(a, i, i + len(fl))
+            mentions.append((any(m in sentence for m in _NEGATION_MARKERS), sentence))
             idx = i + len(fl)
+        if not mentions:
+            continue
+        denied = any(neg for neg, _ in mentions)
+        for neg, sentence in mentions:
+            if neg:
+                continue
+            if denied and not _locates_in_repo(sentence):
+                continue
+            hits.append(f)
+            break
     return hits
 
 

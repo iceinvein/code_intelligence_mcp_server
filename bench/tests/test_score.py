@@ -406,6 +406,99 @@ def test_forbidden_negation_does_not_leak_across_sentences():
     assert score.forbidden_hits(q, answer) == ["RedisCache"]
 
 
+def test_forbidden_negation_after_mention_not_counted():
+    # R037 django-negative-02 rep1: the denial follows the term in the same sentence.
+    q = _q(forbidden=["JWTAuthentication"])
+    answer = (
+        "A full-repo search for `JWT`, `jwt`, or `JWTAuthentication` "
+        "across all `.py` files returned zero matches."
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_analogy_mention_not_counted():
+    # R037 wolfmax-arch-02 rep1: analogy to a framework the repo does not use.
+    q = _q(forbidden=["express"])
+    answer = (
+        "Routers are plugged into the root app via `.use()` - "
+        "Elysia's equivalent of `app.use()` in Express."
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_third_party_attribution_not_counted():
+    # R037 django-negative-02 rep1: naming what a third-party package provides.
+    q = _q(forbidden=["JWTAuthentication"])
+    answer = (
+        "- [`djangorestframework-simplejwt`](https://github.com/jazzband/"
+        "djangorestframework-simplejwt) - provides `JWTAuthentication` "
+        "for Django REST Framework"
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_code_token_dot_does_not_end_sentence():
+    # `.use()` and `.py` contain dots that must not truncate the sentence scan.
+    q = _q(forbidden=["express"])
+    answer = "Unlike app.use() in Express, Elysia chains plugins."
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_attribution_after_denial_not_counted():
+    # R033 django-negative-02: denial first, then a bullet naming what a
+    # third-party package provides, with no repo path in the bullet.
+    q = _q(forbidden=["JWTAuthentication"])
+    answer = (
+        "There is no `JWTAuthentication` class in Django's core.\n"
+        "For JWT support the common choices are:\n"
+        "- `rest_framework_simplejwt.authentication.JWTAuthentication` "
+        "(for Django REST Framework)"
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_url_is_not_a_repo_path():
+    # A docs URL contains slashes but does not locate the term in the repo.
+    q = _q(forbidden=["JWTAuthentication"])
+    answer = (
+        "No `JWTAuthentication` exists anywhere in django.contrib.auth.\n"
+        "- [`djangorestframework-simplejwt`](https://django-rest-framework-"
+        "simplejwt.readthedocs.io/) offers `JWTAuthentication` support"
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_repo_path_claim_after_denial_still_counts():
+    # A denial does not launder a later claim that locates the term in-repo.
+    q = _q(forbidden=["JWTAuthentication"])
+    answer = (
+        "There is no `JWTAuthentication` in django.contrib.auth. "
+        "However, `JWTAuthentication` is defined in django/contrib/jwt/backends.py."
+    )
+    assert score.forbidden_hits(q, answer) == ["JWTAuthentication"]
+
+
+def test_forbidden_zero_occurrences_not_counted():
+    # R031 django-negative-02 rep0: "Zero occurrences" is a denial.
+    q = _q(forbidden=["JWTAuthentication"])
+    answer = (
+        "- **Zero occurrences** of `JWT`, `jwt`, `JWTAuthentication`, "
+        "or `JsonWebToken` anywhere under `django/`"
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
+def test_forbidden_prose_slash_is_not_a_repo_path():
+    # R031 django-negative-02 rep1: "obtain/refresh/verify" is prose, not a path.
+    q = _q(forbidden=["JWTAuthentication"])
+    answer = (
+        "There is no `JWTAuthentication` class anywhere in Django's core.\n"
+        "- **`djangorestframework-simplejwt`** - provides `JWTAuthentication`, "
+        "token obtain/refresh/verify views"
+    )
+    assert score.forbidden_hits(q, answer) == []
+
+
 def test_forbidden_mixed_negated_and_affirmative_counts():
     q = _q(forbidden=["RedisCache"])
     answer = "There is no RedisCache in src/. However, RedisCache is defined in vendor/cache.py."

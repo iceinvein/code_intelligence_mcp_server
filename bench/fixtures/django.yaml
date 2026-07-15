@@ -704,8 +704,9 @@ questions:
       facts:
         - ["does not exist", "no JWT", "not built-in", "third-party"]
         - ["session", "Token model", "password-reset"]
+      # PyJWT is deliberately NOT forbidden: the rubric names it as the
+      # expected third-party pointer, so forbidding it contradicts the rubric.
       forbidden:
         - "JWTAuthentication"
         - "jwt.encode"
-        - "PyJWT"
       forbidden_strict: true

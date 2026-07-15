@@ -133,3 +133,27 @@ def test_rescore_dedupes_superseded_retry_records(tmp_path):
     rows = [json.loads(l) for l in (round_dir / "scores.json").read_text().splitlines()]
     assert len(rows) == 1
     assert rows[0]["run_error"] is None  # the later retry wins
+
+
+def test_aggregate_reports_product_scope():
+    """Rows where the agent never called the product are excluded from the
+    product-scope mech/judge means; headline numbers stay unfiltered."""
+    rows = [
+        {"mech": 1.0, "judge_median": 9, "mcp_tool_calls": 2},
+        {"mech": 0.0, "judge_median": 5, "mcp_tool_calls": 0},
+    ]
+    agg = rescore._aggregate(rows)
+    assert agg["mech"] == pytest.approx(0.5)
+    assert agg["n_product"] == 1
+    assert agg["mech_product"] == pytest.approx(1.0)
+    assert agg["judge_product"] == pytest.approx(9.0)
+
+
+def test_aggregate_product_scope_handles_legacy_rows():
+    """Rows rescored before mcp_tool_calls existed count as product-scope
+    (they cannot be distinguished, and excluding them would silently shrink
+    old rounds)."""
+    rows = [{"mech": 0.8, "judge_median": 7}]
+    agg = rescore._aggregate(rows)
+    assert agg["n_product"] == 1
+    assert agg["mech_product"] == pytest.approx(0.8)

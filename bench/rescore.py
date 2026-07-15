@@ -92,6 +92,12 @@ def _aggregate(rows: list[dict]) -> dict:
     if n == 0:
         return {}
     judged = [r["judge_median"] for r in rows if r.get("judge_median") is not None]
+    # Product scope: rows where the agent actually called code-intelligence.
+    # Zero-MCP rows (agent answered via Grep/Read alone) score the agent, not
+    # the product, so they are excluded here while staying in the headline
+    # numbers. Rows without the field predate it and count as product-scope.
+    product = [r for r in rows if r.get("mcp_tool_calls", 1) > 0]
+    pjudged = [r["judge_median"] for r in product if r.get("judge_median") is not None]
     return {
         "n": n,
         "mech": sum(r.get("mech", 0) for r in rows) / n,
@@ -100,6 +106,11 @@ def _aggregate(rows: list[dict]) -> dict:
         "forbidden_hit": sum(1 for r in rows if r.get("forbidden_hit")) / n,
         "judge": sum(judged) / len(judged) if judged else None,
         "imprecise": sum(1 for r in rows if r.get("imprecise_citations", 0) > 0) / n,
+        "n_product": len(product),
+        "mech_product": (
+            sum(r.get("mech", 0) for r in product) / len(product) if product else None
+        ),
+        "judge_product": sum(pjudged) / len(pjudged) if pjudged else None,
     }
 
 
@@ -179,7 +190,16 @@ def main(argv: list[str] | None = None) -> int:
         old, new = summary["old"], summary["new"]
         print(f"\n{summary['round']}: rescored {summary['n_rescored']} rows")
         if old:
-            for k in ("mech", "citation_hit", "hallucinated", "imprecise", "forbidden_hit", "judge"):
+            for k in (
+                "mech",
+                "mech_product",
+                "citation_hit",
+                "hallucinated",
+                "imprecise",
+                "forbidden_hit",
+                "judge",
+                "judge_product",
+            ):
                 o, nv = old.get(k), new.get(k)
                 fmt = lambda v: "n/a" if v is None else f"{v:.3f}"
                 delta = "" if o is None or nv is None else f"  ({nv - o:+.3f})"

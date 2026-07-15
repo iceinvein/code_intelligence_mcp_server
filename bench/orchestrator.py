@@ -99,6 +99,14 @@ def _score_record(
         "imprecise_citations": sum(1 for v in verifications if v.imprecise),
         "forbidden_hit": bool(forbidden),
         "tool_calls": len(rec.get("tool_calls", [])),
+        # True product usage: rows with 0 answered the question without ever
+        # calling code-intelligence (greppable questions), so their score
+        # cannot reflect product changes. Gate aggregates report both scopes.
+        "mcp_tool_calls": sum(
+            1
+            for t in rec.get("tool_calls", [])
+            if str(t.get("name", "")).startswith("mcp__code-intelligence")
+        ),
         "input_tokens": rec.get("input_tokens", 0) + rec.get("cache_read_tokens", 0),
         "wall_ms": rec.get("wall_ms", 0),
         "run_error": rec.get("run_error"),

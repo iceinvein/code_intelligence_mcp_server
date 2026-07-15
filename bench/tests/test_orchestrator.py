@@ -503,3 +503,36 @@ def test_orchestrator_persists_judge_errors_and_casualties(monkeypatch, tmp_path
     for s in summary["scores"]:
         assert s["judge_median"] is None
         assert s["judge_casualty"] is True
+
+
+def test_score_record_counts_mcp_tool_calls(tmp_path):
+    """scores.json rows carry true code-intelligence MCP usage per run.
+
+    scores.json `tool_calls` counts every tool (Grep, ToolSearch, ...); a
+    product gate needs to know whether the product was exercised at all,
+    so `mcp_tool_calls` counts only code-intelligence MCP calls.
+    """
+    q = fixtures_io.Question(
+        id="t-1",
+        task_type="symbol_lookup",
+        difficulty="easy",
+        question="?",
+        rubric="r",
+        expected=fixtures_io.Expected(
+            citations=[], files=[], facts=["bar"], forbidden=[],
+            forbidden_strict=False,
+        ),
+    )
+    rec = {
+        "arm": "code_intel_shipped", "repo": "smoke", "rep": 0,
+        "final_answer": "bar",
+        "tool_calls": [
+            {"name": "ToolSearch", "input_summary": ""},
+            {"name": "Grep", "input_summary": ""},
+            {"name": "mcp__code-intelligence__ask_code", "input_summary": ""},
+            {"name": "mcp__code-intelligence__search_code", "input_summary": ""},
+        ],
+    }
+    s = orchestrator._score_record(q, rec, tmp_path)
+    assert s["tool_calls"] == 4
+    assert s["mcp_tool_calls"] == 2

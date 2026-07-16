@@ -159,9 +159,12 @@ pub fn resolve_imported_symbol_id_with_db(
         }
     }
 
-    // Final fallback to generated ID (for symbols not yet indexed)
-    let target_path = resolve_path(current_file_path, &imp.source)?;
-    Some(stable_symbol_id(&target_path, &imp.name, 0))
+    // The persisted graph is symbol-to-symbol. Do not manufacture an ID for an
+    // unresolved import: it would not have a corresponding symbols row and
+    // would violate the edges table's foreign-key contract. External and
+    // ambiguous bindings need explicit endpoint types before they can be
+    // represented safely.
+    None
 }
 
 /// Generate alternative import paths to try when the default resolution fails
@@ -414,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_imported_symbol_id_fallback_to_file_level() {
+    fn resolve_imported_symbol_id_with_db_drops_missing_target() {
         let base0 = tmp_dir();
         let base = base0.canonicalize().unwrap_or(base0);
 
@@ -431,14 +434,11 @@ mod tests {
             alias: None,
         };
 
-        // Test the enhanced resolution - should fall back to file-level ID
+        // Database-backed resolution must not manufacture an orphan target.
         let conn_guard = sqlite.read().unwrap();
         let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &conn_guard);
 
-        // Should fall back to stable_symbol_id based on path and name
-        assert!(resolved.is_some());
-        let resolved_id = resolved.unwrap();
-        assert!(resolved_id.starts_with("0x") || resolved_id.len() == 16);
+        assert_eq!(resolved, None);
     }
 }
 

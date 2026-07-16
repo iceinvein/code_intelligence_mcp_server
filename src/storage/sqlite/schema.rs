@@ -506,6 +506,12 @@ CREATE TABLE IF NOT EXISTS symbol_mappings (
 CREATE INDEX IF NOT EXISTS idx_symbol_mappings_internal
   ON symbol_mappings(internal_symbol_id);
 
+CREATE TABLE IF NOT EXISTS index_metadata (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 CREATE TABLE IF NOT EXISTS file_fingerprints (
   file_path TEXT PRIMARY KEY NOT NULL,
   mtime_ns INTEGER NOT NULL,

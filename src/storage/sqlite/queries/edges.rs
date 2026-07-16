@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
 
 use crate::storage::sqlite::schema::{EdgeEvidenceRow, EdgeRow, SymbolRow};
@@ -137,6 +137,109 @@ ON CONFLICT(from_symbol_id, to_symbol_id, edge_type, at_file, at_line) DO UPDATE
                 })?;
         }
     }
+    Ok(())
+}
+
+/// Delete outgoing graph facts owned by symbols in a changed file.
+///
+/// Incoming edges are deliberately preserved: stable target IDs remain valid
+/// when a declaration is rewritten in place, and unchanged source files are
+/// not re-parsed during an incremental index. Orphaned incoming edges are
+/// removed after all replacement symbols have been written.
+pub fn delete_outgoing_edges_by_file(conn: &Connection, file_path: &str) -> Result<u64> {
+    conn.execute(
+        r#"
+DELETE FROM edge_evidence
+WHERE from_symbol_id IN (SELECT id FROM symbols WHERE file_path = ?1)
+"#,
+        params![file_path],
+    )
+    .with_context(|| format!("Failed to delete edge evidence owned by file: {file_path}"))?;
+
+    let deleted = conn
+        .execute(
+            r#"
+DELETE FROM edges
+WHERE from_symbol_id IN (SELECT id FROM symbols WHERE file_path = ?1)
+"#,
+            params![file_path],
+        )
+        .with_context(|| format!("Failed to delete outgoing edges owned by file: {file_path}"))?;
+    Ok(deleted as u64)
+}
+
+/// Remove graph rows whose endpoints disappeared while foreign-key checks
+/// were temporarily disabled for the symbol replacement phase.
+pub fn delete_orphan_edges(conn: &Connection) -> Result<u64> {
+    conn.execute(
+        r#"
+DELETE FROM edge_evidence
+WHERE NOT EXISTS (SELECT 1 FROM symbols s WHERE s.id = edge_evidence.from_symbol_id)
+   OR NOT EXISTS (SELECT 1 FROM symbols s WHERE s.id = edge_evidence.to_symbol_id)
+"#,
+        [],
+    )
+    .context("Failed to delete orphan edge evidence")?;
+
+    let deleted = conn
+        .execute(
+            r#"
+DELETE FROM edges
+WHERE NOT EXISTS (SELECT 1 FROM symbols s WHERE s.id = edges.from_symbol_id)
+   OR NOT EXISTS (SELECT 1 FROM symbols s WHERE s.id = edges.to_symbol_id)
+"#,
+            [],
+        )
+        .context("Failed to delete orphan edges")?;
+    Ok(deleted as u64)
+}
+
+/// Enforce the graph contracts that can be checked without source parsing.
+pub fn validate_graph_integrity(conn: &Connection) -> Result<()> {
+    for table_name in ["edges", "edge_evidence"] {
+        let sql = format!("PRAGMA foreign_key_check({table_name})");
+        let mut fk_stmt = conn
+            .prepare(&sql)
+            .context("Failed to prepare graph foreign-key validation")?;
+        let mut fk_rows = fk_stmt
+            .query([])
+            .context("Failed to run graph foreign-key validation")?;
+        if let Some(row) = fk_rows.next()? {
+            let table: String = row.get(0)?;
+            let rowid: Option<i64> = row.get(1)?;
+            let parent: String = row.get(2)?;
+            let fk_index: i64 = row.get(3)?;
+            bail!(
+                "Graph foreign-key violation: table={table}, rowid={rowid:?}, parent={parent}, fk_index={fk_index}"
+            );
+        }
+    }
+
+    let invalid_locations: i64 = conn
+        .query_row(
+            r#"
+SELECT COUNT(*)
+FROM edges e
+JOIN symbols source ON source.id = e.from_symbol_id
+WHERE e.edge_type IN ('reads', 'writes', 'async_call', 'spawn')
+  AND (
+    e.at_file IS NULL
+    OR e.at_file != source.file_path
+    OR e.at_line IS NULL
+    OR e.at_line < source.start_line
+    OR e.at_line > source.end_line
+  )
+"#,
+            [],
+            |row| row.get(0),
+        )
+        .context("Failed to validate data-flow edge locations")?;
+    if invalid_locations > 0 {
+        bail!(
+            "Graph integrity violation: {invalid_locations} data-flow edges fall outside their source symbol"
+        );
+    }
+
     Ok(())
 }
 
@@ -530,6 +633,85 @@ mod dead_code_tests {
     #[test]
     fn test_sqlite_limit_clamps_usize_max_to_non_negative_i64() {
         assert_eq!(sqlite_limit(usize::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn changed_file_cleanup_removes_only_source_owned_edges() {
+        let conn = setup_test_db();
+        insert_symbol(
+            &conn,
+            "changed",
+            "src/changed.rs",
+            "rust",
+            "function",
+            "changed",
+            false,
+        );
+        insert_symbol(
+            &conn,
+            "target",
+            "src/target.rs",
+            "rust",
+            "function",
+            "target",
+            false,
+        );
+        insert_symbol(
+            &conn,
+            "caller",
+            "src/caller.rs",
+            "rust",
+            "function",
+            "caller",
+            false,
+        );
+        insert_edge(&conn, "changed", "target", "call");
+        insert_edge(&conn, "caller", "changed", "call");
+
+        assert_eq!(
+            delete_outgoing_edges_by_file(&conn, "src/changed.rs").unwrap(),
+            1
+        );
+        assert!(list_edges_from(&conn, "changed", 10).unwrap().is_empty());
+        assert_eq!(
+            list_edges_to(&conn, "changed", 10).unwrap().len(),
+            1,
+            "incoming edges survive while the stable target ID is replaced"
+        );
+    }
+
+    #[test]
+    fn graph_integrity_rejects_dataflow_location_outside_owner() {
+        let conn = setup_test_db();
+        insert_symbol(
+            &conn,
+            "source",
+            "src/lib.rs",
+            "rust",
+            "function",
+            "source",
+            false,
+        );
+        insert_symbol(
+            &conn,
+            "target",
+            "src/lib.rs",
+            "rust",
+            "function",
+            "target",
+            false,
+        );
+        conn.execute(
+            r#"
+INSERT INTO edges(from_symbol_id, to_symbol_id, edge_type, at_file, at_line)
+VALUES ('source', 'target', 'reads', 'src/lib.rs', 99)
+"#,
+            [],
+        )
+        .unwrap();
+
+        let error = validate_graph_integrity(&conn).unwrap_err().to_string();
+        assert!(error.contains("outside their source symbol"), "{error}");
     }
 
     #[test]

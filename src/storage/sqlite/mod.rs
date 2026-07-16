@@ -32,6 +32,11 @@ impl SqliteStore {
         queries::symbols::most_recent_symbol_update(&conn)
     }
 
+    pub fn ensure_graph_index_version(&self, current_version: &str) -> Result<bool> {
+        let conn = self.write()?;
+        queries::files::ensure_graph_index_version(&conn, current_version)
+    }
+
     pub fn search_symbols_by_exact_name(
         &self,
         name: &str,

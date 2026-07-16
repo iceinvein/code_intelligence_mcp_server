@@ -117,6 +117,7 @@ DELETE FROM cross_repo_edges;
 DELETE FROM external_indexes;
 DELETE FROM edges;
 DELETE FROM edge_evidence;
+DELETE FROM index_metadata;
 DELETE FROM symbols;
 DELETE FROM file_fingerprints;
 DELETE FROM usage_examples;

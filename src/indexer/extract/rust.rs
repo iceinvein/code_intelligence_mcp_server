@@ -655,7 +655,7 @@ fn extract_rust_dataflow_from_node(
 ) {
     match node.kind() {
         "let_declaration" => {
-            let line = node.start_position().row as u32;
+            let line = node.start_position().row as u32 + 1;
             if let Some(pattern) = node.child_by_field_name("pattern") {
                 if pattern.kind() == "identifier" {
                     out.push(DataFlowEdge {
@@ -672,7 +672,7 @@ fn extract_rust_dataflow_from_node(
             }
         }
         "assignment_expression" | "compound_assignment_expr" => {
-            let line = node.start_position().row as u32;
+            let line = node.start_position().row as u32 + 1;
             if let Some(left) = node.child_by_field_name("left") {
                 if let Some(n) = extract_rust_lhs_identifier(left, source) {
                     out.push(DataFlowEdge {
@@ -695,7 +695,7 @@ fn extract_rust_dataflow_from_node(
             //     "."
             //     "await"
             // There is no named field; the inner expression is simply the first child.
-            let line = node.start_position().row as u32;
+            let line = node.start_position().row as u32 + 1;
             let inner = {
                 let mut cur = node.walk();
                 cur.goto_first_child();
@@ -740,7 +740,7 @@ fn extract_rust_dataflow_from_node(
             }
         }
         "call_expression" => {
-            let line = node.start_position().row as u32;
+            let line = node.start_position().row as u32 + 1;
 
             // Detect tokio::spawn / tokio::spawn_blocking before the generic handler.
             if let Some(func) = node.child_by_field_name("function") {
@@ -805,7 +805,7 @@ fn extract_rust_reads_from_expr(
     context_name: &str,
     out: &mut Vec<DataFlowEdge>,
 ) {
-    let line = node.start_position().row as u32;
+    let line = node.start_position().row as u32 + 1;
     match node.kind() {
         "await_expression" => {
             // Delegate to the main handler which knows how to emit the await: edge.
@@ -1359,5 +1359,14 @@ fn process(data: Vec<u8>) -> String {
             has_read("format_output"),
             "expected read edge for 'format_output'"
         );
+
+        let transform_read = extracted
+            .dataflow_edges
+            .iter()
+            .find(|edge| {
+                edge.from_symbol == "transform" && matches!(edge.flow_type, DataFlowType::Reads)
+            })
+            .expect("transform read edge");
+        assert_eq!(transform_read.at_line, 3, "data-flow lines are one-based");
     }
 }

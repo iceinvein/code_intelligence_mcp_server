@@ -41,6 +41,10 @@ use self::scan::{scan_files, should_index_file};
 use self::stats::IndexRunStats;
 use self::utils::{cluster_key_from_vector, file_fingerprint, file_key_path, unix_now_s};
 
+/// Version of persisted graph extraction semantics. Increment whenever existing
+/// edges cannot be trusted and every source file must regenerate its graph.
+const GRAPH_INDEX_VERSION: &str = "2";
+
 /// Determine whether a symbol warrants embedding and LLM description generation.
 ///
 /// Skips symbols that almost never appear in search results:
@@ -113,6 +117,12 @@ impl IndexPipeline {
         self.config.base_dir.file_name().unwrap_or("unknown")
     }
 
+    fn ensure_graph_index_version(&self) -> Result<bool> {
+        let sqlite = SqliteStore::open(&self.db_path)?;
+        sqlite.init()?;
+        sqlite.ensure_graph_index_version(GRAPH_INDEX_VERSION)
+    }
+
     pub fn new(
         config: Arc<Config>,
         tantivy: Arc<TantivyIndex>,
@@ -179,6 +189,14 @@ impl IndexPipeline {
 
         if let Some(ref logger) = self.repo_logger {
             logger.info(&format!("Index run started for {}", self.repo_name()));
+        }
+
+        if self.ensure_graph_index_version()? {
+            tracing::warn!(
+                repo = %self.repo_name(),
+                graph_index_version = GRAPH_INDEX_VERSION,
+                "Graph index format changed — cleared edges and fingerprints for a full rebuild"
+            );
         }
 
         // Discover and store packages if enabled
@@ -367,6 +385,16 @@ impl IndexPipeline {
     pub async fn index_paths(&self, paths: &[Utf8PathBuf]) -> Result<IndexRunStats> {
         let started_at = Instant::now();
         let started_at_unix_s = unix_now_s();
+
+        if self.ensure_graph_index_version()? {
+            tracing::warn!(
+                repo = %self.repo_name(),
+                graph_index_version = GRAPH_INDEX_VERSION,
+                "Graph index format changed during a partial refresh — running a full rebuild"
+            );
+            return self.index_all().await;
+        }
+
         let mut files = Vec::new();
         for p in paths {
             let std_path = p.as_std_path();

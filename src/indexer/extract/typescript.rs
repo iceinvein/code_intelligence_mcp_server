@@ -800,7 +800,7 @@ fn extract_dataflow_from_lexical_declaration(
                         from_symbol: name.clone(),
                         to_symbol: "<scope>".to_string(),
                         flow_type: DataFlowType::Writes,
-                        at_line: node.start_position().row as u32,
+                        at_line: node.start_position().row as u32 + 1,
                         scope: Some(name.clone()),
                     });
                 }
@@ -864,7 +864,7 @@ fn extract_dataflow_from_node(
             extract_dataflow_from_assignment(node, source, context_name, out);
         }
         "await_expression" => {
-            let line = node.start_position().row as u32;
+            let line = node.start_position().row as u32 + 1;
             // The child of an await_expression is the expression being awaited.
             // It is typically a call_expression; extract its callee name.
             let mut cursor = node.walk();
@@ -931,7 +931,7 @@ fn extract_dataflow_from_node(
             if is_promise_combinator {
                 if let Some(func) = node.child_by_field_name("function") {
                     if let Some(full_name) = extract_member_expression_full_name(func, source) {
-                        let line = node.start_position().row as u32;
+                        let line = node.start_position().row as u32 + 1;
                         out.push(DataFlowEdge {
                             from_symbol: format!("spawn:{full_name}"),
                             to_symbol: context_name.to_string(),
@@ -995,7 +995,7 @@ fn extract_dataflow_from_assignment(
         None => return,
     };
 
-    let line = node.start_position().row as u32;
+    let line = node.start_position().row as u32 + 1;
 
     // Extract what's being written (left side)
     if let Some(name) = extract_identifier_from_assignment_left(left, source) {
@@ -1027,7 +1027,7 @@ fn extract_dataflow_from_call(
     context_name: &str,
     out: &mut Vec<DataFlowEdge>,
 ) {
-    let line = node.start_position().row as u32;
+    let line = node.start_position().row as u32 + 1;
 
     // The function being called is being read
     if let Some(func_node) = node.child_by_field_name("function") {
@@ -1066,7 +1066,7 @@ fn extract_reads_from_expression(
     context_name: &str,
     out: &mut Vec<DataFlowEdge>,
 ) {
-    let line = node.start_position().row as u32;
+    let line = node.start_position().row as u32 + 1;
     for ident in extract_identifiers_from_expression(node, source) {
         out.push(DataFlowEdge {
             from_symbol: ident,
@@ -1802,6 +1802,12 @@ const arrowFunc = (input: string) => {
         assert!(df_edges
             .iter()
             .any(|e| { e.from_symbol == "x" && matches!(e.flow_type, DataFlowType::Reads) }));
+
+        let foo_read = df_edges
+            .iter()
+            .find(|edge| edge.from_symbol == "foo" && matches!(edge.flow_type, DataFlowType::Reads))
+            .expect("foo read edge");
+        assert_eq!(foo_read.at_line, 4, "data-flow lines are one-based");
 
         // Check that dataflow_edges is populated
         assert!(

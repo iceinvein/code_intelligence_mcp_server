@@ -67,6 +67,17 @@ pub fn write_batch(
 
         for file in chunk {
             // Delete old data for this file
+            // Outgoing edges are source-owned and must be regenerated from the
+            // changed file. Incoming edges are preserved across stable target
+            // IDs and orphan-pruned after all replacement symbols are present.
+            queries::edges::delete_outgoing_edges_by_file(&tx, &file.rel_path).with_context(
+                || {
+                    format!(
+                        "Failed to delete outgoing edges for file: {}",
+                        file.rel_path
+                    )
+                },
+            )?;
             queries::symbols::delete_symbols_by_file(&tx, &file.rel_path)
                 .with_context(|| format!("Failed to delete symbols for file: {}", file.rel_path))?;
             queries::misc::delete_usage_examples_by_file(&tx, &file.rel_path).with_context(
@@ -199,6 +210,17 @@ pub fn write_batch(
         }
     }
 
+    // Foreign keys are disabled while files are replaced so incoming edges to
+    // stable IDs survive. Once every replacement symbol has been written,
+    // remove incoming edges whose targets genuinely disappeared.
+    let orphaned_edges = queries::edges::delete_orphan_edges(conn)?;
+    if orphaned_edges > 0 {
+        tracing::debug!(
+            orphaned_edges,
+            "Removed orphan graph edges after symbol replacement"
+        );
+    }
+
     // Single Tantivy commit after ALL chunks
     tantivy
         .commit()
@@ -226,10 +248,16 @@ pub fn write_edges_batch(
     const CHUNK_SIZE: usize = 50;
     let mut edges_written = 0usize;
 
-    // write_batch ran with foreign_keys=OFF and re-enabled it. We need the
-    // same loosening here because edge targets may reference symbols in
-    // later chunks of the same write pass.
-    let _fk_guard = ForeignKeysOffGuard::new(conn)?;
+    // All symbols for the run were persisted by write_batch. Keep foreign-key
+    // enforcement enabled here so a bad resolver cannot create orphan graph
+    // endpoints.
+    let foreign_keys_enabled: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .context("Failed to read SQLite foreign_keys setting")?;
+    anyhow::ensure!(
+        foreign_keys_enabled == 1,
+        "write_edges_batch requires SQLite foreign_keys=ON"
+    );
 
     for chunk in edge_bundles.chunks(CHUNK_SIZE) {
         let tx = conn
@@ -248,6 +276,9 @@ pub fn write_edges_batch(
         tx.commit()
             .context("Failed to commit transaction for write_edges_batch chunk")?;
     }
+
+    queries::edges::validate_graph_integrity(conn)
+        .context("Graph integrity validation failed after deferred edge write")?;
 
     Ok(edges_written)
 }
@@ -632,5 +663,51 @@ mod tests {
         drop(conn);
         drop(sqlite);
         std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[test]
+    fn deferred_edge_write_rejects_missing_symbol_endpoint() {
+        let sqlite = SqliteStore::open_in_memory().unwrap();
+        sqlite.init().unwrap();
+        let conn = sqlite.read().unwrap();
+        queries::symbols::upsert_symbol(
+            &conn,
+            &SymbolRow {
+                id: "source".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                kind: "function".to_string(),
+                name: "source".to_string(),
+                exported: false,
+                start_byte: 0,
+                end_byte: 20,
+                start_line: 1,
+                end_line: 2,
+                text: "fn source() {}".to_string(),
+            },
+        )
+        .unwrap();
+
+        let bundles = vec![vec![(
+            EdgeRow {
+                from_symbol_id: "source".to_string(),
+                to_symbol_id: "missing".to_string(),
+                edge_type: "reads".to_string(),
+                at_file: Some("src/lib.rs".to_string()),
+                at_line: Some(1),
+                confidence: 0.7,
+                evidence_count: 1,
+                resolution: "unknown".to_string(),
+            },
+            vec![],
+        )]];
+
+        let error = write_edges_batch(&bundles, &conn).unwrap_err().to_string();
+        assert!(error.contains("batch upsert edge"), "{error}");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM edges", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }

@@ -218,6 +218,19 @@ fn determine_edge_resolution(
     "unknown".to_string()
 }
 
+/// Return whether an extracted data-flow fact belongs to this symbol.
+///
+/// Extractors emit one file-level data-flow collection, while edge extraction
+/// is invoked once per symbol in that file. Both the lexical context and the
+/// source location must match: the name disambiguates containing classes/file
+/// symbols, and the line span disambiguates repeated method names in a file.
+fn dataflow_belongs_to_symbol(edge: &DataFlowEdge, row: &SymbolRow) -> bool {
+    let context_matches =
+        edge.to_symbol == row.name || edge.scope.as_deref() == Some(row.name.as_str());
+    let location_matches = edge.at_line >= row.start_line && edge.at_line <= row.end_line;
+    context_matches && location_matches
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn extract_edges_for_symbol(
     row: &SymbolRow,
@@ -639,6 +652,10 @@ pub fn extract_edges_for_symbol(
 
     // Handle data flow edges
     for dfe in dataflow_edges {
+        if !dataflow_belongs_to_symbol(dfe, row) {
+            continue;
+        }
+
         // Detect async boundary prefixes before resolution
         let (async_kind, actual_from) = if let Some(rest) = dfe.from_symbol.strip_prefix("await:") {
             (Some("async_call"), rest.to_string())
@@ -656,18 +673,11 @@ pub fn extract_edges_for_symbol(
             (Some(local_id.clone()), false)
         } else if let Some(imp) = import_map.get(actual_from.as_str()) {
             (resolve_import(&row.file_path, imp), true)
-        } else if let Some(ref scope) = dfe.scope {
-            // Local variable — create synthetic ID for scope-aware tracking.
-            // SQLite FK enforcement is OFF during batch writes, so synthetic IDs
-            // without corresponding symbol rows are safe.
-            let synthetic_id = format!("local:{}#{}::{}", row.file_path, scope, actual_from);
-            (Some(synthetic_id), false)
-        } else if async_kind.is_some() {
-            // Async edge without scope — create a synthetic boundary ID
-            let synthetic_id = format!("async:{}#{}", row.file_path, actual_from);
-            (Some(synthetic_id), false)
         } else {
-            // No scope information available — cannot create a useful edge
+            // The generic graph is strictly symbol-to-symbol. Local variables,
+            // unresolved callees, and async boundaries need typed non-symbol
+            // endpoints before they can be persisted without violating the
+            // edges table's foreign-key contract.
             continue;
         };
 
@@ -688,15 +698,7 @@ pub fn extract_edges_for_symbol(
                 continue;
             }
 
-            let resolution = if id.starts_with("local:") {
-                // Synthetic local-variable ID — no real symbol to look up
-                "local-variable".to_string()
-            } else if id.starts_with("async:") {
-                // Synthetic async-boundary ID — no real symbol to look up
-                "async-boundary".to_string()
-            } else {
-                compute_resolution_for_target(&resolution_ctx, &id, was_import)
-            };
+            let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
 
             out.push((
                 EdgeRow {
@@ -1140,7 +1142,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dataflow_local_variable_creates_synthetic_edge() {
+    fn test_dataflow_local_variable_is_not_inserted_as_symbol_edge() {
         // Function symbol that contains a local variable "x"
         let row = symbol(
             "fn-1",
@@ -1205,20 +1207,102 @@ mod tests {
             "foo is in the same file, so resolution must be 'local'"
         );
 
-        // The "x" writes edge must use a synthetic ID and resolution = "local-variable"
-        let expected_synthetic_id = "local:src/main.rs#process::x";
-        let x_edge = edges
-            .iter()
-            .find(|(e, _)| e.to_symbol_id == expected_synthetic_id && e.edge_type == "writes");
+        // The "x" write has no symbol endpoint and must not be inserted into
+        // the symbol-to-symbol graph under a synthetic ID.
         assert!(
-            x_edge.is_some(),
-            "Expected a 'writes' edge with synthetic ID '{expected_synthetic_id}'"
+            !edges
+                .iter()
+                .any(|(edge, _)| edge.to_symbol_id.starts_with("local:")),
+            "local variables must not create orphan symbol endpoints: {edges:?}"
         );
-        assert_eq!(
-            x_edge.unwrap().0.resolution,
-            "local-variable",
-            "Synthetic local variable edge must have resolution 'local-variable'"
+    }
+
+    #[test]
+    fn dataflow_is_attached_only_to_its_lexical_owner() {
+        let mut first = symbol(
+            "fn-first",
+            "first",
+            "function",
+            "fn first() { helper(); }",
+            "src/lib.rs",
         );
+        first.start_line = 1;
+        first.end_line = 3;
+
+        let mut second = symbol(
+            "fn-second",
+            "second",
+            "function",
+            "fn second() { helper(); }",
+            "src/lib.rs",
+        );
+        second.start_line = 5;
+        second.end_line = 7;
+
+        let helper = symbol(
+            "fn-helper",
+            "helper",
+            "function",
+            "fn helper() {}",
+            "src/lib.rs",
+        );
+        let mut name_to_id = HashMap::new();
+        upsert_name_mapping(&mut name_to_id, &helper);
+        let mut id_to_symbol = HashMap::new();
+        id_to_symbol.insert(helper.id.clone(), &helper);
+        let dataflow_edges = vec![
+            DataFlowEdge {
+                from_symbol: "helper".to_string(),
+                to_symbol: "first".to_string(),
+                flow_type: DataFlowType::Reads,
+                at_line: 2,
+                scope: Some("first".to_string()),
+            },
+            DataFlowEdge {
+                from_symbol: "helper".to_string(),
+                to_symbol: "second".to_string(),
+                flow_type: DataFlowType::Reads,
+                at_line: 6,
+                scope: Some("second".to_string()),
+            },
+        ];
+
+        let first_edges = extract_edges_for_symbol(
+            &first,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &[],
+            &dataflow_edges,
+            None,
+            None,
+        );
+        let second_edges = extract_edges_for_symbol(
+            &second,
+            &name_to_id,
+            &id_to_symbol,
+            &[],
+            &[],
+            &[],
+            &dataflow_edges,
+            None,
+            None,
+        );
+
+        let first_reads = first_edges
+            .iter()
+            .filter(|(edge, _)| edge.edge_type == "reads")
+            .collect::<Vec<_>>();
+        let second_reads = second_edges
+            .iter()
+            .filter(|(edge, _)| edge.edge_type == "reads")
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_reads.len(), 1, "first must own only its edge");
+        assert_eq!(second_reads.len(), 1, "second must own only its edge");
+        assert_eq!(first_reads[0].0.at_line, Some(2));
+        assert_eq!(second_reads[0].0.at_line, Some(6));
     }
 
     #[test]
@@ -1353,7 +1437,7 @@ mod tests {
             from_symbol: "await:fetch_data".to_string(),
             to_symbol: "fetch_user".to_string(),
             flow_type: DataFlowType::Reads,
-            at_line: 2,
+            at_line: 1,
             scope: Some("fetch_user".to_string()),
         }];
 
@@ -1513,7 +1597,7 @@ mod tests {
     }
 
     #[test]
-    fn test_async_edge_without_scope_gets_synthetic_id() {
+    fn test_unresolved_async_edge_does_not_create_orphan_endpoint() {
         let row = symbol(
             "fn-entry",
             "run",
@@ -1546,28 +1630,8 @@ mod tests {
         );
 
         assert!(
-            !edges.is_empty(),
-            "async edge with unknown callee must not be dropped"
-        );
-
-        let async_edge = edges.iter().find(|(e, _)| e.edge_type == "async_call");
-
-        assert!(
-            async_edge.is_some(),
-            "Expected an async_call edge, got: {edges:?}"
-        );
-        let (edge, _) = async_edge.unwrap();
-
-        assert!(
-            edge.to_symbol_id.starts_with("async:"),
-            "to_symbol_id must start with 'async:', got '{}'",
-            edge.to_symbol_id
-        );
-
-        assert_eq!(
-            edge.resolution, "async-boundary",
-            "resolution must be 'async-boundary', got '{}'",
-            edge.resolution
+            edges.is_empty(),
+            "unresolved async targets must not create orphan symbol endpoints: {edges:?}"
         );
     }
 }

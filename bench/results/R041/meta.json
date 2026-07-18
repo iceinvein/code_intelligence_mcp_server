@@ -1,0 +1,124 @@
+{
+  "binaries": {
+    "agent_cli": "2.1.205 (Claude Code)",
+    "codegraph": null
+  },
+  "comparator": {
+    "baseline_arm": "code_intel_shipped",
+    "candidate_arms": []
+  },
+  "configuration": {
+    "arms": [
+      {
+        "allowed_tools": [
+          "Read",
+          "Grep",
+          "Glob",
+          "Bash",
+          "mcp__code-intelligence__ask_code",
+          "mcp__code-intelligence__investigate",
+          "mcp__code-intelligence__search_code",
+          "mcp__code-intelligence__get_definition",
+          "mcp__code-intelligence__find_references",
+          "mcp__code-intelligence__get_call_hierarchy",
+          "mcp__code-intelligence__find_affected_code",
+          "mcp__code-intelligence__trace_data_flow",
+          "mcp__code-intelligence__explore_dependency_graph",
+          "mcp__code-intelligence__bind_workspace",
+          "mcp__code-intelligence__hydrate_symbols"
+        ],
+        "daemon_env": {
+          "BENCH_DISABLE_DESCRIPTIONS": "1"
+        },
+        "index_variant": "no_desc",
+        "is_codegraph": false,
+        "name": "code_intel_shipped",
+        "needs_daemon": true,
+        "tool_guidance": "Start with `mcp__code-intelligence__ask_code` for codebase questions. Fall back to Read/Grep when results are insufficient."
+      }
+    ],
+    "judge_concurrency": 3,
+    "judge_enabled": true,
+    "judge_tiered": true,
+    "max_turns": 16,
+    "per_question_timeout_s": 180,
+    "repeats": 2,
+    "run_concurrency": 4,
+    "run_reuse": true
+  },
+  "daemon": {
+    "binary_sha256": "0ecc7d65b1ca696c832c29e866b71d514f230b2f5c1487f1213d3a91eb8cacec",
+    "git_sha": "49cab3092fda6de5fabdc4046438208ef83c7dbf"
+  },
+  "fixtures": [
+    {
+      "authored_against_schema_version": 22,
+      "authored_at": "2026-05-27",
+      "fixture_sha256": "39f4bed2e14333e4f21ad63a322cf41e035577cb0d3fb4b727437716b1e20863",
+      "question_ids": [
+        "django-arch-01",
+        "django-arch-02",
+        "django-arch-03",
+        "django-concept-01",
+        "django-concept-02",
+        "django-concept-03",
+        "django-concept-04",
+        "django-impact-01",
+        "django-impact-02",
+        "django-impact-03",
+        "django-multi-hop-01",
+        "django-multi-hop-02",
+        "django-multi-hop-03",
+        "django-multi-hop-04",
+        "django-negative-01",
+        "django-negative-02",
+        "django-symbol-01",
+        "django-symbol-02",
+        "django-symbol-03",
+        "django-symbol-04"
+      ],
+      "repo": "django",
+      "upstream_sha": "2d4add11fd57b05f7ea48e8b3e89e743c9871aa3",
+      "upstream_url": "https://github.com/django/django.git"
+    },
+    {
+      "authored_against_schema_version": 22,
+      "authored_at": "2026-06-13",
+      "fixture_sha256": "4645e9686f9bde2acbaaee9bb71c5202d4c094ed462d49fb3197a7d4e0331ca4",
+      "question_ids": [
+        "wolfmax-arch-01",
+        "wolfmax-arch-02",
+        "wolfmax-arch-03",
+        "wolfmax-concept-01",
+        "wolfmax-concept-02",
+        "wolfmax-concept-03",
+        "wolfmax-concept-04",
+        "wolfmax-impact-01",
+        "wolfmax-impact-02",
+        "wolfmax-impact-03",
+        "wolfmax-multi-hop-01",
+        "wolfmax-multi-hop-02",
+        "wolfmax-multi-hop-03",
+        "wolfmax-multi-hop-04",
+        "wolfmax-negative-01",
+        "wolfmax-negative-02",
+        "wolfmax-symbol-01",
+        "wolfmax-symbol-02",
+        "wolfmax-symbol-03",
+        "wolfmax-symbol-04"
+      ],
+      "repo": "workings",
+      "upstream_sha": "53f9d71cb800ff9df2bb3636e9f803f3a16bf249",
+      "upstream_url": "/Users/dikrana/Documents/projects/workings"
+    }
+  ],
+  "models": {
+    "agent": "claude-sonnet-4-6",
+    "judges": {
+      "haiku": "claude-haiku-4-5",
+      "opus": "claude-opus-4-8",
+      "sonnet": "claude-sonnet-4-6"
+    }
+  },
+  "schema_version": 1
+}

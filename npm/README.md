@@ -123,7 +123,9 @@ Project-scope targets write only a marked block that can be safely replaced or r
 
 ### Bundled External Producers
 
-Code Intelligence installs external producer entrypoints with the server binary. These helpers are resolved from the installed binary directory first, then from `PATH`, with `EXTERNAL_INDEX_<LANG>_COMMAND` still available as an explicit override.
+Code Intelligence installs external producer entrypoints with the server binary. TypeScript/JavaScript, Rust, Python, and Go have integrated, deterministically tested generators. Java, Kotlin, C#, Swift, C, C++, and Ruby expose adapter contracts only: supply a generator with `EXTERNAL_INDEX_<LANG>_COMMAND` that writes the normalized artifact. The dashboard/API reports these states as `integrated`, `adapter_only`, or `missing` instead of treating a diagnostic wrapper as a working generator.
+
+Commands are resolved from an explicit `EXTERNAL_INDEX_<LANG>_COMMAND` override first, then from the installed binary directory and `PATH`. Invoking an adapter-only bundled entrypoint returns `adapter_required` without starting a placeholder process.
 
 Bundled producers do not make external indexing automatic. The default remains native Tree-sitter indexing:
 
@@ -363,6 +365,13 @@ Works out of the box with no configuration. All settings are optional environmen
 | `MAX_CONTEXT_TOKENS` | `8192` | Token budget for assembled context |
 | `MAX_CONTEXT_BYTES` | `200000` | Byte-based fallback limit |
 
+**Investigation diagnostics:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `INVESTIGATION_DISABLED_PASSES` | — | Comma-separated typed enrichment pass IDs to disable for isolation: `supporting_definition`, `question_route`, `evidence_route`, `sibling_route`, `handler_dependency`, `module_breadth`, `breadth_dependency`, or `hub_type` |
+| `INVESTIGATION_TRACE` | `false` | Include pass applicability, cost, timing, provenance, and per-candidate allocation decisions in `investigate` output |
+
 **Learning (on by default):**
 
 | Variable | Default | Description |
@@ -445,12 +454,21 @@ All data lives in `~/.code-intelligence/`:
 
 ## Development
 
+Production builds require the Xcode command-line tools and CMake
+(`brew install cmake`). Cargo automatically uses the repository's pinned,
+checksummed `protoc` bootstrap; no system protobuf installation is required.
+
 ```bash
 cargo build --release
 cargo test                                        # Full test suite
 EMBEDDINGS_BACKEND=hash cargo test --no-default-features  # Fast; no llama.cpp/CMake/model
 ./scripts/start_mcp.sh                            # Start MCP server
 ```
+
+The default `native-llama` feature builds the Metal-backed embeddings, optional
+description LLM, and reranker used by production. `EMBEDDINGS_BACKEND=hash` is
+the runtime selection; add `--no-default-features` when a deterministic test
+build should omit the native llama.cpp dependency entirely.
 
 <details>
 <summary>Project structure</summary>

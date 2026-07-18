@@ -1,7 +1,12 @@
 meta:
-  repo: wolfmax
-  upstream_url: "/Users/dikrana/Documents/workspace/wolfmax/wolfmax"
-  upstream_sha: "f0cf41260ec5893daa471c5d812c68ce3d2ef4a2"
+  repo: workings
+  # workings is the rebrand of the former "wolfmax" repo (same codebase, same
+  # layout). Re-pinned 2026-07-18 to workings main after the wolfmax source was
+  # lost in a machine move. Minor citation line drift vs the original wolfmax
+  # pin is expected and accepted; question IDs keep their historical wolfmax-*
+  # prefix so the iteration/probe question sets still resolve.
+  upstream_url: "/Users/dikrana/Documents/projects/workings"
+  upstream_sha: "53f9d71cb800ff9df2bb3636e9f803f3a16bf249"
   authored_at: "2026-06-13"
   authored_against_schema_version: 22
 
@@ -604,7 +609,7 @@ questions:
   - id: wolfmax-negative-01
     task_type: negative
     difficulty: easy
-    question: "Is there a `RedisCache` class or any Redis-based caching layer in the wolfmax codebase?"
+    question: "Is there a `RedisCache` class or any Redis-based caching layer in the workings codebase?"
     rubric: |
       Must conclude that no Redis cache class or Redis integration exists. Rate
       limiting uses in-memory storage (a Map in api/rate-limit.ts); update manifest
@@ -628,7 +633,7 @@ questions:
   - id: wolfmax-negative-02
     task_type: negative
     difficulty: medium
-    question: "Is there a `LegacyAuthMiddleware` or any legacy authentication middleware in the wolfmax backend?"
+    question: "Is there a `LegacyAuthMiddleware` or any legacy authentication middleware in the workings backend?"
     rubric: |
       Must conclude that no LegacyAuthMiddleware exists. Authentication is handled
       entirely via authPlugin and adminPlugin in packages/backend/src/auth/macro.ts,

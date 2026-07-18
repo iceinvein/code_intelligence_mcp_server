@@ -42,6 +42,15 @@ impl SqliteStore {
         queries::module_bindings::delete_by_file(&conn, file_path)
     }
 
+    pub fn list_data_flow_facts_by_owner(
+        &self,
+        owner_symbol_id: &str,
+        limit: usize,
+    ) -> Result<Vec<DataFlowFactRow>> {
+        let conn = self.read()?;
+        queries::data_flow::list_by_owner(&conn, owner_symbol_id, limit)
+    }
+
     pub fn list_module_bindings_by_file(&self, file_path: &str) -> Result<Vec<ModuleBindingRow>> {
         let conn = self.read()?;
         queries::module_bindings::list_by_file(&conn, file_path)

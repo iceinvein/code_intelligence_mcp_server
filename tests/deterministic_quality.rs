@@ -6,10 +6,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use code_intelligence_mcp_server::handlers::{handle_find_affected_code, handle_get_definition};
+use code_intelligence_mcp_server::handlers::{
+    handle_find_affected_code, handle_get_definition, handle_trace_data_flow,
+};
 use code_intelligence_mcp_server::retrieval::ContextMode;
 use code_intelligence_mcp_server::storage::sqlite::SymbolRow;
-use code_intelligence_mcp_server::tools::{FindAffectedCodeTool, GetDefinitionTool};
+use code_intelligence_mcp_server::tools::{
+    FindAffectedCodeTool, GetDefinitionTool, TraceDataFlowTool,
+};
 use tempfile::TempDir;
 
 use support::fixtures::{app_state_for_config, test_config_for_dir};
@@ -220,6 +224,117 @@ async fn deterministic_engine_quality_gate() {
     .expect("negative definition response");
     assert_eq!(negative["resolution"], "unresolved");
     assert_eq!(negative["count"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_data_flow_facts_survive_indexing_and_surface_exact_source_lines() {
+    let workspace = TempDir::new().expect("data-flow tempdir");
+    fs::write(
+        workspace.path().join("flow.rs"),
+        r#"async fn fetch_data() -> i32 { 1 }
+
+async fn trace_owner() -> i32 {
+    let mut local_value = 1;
+    local_value = local_value + 1;
+    let fetched = fetch_data().await;
+    tokio::spawn(async { background_work(); });
+    local_value + fetched
+}
+
+fn background_work() {}
+
+async fn pipeline_root() -> i32 { trace_owner().await }
+"#,
+    )
+    .expect("write data-flow fixture");
+    let state = app_state_for_config(test_config_for_dir(workspace.path().to_path_buf())).await;
+    state
+        .indexer
+        .index_all()
+        .await
+        .expect("index data-flow fixture");
+
+    let owner = exact_symbol(&state.sqlite, "trace_owner", Some("flow.rs"));
+    let persisted = state
+        .sqlite
+        .list_data_flow_facts_by_owner(&owner.id, 100)
+        .expect("persisted typed data-flow facts");
+    assert!(persisted.iter().any(|fact| {
+        fact.entity_name == "local_value"
+            && fact.entity_kind == "value"
+            && fact.access_kind == "write"
+            && fact.at_line == 4
+    }));
+    assert!(persisted.iter().any(|fact| {
+        fact.entity_name == "fetch_data"
+            && fact.entity_kind == "async_boundary"
+            && fact.access_kind == "await"
+            && fact.at_line == 6
+    }));
+    assert!(persisted.iter().any(|fact| {
+        fact.entity_name == "tokio::spawn"
+            && fact.entity_kind == "async_boundary"
+            && fact.access_kind == "spawn"
+            && fact.at_line == 7
+    }));
+
+    let response = handle_trace_data_flow(
+        &state,
+        TraceDataFlowTool {
+            symbol_name: "trace_owner".into(),
+            file_path: Some("flow.rs".into()),
+            direction: Some("both".into()),
+            depth: Some(1),
+            limit: Some(100),
+            inter_procedural: Some(false),
+            include_display: Some(false),
+        },
+    )
+    .expect("trace data flow");
+    let flows = response["flows"].as_array().expect("flows array");
+    for (name, kind, line) in [
+        ("local_value", "value", 4),
+        ("fetch_data", "async_boundary", 6),
+        ("tokio::spawn", "async_boundary", 7),
+    ] {
+        assert!(
+            flows.iter().any(|flow| {
+                flow["symbol_name"] == name
+                    && flow["entity_kind"] == kind
+                    && flow["line"] == line
+                    && flow["source_backed"] == true
+            }),
+            "missing exact typed flow {name} at line {line}: {response}"
+        );
+    }
+
+    let inter_procedural = handle_trace_data_flow(
+        &state,
+        TraceDataFlowTool {
+            symbol_name: "pipeline_root".into(),
+            file_path: Some("flow.rs".into()),
+            direction: Some("both".into()),
+            depth: Some(1),
+            limit: Some(100),
+            inter_procedural: Some(true),
+            include_display: Some(false),
+        },
+    )
+    .expect("inter-procedural trace data flow");
+    assert!(
+        inter_procedural["flows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|flow| flow["symbol_name"] == "trace_owner")
+            .flat_map(|flow| flow["called_flows"].as_array().into_iter().flatten())
+            .any(|flow| {
+                flow["symbol_name"] == "local_value"
+                    && flow["entity_kind"] == "value"
+                    && flow["source_backed"] == true
+            }),
+        "callee-local facts must survive inter-procedural expansion: {inter_procedural}"
+    );
 }
 
 fn copy_polyglot_fixture(destination: &Path) {

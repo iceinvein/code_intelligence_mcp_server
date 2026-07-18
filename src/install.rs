@@ -145,9 +145,13 @@ fn render_producer_summary(
     producers: &[crate::external_index::manifest::ProducerAvailability],
     auto_enabled: bool,
 ) -> String {
-    let available = producers
+    let integrated = producers
         .iter()
-        .filter(|producer| producer.availability != "missing")
+        .filter(|producer| producer.availability == "bundled")
+        .count();
+    let adapters = producers
+        .iter()
+        .filter(|producer| producer.readiness == "adapter_only")
         .count();
     let policy = if auto_enabled {
         "auto indexing enabled"
@@ -155,8 +159,8 @@ fn render_producer_summary(
         "auto indexing disabled"
     };
     format!(
-        "External producers: bundled {available}/{}, {policy}",
-        producers.len()
+        "External producers: integrated {integrated}/{}, adapter contracts {adapters}, {policy}",
+        producers.len(),
     )
 }
 
@@ -767,6 +771,7 @@ mod tests {
                 id: "rust".to_string(),
                 language: "rust".to_string(),
                 tier: "first_class".to_string(),
+                readiness: "integrated".to_string(),
                 executable: "/bin/code-intelligence-external-rust".to_string(),
                 availability: "bundled".to_string(),
             },
@@ -774,18 +779,27 @@ mod tests {
                 id: "python".to_string(),
                 language: "python".to_string(),
                 tier: "first_class".to_string(),
+                readiness: "integrated".to_string(),
                 executable: "code-intelligence-external-python".to_string(),
                 availability: "missing".to_string(),
+            },
+            crate::external_index::manifest::ProducerAvailability {
+                id: "java".to_string(),
+                language: "java".to_string(),
+                tier: "build_aware".to_string(),
+                readiness: "adapter_only".to_string(),
+                executable: "code-intelligence-external-java".to_string(),
+                availability: "adapter_only".to_string(),
             },
         ];
 
         assert_eq!(
             render_producer_summary(&producers, false),
-            "External producers: bundled 1/2, auto indexing disabled"
+            "External producers: integrated 1/3, adapter contracts 1, auto indexing disabled"
         );
         assert_eq!(
             render_producer_summary(&producers, true),
-            "External producers: bundled 1/2, auto indexing enabled"
+            "External producers: integrated 1/3, adapter contracts 1, auto indexing enabled"
         );
     }
 

@@ -29,6 +29,8 @@ pub fn ensure_graph_index_version(conn: &Connection, current_version: &str) -> R
         .context("Failed to clear edge evidence for graph format change")?;
     tx.execute("DELETE FROM edges", [])
         .context("Failed to clear edges for graph format change")?;
+    tx.execute("DELETE FROM data_flow_facts", [])
+        .context("Failed to clear data-flow facts for graph format change")?;
     tx.execute("DELETE FROM module_bindings", [])
         .context("Failed to clear module bindings for graph format change")?;
     tx.execute("DELETE FROM file_fingerprints", [])
@@ -169,6 +171,16 @@ VALUES ('source', 'target', 'reads', 'src/lib.rs', 1)
             [],
         )
         .unwrap();
+        conn.execute(
+            r#"
+INSERT INTO data_flow_facts(
+  owner_symbol_id, entity_name, entity_kind, access_kind, at_file, at_line
+)
+VALUES ('source', 'local_value', 'value', 'read', 'src/lib.rs', 1)
+"#,
+            [],
+        )
+        .unwrap();
         upsert_file_fingerprint(&conn, "src/lib.rs", 123, 456).unwrap();
 
         assert!(!ensure_graph_index_version(&conn, "1").unwrap());
@@ -186,6 +198,13 @@ VALUES ('source', 'target', 'reads', 'src/lib.rs', 1)
         );
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM file_fingerprints", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM data_flow_facts", [], |row| {
                 row.get::<_, i64>(0)
             })
             .unwrap(),

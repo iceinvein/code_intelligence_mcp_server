@@ -2497,6 +2497,41 @@ fn extract_locations_from_flows(
         let Some(row) = sqlite.get_symbol_by_id(id)? else {
             continue;
         };
+        if let Some(entity_kind) = flow.get("entity_kind").and_then(|v| v.as_str()) {
+            let line = flow
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(row.start_line);
+            let relative_line = line.saturating_sub(row.start_line) as usize;
+            let body = row
+                .text
+                .lines()
+                .nth(relative_line)
+                .unwrap_or(row.text.as_str())
+                .to_string();
+            let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
+            out.push(VerifiedLocation {
+                symbol_id: row.id,
+                symbol_name: flow
+                    .get("symbol_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(row.name.as_str())
+                    .to_string(),
+                file_path: flow
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(row.file_path.as_str())
+                    .to_string(),
+                kind: entity_kind.to_string(),
+                start_line: line,
+                end_line: line,
+                via,
+                body,
+                route_exposure,
+            });
+            continue;
+        }
         let body = body_with_cap(&row.text, PER_BODY_LINES_CAP);
         let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
         out.push(VerifiedLocation {

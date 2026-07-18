@@ -111,6 +111,22 @@ pub struct EdgeEvidenceRow {
     pub count: u32,
 }
 
+/// Source-backed data-flow fact whose endpoint is not required to be a symbol.
+///
+/// Generic graph edges retain their strict symbol-to-symbol foreign-key
+/// contract. This relation preserves local values and async boundaries that
+/// would otherwise be discarded during graph extraction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataFlowFactRow {
+    pub owner_symbol_id: String,
+    pub entity_name: String,
+    pub entity_kind: String,
+    pub access_kind: String,
+    pub at_file: String,
+    pub at_line: u32,
+    pub scope: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModuleBindingRow {
     pub id: i64,
@@ -490,6 +506,30 @@ CREATE INDEX IF NOT EXISTS idx_edge_evidence_from ON edge_evidence(from_symbol_i
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_to ON edge_evidence(to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_type ON edge_evidence(edge_type);
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_loc ON edge_evidence(at_file, at_line);
+
+-- Local values and async boundaries are first-class data-flow endpoints, but
+-- they are not declarations and therefore do not belong in the generic
+-- symbol-to-symbol edges table.
+CREATE TABLE IF NOT EXISTS data_flow_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_symbol_id TEXT NOT NULL,
+  entity_name TEXT NOT NULL,
+  entity_kind TEXT NOT NULL CHECK(entity_kind IN ('value', 'async_boundary')),
+  access_kind TEXT NOT NULL CHECK(access_kind IN ('read', 'write', 'await', 'spawn')),
+  at_file TEXT NOT NULL,
+  at_line INTEGER NOT NULL,
+  scope TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(owner_symbol_id, entity_name, entity_kind, access_kind, at_file, at_line),
+  FOREIGN KEY(owner_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_data_flow_facts_owner
+  ON data_flow_facts(owner_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_data_flow_facts_entity
+  ON data_flow_facts(entity_name, entity_kind);
+CREATE INDEX IF NOT EXISTS idx_data_flow_facts_loc
+  ON data_flow_facts(at_file, at_line);
 
 -- Module-level imports and public API exposure paths. Unlike generic graph
 -- edges, these rows retain both sides of aliases and may remain unresolved.

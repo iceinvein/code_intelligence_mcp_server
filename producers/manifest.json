@@ -1,11 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "producers": [
     {
       "id": "typescript",
       "language": "typescript",
       "executable": "code-intelligence-external-typescript",
       "tier": "first_class",
+      "readiness": "integrated",
       "output_file": "typescript-normalized.json",
       "requires_project_toolchain": true,
       "support_files": [
@@ -18,6 +19,7 @@
       "language": "rust",
       "executable": "code-intelligence-external-rust",
       "tier": "first_class",
+      "readiness": "integrated",
       "output_file": "rust-normalized.json",
       "requires_project_toolchain": true,
       "support_files": [
@@ -32,6 +34,7 @@
       "language": "python",
       "executable": "code-intelligence-external-python",
       "tier": "first_class",
+      "readiness": "integrated",
       "output_file": "python-normalized.json",
       "requires_project_toolchain": true,
       "support_files": [
@@ -46,6 +49,7 @@
       "language": "go",
       "executable": "code-intelligence-external-go",
       "tier": "first_class",
+      "readiness": "integrated",
       "output_file": "go-normalized.json",
       "requires_project_toolchain": true,
       "support_files": [
@@ -60,6 +64,7 @@
       "language": "java",
       "executable": "code-intelligence-external-java",
       "tier": "build_aware",
+      "readiness": "adapter_only",
       "output_file": "java-normalized.json",
       "requires_project_toolchain": true,
       "description": "Java external index producer"
@@ -69,6 +74,7 @@
       "language": "kotlin",
       "executable": "code-intelligence-external-kotlin",
       "tier": "build_aware",
+      "readiness": "adapter_only",
       "output_file": "kotlin-normalized.json",
       "requires_project_toolchain": true,
       "description": "Kotlin external index producer"
@@ -78,6 +84,7 @@
       "language": "csharp",
       "executable": "code-intelligence-external-csharp",
       "tier": "build_aware",
+      "readiness": "adapter_only",
       "output_file": "csharp-normalized.json",
       "requires_project_toolchain": true,
       "description": "C# external index producer"
@@ -87,6 +94,7 @@
       "language": "swift",
       "executable": "code-intelligence-external-swift",
       "tier": "build_aware",
+      "readiness": "adapter_only",
       "output_file": "swift-normalized.json",
       "requires_project_toolchain": true,
       "description": "Swift external index producer"
@@ -96,6 +104,7 @@
       "language": "c",
       "executable": "code-intelligence-external-c",
       "tier": "compile_database",
+      "readiness": "adapter_only",
       "output_file": "c-normalized.json",
       "requires_project_toolchain": true,
       "description": "C external index producer"
@@ -105,6 +114,7 @@
       "language": "cpp",
       "executable": "code-intelligence-external-cpp",
       "tier": "compile_database",
+      "readiness": "adapter_only",
       "output_file": "cpp-normalized.json",
       "requires_project_toolchain": true,
       "description": "C++ external index producer"
@@ -114,6 +124,7 @@
       "language": "ruby",
       "executable": "code-intelligence-external-ruby",
       "tier": "fallback_only",
+      "readiness": "adapter_only",
       "output_file": "ruby-normalized.json",
       "requires_project_toolchain": false,
       "description": "Ruby fallback external index producer"

@@ -89,6 +89,12 @@ pub fn write_batch(
                     file.rel_path
                 )
             })?;
+            queries::data_flow::delete_by_file(&tx, &file.rel_path).with_context(|| {
+                format!(
+                    "Failed to delete data-flow facts for file: {}",
+                    file.rel_path
+                )
+            })?;
             // Foreign keys are intentionally disabled for chunk replacement,
             // so delete occurrence metadata explicitly before its symbols.
             queries::symbol_identities::delete_by_file(&tx, &file.rel_path).with_context(|| {
@@ -313,6 +319,38 @@ pub fn write_module_bindings_batch(
     }
     tx.commit()
         .context("Failed to commit module binding write transaction")?;
+    Ok(written)
+}
+
+pub fn write_data_flow_facts_batch(
+    bundles: &[Vec<crate::storage::sqlite::DataFlowFactRow>],
+    conn: &Connection,
+) -> Result<usize> {
+    if bundles.iter().all(|bundle| bundle.is_empty()) {
+        return Ok(0);
+    }
+
+    let foreign_keys_enabled: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .context("Failed to read SQLite foreign_keys setting")?;
+    anyhow::ensure!(
+        foreign_keys_enabled == 1,
+        "write_data_flow_facts_batch requires SQLite foreign_keys=ON"
+    );
+
+    let tx = conn
+        .unchecked_transaction()
+        .context("Failed to begin data-flow fact write transaction")?;
+    let mut written = 0usize;
+    for rows in bundles {
+        queries::data_flow::batch_upsert(&tx, rows)
+            .context("Failed to batch upsert typed data-flow facts")?;
+        written += rows.len();
+    }
+    tx.commit()
+        .context("Failed to commit data-flow fact write transaction")?;
+    queries::edges::validate_graph_integrity(conn)
+        .context("Graph integrity validation failed after typed data-flow write")?;
     Ok(written)
 }
 

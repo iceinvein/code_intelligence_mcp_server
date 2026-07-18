@@ -524,5 +524,14 @@ mod tests {
             .find(|producer| producer["id"] == "rust")
             .expect("rust producer");
         assert_eq!(rust["availability"], "missing");
+        assert_eq!(rust["readiness"], "integrated");
+        let java = stats["external_producers"]
+            .as_array()
+            .expect("external producers")
+            .iter()
+            .find(|producer| producer["id"] == "java")
+            .expect("java producer");
+        assert_eq!(java["availability"], "adapter_only");
+        assert_eq!(java["readiness"], "adapter_only");
     }
 }

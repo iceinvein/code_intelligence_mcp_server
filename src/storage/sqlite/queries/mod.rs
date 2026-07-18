@@ -2,6 +2,7 @@ pub mod affinity;
 pub mod cache;
 pub mod cochange;
 pub mod cross_repo;
+pub mod data_flow;
 pub mod decorators;
 pub mod descriptions;
 pub mod docstrings;

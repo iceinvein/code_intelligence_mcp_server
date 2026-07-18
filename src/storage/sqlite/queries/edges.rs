@@ -237,6 +237,26 @@ WHERE e.edge_type IN ('reads', 'writes', 'async_call', 'spawn')
         );
     }
 
+    let invalid_fact_locations: i64 = conn
+        .query_row(
+            r#"
+SELECT COUNT(*)
+FROM data_flow_facts fact
+JOIN symbols owner ON owner.id = fact.owner_symbol_id
+WHERE fact.at_file != owner.file_path
+   OR fact.at_line < owner.start_line
+   OR fact.at_line > owner.end_line
+"#,
+            [],
+            |row| row.get(0),
+        )
+        .context("Failed to validate typed data-flow fact locations")?;
+    if invalid_fact_locations > 0 {
+        bail!(
+            "Graph integrity violation: {invalid_fact_locations} typed data-flow facts fall outside their owner symbol"
+        );
+    }
+
     Ok(())
 }
 
@@ -709,6 +729,33 @@ VALUES ('source', 'target', 'reads', 'src/lib.rs', 99)
 
         let error = validate_graph_integrity(&conn).unwrap_err().to_string();
         assert!(error.contains("outside their source symbol"), "{error}");
+    }
+
+    #[test]
+    fn graph_integrity_rejects_typed_fact_location_outside_owner() {
+        let conn = setup_test_db();
+        insert_symbol(
+            &conn,
+            "source",
+            "src/lib.rs",
+            "rust",
+            "function",
+            "source",
+            false,
+        );
+        conn.execute(
+            r#"
+INSERT INTO data_flow_facts(
+  owner_symbol_id, entity_name, entity_kind, access_kind, at_file, at_line
+)
+VALUES ('source', 'local_value', 'value', 'read', 'src/lib.rs', 99)
+"#,
+            [],
+        )
+        .unwrap();
+
+        let error = validate_graph_integrity(&conn).unwrap_err().to_string();
+        assert!(error.contains("typed data-flow facts"), "{error}");
     }
 
     #[test]

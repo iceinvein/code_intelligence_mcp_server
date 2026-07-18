@@ -1,4 +1,5 @@
 pub mod bindings;
+pub mod data_flow;
 pub mod describe;
 pub mod edges;
 pub mod identity;
@@ -46,7 +47,7 @@ use self::utils::{cluster_key_from_vector, file_fingerprint, file_key_path, unix
 /// Version of persisted extraction semantics. Increment whenever existing
 /// symbols, identities, or edges cannot be trusted and every source file must
 /// be parsed again. The metadata key retains its historical graph name.
-const GRAPH_INDEX_VERSION: &str = "4";
+const GRAPH_INDEX_VERSION: &str = "5";
 
 fn elapsed_ms(elapsed: Duration) -> u64 {
     elapsed.as_millis().min(u64::MAX as u128) as u64
@@ -1101,6 +1102,18 @@ impl IndexPipeline {
         }
 
         let parsed_arc = std::sync::Arc::new(std::mem::take(&mut parsed_files));
+
+        // Preserve local values and async boundaries in a typed relation. The
+        // generic graph remains symbol-to-symbol; this source-backed overlay
+        // carries endpoints that are not declarations.
+        if !parsed_arc.is_empty() {
+            let data_flow_bundles = parsed_arc
+                .iter()
+                .map(data_flow::extract_facts)
+                .collect::<Vec<_>>();
+            let conn = self.sqlite.write()?;
+            write::write_data_flow_facts_batch(&data_flow_bundles, &conn)?;
+        }
 
         // Phase 2.5: Resolve and persist public module bindings first. The
         // ordinary edge resolver can then follow names such as `default` or a

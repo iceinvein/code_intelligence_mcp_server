@@ -18,11 +18,22 @@ pub enum LanguageTier {
     FallbackOnly,
 }
 
+/// Maturity of the bundled producer implementation for a language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProducerReadiness {
+    /// The distribution includes an executable generator with deterministic tests.
+    Integrated,
+    /// The normalized-artifact contract and override hook exist, but callers
+    /// must provide a language-service adapter.
+    AdapterOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageSupport {
     pub language: &'static str,
     pub tier: LanguageTier,
     pub producer: Option<&'static str>,
+    pub producer_readiness: Option<ProducerReadiness>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +43,7 @@ struct ProducerSpec {
     default_program: &'static str,
     command_env: &'static str,
     output_file: &'static str,
+    readiness: ProducerReadiness,
 }
 
 const PRODUCER_SPECS: &[ProducerSpec] = &[
@@ -41,6 +53,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-typescript",
         command_env: "EXTERNAL_INDEX_TYPESCRIPT_COMMAND",
         output_file: "typescript-normalized.json",
+        readiness: ProducerReadiness::Integrated,
     },
     ProducerSpec {
         id: "rust",
@@ -48,6 +61,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-rust",
         command_env: "EXTERNAL_INDEX_RUST_COMMAND",
         output_file: "rust-normalized.json",
+        readiness: ProducerReadiness::Integrated,
     },
     ProducerSpec {
         id: "python",
@@ -55,6 +69,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-python",
         command_env: "EXTERNAL_INDEX_PYTHON_COMMAND",
         output_file: "python-normalized.json",
+        readiness: ProducerReadiness::Integrated,
     },
     ProducerSpec {
         id: "go",
@@ -62,6 +77,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-go",
         command_env: "EXTERNAL_INDEX_GO_COMMAND",
         output_file: "go-normalized.json",
+        readiness: ProducerReadiness::Integrated,
     },
     ProducerSpec {
         id: "java",
@@ -69,6 +85,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-java",
         command_env: "EXTERNAL_INDEX_JAVA_COMMAND",
         output_file: "java-normalized.json",
+        readiness: ProducerReadiness::AdapterOnly,
     },
     ProducerSpec {
         id: "kotlin",
@@ -76,6 +93,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-kotlin",
         command_env: "EXTERNAL_INDEX_KOTLIN_COMMAND",
         output_file: "kotlin-normalized.json",
+        readiness: ProducerReadiness::AdapterOnly,
     },
     ProducerSpec {
         id: "csharp",
@@ -83,6 +101,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-csharp",
         command_env: "EXTERNAL_INDEX_CSHARP_COMMAND",
         output_file: "csharp-normalized.json",
+        readiness: ProducerReadiness::AdapterOnly,
     },
     ProducerSpec {
         id: "swift",
@@ -90,6 +109,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-swift",
         command_env: "EXTERNAL_INDEX_SWIFT_COMMAND",
         output_file: "swift-normalized.json",
+        readiness: ProducerReadiness::AdapterOnly,
     },
     ProducerSpec {
         id: "c",
@@ -97,6 +117,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-c",
         command_env: "EXTERNAL_INDEX_C_COMMAND",
         output_file: "c-normalized.json",
+        readiness: ProducerReadiness::AdapterOnly,
     },
     ProducerSpec {
         id: "cpp",
@@ -104,6 +125,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-cpp",
         command_env: "EXTERNAL_INDEX_CPP_COMMAND",
         output_file: "cpp-normalized.json",
+        readiness: ProducerReadiness::AdapterOnly,
     },
     ProducerSpec {
         id: "ruby",
@@ -111,6 +133,7 @@ const PRODUCER_SPECS: &[ProducerSpec] = &[
         default_program: "code-intelligence-external-ruby",
         command_env: "EXTERNAL_INDEX_RUBY_COMMAND",
         output_file: "ruby-normalized.json",
+        readiness: ProducerReadiness::AdapterOnly,
     },
 ];
 
@@ -144,61 +167,73 @@ pub fn supported_language_tiers() -> Vec<LanguageSupport> {
             language: "typescript",
             tier: LanguageTier::FirstClass,
             producer: Some("typescript"),
+            producer_readiness: Some(ProducerReadiness::Integrated),
         },
         LanguageSupport {
             language: "javascript",
             tier: LanguageTier::FirstClass,
             producer: Some("typescript"),
+            producer_readiness: Some(ProducerReadiness::Integrated),
         },
         LanguageSupport {
             language: "rust",
             tier: LanguageTier::FirstClass,
             producer: Some("rust"),
+            producer_readiness: Some(ProducerReadiness::Integrated),
         },
         LanguageSupport {
             language: "python",
             tier: LanguageTier::FirstClass,
             producer: Some("python"),
+            producer_readiness: Some(ProducerReadiness::Integrated),
         },
         LanguageSupport {
             language: "go",
             tier: LanguageTier::FirstClass,
             producer: Some("go"),
+            producer_readiness: Some(ProducerReadiness::Integrated),
         },
         LanguageSupport {
             language: "java",
             tier: LanguageTier::BuildAware,
             producer: Some("java"),
+            producer_readiness: Some(ProducerReadiness::AdapterOnly),
         },
         LanguageSupport {
             language: "kotlin",
             tier: LanguageTier::BuildAware,
             producer: Some("kotlin"),
+            producer_readiness: Some(ProducerReadiness::AdapterOnly),
         },
         LanguageSupport {
             language: "csharp",
             tier: LanguageTier::BuildAware,
             producer: Some("csharp"),
+            producer_readiness: Some(ProducerReadiness::AdapterOnly),
         },
         LanguageSupport {
             language: "swift",
             tier: LanguageTier::BuildAware,
             producer: Some("swift"),
+            producer_readiness: Some(ProducerReadiness::AdapterOnly),
         },
         LanguageSupport {
             language: "c",
             tier: LanguageTier::CompileDatabase,
             producer: Some("c"),
+            producer_readiness: Some(ProducerReadiness::AdapterOnly),
         },
         LanguageSupport {
             language: "cpp",
             tier: LanguageTier::CompileDatabase,
             producer: Some("cpp"),
+            producer_readiness: Some(ProducerReadiness::AdapterOnly),
         },
         LanguageSupport {
             language: "ruby",
             tier: LanguageTier::FallbackOnly,
             producer: Some("ruby"),
+            producer_readiness: Some(ProducerReadiness::AdapterOnly),
         },
     ]
 }
@@ -285,6 +320,18 @@ fn resolve_producer_program_for_dir(
     spec: ProducerSpec,
     exe_dir: Option<&std::path::Path>,
 ) -> Option<ResolvedProducerProgram> {
+    let path_dirs = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .unwrap_or_default();
+    resolve_producer_program_for_dir_and_path(spec, exe_dir, &path_dirs)
+}
+
+#[cfg(test)]
+fn resolve_producer_program_for_dir_and_path(
+    spec: ProducerSpec,
+    exe_dir: Option<&std::path::Path>,
+    path_dirs: &[std::path::PathBuf],
+) -> Option<ResolvedProducerProgram> {
     if let Ok(program) = std::env::var(spec.command_env) {
         if !program.trim().is_empty() {
             return Some(ResolvedProducerProgram {
@@ -304,7 +351,10 @@ fn resolve_producer_program_for_dir(
         }
     }
 
-    if path_lookup(spec.default_program) {
+    if path_dirs
+        .iter()
+        .any(|dir| is_executable(&dir.join(spec.default_program)))
+    {
         return Some(ResolvedProducerProgram {
             program: spec.default_program.to_string(),
             source: ProducerCommandSource::Path,
@@ -314,6 +364,7 @@ fn resolve_producer_program_for_dir(
     None
 }
 
+#[cfg(not(test))]
 fn path_lookup(program: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| is_executable(&dir.join(program))))
@@ -602,8 +653,9 @@ fn generate_with_spec_for_exe_dir(
     language: Option<String>,
     spec: ProducerSpec,
     exe_dir: Option<&std::path::Path>,
+    path_dirs: &[std::path::PathBuf],
 ) -> Result<Value> {
-    let resolved = resolve_producer_program_for_dir(spec, exe_dir);
+    let resolved = resolve_producer_program_for_dir_and_path(spec, exe_dir, path_dirs);
     generate_with_spec_with_resolved(store, repo_root, repo_data_dir, language, spec, resolved)
 }
 
@@ -626,6 +678,17 @@ fn generate_with_spec_with_resolved(
     let resolved = match resolved {
         Some(resolved) => resolved,
         None => {
+            if spec.readiness == ProducerReadiness::AdapterOnly {
+                return Ok(json!({
+                    "ok": false,
+                    "status": "adapter_required",
+                    "producer": spec.id,
+                    "language": language,
+                    "readiness": "adapter_only",
+                    "command_env": spec.command_env,
+                    "supported_producers": supported_producers(),
+                }));
+            }
             return Ok(json!({
                 "ok": false,
                 "status": "missing_bundle",
@@ -638,6 +701,21 @@ fn generate_with_spec_with_resolved(
         }
     };
     let command_source = command_source_str(resolved.source);
+    if spec.readiness == ProducerReadiness::AdapterOnly
+        && resolved.source == ProducerCommandSource::Bundled
+    {
+        return Ok(json!({
+            "ok": false,
+            "status": "adapter_required",
+            "producer": spec.id,
+            "language": language,
+            "readiness": "adapter_only",
+            "command_env": spec.command_env,
+            "program": resolved.program,
+            "command_source": command_source,
+            "supported_producers": supported_producers(),
+        }));
+    }
     let command = producer_command(&resolved.program, repo_root, output_path.as_str());
 
     let output = match Command::new(&command.program)
@@ -787,6 +865,33 @@ mod tests {
                 .find(|tier| tier.language == lang)
                 .unwrap_or_else(|| panic!("missing {lang}"));
             assert!(support.producer.is_some(), "missing producer for {lang}");
+        }
+    }
+
+    #[test]
+    fn readiness_distinguishes_integrated_generators_from_adapter_contracts() {
+        let langs = supported_language_tiers();
+        for language in ["typescript", "javascript", "rust", "python", "go"] {
+            let support = langs
+                .iter()
+                .find(|support| support.language == language)
+                .expect("language support");
+            assert_eq!(
+                support.producer_readiness,
+                Some(ProducerReadiness::Integrated),
+                "{language} should have an integrated generator"
+            );
+        }
+        for language in ["java", "kotlin", "csharp", "swift", "c", "cpp", "ruby"] {
+            let support = langs
+                .iter()
+                .find(|support| support.language == language)
+                .expect("language support");
+            assert_eq!(
+                support.producer_readiness,
+                Some(ProducerReadiness::AdapterOnly),
+                "{language} should report its adapter contract honestly"
+            );
         }
     }
 
@@ -1027,13 +1132,48 @@ mod tests {
         let path_program = path_dir.path().join("code-intelligence-external-rust");
         std::fs::write(&path_program, "#!/bin/sh\nexit 0\n").expect("write path producer");
         make_executable(&path_program);
-        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
         let spec = producer_spec_by_id("rust").expect("rust spec");
 
-        let resolved = resolve_producer_program_for_dir(spec, Some(temp.path())).expect("resolve");
+        let resolved = resolve_producer_program_for_dir_and_path(
+            spec,
+            Some(temp.path()),
+            &[path_dir.path().to_path_buf()],
+        )
+        .expect("resolve");
 
         assert_eq!(resolved.program, bundled.to_string_lossy());
         assert_eq!(resolved.source, ProducerCommandSource::Bundled);
+    }
+
+    #[test]
+    fn bundled_adapter_wrapper_reports_required_override_without_executing() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        std::env::remove_var("EXTERNAL_INDEX_JAVA_COMMAND");
+        let store = SqliteStore::open_in_memory().expect("sqlite");
+        store.init().expect("init");
+        let repo = tempfile::tempdir().expect("repo");
+        let repo_data = tempfile::tempdir().expect("repo data");
+        let exe_dir = tempfile::tempdir().expect("exe dir");
+        let bundled = exe_dir.path().join("code-intelligence-external-java");
+        std::fs::write(&bundled, "#!/bin/sh\nexit 99\n").expect("write adapter wrapper");
+        make_executable(&bundled);
+        let spec = producer_spec_by_id("java").expect("java spec");
+
+        let response = generate_with_spec_for_exe_dir(
+            &store,
+            repo.path().to_str().expect("utf8"),
+            Utf8Path::from_path(repo_data.path()).expect("utf8"),
+            Some("java".into()),
+            spec,
+            Some(exe_dir.path()),
+            &[],
+        )
+        .expect("response");
+
+        assert_eq!(response["status"], "adapter_required");
+        assert_eq!(response["readiness"], "adapter_only");
+        assert_eq!(response["command_env"], "EXTERNAL_INDEX_JAVA_COMMAND");
+        assert_eq!(response["command_source"], "bundled");
     }
 
     #[test]
@@ -1041,11 +1181,9 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
         let temp = tempfile::tempdir().expect("tempdir");
-        let path_dir = tempfile::tempdir().expect("path tempdir");
-        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
         let spec = producer_spec_by_id("rust").expect("rust spec");
 
-        let resolved = resolve_producer_program_for_dir(spec, Some(temp.path()));
+        let resolved = resolve_producer_program_for_dir_and_path(spec, Some(temp.path()), &[]);
 
         assert!(resolved.is_none());
     }
@@ -1059,11 +1197,14 @@ mod tests {
         let path_program = path_dir.path().join("code-intelligence-external-rust");
         std::fs::write(&path_program, "#!/bin/sh\nexit 0\n").expect("write path producer");
         make_executable(&path_program);
-        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
         let spec = producer_spec_by_id("rust").expect("rust spec");
 
-        let resolved =
-            resolve_producer_program_for_dir(spec, Some(exe_dir.path())).expect("resolve");
+        let resolved = resolve_producer_program_for_dir_and_path(
+            spec,
+            Some(exe_dir.path()),
+            &[path_dir.path().to_path_buf()],
+        )
+        .expect("resolve");
 
         assert_eq!(resolved.program, "code-intelligence-external-rust");
         assert_eq!(resolved.source, ProducerCommandSource::Path);
@@ -1108,8 +1249,6 @@ mod tests {
     fn generate_reports_missing_bundle_when_resolved_command_is_absent() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         std::env::remove_var("EXTERNAL_INDEX_RUST_COMMAND");
-        let path_dir = tempfile::tempdir().expect("path tempdir");
-        let _path = EnvVarGuard::set("PATH", path_dir.path().as_os_str());
         let store = SqliteStore::open_in_memory().expect("sqlite");
         store.init().expect("init");
         let repo = tempfile::tempdir().expect("repo");
@@ -1129,6 +1268,7 @@ mod tests {
             None,
             spec,
             Some(exe_dir.path()),
+            &[],
         )
         .expect("response");
 

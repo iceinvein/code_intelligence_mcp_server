@@ -91,6 +91,135 @@ fn tier1_typescript_producer_artifact_imports_into_overlay() {
 }
 
 #[test]
+fn external_overlay_reference_and_impact_matrix_covers_every_indexed_language() {
+    let (_tmp, app_state) = test_app_state();
+    let languages = [
+        ("typescript", "ts"),
+        ("javascript", "js"),
+        ("rust", "rs"),
+        ("python", "py"),
+        ("go", "go"),
+        ("java", "java"),
+        ("kotlin", "kt"),
+        ("csharp", "cs"),
+        ("swift", "swift"),
+        ("c", "c"),
+        ("cpp", "cpp"),
+        ("ruby", "rb"),
+    ];
+
+    for (language, extension) in languages {
+        let target_id = format!("target_{language}_internal");
+        let caller_id = format!("caller_{language}_internal");
+        let target_name = format!("target_{language}");
+        let caller_name = format!("caller_{language}");
+        let target_file = format!("matrix/{language}/target.{extension}");
+        let caller_file = format!("matrix/{language}/caller.{extension}");
+        insert_symbol_for_language(
+            &app_state.sqlite,
+            &target_id,
+            &target_file,
+            &target_name,
+            language,
+            1,
+            3,
+        );
+        insert_symbol_for_language(
+            &app_state.sqlite,
+            &caller_id,
+            &caller_file,
+            &caller_name,
+            language,
+            1,
+            4,
+        );
+
+        let target_external = format!("matrix {language} target");
+        let caller_external = format!("matrix {language} caller");
+        let artifact = serde_json::json!({
+            "source_kind": "normalized_json",
+            "producer": format!("matrix-{language}"),
+            "language": language,
+            "root_path": "/fixture/repo",
+            "symbols": [
+                {
+                    "external_symbol": target_external,
+                    "display_name": target_name,
+                    "kind": "function",
+                    "file_path": target_file,
+                    "start_line": 1,
+                    "end_line": 3,
+                    "start_byte": 0,
+                    "end_byte": 42
+                },
+                {
+                    "external_symbol": caller_external,
+                    "display_name": caller_name,
+                    "kind": "function",
+                    "file_path": caller_file,
+                    "start_line": 1,
+                    "end_line": 4,
+                    "start_byte": 0,
+                    "end_byte": 60
+                }
+            ],
+            "references": [
+                {
+                    "from_external_symbol": caller_external,
+                    "to_external_symbol": target_external,
+                    "relationship": "call",
+                    "file_path": caller_file,
+                    "line": 2,
+                    "confidence": 1.0,
+                    "provenance": "language-matrix"
+                }
+            ]
+        });
+        let artifact_file = write_artifact(&artifact.to_string());
+        let report =
+            import_external_index(&app_state.sqlite, "/fixture/repo", artifact_file.path())
+                .unwrap_or_else(|err| panic!("{language} overlay import failed: {err}"));
+        assert_eq!(report.symbols_mapped, 2, "{language} symbol mapping");
+
+        let references =
+            merged_references_to_internal_symbol(&app_state.sqlite, &target_id, Some("call"), 20)
+                .unwrap_or_else(|err| panic!("{language} reference query failed: {err}"));
+        assert_eq!(references.len(), 1, "{language} reference precision/recall");
+        assert_eq!(
+            references[0].source,
+            ReferenceSource::External,
+            "{language}"
+        );
+        assert_eq!(
+            references[0].from_symbol_id.as_deref(),
+            Some(caller_id.as_str()),
+            "{language} mapped caller"
+        );
+
+        let response = handle_find_affected_code(
+            &app_state,
+            FindAffectedCodeTool {
+                symbol_name: target_name,
+                file_path: Some(target_file),
+                depth: Some(1),
+                limit: Some(20),
+                include_tests: Some(true),
+                edge_types: None,
+                include_display: Some(false),
+            },
+        )
+        .unwrap_or_else(|err| panic!("{language} impact query failed: {err}"));
+        let affected = response["affected"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{language} affected array"));
+        assert_eq!(affected.len(), 1, "{language} impact precision/recall");
+        assert_eq!(affected[0]["symbol_id"], caller_id, "{language}");
+        assert_eq!(affected[0]["source"], "external", "{language}");
+        assert_eq!(affected[0]["provenance"], "language-matrix", "{language}");
+    }
+}
+
+#[test]
 fn imports_normalized_artifact_and_maps_exact_range() {
     let store = SqliteStore::open_in_memory().expect("in-memory sqlite");
     store.init().expect("init sqlite");
@@ -1297,11 +1426,48 @@ fn insert_symbol_with_kind(
     start_line: u32,
     end_line: u32,
 ) {
+    insert_symbol_with_kind_for_language(
+        store,
+        id,
+        file_path,
+        name,
+        kind,
+        "typescript",
+        start_line,
+        end_line,
+    );
+}
+
+fn insert_symbol_for_language(
+    store: &SqliteStore,
+    id: &str,
+    file_path: &str,
+    name: &str,
+    language: &str,
+    start_line: u32,
+    end_line: u32,
+) {
+    insert_symbol_with_kind_for_language(
+        store, id, file_path, name, "function", language, start_line, end_line,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_symbol_with_kind_for_language(
+    store: &SqliteStore,
+    id: &str,
+    file_path: &str,
+    name: &str,
+    kind: &str,
+    language: &str,
+    start_line: u32,
+    end_line: u32,
+) {
     store
         .upsert_symbol(&SymbolRow {
             id: id.to_string(),
             file_path: file_path.to_string(),
-            language: "typescript".to_string(),
+            language: language.to_string(),
             kind: kind.to_string(),
             name: name.to_string(),
             exported: false,

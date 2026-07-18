@@ -352,8 +352,44 @@ pub fn handle_trace_data_flow(
     // Trace data flow using edge traversal
     let (reads, writes) = trace_data_flow_edges(sqlite, &root.id, depth, limit, &direction)?;
 
-    // Build flow items
+    // Build source-backed non-symbol facts first. These exact occurrences are
+    // complementary to graph traversal: local values and async boundaries do
+    // not have declaration rows and must not be forced into the edges table.
     let mut flows = Vec::new();
+    for fact in sqlite.list_data_flow_facts_by_owner(&root.id, limit)? {
+        let flow_type = match fact.access_kind.as_str() {
+            "read" => "read",
+            "write" => "write",
+            "await" => "async_read",
+            "spawn" => "spawn",
+            _ => continue,
+        };
+        let matches_direction = match direction.as_str() {
+            "reads" => matches!(flow_type, "read" | "async_read"),
+            "writes" => flow_type == "write",
+            _ => true,
+        };
+        if !matches_direction {
+            continue;
+        }
+        flows.push(json!({
+            "symbol_id": root.id,
+            "symbol_name": fact.entity_name,
+            "kind": fact.entity_kind,
+            "entity_kind": fact.entity_kind,
+            "owner_symbol_id": root.id,
+            "owner_symbol_name": root.name,
+            "file_path": fact.at_file,
+            "line": fact.at_line,
+            "flow_type": flow_type,
+            "access_kind": fact.access_kind,
+            "scope": fact.scope,
+            "path": [],
+            "source_backed": true,
+        }));
+    }
+
+    // Add symbol-to-symbol graph traversal results.
     for (sym_id, flow_type, path) in &reads {
         if let Some(sym) = sqlite.get_symbol_by_id(sym_id)? {
             flows.push(json!({
@@ -381,19 +417,28 @@ pub fn handle_trace_data_flow(
         }
     }
 
-    // Sort: writes first, then reads, each by file path
+    // Sort: writes first, then reads/async boundaries, each by source location.
     flows.sort_by(|a, b| {
         let fa = a.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
         let fb = b.get("flow_type").and_then(|v| v.as_str()).unwrap_or("");
-        match (fa, fb) {
-            ("write", "read") => std::cmp::Ordering::Less,
-            ("read", "write") => std::cmp::Ordering::Greater,
-            _ => {
-                let fa_path = a.get("file_path").and_then(|v| v.as_str());
-                let fb_path = b.get("file_path").and_then(|v| v.as_str());
-                fa_path.cmp(&fb_path)
-            }
-        }
+        let rank = |flow_type: &str| match flow_type {
+            "write" => 0,
+            "read" | "async_read" => 1,
+            "spawn" => 2,
+            _ => 3,
+        };
+        rank(fa)
+            .cmp(&rank(fb))
+            .then_with(|| {
+                a.get("file_path")
+                    .and_then(|v| v.as_str())
+                    .cmp(&b.get("file_path").and_then(|v| v.as_str()))
+            })
+            .then_with(|| {
+                a.get("line")
+                    .and_then(|v| v.as_u64())
+                    .cmp(&b.get("line").and_then(|v| v.as_u64()))
+            })
     });
     let budgeted_flows = budget_array(flows, limit);
     let total_flow_count = budgeted_flows.total_count;
@@ -421,7 +466,32 @@ pub fn handle_trace_data_flow(
             let callee_edges = sqlite.list_edges_from(sym_id, 20)?;
             let mut called_flows = Vec::new();
 
+            for fact in sqlite.list_data_flow_facts_by_owner(sym_id, 20)? {
+                let ft = match fact.access_kind.as_str() {
+                    "read" => "read",
+                    "write" => "write",
+                    "await" => "async_read",
+                    "spawn" => "spawn",
+                    _ => continue,
+                };
+                called_flows.push(json!({
+                    "symbol_name": fact.entity_name,
+                    "symbol_id": sym_id,
+                    "kind": fact.entity_kind,
+                    "entity_kind": fact.entity_kind,
+                    "owner_symbol_id": sym_id,
+                    "flow_type": ft,
+                    "access_kind": fact.access_kind,
+                    "file_path": fact.at_file,
+                    "line": fact.at_line,
+                    "source_backed": true,
+                }));
+            }
+
             for edge in callee_edges {
+                if called_flows.len() >= 20 {
+                    break;
+                }
                 let ft = match edge.edge_type.as_str() {
                     "reads" => "read",
                     "writes" => "write",
@@ -629,7 +699,12 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
 
     let read_count = flows
         .iter()
-        .filter(|f| f.get("flow_type").and_then(|v| v.as_str()) == Some("read"))
+        .filter(|f| {
+            matches!(
+                f.get("flow_type").and_then(|v| v.as_str()),
+                Some("read" | "async_read")
+            )
+        })
         .count();
     let write_count = flows
         .iter()
@@ -660,6 +735,8 @@ fn format_data_flow(root: &SymbolRow, flows: &[serde_json::Value]) -> String {
         let icon = match flow_type {
             "write" => "[WRITE]",
             "read" => "[READ]",
+            "async_read" => "[AWAIT]",
+            "spawn" => "[SPAWN]",
             _ => "[?]",
         };
 

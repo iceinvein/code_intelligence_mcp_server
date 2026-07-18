@@ -123,7 +123,9 @@ Project-scope targets write only a marked block that can be safely replaced or r
 
 ### Bundled External Producers
 
-Code Intelligence installs external producer entrypoints with the server binary. These helpers are resolved from the installed binary directory first, then from `PATH`, with `EXTERNAL_INDEX_<LANG>_COMMAND` still available as an explicit override.
+Code Intelligence installs external producer entrypoints with the server binary. TypeScript/JavaScript, Rust, Python, and Go have integrated, deterministically tested generators. Java, Kotlin, C#, Swift, C, C++, and Ruby expose adapter contracts only: supply a generator with `EXTERNAL_INDEX_<LANG>_COMMAND` that writes the normalized artifact. The dashboard/API reports these states as `integrated`, `adapter_only`, or `missing` instead of treating a diagnostic wrapper as a working generator.
+
+Commands are resolved from an explicit `EXTERNAL_INDEX_<LANG>_COMMAND` override first, then from the installed binary directory and `PATH`. Invoking an adapter-only bundled entrypoint returns `adapter_required` without starting a placeholder process.
 
 Bundled producers do not make external indexing automatic. The default remains native Tree-sitter indexing:
 

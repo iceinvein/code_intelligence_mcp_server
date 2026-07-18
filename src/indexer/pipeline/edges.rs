@@ -252,13 +252,6 @@ fn determine_edge_resolution(
 /// is invoked once per symbol in that file. Both the lexical context and the
 /// source location must match: the name disambiguates containing classes/file
 /// symbols, and the line span disambiguates repeated method names in a file.
-fn dataflow_belongs_to_symbol(edge: &DataFlowEdge, row: &SymbolRow) -> bool {
-    let context_matches =
-        edge.to_symbol == row.name || edge.scope.as_deref() == Some(row.name.as_str());
-    let location_matches = edge.at_line >= row.start_line && edge.at_line <= row.end_line;
-    context_matches && location_matches
-}
-
 /// Conservative transparent-wrapper classifier.
 ///
 /// A wrapper must have exactly one semantic call, and its body must consist of
@@ -804,7 +797,7 @@ pub fn extract_edges_for_symbol(
 
     // Handle data flow edges
     for dfe in dataflow_edges {
-        if !dataflow_belongs_to_symbol(dfe, row) {
+        if !super::data_flow::belongs_to_symbol(dfe, row) {
             continue;
         }
 

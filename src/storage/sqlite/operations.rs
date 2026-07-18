@@ -151,6 +151,7 @@ DELETE FROM cross_repo_edges;
 DELETE FROM external_indexes;
 DELETE FROM edges;
 DELETE FROM edge_evidence;
+DELETE FROM data_flow_facts;
 DELETE FROM module_bindings;
 DELETE FROM index_metadata;
 DELETE FROM symbols;

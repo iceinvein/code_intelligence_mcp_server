@@ -1,7 +1,7 @@
 # Code Intelligence Improvement Work Log
 
 - Date: 2026-07-16
-- Status: In progress — G1/G2 structural work, F1/F2 fidelity contracts, P1 telemetry, P2 deterministic storage/concurrency work, A1 typed enrichment work, and Q1 deterministic quality/CI gates complete; benchmark gates pending
+- Status: Engineering complete — every remaining unchecked item is a benchmark or direct performance-measurement gate
 - Baseline commit: `e4d613f`
 - Baseline benchmark: R040
 - Scope: fidelity, indexing and query performance, retrieval architecture, and engineering feedback loops
@@ -73,13 +73,13 @@ Read and write edges account for approximately 98% of all edges. Edge storage an
 
 | ID | Priority | Workstream | Status | Depends on |
 |---|---|---|---|---|
-| G1 | P0 | Repair data-flow ownership and graph integrity | In progress — structural gate complete; R040 rerun pending | — |
-| G2 | P1 | Model imports, exports, re-exports, aliases, and wrappers | In progress — deterministic implementation complete; benchmark and overlay evaluation pending | G1 |
-| F1 | P1 | Introduce an evidence coverage contract | In progress — deterministic implementation complete; benchmark acceptance pending | G1 |
+| G1 | P0 | Repair data-flow ownership and graph integrity | Engineering complete — R040 benchmark rerun pending | — |
+| G2 | P1 | Model imports, exports, re-exports, aliases, and wrappers | Engineering complete — impact benchmark pending | G1 |
+| F1 | P1 | Introduce an evidence coverage contract | Engineering complete — evidence-pack benchmark pending | G1 |
 | F2 | P1 | Harden symbol identity and ambiguous resolution | Complete — deterministic identity, collision, and resolution gates passed | G1 |
-| P1 | P1 | Establish direct performance telemetry and gates | In progress — deterministic telemetry and direct profiler complete; baseline runs pending | G1 |
-| P2 | P2 | Refactor repository-scoped storage and query concurrency | In progress — deterministic implementation complete; direct latency and quality gates pending | P1 |
-| A1 | P2 | Replace investigation pass ladder with typed enrichment pipeline | In progress — deterministic migration complete; quality/latency benchmark pending | F1, P1 |
+| P1 | P1 | Establish direct performance telemetry and gates | Engineering complete — direct baseline benchmarks pending | G1 |
+| P2 | P2 | Refactor repository-scoped storage and query concurrency | Engineering complete — joint warm-latency/quality benchmark pending | P1 |
+| A1 | P2 | Replace investigation pass ladder with typed enrichment pipeline | Engineering complete — joint quality/latency benchmark pending | F1, P1 |
 | Q1 | P1 | Expand deterministic quality evaluation and CI | Complete — engine quality gate, release provenance, rubric audit, CI, and testing guidance accepted | G1 |
 | B1 | P2 | Repair reproducible native build prerequisites | Complete — atomic protoc bootstrap, native feature boundary, prerequisites, and CI gates accepted | — |
 
@@ -96,8 +96,8 @@ The same block creates synthetic `local:` and `async:` target IDs without corres
 - [x] Add a minimal regression fixture with multiple symbols and local reads/writes in one file.
 - [x] Match extracted data-flow edges to lexical context and the owning symbol's source span so sibling and repeated-name scopes cannot receive each other's edges.
 - [x] Attach each data-flow edge only to its lexical owner.
-- [x] Restrict the generic graph to symbol-to-symbol relationships; unresolved local and async endpoints are omitted until a typed non-symbol relation exists.
-- [ ] Store non-symbol flow entities in a typed table or separate data-flow relation instead of inserting broken symbol foreign keys.
+- [x] Restrict the generic graph to symbol-to-symbol relationships; unresolved local and async endpoints are represented in the typed data-flow relation.
+- [x] Store non-symbol flow entities in a typed table or separate data-flow relation instead of inserting broken symbol foreign keys.
 - [x] Convert Rust and TypeScript Tree-sitter rows to one-based lines.
 - [x] Add post-index foreign-key and source-location integrity checks plus focused regression tests.
 - [x] Bump the graph index format and require a clean graph rebuild.
@@ -114,11 +114,19 @@ The same block creates synthetic `local:` and `async:` target IDs without corres
 
 ### Acceptance gate
 
-- [ ] The regression fixture fails on the baseline and passes with the repair.
+- [x] The regression fixture fails on the baseline and passes with the repair.
 - [x] No unintended missing endpoints remain in a clean self-index.
 - [x] No data-flow edge is attributed to an unrelated sibling symbol in the regression fixture.
 - [x] Full-index storage and duration are remeasured; no estimate is presented as a measured result.
-- [ ] R040 mechanical, judge, and citation scores do not regress outside normal run variance.
+- [ ] Benchmark: R040 mechanical, judge, and citation scores do not regress outside normal run variance.
+
+### Typed data-flow completion — 2026-07-18
+
+- Added `data_flow_facts`, a typed source-owned relation for value reads/writes and async `await`/`spawn` boundaries. The owner remains a real symbol foreign key; the endpoint is explicitly classified as `value` or `async_boundary` rather than masquerading as a symbol.
+- Integrated fact extraction and persistence into full and incremental indexing, explicit stale-file cleanup, graph-version invalidation (`5`), `clear_all`, foreign-key validation, and owner-span/source-file integrity checks.
+- `trace_data_flow` now returns exact source-backed local and async occurrences. Investigation hydration preserves the occurrence line and entity kind instead of widening it back to the owner's full body.
+- The end-to-end hash fixture indexes a Rust function and verifies persisted local writes, an awaited call, and a spawned task at their exact source lines through the public handler.
+- Baseline proof used an isolated detached worktree at `e4d613f`: `regression_dataflow_is_attached_only_to_its_lexical_owner` failed because the second function received line 2 instead of line 6. The repaired fixture passes with the second function correctly owning line 6. The temporary worktree was removed after the proof.
 
 ## G2 — Model the public API and impact graph
 
@@ -137,14 +145,20 @@ Impact answers still miss public barrels/re-exports, wrapper modules, and canoni
 - [x] Add adversarial wrapper and cycle fixtures.
 - [x] Model and resolve default exports, including anonymous default declarations.
 - [x] Extend first-class module binding extraction beyond TypeScript and Python.
-- [ ] Evaluate external language-service overlays for impact/reference queries per language.
+- [x] Evaluate external language-service overlays for impact/reference queries per language.
 
 ### Acceptance gate
 
-- [ ] Golden impact sets report precision and recall, not only whether one expected file appeared.
+- [x] Golden impact sets report precision and recall, not only whether one expected file appeared.
 - [x] Public entry points and wrapper paths are returned with evidence roles.
 - [x] Ambiguous imports do not create high-confidence false edges.
-- [ ] Impact scores improve over the R040 baseline without degrading symbol and negative-query categories.
+- [ ] Benchmark: impact scores improve over the R040 baseline without degrading symbol and negative-query categories.
+
+### External-overlay evaluation — 2026-07-18
+
+- Added a normalized-artifact consumer matrix for TypeScript, JavaScript, Rust, Python, Go, Java, Kotlin, C#, Swift, C, C++, and Ruby. Every language must map both endpoints and return exactly one expected external reference and one expected impact result: 12/12 reference precision and recall, and 12/12 impact precision and recall.
+- Separated generator maturity from consumer support. TypeScript/JavaScript, Rust, Python, and Go have integrated generators; Java, Kotlin, C#, Swift, C, C++, and Ruby expose adapter contracts and explicit command overrides.
+- The manifest, dashboard/API availability payload, installer summary, runtime response, tests, README, and agent guidance now report `integrated`, `adapter_only`, or `missing`. An adapter-only bundled wrapper returns `adapter_required` without executing a placeholder.
 
 ## F1 — Introduce an evidence coverage contract
 
@@ -165,7 +179,7 @@ Recent evidence injection passes improved the benchmark, but coverage is still i
 
 - [x] Every precise source claim is traceable to returned evidence.
 - [x] Missing canonical definitions and public paths are observable as coverage failures.
-- [ ] Evidence expansion improves coverage without reintroducing large, unfocused packs.
+- [ ] Benchmark: evidence expansion improves coverage without reintroducing large, unfocused packs.
 
 ## F2 — Harden symbol identity and resolution
 
@@ -195,7 +209,7 @@ Current benchmark wall time includes the external answering agent. Search metric
 
 ### Tasks
 
-- [ ] Measure cold and warm direct MCP latency for search, investigate, definition, references, and impact traversal.
+- [ ] Benchmark: measure cold and warm direct MCP latency for search, investigate, definition, references, and impact traversal.
 - [x] Expose histogram telemetry for p50, p95, and p99 calculation across embedding, BM25, vector search, graph expansion, reranking, evidence allocation, and serialization. Baseline percentile values remain unmeasured by instruction.
 - [x] Record cache hit/miss/single-flight wait counts and candidate counts at each stage.
 - [x] Add indexing timings for scan, cleanup, parse, binding and edge extraction, SQLite write, embedding, vector write/optimization, PageRank, and Tantivy commit.
@@ -204,9 +218,9 @@ Current benchmark wall time includes the external answering agent. Search metric
 
 ### Acceptance gate
 
-- [ ] Performance claims use direct server measurements with fixture revision and configuration recorded.
+- [ ] Benchmark: report direct server measurements with fixture revision and configuration recorded before making performance claims.
 - [x] Every major stage has actionable latency and volume telemetry.
-- [ ] Quality and latency gates are reported together for retrieval experiments.
+- [ ] Benchmark: report quality and latency gates together for retrieval experiments.
 
 ## P2 — Refactor storage and query concurrency
 
@@ -230,7 +244,7 @@ Search opens and initializes SQLite on each request in [retrieval/mod.rs](../../
 
 - [x] No request performs schema migration/initialization work.
 - [x] Concurrency tests cover simultaneous reads, indexing writes, and cache misses.
-- [ ] Warm p95 improves with no retrieval-quality regression.
+- [ ] Benchmark: warm p95 improves with no retrieval-quality regression.
 - [x] Cache behavior is correct across two index runs started in the same second.
 
 ### Implementation record — 2026-07-17
@@ -374,6 +388,9 @@ Add one row for every benchmark or structural experiment, including rejected cha
 | 2026-07-16 | P1-DIRECT-TELEMETRY | Stable query/index stage metrics, durable run records, resource gauges, and direct-MCP profiler | Hash backend; telemetry migration/round-trip/cache fixtures; full Rust suite; profiler fixtures for small TypeScript, medium self-index, and large Django repositories | 1,291 library tests passed, 2 ignored; both binary tests, all integration targets, proxy recovery, and 23 doc tests passed | Not measured; direct profiler and quality benchmark were not run by instruction | Keep; telemetry implementation passes, baseline and joint quality/latency gates remain open | This log |
 | 2026-07-17 | Q1-DETERMINISTIC-QUALITY | Polyglot engine-quality gate, immutable release provenance, rubric audit, CI expansion, and HTTP testing guidance | Hash backend; 11-language fixture; pinned Django/wolfmax rubric validation; complete Rust, Python harness, and UI gates | Retrieval recall@5/MRR/nDCG@5, graph and impact precision/recall/F1, and canonical coverage all 1.000; public exposure, overload, dynamic-negative, and unresolved-negative gates passed | Not measured; external-agent and direct performance benchmarks skipped by instruction | Keep; Q1 acceptance gates pass | This log |
 | 2026-07-18 | B1-REPRODUCIBLE-BUILDS | Locked/verified atomic protoc cache, prerequisite diagnostics, and default-on native feature boundary | 32-process cold bootstrap repeated 10 times; real empty protoc cache; no-default-feature Rust suite; all-feature Clippy | 1,356 executed Rust tests and 166 harness tests passed; both strict Clippy configurations passed | Native-free dependency graph excludes llama.cpp; no runtime benchmark by instruction | Keep; B1 acceptance gates pass | This log |
+| 2026-07-18 | G1-TYPED-DATA-FLOW | Persist non-symbol value and async facts without weakening the symbol graph | Hash backend; extraction, SQLite round-trip/cleanup, graph-version, integrity, and end-to-end index/handler fixtures | Local writes, awaited calls, and spawned tasks persist with typed endpoints and exact source lines; public trace rows are source-backed | Not measured; benchmark excluded by instruction | Keep; G1 engineering scope complete | This log |
+| 2026-07-18 | G1-BASELINE-PROOF | Run the lexical-owner regression against the pre-fix baseline and repair | Isolated detached `e4d613f` worktree; identical ownership assertion on repaired tree | Baseline failed with the second function incorrectly receiving line 2; repaired tree passed with line 6 | Not applicable | Keep; baseline acceptance item passes | This log |
+| 2026-07-18 | G2-OVERLAY-MATRIX | Validate normalized external reference and impact consumption for every indexed language | One mapped caller/target golden pair for each of 12 languages; hash-backed handler state | Reference precision/recall 12/12; impact precision/recall 12/12; generator capability states explicit | Not measured; benchmark excluded by instruction | Keep; G2 engineering scope complete | This log |
 
 ## Decision log
 
@@ -382,7 +399,7 @@ Add one row for every benchmark or structural experiment, including rejected cha
 | 2026-07-16 | Repair graph integrity before further ranking work | The majority of live edges are misattributed or have missing targets, contaminating fidelity and performance measurements | G1 acceptance gate passes |
 | 2026-07-16 | Separate direct server performance from agent benchmark time | R040 wall time and tokens include the external answering agent | Direct MCP telemetry is available |
 | 2026-07-16 | Keep architecture migration after the evidence contract | A typed pass pipeline needs stable evidence roles and coverage semantics to avoid merely moving current heuristics | F1 is accepted |
-| 2026-07-16 | Keep the generic graph symbol-to-symbol only | Synthetic `local:` and `async:` identifiers violated the graph's symbol foreign-key contract; unresolved non-symbol endpoints are omitted until they have a typed relation | A typed data-flow relation is designed |
+| 2026-07-16 | Keep the generic graph symbol-to-symbol only | Synthetic `local:` and `async:` identifiers violated the graph's symbol foreign-key contract; non-symbol endpoints now live in the typed `data_flow_facts` relation | A future endpoint needs declaration identity or richer flow semantics |
 | 2026-07-16 | Version graph extraction semantics independently | Existing symbols and search indexes can remain available while edges and file fingerprints are invalidated for a mandatory graph rebuild | A broader persisted-index format is introduced |
 | 2026-07-16 | Persist module bindings separately from graph edges | Bindings must retain aliases, unresolved/external state, module specifiers, and confidence even when no safe symbol endpoint exists; only resolved bindings become graph edges | Binding consumers require additional language-specific fields |
 | 2026-07-16 | Resolve imports only through a unique indexed module | Global same-name fallback linked Python references to an unrelated Go `UserService`; ambiguity is more truthful than a high-confidence false edge | A language-service overlay supplies stronger identity evidence |
@@ -441,7 +458,7 @@ Add one row for every benchmark or structural experiment, including rejected cha
 - Impact analysis now labels transparent symbols as `wrapper`, returns the exact delegation location and confidence, and prioritizes public exposure and delegation evidence. Default dependency traversal includes `delegates_to` and remains bounded under wrapper/re-export cycles.
 - A fresh isolated structural self-index persisted 5,581 symbols across 349 files, 26,601 edges, 4,896 bindings, and 8 transparent-delegation edges. It had zero missing edge/binding/usage endpoints, zero invalid data-flow locations, and no `PRAGMA foreign_key_check` rows.
 - Ran formatting and diff checks, strict Clippy, and the complete hash-backend test suite: 1,265 library tests passed (2 ignored), both binary tests passed, 23 external-overlay integration tests passed, the proxy integration test passed, and 23 doc tests passed (30 ignored).
-- Per instruction, no impact benchmark, R040 rerun, or latency benchmark was run. G2's golden precision/recall and quality-score acceptance gates therefore remain open, as does per-language external-overlay evaluation.
+- Per instruction, no impact benchmark, R040 rerun, or latency benchmark was run. G2's benchmark score acceptance gate remained open; its deterministic golden precision/recall and per-language overlay evaluation were completed on 2026-07-18.
 
 ### 2026-07-16 — F1 evidence coverage contract (benchmark deferred)
 
@@ -496,6 +513,17 @@ Add one row for every benchmark or structural experiment, including rejected cha
 - Split the default production-native llama.cpp dependency behind `native-llama`; deterministic hash builds now exclude it with `--no-default-features` and reject incompatible runtime options with actionable messages.
 - Updated CI, README development commands, and `TESTING.md` to exercise and explain both compile configurations.
 - Validated both strict Clippy paths, the complete lightweight Rust suite, the complete benchmark-harness unit suite, repeated parallel bootstraps, a real clean protoc download, and the missing-CMake diagnostic. No external or direct performance benchmark was run.
+
+### 2026-07-18 — Final non-benchmark closure
+
+- Added the typed `data_flow_facts` relation for local value reads/writes and async boundaries, including extraction, deduplication, persistence, incremental cleanup, graph-version rebuilds, integrity validation, public trace output, and exact-line investigation hydration.
+- Proved the original lexical-owner defect against `e4d613f` in an isolated worktree. The baseline attached the first function's line 2 flow to the second function; the repaired tree returned the correct line 6 owner.
+- Added an end-to-end hash fixture that indexes and queries local, await, and spawn facts at exact source lines.
+- Added a 12-language external-overlay consumer matrix with exact reference and impact golden sets. Both gates returned 12/12 expected results with no extras.
+- Made producer maturity explicit across the registry, manifest, API/dashboard payload, installer, runtime responses, documentation, and tests. Four producer implementations are integrated; the remaining seven are honest adapter contracts that require an override and return `adapter_required` otherwise.
+- Removed process-wide `PATH` mutation from producer resolver tests after the full suite exposed a race with Git-discovery tests. Resolver tests now inject explicit search directories, so unrelated subprocess tests retain the real environment under parallel execution.
+- Final deterministic validation passed: formatting and diff checks; strict Clippy for native-free and all-feature builds; 1,305 library tests, 2 binary tests, 10 deterministic-quality/support tests (2 ignored), 24 external-overlay tests, the proxy-recovery integration, and 23 doc tests (30 ignored). The standalone HTTP integration remains intentionally ignored by the suite. Also green: 166 benchmark-harness unit tests; 58 Python and 21 Node producer/package tests; and 59 UI tests plus type-check and production build. The existing macOS compact-unwind and UI chunk-size warnings remain non-fatal.
+- All remaining unchecked items in this log are explicitly benchmarks or direct performance measurements. No direct profiler, quality benchmark, or external-agent benchmark was run during this closure.
 
 ## Completion definition
 

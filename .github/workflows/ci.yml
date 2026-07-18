@@ -58,7 +58,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Full history: the rescore tests read files from a pinned historical
+      # commit via `git show <sha>`, which a shallow checkout would not contain.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:

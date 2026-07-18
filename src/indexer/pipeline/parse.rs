@@ -1,9 +1,11 @@
-use crate::indexer::extract::symbol::{DataFlowEdge, Import, JSDocEntry, TodoEntry};
+use crate::indexer::extract::symbol::{
+    DataFlowEdge, Import, JSDocEntry, ModuleBinding, ModuleBindingKind, TodoEntry,
+};
 use crate::indexer::pipeline::utils::FileFingerprint;
 use crate::storage::sqlite::schema::{
-    DecoratorRow, EdgeEvidenceRow, EdgeRow, FrameworkPatternRow, UsageExampleRow,
+    DecoratorRow, EdgeEvidenceRow, EdgeRow, FrameworkPatternRow, ModuleBindingRow, UsageExampleRow,
 };
-use crate::storage::sqlite::SymbolRow;
+use crate::storage::sqlite::{SymbolIdentityRow, SymbolRow};
 
 use crate::{
     config::Config,
@@ -22,7 +24,7 @@ use crate::{
         parser::{language_id_for_path, LanguageId},
         pipeline::{
             edges::{extract_edges_for_symbol, upsert_name_mapping, PackageLookupFn},
-            parsing::symbol_kind_to_string,
+            identity::build_symbol_occurrences,
             usage::extract_usage_examples_for_file,
             utils::{file_fingerprint, file_key_path, language_string, stable_symbol_id},
         },
@@ -48,12 +50,13 @@ pub const MAX_SOURCE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// just-indexed symbols. The `imports`, `type_edges`, and `dataflow_edges`
 /// fields carry the AST-derived inputs that the deferred edge extraction
 /// needs, since the tree-sitter parse is discarded by then.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsedFile {
     pub rel_path: String,
     pub fingerprint: FileFingerprint,
     pub language: String,
     pub symbol_rows: Vec<SymbolRow>,
+    pub symbol_identities: Vec<SymbolIdentityRow>,
     pub edges: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)>,
     pub usage_examples: Vec<UsageExampleRow>,
     pub import_tags: String,
@@ -64,6 +67,7 @@ pub struct ParsedFile {
     pub framework_patterns: Vec<FrameworkPatternRow>,
     pub is_test_file: bool,
     pub imports: Vec<Import>,
+    pub module_bindings: Vec<ModuleBinding>,
     pub type_edges: Vec<(String, String)>,
     pub extends_edges: Vec<(String, String)>,
     pub dataflow_edges: Vec<DataFlowEdge>,
@@ -179,54 +183,147 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         }
     };
 
-    // 6. Build SymbolRow vec (include file-level symbol)
-    let mut symbol_rows = Vec::new();
+    // 6. Build source-addressable occurrences and logical identities (include
+    // one file-level symbol). The canonical occurrence keeps the legacy
+    // location-independent id; overloads/partials receive distinct ids.
+    let language = language_string(language_id).to_string();
+    let (mut symbol_rows, mut symbol_identities) =
+        match build_symbol_occurrences(&rel, &language, &source, &extracted.symbols) {
+            Ok(rows) => rows,
+            Err(error) => {
+                return ParseResult::Skipped {
+                    reason: format!("Failed to allocate symbol identities: {error}"),
+                    file_path: rel,
+                };
+            }
+        };
 
     // Add file-level symbol
     let file_symbol_id = stable_symbol_id(&rel, "FILE_ROOT", 0);
-    symbol_rows.push(SymbolRow {
-        id: file_symbol_id,
-        file_path: rel.clone(),
-        language: language_string(language_id).to_string(),
-        kind: "file".to_string(),
-        name: rel.clone(),
-        exported: false,
-        start_byte: 0,
-        end_byte: source.len() as u32,
-        start_line: 1,
-        end_line: source.lines().count() as u32,
-        text: source.clone(),
-    });
-
-    for sym in extracted.symbols {
-        let text = source
-            .get(sym.bytes.start..sym.bytes.end)
-            .unwrap_or("")
-            .to_string();
-
-        if text.trim().is_empty() {
-            continue;
-        }
-
-        let start_byte_for_id = if sym.exported {
-            0
-        } else {
-            sym.bytes.start as u32
-        };
-        let id = stable_symbol_id(&rel, &sym.name, start_byte_for_id);
-        symbol_rows.push(SymbolRow {
-            id,
+    symbol_rows.insert(
+        0,
+        SymbolRow {
+            id: file_symbol_id.clone(),
             file_path: rel.clone(),
-            language: language_string(language_id).to_string(),
-            kind: symbol_kind_to_string(sym.kind),
-            name: sym.name,
-            exported: sym.exported,
-            start_byte: sym.bytes.start as u32,
-            end_byte: sym.bytes.end as u32,
-            start_line: sym.lines.start,
-            end_line: sym.lines.end,
-            text,
+            language: language.clone(),
+            kind: "file".to_string(),
+            name: rel.clone(),
+            exported: false,
+            start_byte: 0,
+            end_byte: source.len() as u32,
+            start_line: 1,
+            end_line: source.lines().count() as u32,
+            text: source.clone(),
+        },
+    );
+    symbol_identities.insert(
+        0,
+        SymbolIdentityRow {
+            symbol_id: file_symbol_id.clone(),
+            logical_id: file_symbol_id,
+            qualified_name: rel.clone(),
+            signature: "file".to_string(),
+            occurrence_discriminator: "file_root".to_string(),
+            is_canonical: true,
+        },
+    );
+
+    // Preserve module-level public names independently from symbol flags. A
+    // direct export is a binding from the file's API surface to its concrete
+    // symbol. Python package initializers expose public from-imports as
+    // re-exports, matching how packages such as django.urls define their API.
+    let mut module_bindings = extracted.module_bindings;
+    if !matches!(
+        language_id,
+        LanguageId::Typescript | LanguageId::Tsx | LanguageId::Javascript | LanguageId::Python
+    ) {
+        for import in &extracted.imports {
+            let (imported_name, local_name) = match language_id {
+                LanguageId::Rust | LanguageId::Java | LanguageId::Kotlin | LanguageId::CSharp => {
+                    let imported_name = if matches!(
+                        language_id,
+                        LanguageId::Java | LanguageId::Kotlin | LanguageId::CSharp
+                    ) {
+                        import
+                            .source
+                            .split('.')
+                            .next_back()
+                            .unwrap_or(&import.name)
+                            .to_string()
+                    } else {
+                        import.name.clone()
+                    };
+                    (
+                        imported_name,
+                        import.alias.clone().unwrap_or_else(|| import.name.clone()),
+                    )
+                }
+                LanguageId::Go
+                | LanguageId::Swift
+                | LanguageId::C
+                | LanguageId::Cpp
+                | LanguageId::Ruby => (
+                    "*".to_string(),
+                    import.alias.clone().unwrap_or_else(|| import.name.clone()),
+                ),
+                _ => unreachable!("explicit binding extractor handles this language"),
+            };
+            let binding = ModuleBinding {
+                kind: ModuleBindingKind::Import,
+                source: import.source.clone(),
+                imported_name,
+                local_name,
+                exported_name: String::new(),
+                at_line: import.at_line,
+            };
+            let duplicate = module_bindings.iter().any(|existing| {
+                existing.kind == binding.kind
+                    && existing.source == binding.source
+                    && existing.imported_name == binding.imported_name
+                    && existing.local_name == binding.local_name
+                    && existing.at_line == binding.at_line
+            });
+            if !duplicate {
+                module_bindings.push(binding);
+            }
+        }
+    }
+    if language_id == LanguageId::Python && (rel == "__init__.py" || rel.ends_with("/__init__.py"))
+    {
+        for binding in &mut module_bindings {
+            if binding.kind == ModuleBindingKind::Import && !binding.local_name.starts_with('_') {
+                binding.kind = if binding.imported_name == "*" {
+                    ModuleBindingKind::ExportAll
+                } else {
+                    ModuleBindingKind::ReExport
+                };
+                binding.exported_name = if binding.imported_name == "*" {
+                    "*".to_string()
+                } else {
+                    binding.local_name.clone()
+                };
+            }
+        }
+    }
+
+    for row in symbol_rows.iter().filter(|row| {
+        row.kind != "file"
+            && row.exported
+            && (language_id != LanguageId::Python || !row.name.contains('.'))
+    }) {
+        let already_explicit = module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Export && binding.local_name == row.name
         });
+        if !already_explicit {
+            module_bindings.push(ModuleBinding {
+                kind: ModuleBindingKind::Export,
+                source: String::new(),
+                imported_name: String::new(),
+                local_name: row.name.clone(),
+                exported_name: row.name.clone(),
+                at_line: row.start_line,
+            });
+        }
     }
 
     // 7. Extract import tags
@@ -322,6 +419,7 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         fingerprint: fp,
         language: language_string(language_id).to_string(),
         symbol_rows,
+        symbol_identities,
         edges: all_edges,
         usage_examples,
         import_tags,
@@ -332,6 +430,7 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         framework_patterns,
         is_test_file,
         imports: extracted.imports,
+        module_bindings,
         type_edges: extracted.type_edges,
         extends_edges: extracted.extends_edges,
         dataflow_edges: extracted.dataflow_edges,
@@ -340,6 +439,11 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
 
 /// One file's edge bundle: each entry is an edge row plus its evidence rows.
 pub type EdgeBundle = Vec<(EdgeRow, Vec<EdgeEvidenceRow>)>;
+
+pub struct BindingFileBundle {
+    pub binding_edges: EdgeBundle,
+    pub module_bindings: Vec<ModuleBindingRow>,
+}
 
 /// Extract edges for a single parsed file using the populated SQLite
 /// connection. Runs in the indexing pipeline's deferred edge phase, after
@@ -414,7 +518,7 @@ pub fn parse_files(
                     Err(e) => {
                         return ParseResult::Skipped {
                             reason: format!("Failed to get DB connection: {}", e),
-                            file_path: file_key_path(&config, file),
+                            file_path: file_key_path(config, file),
                         };
                     }
                 };
@@ -468,6 +572,44 @@ pub fn extract_edges_for_files(
     Ok(results)
 }
 
+/// Resolve module bindings after every symbol in the batch is visible.
+///
+/// The returned rows are persisted before ordinary edge extraction. That
+/// makes public-name indirection (`default`, renamed exports, chained barrels)
+/// available to the DB-backed call/reference resolver in the next phase.
+pub fn resolve_bindings_for_files(
+    parsed_files: &[ParsedFile],
+    config: &Config,
+    pool: &SqlitePool,
+) -> Result<Vec<BindingFileBundle>> {
+    let rayon_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.parallel_workers)
+        .thread_name(|i| format!("bindings-{}", i))
+        .build()
+        .context("Failed to build Rayon thread pool for binding resolution")?;
+    let catalog = super::bindings::BindingCatalog::from_parsed_files(parsed_files);
+
+    rayon_pool.install(|| {
+        parsed_files
+            .par_iter()
+            .map(|parsed| {
+                let conn = pool.get().with_context(|| {
+                    format!(
+                        "Failed to get DB connection for binding resolution: {}",
+                        parsed.rel_path
+                    )
+                })?;
+                let (module_bindings, binding_edges) =
+                    super::bindings::resolve_for_file(parsed, &conn, &catalog)?;
+                Ok(BindingFileBundle {
+                    binding_edges,
+                    module_bindings,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,7 +658,7 @@ mod tests {
         let test_file = tmp_dir.join("test.rs");
         std::fs::write(
             &test_file,
-            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+            "use crate::math::Number;\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
         )
         .unwrap();
 
@@ -619,6 +761,13 @@ mod tests {
                     .expect("Should have 'add' function");
                 assert_eq!(fn_sym.kind, "function");
                 assert!(fn_sym.exported);
+                assert!(parsed.module_bindings.iter().any(|binding| {
+                    binding.kind == ModuleBindingKind::Import
+                        && binding.source == "crate::math::Number"
+                        && binding.imported_name == "Number"
+                        && binding.local_name == "Number"
+                        && binding.at_line == 1
+                }));
             }
             ParseResult::Unchanged => panic!("File should not be unchanged on first parse"),
             ParseResult::Skipped { reason, .. } => {

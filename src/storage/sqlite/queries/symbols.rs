@@ -1,9 +1,11 @@
-use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use std::collections::{HashMap, HashSet};
 
 use crate::storage::sqlite::schema::{RepoMapSymbolRow, SymbolHeaderRow, SymbolRow};
 
 pub fn upsert_symbol(conn: &Connection, symbol: &SymbolRow) -> Result<()> {
+    validate_symbol_id_reuse(conn, symbol)?;
     conn.execute(
         r#"
 INSERT INTO symbols (
@@ -48,6 +50,18 @@ ON CONFLICT(id) DO UPDATE SET
 }
 
 pub fn batch_upsert_symbols(conn: &Connection, symbols: &[SymbolRow]) -> Result<()> {
+    let mut ids = HashSet::with_capacity(symbols.len());
+    for symbol in symbols {
+        if !ids.insert(&symbol.id) {
+            bail!(
+                "Duplicate symbol id in batch: id={}, file_path={}, name={}",
+                symbol.id,
+                symbol.file_path,
+                symbol.name
+            );
+        }
+    }
+    validate_existing_symbol_ids(conn, symbols)?;
     let mut stmt = conn.prepare_cached(
         r#"
 INSERT INTO symbols (
@@ -84,6 +98,89 @@ ON CONFLICT(id) DO UPDATE SET
             s.text
         ])
         .with_context(|| format!("Failed to batch upsert symbol: id={}", s.id))?;
+    }
+    Ok(())
+}
+
+fn validate_symbol_id_reuse(conn: &Connection, symbol: &SymbolRow) -> Result<()> {
+    let existing = conn
+        .query_row(
+            "SELECT file_path, kind, name FROM symbols WHERE id = ?1",
+            params![symbol.id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .context("Failed to validate symbol id reuse")?;
+    if let Some((file_path, kind, name)) = existing {
+        if file_path != symbol.file_path || kind != symbol.kind || name != symbol.name {
+            bail!(
+                "Symbol id collision: id={}, incoming={}:{}:{}, existing={}:{}:{}",
+                symbol.id,
+                symbol.file_path,
+                symbol.kind,
+                symbol.name,
+                file_path,
+                kind,
+                name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_existing_symbol_ids(conn: &Connection, symbols: &[SymbolRow]) -> Result<()> {
+    if symbols.is_empty() {
+        return Ok(());
+    }
+    let incoming = symbols
+        .iter()
+        .map(|symbol| (symbol.id.as_str(), symbol))
+        .collect::<HashMap<_, _>>();
+    // Stay below conservative SQLite variable limits for generated files with
+    // many declarations, while retaining one lookup per chunk rather than an
+    // N+1 validation query per symbol.
+    for chunk in symbols.chunks(500) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql =
+            format!("SELECT id, file_path, kind, name FROM symbols WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params_from_iter(chunk.iter().map(|symbol| &symbol.id)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?;
+        for existing in rows {
+            let (id, file_path, kind, name) = existing?;
+            let symbol = incoming
+                .get(id.as_str())
+                .expect("queried id came from incoming symbols");
+            if file_path != symbol.file_path || kind != symbol.kind || name != symbol.name {
+                bail!(
+                    "Symbol id collision: id={}, incoming={}:{}:{}, existing={}:{}:{}",
+                    symbol.id,
+                    symbol.file_path,
+                    symbol.kind,
+                    symbol.name,
+                    file_path,
+                    kind,
+                    name
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -315,6 +412,57 @@ WHERE id = ?1
     )
     .optional()
     .with_context(|| format!("Failed to query symbol by id: table=symbols, id={}", id))
+}
+
+/// Batch-fetch complete symbol rows by ID.
+///
+/// Results are keyed by ID so callers can restore their original ordering. The
+/// lookup is chunked below SQLite's conservative bind-parameter limit.
+pub fn batch_get_symbols_by_ids(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> Result<HashMap<String, SymbolRow>> {
+    let mut out = HashMap::with_capacity(symbol_ids.len());
+    for chunk in symbol_ids.chunks(500) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            r#"
+SELECT
+  id, file_path, language, kind, name, exported,
+  start_byte, end_byte, start_line, end_line, text
+FROM symbols
+WHERE id IN ({placeholders})
+"#
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .context("Failed to prepare batch_get_symbols_by_ids")?;
+        let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| {
+            Ok(SymbolRow {
+                id: row.get(0)?,
+                file_path: row.get(1)?,
+                language: row.get(2)?,
+                kind: row.get(3)?,
+                name: row.get(4)?,
+                exported: row.get::<_, i64>(5)? != 0,
+                start_byte: row.get::<_, i64>(6)? as u32,
+                end_byte: row.get::<_, i64>(7)? as u32,
+                start_line: row.get::<_, i64>(8)? as u32,
+                end_line: row.get::<_, i64>(9)? as u32,
+                text: row.get(10)?,
+            })
+        })?;
+        for row in rows {
+            let row = row?;
+            out.insert(row.id.clone(), row);
+        }
+    }
+    Ok(out)
 }
 
 pub fn list_symbol_headers_by_file(
@@ -896,6 +1044,105 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn batch_get_symbols_returns_complete_rows_and_omits_missing_ids() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+        let conn = store.write().unwrap();
+        let symbol = SymbolRow {
+            id: "present".into(),
+            file_path: "src/lib.rs".into(),
+            language: "rust".into(),
+            kind: "function".into(),
+            name: "present".into(),
+            exported: true,
+            start_byte: 5,
+            end_byte: 20,
+            start_line: 2,
+            end_line: 4,
+            text: "pub fn present() {}".into(),
+        };
+        upsert_symbol(&conn, &symbol).unwrap();
+
+        let rows = batch_get_symbols_by_ids(&conn, &["missing".to_string(), "present".to_string()])
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows["present"], symbol);
+    }
+
+    #[test]
+    fn duplicate_ids_in_one_batch_are_rejected_without_writes() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+        let conn = store.read().unwrap();
+        let first = SymbolRow {
+            id: "collision".into(),
+            file_path: "a.rs".into(),
+            language: "rust".into(),
+            kind: "function".into(),
+            name: "first".into(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 1,
+            text: "fn first() {}".into(),
+        };
+        let mut second = first.clone();
+        second.name = "second".into();
+
+        let error = batch_upsert_symbols(&conn, &[first, second])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Duplicate symbol id"), "{error}");
+        assert_eq!(count_symbols(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn existing_id_collision_is_rejected_without_overwriting_source() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.init().unwrap();
+        let conn = store.read().unwrap();
+        let original = SymbolRow {
+            id: "stable-id".into(),
+            file_path: "a.rs".into(),
+            language: "rust".into(),
+            kind: "function".into(),
+            name: "first".into(),
+            exported: true,
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 1,
+            text: "fn first() {}".into(),
+        };
+        upsert_symbol(&conn, &original).unwrap();
+        let mut conflicting = original.clone();
+        conflicting.file_path = "other.rs".into();
+        conflicting.name = "other".into();
+
+        let error = upsert_symbol(&conn, &conflicting).unwrap_err().to_string();
+        assert!(error.contains("collision"), "{error}");
+        let persisted = get_symbol_by_id(&conn, "stable-id").unwrap().unwrap();
+        assert_eq!(persisted.file_path, original.file_path);
+        assert_eq!(persisted.name, original.name);
+
+        let mut moved = original.clone();
+        moved.start_byte = 100;
+        moved.end_byte = 110;
+        moved.start_line = 8;
+        moved.end_line = 8;
+        upsert_symbol(&conn, &moved).unwrap();
+        assert_eq!(
+            get_symbol_by_id(&conn, "stable-id")
+                .unwrap()
+                .unwrap()
+                .start_byte,
+            100
+        );
     }
 
     #[test]

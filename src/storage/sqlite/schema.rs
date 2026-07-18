@@ -15,6 +15,23 @@ pub struct SymbolRow {
     pub text: String,
 }
 
+/// Identity metadata for one concrete declaration occurrence.
+///
+/// `symbol_id` addresses the source occurrence and remains the graph foreign
+/// key. `logical_id` groups overloads/partial declarations under a stable,
+/// location-independent identity. The canonical occurrence deliberately uses
+/// the logical id as its symbol id for compatibility with existing import
+/// targets; additional occurrences receive deterministic distinct ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolIdentityRow {
+    pub symbol_id: String,
+    pub logical_id: String,
+    pub qualified_name: String,
+    pub signature: String,
+    pub occurrence_discriminator: String,
+    pub is_canonical: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeRow {
     pub from_symbol_id: String,
@@ -94,6 +111,22 @@ pub struct EdgeEvidenceRow {
     pub count: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModuleBindingRow {
+    pub id: i64,
+    pub file_path: String,
+    pub binding_kind: String,
+    pub source_module: String,
+    pub source_file: Option<String>,
+    pub imported_name: String,
+    pub local_name: String,
+    pub exported_name: String,
+    pub target_symbol_id: Option<String>,
+    pub at_line: u32,
+    pub resolution: String,
+    pub confidence: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolHeaderRow {
     pub id: String,
@@ -135,6 +168,17 @@ pub struct IndexRunRow {
     pub files_unchanged: u64,
     pub files_deleted: u64,
     pub symbols_indexed: u64,
+    pub scan_ms: u64,
+    pub cleanup_ms: u64,
+    pub parse_ms: u64,
+    pub sqlite_write_ms: u64,
+    pub tantivy_ms: u64,
+    pub binding_ms: u64,
+    pub edge_ms: u64,
+    pub embedding_ms: u64,
+    pub vector_write_ms: u64,
+    pub pagerank_ms: u64,
+    pub optimize_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +200,13 @@ pub struct SearchRunRow {
     pub scoring_ms: u64,
     /// Time for context assembly (text reads, token counting, formatting)
     pub assembly_ms: u64,
+    pub fusion_ms: u64,
+    pub search_path: String,
+    pub cache_status: String,
+    pub subquery_count: u64,
+    pub keyword_candidates: u64,
+    pub vector_candidates: u64,
+    pub fused_candidates: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,6 +434,23 @@ CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_exported ON symbols(exported);
 
+CREATE TABLE IF NOT EXISTS symbol_identities (
+  symbol_id TEXT PRIMARY KEY NOT NULL,
+  logical_id TEXT NOT NULL,
+  qualified_name TEXT NOT NULL,
+  signature TEXT NOT NULL DEFAULT '',
+  occurrence_discriminator TEXT NOT NULL,
+  is_canonical INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(logical_id, occurrence_discriminator),
+  FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_symbol_identities_logical
+  ON symbol_identities(logical_id);
+CREATE INDEX IF NOT EXISTS idx_symbol_identities_qualified
+  ON symbol_identities(qualified_name);
+
 CREATE TABLE IF NOT EXISTS edges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   from_symbol_id TEXT NOT NULL,
@@ -422,6 +490,39 @@ CREATE INDEX IF NOT EXISTS idx_edge_evidence_from ON edge_evidence(from_symbol_i
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_to ON edge_evidence(to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_type ON edge_evidence(edge_type);
 CREATE INDEX IF NOT EXISTS idx_edge_evidence_loc ON edge_evidence(at_file, at_line);
+
+-- Module-level imports and public API exposure paths. Unlike generic graph
+-- edges, these rows retain both sides of aliases and may remain unresolved.
+CREATE TABLE IF NOT EXISTS module_bindings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path TEXT NOT NULL,
+  binding_kind TEXT NOT NULL,
+  source_module TEXT NOT NULL DEFAULT '',
+  source_file TEXT,
+  imported_name TEXT NOT NULL DEFAULT '',
+  local_name TEXT NOT NULL DEFAULT '',
+  exported_name TEXT NOT NULL DEFAULT '',
+  target_symbol_id TEXT,
+  at_line INTEGER NOT NULL,
+  resolution TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(
+    file_path, binding_kind, source_module, imported_name,
+    local_name, exported_name, at_line
+  ),
+  FOREIGN KEY(target_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_module_bindings_file
+  ON module_bindings(file_path);
+CREATE INDEX IF NOT EXISTS idx_module_bindings_source_file
+  ON module_bindings(source_file);
+CREATE INDEX IF NOT EXISTS idx_module_bindings_target
+  ON module_bindings(target_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_module_bindings_public_name
+  ON module_bindings(exported_name)
+  WHERE binding_kind IN ('export', 're_export', 'export_all');
 
 CREATE TABLE IF NOT EXISTS external_indexes (
   id TEXT PRIMARY KEY NOT NULL,
@@ -547,7 +648,18 @@ CREATE TABLE IF NOT EXISTS index_runs (
   files_skipped INTEGER NOT NULL,
   files_unchanged INTEGER NOT NULL,
   files_deleted INTEGER NOT NULL,
-  symbols_indexed INTEGER NOT NULL
+  symbols_indexed INTEGER NOT NULL,
+  scan_ms INTEGER NOT NULL DEFAULT 0,
+  cleanup_ms INTEGER NOT NULL DEFAULT 0,
+  parse_ms INTEGER NOT NULL DEFAULT 0,
+  sqlite_write_ms INTEGER NOT NULL DEFAULT 0,
+  tantivy_ms INTEGER NOT NULL DEFAULT 0,
+  binding_ms INTEGER NOT NULL DEFAULT 0,
+  edge_ms INTEGER NOT NULL DEFAULT 0,
+  embedding_ms INTEGER NOT NULL DEFAULT 0,
+  vector_write_ms INTEGER NOT NULL DEFAULT 0,
+  pagerank_ms INTEGER NOT NULL DEFAULT 0,
+  optimize_ms INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_index_runs_started_at ON index_runs(started_at);
 
@@ -565,7 +677,14 @@ CREATE TABLE IF NOT EXISTS search_runs (
   embedding_ms INTEGER NOT NULL DEFAULT 0,
   reranker_ms INTEGER NOT NULL DEFAULT 0,
   scoring_ms INTEGER NOT NULL DEFAULT 0,
-  assembly_ms INTEGER NOT NULL DEFAULT 0
+  assembly_ms INTEGER NOT NULL DEFAULT 0,
+  fusion_ms INTEGER NOT NULL DEFAULT 0,
+  search_path TEXT NOT NULL DEFAULT 'unknown',
+  cache_status TEXT NOT NULL DEFAULT 'miss',
+  subquery_count INTEGER NOT NULL DEFAULT 0,
+  keyword_candidates INTEGER NOT NULL DEFAULT 0,
+  vector_candidates INTEGER NOT NULL DEFAULT 0,
+  fused_candidates INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_search_runs_started_at ON search_runs(started_at);
 

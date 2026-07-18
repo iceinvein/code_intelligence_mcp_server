@@ -117,10 +117,9 @@ pub(crate) async fn handle_query_search(
         exported_only: req.exported_only,
         context: req.context,
     };
-    let result =
-        crate::handlers::handle_search_code(&app_state.retriever, &app_state.config.db_path, tool)
-            .await
-            .map_err(|e| ApiError(format!("search failed: {e}")))?;
+    let result = crate::handlers::handle_search_code(&app_state.retriever, tool)
+        .await
+        .map_err(|e| ApiError(format!("search failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "search",

@@ -11,12 +11,13 @@ use serde_json::json;
 use crate::external_index::provider::{merged_references_to_internal_symbol, MergedReference};
 use crate::path::{PathError, PathNormalizer, Utf8PathBuf};
 use crate::retrieval::assembler::FormatMode;
-use crate::storage::sqlite::{SqliteStore, SymbolRow};
+use crate::storage::sqlite::{SqliteStore, SymbolIdentityRow, SymbolRow};
 use crate::tools::*;
 
 use super::budget::{
     budget_array, budget_string_field, clamp_limit, insert_budgeted_array, DEFAULT_MAX_STRING_CHARS,
 };
+use super::symbol_resolution::{candidate_values, resolve_symbol, SymbolResolution};
 use super::{extract_usage_line, AppState};
 
 #[cfg(test)]
@@ -310,12 +311,14 @@ mod find_references_tests {
         .expect("find references response");
 
         assert_eq!(response["count"], 2);
+        assert_eq!(response["resolution"], "ambiguous");
+        assert_eq!(response["logical_count"], 2);
         assert_eq!(response["targets"].as_array().expect("targets").len(), 2);
         assert!(response["disambiguation"].is_object());
         assert_eq!(
-            response["disambiguation"]["available_files"]
+            response["disambiguation"]["candidates"]
                 .as_array()
-                .expect("available files")
+                .expect("candidates")
                 .len(),
             2
         );
@@ -392,44 +395,66 @@ pub async fn handle_get_definition(
 
     let sqlite = &state.sqlite;
 
-    let rows =
-        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file.as_deref(), limit)?;
+    let resolved = resolve_symbol(sqlite, &tool.symbol_name, tool.file.as_deref(), limit)?;
+    let resolution = resolved.state();
+    let logical_count = resolved.logical_count();
+    let rows = resolved
+        .groups()
+        .into_iter()
+        .flat_map(|group| group.occurrences.iter().cloned())
+        .take(limit)
+        .collect::<Vec<_>>();
 
+    let symbol_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let identities = sqlite.get_symbol_identities(&symbol_ids)?;
     let context = state.retriever.assemble_definitions(&rows)?;
 
-    // Check if disambiguation is needed (multiple symbols with same name in different files)
-    let unique_files: HashSet<&str> = rows.iter().map(|r| r.file_path.as_str()).collect();
-    let needs_disambiguation = unique_files.len() > 1 && tool.file.is_none();
+    // Multiple occurrences of one logical overload/partial-declaration set are
+    // exact. Distinct logical identities require owner/file disambiguation.
+    let needs_disambiguation = matches!(resolved, SymbolResolution::Ambiguous(_));
 
     let mut response = json!({
         "symbol_name": tool.symbol_name,
         "count": rows.len(),
-        "definitions": symbol_summaries(&rows),
+        "logical_count": logical_count,
+        "resolution": resolution,
+        "definitions": symbol_summaries(&rows, &identities),
         "context": context,
     });
     budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
 
-    // Add disambiguation hints when multiple symbols exist in different files
     if needs_disambiguation {
-        let file_paths: Vec<&str> = unique_files.into_iter().collect();
+        let groups = match &resolved {
+            SymbolResolution::Ambiguous(groups) => groups.as_slice(),
+            _ => &[],
+        };
         response["disambiguation"] = json!({
             "hint": format!(
-                "Multiple '{}' symbols found in {} files. Use 'file' parameter to disambiguate.",
+                "Multiple logical '{}' symbols found. Use an owner-qualified name and/or the 'file' parameter to disambiguate.",
                 tool.symbol_name,
-                file_paths.len()
             ),
-            "available_files": file_paths,
+            "candidates": candidate_values(groups),
         });
     }
 
     Ok(response)
 }
 
-fn symbol_summaries(rows: &[SymbolRow]) -> Vec<serde_json::Value> {
+fn symbol_summaries(
+    rows: &[SymbolRow],
+    identities: &std::collections::HashMap<String, SymbolIdentityRow>,
+) -> Vec<serde_json::Value> {
     rows.iter()
         .map(|row| {
+            let identity = identities.get(&row.id);
             json!({
                 "id": row.id,
+                "occurrence_id": row.id,
+                "logical_id": identity.map(|value| value.logical_id.as_str()).unwrap_or(row.id.as_str()),
+                "qualified_name": identity.map(|value| value.qualified_name.as_str()).unwrap_or(row.name.as_str()),
+                "signature": identity.map(|value| value.signature.as_str()).unwrap_or(""),
+                "occurrence_discriminator": identity.map(|value| value.occurrence_discriminator.as_str()).unwrap_or("legacy"),
+                "is_canonical": identity.map(|value| value.is_canonical).unwrap_or(true),
                 "file_path": row.file_path,
                 "language": row.language,
                 "kind": row.kind,
@@ -581,12 +606,16 @@ fn collect_find_references_response(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = clamp_limit(requested_limit, 200, 500);
     let reference_type = requested_reference_type.unwrap_or_else(|| "all".to_string());
-    // Use file parameter for disambiguation if provided
-    let roots = sqlite.search_symbols_by_exact_name(&symbol_name, file.as_deref(), 20)?;
-
-    // Check for disambiguation needs
-    let unique_files: HashSet<&str> = roots.iter().map(|r| r.file_path.as_str()).collect();
-    let needs_disambiguation = unique_files.len() > 1 && file.is_none();
+    let resolved = resolve_symbol(sqlite, &symbol_name, file.as_deref(), 100)?;
+    let resolution = resolved.state();
+    let logical_count = resolved.logical_count();
+    let roots = resolved
+        .groups()
+        .into_iter()
+        .flat_map(|group| group.occurrences.iter())
+        .take(100)
+        .collect::<Vec<_>>();
+    let needs_disambiguation = matches!(resolved, SymbolResolution::Ambiguous(_));
 
     let mut out = Vec::new();
     let mut targets: Vec<serde_json::Value> = Vec::new();
@@ -623,21 +652,26 @@ fn collect_find_references_response(
     let mut response = json!({
         "symbol_name": symbol_name,
         "reference_type": reference_type,
+        "resolution": resolution,
+        "logical_count": logical_count,
         "count": budgeted_references.returned_count,
         "targets": targets,
     });
     insert_budgeted_array(&mut response, "references", budgeted_references)?;
 
-    // Add disambiguation hints when multiple symbols exist in different files
+    // Add disambiguation hints when multiple logical symbols exist.
     if needs_disambiguation {
-        let file_paths: Vec<&str> = unique_files.into_iter().collect();
+        let groups = match &resolved {
+            SymbolResolution::Ambiguous(groups) => groups.as_slice(),
+            _ => &[],
+        };
         response["disambiguation"] = json!({
             "hint": format!(
-                "Multiple '{}' symbols found in {} files. Results include references to all. Use 'file' parameter to filter to a specific symbol.",
+                "Multiple logical '{}' symbols found ({} candidates). Results include references to all. Use an owner-qualified name and/or file parameter to disambiguate.",
                 symbol_name,
-                file_paths.len()
+                logical_count
             ),
-            "available_files": file_paths,
+            "candidates": candidate_values(groups),
         });
     }
 

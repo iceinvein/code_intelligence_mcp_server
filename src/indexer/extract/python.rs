@@ -6,7 +6,7 @@ use super::django::extract_django_patterns;
 use super::fastapi::extract_fastapi_patterns;
 use super::symbol::{
     ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
-    SymbolKind,
+    ModuleBinding, ModuleBindingKind, SymbolKind,
 };
 
 pub fn extract_python_symbols(source: &str) -> Result<ExtractedFile> {
@@ -23,6 +23,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut module_bindings = Vec::new();
     let mut type_edges: Vec<(String, String)> = Vec::new();
     let mut extends_edges: Vec<(String, String)> = Vec::new();
     let mut dataflow_edges: Vec<DataFlowEdge> = Vec::new();
@@ -55,7 +56,8 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             }
             if let Some(name) = symbol_name(node, source) {
                 let is_dunder = name.starts_with("__") && name.ends_with("__");
-                let exported = is_dunder || !name.starts_with('_');
+                let exported =
+                    is_module_level_function(node) && (is_dunder || !name.starts_with('_'));
                 symbols.push(symbol_from_node(
                     name.clone(),
                     SymbolKind::Function,
@@ -137,10 +139,10 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             }
         }
         "import_statement" => {
-            extract_imports(node, source, &mut imports);
+            extract_imports(node, source, &mut imports, &mut module_bindings);
         }
         "import_from_statement" => {
-            extract_from_imports(node, source, &mut imports);
+            extract_from_imports(node, source, &mut imports, &mut module_bindings);
         }
         "expression_statement" => {
             // Module-level constants: ALL_CAPS assignments at top level only.
@@ -189,6 +191,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
+        module_bindings,
         type_edges,
         extends_edges,
         dataflow_edges,
@@ -197,6 +200,22 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         decorators: Vec::new(),
         framework_patterns,
     })
+}
+
+/// Return whether a Python function is declared on the module surface.
+/// Nested helpers are searchable symbols but are not module exports; treating
+/// them as exported makes repeated helper names share the location-independent
+/// exported-symbol ID.
+fn is_module_level_function(node: Node<'_>) -> bool {
+    let mut ancestor = node.parent();
+    while let Some(current) = ancestor {
+        match current.kind() {
+            "module" => return true,
+            "function_definition" | "class_definition" | "lambda" => return false,
+            _ => ancestor = current.parent(),
+        }
+    }
+    false
 }
 
 /// Extract a single method node from a class body, prefixing it with `ClassName.`.
@@ -955,7 +974,12 @@ fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) 
     }
 }
 
-fn extract_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
+fn extract_imports(
+    node: Node,
+    source: &str,
+    imports: &mut Vec<Import>,
+    module_bindings: &mut Vec<ModuleBinding>,
+) {
     // import_statement can contain multiple imports: import x, y as z
     // children can be dotted_name or aliased_import
     let mut cursor = node.walk();
@@ -964,8 +988,17 @@ fn extract_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
             let name = child.utf8_text(source.as_bytes()).unwrap().to_string();
             imports.push(Import {
                 name: name.clone(),
-                source: name,
+                source: name.clone(),
                 alias: None,
+                at_line: child.start_position().row as u32 + 1,
+            });
+            module_bindings.push(ModuleBinding {
+                kind: ModuleBindingKind::Import,
+                source: name.clone(),
+                imported_name: "*".to_string(),
+                local_name: name.split('.').next().unwrap_or(&name).to_string(),
+                exported_name: String::new(),
+                at_line: child.start_position().row as u32 + 1,
             });
         } else if child.kind() == "aliased_import" {
             let name_node = child.child_by_field_name("name");
@@ -975,20 +1008,36 @@ fn extract_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
                 let alias = alias_n.utf8_text(source.as_bytes()).unwrap().to_string();
                 imports.push(Import {
                     name: name.clone(),
+                    source: name.clone(),
+                    alias: Some(alias.clone()),
+                    at_line: child.start_position().row as u32 + 1,
+                });
+                module_bindings.push(ModuleBinding {
+                    kind: ModuleBindingKind::Import,
                     source: name,
-                    alias: Some(alias),
+                    imported_name: "*".to_string(),
+                    local_name: alias,
+                    exported_name: String::new(),
+                    at_line: child.start_position().row as u32 + 1,
                 });
             }
         }
     }
 }
 
-fn extract_from_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
+fn extract_from_imports(
+    node: Node,
+    source: &str,
+    imports: &mut Vec<Import>,
+    module_bindings: &mut Vec<ModuleBinding>,
+) {
     // from_import_statement: from module import x, y as z
-    let module_name = node
-        .child_by_field_name("module_name")
-        .map(|n| n.utf8_text(source.as_bytes()).unwrap().to_string())
-        .unwrap_or_default(); // handle relative imports later
+    let statement = node.utf8_text(source.as_bytes()).unwrap_or_default();
+    let module_name = statement
+        .strip_prefix("from ")
+        .and_then(|rest| rest.split_once(" import ").map(|(module, _)| module.trim()))
+        .unwrap_or_default()
+        .to_string();
 
     let mut cursor = node.walk();
 
@@ -1008,6 +1057,30 @@ fn extract_from_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
                 name: name.clone(),
                 source: module_name.clone(),
                 alias: None,
+                at_line: child.start_position().row as u32 + 1,
+            });
+            module_bindings.push(ModuleBinding {
+                kind: ModuleBindingKind::Import,
+                source: module_name.clone(),
+                imported_name: name.clone(),
+                local_name: name,
+                exported_name: String::new(),
+                at_line: child.start_position().row as u32 + 1,
+            });
+        } else if child.kind() == "wildcard_import" {
+            imports.push(Import {
+                name: "*".to_string(),
+                source: module_name.clone(),
+                alias: None,
+                at_line: child.start_position().row as u32 + 1,
+            });
+            module_bindings.push(ModuleBinding {
+                kind: ModuleBindingKind::Import,
+                source: module_name.clone(),
+                imported_name: "*".to_string(),
+                local_name: "*".to_string(),
+                exported_name: String::new(),
+                at_line: child.start_position().row as u32 + 1,
             });
         } else if child.kind() == "aliased_import" {
             let name_node = child.child_by_field_name("name");
@@ -1018,7 +1091,16 @@ fn extract_from_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
                 imports.push(Import {
                     name: name.clone(),          // This is the symbol name being imported
                     source: module_name.clone(), // From this module
-                    alias: Some(alias),
+                    alias: Some(alias.clone()),
+                    at_line: child.start_position().row as u32 + 1,
+                });
+                module_bindings.push(ModuleBinding {
+                    kind: ModuleBindingKind::Import,
+                    source: module_name.clone(),
+                    imported_name: name,
+                    local_name: alias,
+                    exported_name: String::new(),
+                    at_line: child.start_position().row as u32 + 1,
                 });
             }
         }
@@ -1102,6 +1184,50 @@ def _private():
             .unwrap();
         assert_eq!(hello.lines.start, 1); // line 1, not 0
         assert_eq!(hello.lines.end, 2);
+    }
+
+    #[test]
+    fn repeated_nested_helpers_are_not_module_exports() {
+        let source = r#"
+def first():
+    def helper():
+        return 1
+    return helper()
+
+def second():
+    def helper():
+        return 2
+    return helper()
+"#;
+        let extracted = extract_python_symbols(source).unwrap();
+        let helpers = extracted
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.name == "helper")
+            .collect::<Vec<_>>();
+        assert_eq!(helpers.len(), 2);
+        assert!(helpers.iter().all(|symbol| !symbol.exported));
+        assert_ne!(helpers[0].bytes.start, helpers[1].bytes.start);
+    }
+
+    #[test]
+    fn preserves_relative_from_import_aliases_as_module_bindings() {
+        let source =
+            "from .resolvers import get_resolver as public_resolver\nfrom .base import *\n";
+        let extracted = extract_python_symbols(source).unwrap();
+
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Import
+                && binding.source == ".resolvers"
+                && binding.imported_name == "get_resolver"
+                && binding.local_name == "public_resolver"
+                && binding.at_line == 1
+        }));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Import
+                && binding.source == ".base"
+                && binding.imported_name == "*"
+        }));
     }
 
     #[test]

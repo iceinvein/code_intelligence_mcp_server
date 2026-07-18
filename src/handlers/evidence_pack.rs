@@ -1,5 +1,6 @@
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::{BTreeSet, HashSet};
 
 use crate::handlers::investigation::InvestigationShape;
 
@@ -22,16 +23,71 @@ pub enum CoverageStatus {
     NoHits,
 }
 
+/// Shape-independent semantic role used by the coverage contract. The
+/// existing `EvidenceRow::role` remains the presentation role (for example
+/// `affected_test` or `dispatcher`) so current clients keep their ordering
+/// and prose hints, while this enum lets every question shape describe the
+/// evidence it requires in a stable vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageRole {
+    CanonicalDefinition,
+    Implementation,
+    PublicExposure,
+    DirectCaller,
+    WrapperAlias,
+    StateMechanism,
+    CounterEvidence,
+    Producer,
+    Bridge,
+    Channel,
+    Subscriber,
+    Consumer,
+    AffectedCode,
+    Dependency,
+    Test,
+    Config,
+    ModuleContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    Verified,
+    Candidate,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocationClaimCoverage {
+    pub policy: String,
+    pub source_backed_rows: usize,
+    pub unsupported_rows: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Coverage {
     pub status: CoverageStatus,
     pub basis: String,
     pub missing: String,
+    pub required_roles: Vec<CoverageRole>,
+    pub optional_roles: Vec<CoverageRole>,
+    pub resolved_roles: Vec<CoverageRole>,
+    pub missing_roles: Vec<CoverageRole>,
+    pub ambiguous_roles: Vec<CoverageRole>,
+    pub candidate_roles: Vec<CoverageRole>,
+    pub location_claims: LocationClaimCoverage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EvidenceRow {
     pub role: String,
+    pub coverage_role: CoverageRole,
+    pub verification: VerificationStatus,
+    /// True only when file, line, and non-empty source evidence all came from
+    /// a returned indexed location. Exact path:line citations are emitted
+    /// only for rows with this flag.
+    pub source_backed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ordinal: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,6 +201,208 @@ pub fn build_evidence_pack(input: EvidencePackInput) -> EvidencePack {
 
 pub fn pack_to_value(pack: &EvidencePack) -> Value {
     serde_json::to_value(pack).expect("evidence pack should serialize")
+}
+
+/// Select evidence rows under a hard response budget. Required semantic
+/// roles ride first, then the selector prefers new roles over duplicates.
+/// Within each tier, verified/source-backed rows beat candidates and shorter
+/// evidence wins when two rows carry the same value. Returned rows retain
+/// their original order so pipeline ordinals and callsite ordering stay
+/// stable.
+pub fn select_pack_rows_for_budget(rows: &[Value], coverage: &Value, limit: usize) -> Vec<Value> {
+    if rows.len() <= limit {
+        return rows.to_vec();
+    }
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let required = coverage
+        .get("required_roles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let optional = coverage
+        .get("optional_roles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<HashSet<_>>();
+    let required_set = required.iter().copied().collect::<HashSet<_>>();
+    let mut selected = HashSet::new();
+    let mut represented = HashSet::<String>::new();
+
+    let score = |row: &Value| -> i64 {
+        let coverage_role = row
+            .get("coverage_role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let semantic = if required_set.contains(coverage_role) {
+            1_000
+        } else if optional.contains(coverage_role) {
+            250
+        } else {
+            100
+        };
+        let verification = match row.get("verification").and_then(Value::as_str) {
+            Some("verified") => 120,
+            Some("ambiguous") => 20,
+            _ => 0,
+        };
+        let source = if row
+            .get("source_backed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            80
+        } else {
+            0
+        };
+        let injected = match row.get("role").and_then(Value::as_str) {
+            Some(
+                "supporting_definition"
+                | "route_endpoint"
+                | "sibling_route"
+                | "handler_dependency"
+                | "module_breadth"
+                | "breadth_dependency"
+                | "hub_type",
+            ) => 60,
+            _ => 0,
+        };
+        let evidence_cost = row
+            .get("evidence")
+            .and_then(Value::as_str)
+            .map(|text| (text.len() / 128).min(50) as i64)
+            .unwrap_or(0);
+        semantic + verification + source + injected - evidence_cost
+    };
+    let best_unselected_for_role = |role: &str, selected: &HashSet<usize>| {
+        rows.iter()
+            .enumerate()
+            .filter(|(index, row)| {
+                !selected.contains(index)
+                    && row.get("coverage_role").and_then(Value::as_str) == Some(role)
+            })
+            .max_by_key(|(index, row)| (score(row), std::cmp::Reverse(*index)))
+            .map(|(index, _)| index)
+    };
+
+    // Preserve the contract's required-role order when the limit is smaller
+    // than the number of required roles.
+    for role in required {
+        if selected.len() >= limit {
+            break;
+        }
+        if let Some(index) = best_unselected_for_role(role, &selected) {
+            selected.insert(index);
+            represented.insert(role.to_string());
+        }
+    }
+
+    let mut ranked = (0..rows.len()).collect::<Vec<_>>();
+    ranked.sort_by_key(|index| (std::cmp::Reverse(score(&rows[*index])), *index));
+
+    // Novel roles have higher information density than another row for a
+    // role already represented in the retained set.
+    for index in ranked.iter().copied() {
+        if selected.len() >= limit {
+            break;
+        }
+        let role = rows[index]
+            .get("coverage_role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !selected.contains(&index) && !represented.contains(role) {
+            selected.insert(index);
+            represented.insert(role.to_string());
+        }
+    }
+    for index in ranked {
+        if selected.len() >= limit {
+            break;
+        }
+        selected.insert(index);
+    }
+
+    let mut indices = selected.into_iter().collect::<Vec<_>>();
+    indices.sort_unstable();
+    indices
+        .into_iter()
+        .map(|index| rows[index].clone())
+        .collect()
+}
+
+/// Recompute the serialized role contract after response-budget truncation.
+/// This prevents a compacted pack from claiming a required role that no
+/// longer rides in the response.
+pub fn refresh_coverage_after_budget(coverage: &mut Value, rows: &[Value], omitted_count: usize) {
+    let required = coverage
+        .get("required_roles")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let required_names = required
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let mut resolved = BTreeSet::new();
+    let mut ambiguous = BTreeSet::new();
+    let mut candidate = BTreeSet::new();
+    for row in rows {
+        let Some(role) = row.get("coverage_role").and_then(Value::as_str) else {
+            continue;
+        };
+        match row.get("verification").and_then(Value::as_str) {
+            Some("verified") => {
+                resolved.insert(role.to_string());
+            }
+            Some("ambiguous") => {
+                ambiguous.insert(role.to_string());
+            }
+            _ => {
+                candidate.insert(role.to_string());
+            }
+        }
+    }
+    ambiguous.retain(|role| !resolved.contains(role));
+    candidate.retain(|role| !resolved.contains(role) && !ambiguous.contains(role));
+    let present = resolved
+        .iter()
+        .chain(ambiguous.iter())
+        .chain(candidate.iter())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let missing = required_names
+        .into_iter()
+        .filter(|role| !present.contains(*role))
+        .collect::<Vec<_>>();
+    let source_backed_rows = rows
+        .iter()
+        .filter(|row| {
+            row.get("source_backed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+
+    coverage["status"] = json!("partial");
+    coverage["basis"] = json!("evidence rows were truncated for response budget");
+    coverage["missing"] = json!(format!(
+        "{omitted_count} rows omitted by response budget; returned rows are not exhaustive"
+    ));
+    coverage["resolved_roles"] = json!(resolved);
+    coverage["missing_roles"] = json!(missing);
+    coverage["ambiguous_roles"] = json!(ambiguous);
+    coverage["candidate_roles"] = json!(candidate);
+    coverage["location_claims"] = json!({
+        "policy": "exact_path_line_requires_source_backed_row",
+        "source_backed_rows": source_backed_rows,
+        "unsupported_rows": rows.len().saturating_sub(source_backed_rows),
+    });
 }
 
 /// Drop redundant pack rows before role assignment. Two rules, both from the
@@ -292,9 +550,16 @@ fn row_from_location(
     } else {
         None
     };
+    let source_backed =
+        location.file_path.is_some() && line.is_some() && !evidence.trim().is_empty();
+    let coverage_role = coverage_role_for(kind, &role, location.kind.as_deref(), fallback_role);
+    let verification = verification_for(&role, location.kind.as_deref(), source_backed);
 
     EvidenceRow {
         role,
+        coverage_role,
+        verification,
+        source_backed,
         ordinal,
         symbol_id: location.symbol_id,
         symbol_name: location.symbol_name,
@@ -389,6 +654,10 @@ pub fn apply_cite_forms(
 ) {
     let mut applied = false;
     for row in &mut pack.rows {
+        if !row.source_backed {
+            row.cite = None;
+            continue;
+        }
         let Some(file) = row.file_path.as_deref() else {
             continue;
         };
@@ -419,6 +688,7 @@ fn verify_rows(kind: EvidencePackKind, target: &str, rows: Vec<EvidenceRow>) -> 
                 && !evidence_mentions_target(&row.evidence, target)
             {
                 row.role = "candidate".to_string();
+                row.verification = VerificationStatus::Candidate;
             }
 
             row
@@ -486,12 +756,73 @@ fn is_candidate_reason(reason: Option<&str>) -> bool {
     )
 }
 
+fn coverage_role_for(
+    kind: EvidencePackKind,
+    role: &str,
+    reason: Option<&str>,
+    channel: &str,
+) -> CoverageRole {
+    let reason = reason.unwrap_or_default().to_ascii_lowercase();
+    match role {
+        "public_exposure" | "route_endpoint" | "sibling_route" => CoverageRole::PublicExposure,
+        "wrapper" | "alias" => CoverageRole::WrapperAlias,
+        "supporting_definition" => CoverageRole::StateMechanism,
+        "callsite" | "caller" => CoverageRole::DirectCaller,
+        "producer" => CoverageRole::Producer,
+        "bridge" => CoverageRole::Bridge,
+        "channel" => CoverageRole::Channel,
+        "subscriber" => CoverageRole::Subscriber,
+        "consumer" => CoverageRole::Consumer,
+        "affected_test" => CoverageRole::Test,
+        "config" => CoverageRole::Config,
+        "dependency" | "breadth_dependency" => CoverageRole::Dependency,
+        "module_breadth" | "hub_type" => CoverageRole::ModuleContext,
+        "handler_dependency" => CoverageRole::Implementation,
+        "counter_evidence" => CoverageRole::CounterEvidence,
+        _ if reason.contains("public_exposure") || reason.contains("public exposure") => {
+            CoverageRole::PublicExposure
+        }
+        _ if reason.contains("wrapper") || reason.contains("alias") => CoverageRole::WrapperAlias,
+        _ if reason.contains("counter") || reason.contains("negative") => {
+            CoverageRole::CounterEvidence
+        }
+        _ => match (kind, channel) {
+            (EvidencePackKind::CallsiteEnumeration, _) => CoverageRole::DirectCaller,
+            (EvidencePackKind::PipelineTrace, _) => CoverageRole::Implementation,
+            (EvidencePackKind::DataFlow, "primary") => CoverageRole::CanonicalDefinition,
+            (EvidencePackKind::DataFlow, _) => CoverageRole::StateMechanism,
+            (EvidencePackKind::ImpactRadius, "primary") => CoverageRole::Implementation,
+            (EvidencePackKind::ImpactRadius, _) => CoverageRole::AffectedCode,
+            (EvidencePackKind::DependencyMap, "primary") => CoverageRole::CanonicalDefinition,
+            (EvidencePackKind::DependencyMap, _) => CoverageRole::Dependency,
+            (EvidencePackKind::SymbolLookup, "primary") => CoverageRole::CanonicalDefinition,
+            (EvidencePackKind::SymbolLookup, _) => CoverageRole::Implementation,
+        },
+    }
+}
+
+fn verification_for(role: &str, reason: Option<&str>, source_backed: bool) -> VerificationStatus {
+    let reason = reason.unwrap_or_default().to_ascii_lowercase();
+    if reason.contains("ambiguous") || reason.contains("unresolved") || reason.contains("conflict")
+    {
+        VerificationStatus::Ambiguous
+    } else if role == "candidate" || is_candidate_reason(Some(&reason)) || !source_backed {
+        VerificationStatus::Candidate
+    } else {
+        VerificationStatus::Verified
+    }
+}
+
 fn impact_role(file_path: Option<&str>, reason: Option<&str>, fallback_role: &str) -> String {
     let file_path = file_path.unwrap_or_default();
     let file_path_lower = file_path.to_ascii_lowercase();
     let reason = reason.unwrap_or_default().to_ascii_lowercase();
 
-    if reason.contains("test") || crate::classify::is_test_file(file_path) {
+    if reason.contains("public_exposure") || reason.contains("public exposure") {
+        "public_exposure"
+    } else if reason.contains("wrapper") || reason.contains("alias") {
+        "wrapper"
+    } else if reason.contains("test") || crate::classify::is_test_file(file_path) {
         "affected_test"
     } else if reason.contains("cochange")
         || reason.contains("co-change")
@@ -619,61 +950,190 @@ fn pipeline_ordinal(role: &str) -> Option<u32> {
     }
 }
 
+struct RoleContract {
+    required: &'static [CoverageRole],
+    optional: &'static [CoverageRole],
+}
+
+fn role_contract(kind: EvidencePackKind) -> RoleContract {
+    use CoverageRole::*;
+    match kind {
+        EvidencePackKind::CallsiteEnumeration => RoleContract {
+            required: &[DirectCaller],
+            optional: &[CanonicalDefinition, CounterEvidence],
+        },
+        EvidencePackKind::PipelineTrace => RoleContract {
+            required: &[Producer, Bridge, Subscriber],
+            optional: &[
+                Implementation,
+                StateMechanism,
+                Channel,
+                Consumer,
+                CounterEvidence,
+            ],
+        },
+        EvidencePackKind::DataFlow => RoleContract {
+            required: &[CanonicalDefinition, StateMechanism],
+            optional: &[DirectCaller, CounterEvidence],
+        },
+        EvidencePackKind::ImpactRadius => RoleContract {
+            required: &[Implementation, AffectedCode, PublicExposure],
+            optional: &[WrapperAlias, Test, Config, CounterEvidence],
+        },
+        EvidencePackKind::DependencyMap => RoleContract {
+            required: &[CanonicalDefinition, Dependency],
+            optional: &[PublicExposure, WrapperAlias, CounterEvidence],
+        },
+        EvidencePackKind::SymbolLookup => RoleContract {
+            required: &[CanonicalDefinition],
+            optional: &[
+                StateMechanism,
+                PublicExposure,
+                CounterEvidence,
+                ModuleContext,
+            ],
+        },
+    }
+}
+
+fn coverage_role_name(role: CoverageRole) -> &'static str {
+    use CoverageRole::*;
+    match role {
+        CanonicalDefinition => "canonical_definition",
+        Implementation => "implementation",
+        PublicExposure => "public_exposure",
+        DirectCaller => "direct_caller",
+        WrapperAlias => "wrapper_alias",
+        StateMechanism => "state_mechanism",
+        CounterEvidence => "counter_evidence",
+        Producer => "producer",
+        Bridge => "bridge",
+        Channel => "channel",
+        Subscriber => "subscriber",
+        Consumer => "consumer",
+        AffectedCode => "affected_code",
+        Dependency => "dependency",
+        Test => "test",
+        Config => "config",
+        ModuleContext => "module_context",
+    }
+}
+
 fn coverage_for(kind: EvidencePackKind, rows: &[EvidenceRow], target: &str) -> Coverage {
+    let contract = role_contract(kind);
+    let required_roles = contract.required.to_vec();
+    let optional_roles = contract.optional.to_vec();
+    let location_claims = LocationClaimCoverage {
+        policy: "exact_path_line_requires_source_backed_row".to_string(),
+        source_backed_rows: rows.iter().filter(|row| row.source_backed).count(),
+        unsupported_rows: rows.iter().filter(|row| !row.source_backed).count(),
+    };
+
     if rows.is_empty() {
         return Coverage {
             status: CoverageStatus::NoHits,
             basis: "no evidence rows were found".to_string(),
             missing: "all".to_string(),
+            required_roles: required_roles.clone(),
+            optional_roles,
+            resolved_roles: Vec::new(),
+            missing_roles: required_roles,
+            ambiguous_roles: Vec::new(),
+            candidate_roles: Vec::new(),
+            location_claims,
         };
     }
 
-    match kind {
-        EvidencePackKind::CallsiteEnumeration => {
-            if rows
-                .iter()
-                .any(|row| row.role == "callsite" || row.role == "caller")
-            {
-                return Coverage {
-                    status: CoverageStatus::Complete,
-                    basis: "evidence rows cover the requested shape".to_string(),
-                    missing: String::new(),
-                };
+    let mut resolved = BTreeSet::new();
+    let mut ambiguous = BTreeSet::new();
+    let mut candidate = BTreeSet::new();
+    for row in rows {
+        match row.verification {
+            VerificationStatus::Verified => {
+                resolved.insert(row.coverage_role);
             }
-
-            return Coverage {
-                status: CoverageStatus::Partial,
-                basis: "callsite evidence is limited to search candidates".to_string(),
-                missing: format!("verified callsite evidence for {target}"),
-            };
-        }
-        EvidencePackKind::PipelineTrace => {
-            let required = ["producer", "bridge", "subscriber"];
-            let missing = required
-                .iter()
-                .filter(|role| {
-                    !rows.iter().any(|row| {
-                        row.role == **role && !is_candidate_reason(row.reason.as_deref())
-                    })
-                })
-                .copied()
-                .collect::<Vec<_>>();
-
-            if !missing.is_empty() {
-                return Coverage {
-                    status: CoverageStatus::Partial,
-                    basis: "pipeline evidence is missing verified required roles".to_string(),
-                    missing: format!("verified pipeline roles: {}", missing.join(",")),
-                };
+            VerificationStatus::Ambiguous => {
+                ambiguous.insert(row.coverage_role);
+            }
+            VerificationStatus::Candidate => {
+                candidate.insert(row.coverage_role);
             }
         }
-        _ => {}
     }
+    // A verified row wins over weaker evidence for the same semantic role.
+    ambiguous.retain(|role| !resolved.contains(role));
+    candidate.retain(|role| !resolved.contains(role) && !ambiguous.contains(role));
+
+    let present = resolved
+        .iter()
+        .chain(ambiguous.iter())
+        .chain(candidate.iter())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let missing_roles = contract
+        .required
+        .iter()
+        .filter(|role| !present.contains(role))
+        .copied()
+        .collect::<Vec<_>>();
+    let unresolved_required = contract
+        .required
+        .iter()
+        .filter(|role| !resolved.contains(role))
+        .copied()
+        .collect::<Vec<_>>();
+    let status = if unresolved_required.is_empty() {
+        CoverageStatus::Complete
+    } else {
+        CoverageStatus::Partial
+    };
+    let basis = match status {
+        CoverageStatus::Complete => "all required evidence roles are source-backed and verified",
+        CoverageStatus::Partial if matches!(kind, EvidencePackKind::CallsiteEnumeration) => {
+            "callsite evidence is limited to search candidates"
+        }
+        CoverageStatus::Partial if matches!(kind, EvidencePackKind::PipelineTrace) => {
+            "pipeline evidence is missing verified required roles"
+        }
+        CoverageStatus::Partial => "required evidence roles are missing, ambiguous, or candidates",
+        CoverageStatus::NoHits => unreachable!("rows are non-empty"),
+    }
+    .to_string();
+    let missing = if unresolved_required.is_empty() {
+        String::new()
+    } else if matches!(kind, EvidencePackKind::CallsiteEnumeration) {
+        format!("verified callsite evidence for {target}")
+    } else if matches!(kind, EvidencePackKind::PipelineTrace) {
+        format!(
+            "verified pipeline roles: {}",
+            unresolved_required
+                .iter()
+                .map(|role| coverage_role_name(*role))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    } else {
+        format!(
+            "verified evidence roles: {}",
+            unresolved_required
+                .iter()
+                .map(|role| coverage_role_name(*role))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
 
     Coverage {
-        status: CoverageStatus::Complete,
-        basis: "evidence rows cover the requested shape".to_string(),
-        missing: String::new(),
+        status,
+        basis,
+        missing,
+        required_roles,
+        optional_roles,
+        resolved_roles: resolved.into_iter().collect(),
+        missing_roles,
+        ambiguous_roles: ambiguous.into_iter().collect(),
+        candidate_roles: candidate.into_iter().collect(),
+        location_claims,
     }
 }
 
@@ -1677,6 +2137,227 @@ mod tests {
     }
 
     #[test]
+    fn symbol_lookup_contract_resolves_canonical_definition() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "where is handler defined?".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location_via(10, "fn handler() {}", Some("search_code"))],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"][0]["coverage_role"], "canonical_definition");
+        assert_eq!(value["rows"][0]["verification"], "verified");
+        assert_eq!(value["rows"][0]["source_backed"], true);
+        assert_eq!(value["coverage"]["status"], "complete");
+        assert_eq!(
+            value["coverage"]["required_roles"],
+            json!(["canonical_definition"])
+        );
+        assert_eq!(
+            value["coverage"]["resolved_roles"],
+            json!(["canonical_definition"])
+        );
+    }
+
+    #[test]
+    fn impact_contract_reports_missing_public_exposure() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "what breaks if handler changes?".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::ImpactRadius,
+            primary: vec![location_via(10, "fn handler() {}", Some("search_code"))],
+            secondary: vec![location_via(20, "handler();", Some("find_affected_code"))],
+            secondary_via: Some("find_affected_code".to_string()),
+            extra_candidates: Vec::new(),
+        });
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["coverage"]["status"], "partial");
+        assert_eq!(
+            value["coverage"]["missing_roles"],
+            json!(["public_exposure"])
+        );
+        assert_eq!(
+            value["coverage"]["resolved_roles"],
+            json!(["implementation", "affected_code"])
+        );
+    }
+
+    #[test]
+    fn impact_contract_resolves_public_exposure_role() {
+        let mut public = location_via(30, "export { handler };", Some("find_affected_code"));
+        public.kind = Some("public_exposure".to_string());
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "what breaks if handler changes?".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::ImpactRadius,
+            primary: vec![location_via(10, "fn handler() {}", Some("search_code"))],
+            secondary: vec![
+                location_via(20, "handler();", Some("find_affected_code")),
+                public,
+            ],
+            secondary_via: Some("find_affected_code".to_string()),
+            extra_candidates: Vec::new(),
+        });
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["coverage"]["status"], "complete");
+        let public_row = value["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["coverage_role"] == "public_exposure")
+            .expect("public exposure row");
+        assert_eq!(public_row["role"], "public_exposure");
+        assert_eq!(public_row["verification"], "verified");
+    }
+
+    #[test]
+    fn supporting_definition_is_explicit_cached_state_evidence() {
+        let mut cached_state = location_via(
+            40,
+            "static INSTANCE: OnceLock<Service> = OnceLock::new();",
+            Some("supporting_definition"),
+        );
+        cached_state.symbol_name = Some("INSTANCE".to_string());
+        cached_state.kind = Some("static".to_string());
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "how is Service lazily initialized and cached?".to_string(),
+            target: "Service".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![location_via(10, "struct Service {}", Some("search_code"))],
+            secondary: vec![cached_state],
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+        let value = pack_to_value(&pack);
+
+        let state = value["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["coverage_role"] == "state_mechanism")
+            .expect("state mechanism row");
+        assert_eq!(state["role"], "supporting_definition");
+        assert_eq!(state["verification"], "verified");
+        assert!(value["coverage"]["resolved_roles"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("state_mechanism")));
+    }
+
+    #[test]
+    fn ambiguous_required_role_is_not_reported_as_resolved() {
+        let mut ambiguous = location_via(10, "fn handler() {}", Some("search_code"));
+        ambiguous.kind = Some("ambiguous_binding".to_string());
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "where is handler defined?".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![ambiguous],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["coverage"]["status"], "partial");
+        assert_eq!(
+            value["coverage"]["ambiguous_roles"],
+            json!(["canonical_definition"])
+        );
+        assert_eq!(value["coverage"]["missing_roles"], json!([]));
+        assert_eq!(value["coverage"]["resolved_roles"], json!([]));
+    }
+
+    #[test]
+    fn exact_citation_requires_source_backed_location() {
+        let mut unsupported = location_via(10, "handler", Some("search_code"));
+        unsupported.start_line = None;
+        unsupported.end_line = None;
+        let mut pack = build_evidence_pack(EvidencePackInput {
+            question: "where is handler defined?".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::Discover,
+            primary: vec![unsupported],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+        apply_cite_forms(&mut pack, &short_cite_forms(&["src/app.rs".to_string()]));
+        let value = pack_to_value(&pack);
+
+        assert_eq!(value["rows"][0]["source_backed"], false);
+        assert_eq!(value["rows"][0]["verification"], "candidate");
+        assert!(value["rows"][0].get("cite").is_none());
+        assert_eq!(value["coverage"]["location_claims"]["unsupported_rows"], 1);
+    }
+
+    #[test]
+    fn budget_selector_retains_each_required_impact_role() {
+        let mut public = location_via(90, "export { handler };", Some("find_affected_code"));
+        public.kind = Some("public_exposure".to_string());
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "what breaks if handler changes?".to_string(),
+            target: "handler".to_string(),
+            shape: InvestigationShape::ImpactRadius,
+            primary: vec![location_via(10, "fn handler() {}", Some("search_code"))],
+            secondary: vec![
+                location_via(20, "handler();", Some("find_affected_code")),
+                location_via(30, "handler();", Some("find_affected_code")),
+                location_via(40, "handler();", Some("find_affected_code")),
+                public,
+            ],
+            secondary_via: Some("find_affected_code".to_string()),
+            extra_candidates: Vec::new(),
+        });
+        let value = pack_to_value(&pack);
+        let selected =
+            select_pack_rows_for_budget(value["rows"].as_array().unwrap(), &value["coverage"], 3);
+        let roles = selected
+            .iter()
+            .filter_map(|row| row["coverage_role"].as_str())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(
+            roles,
+            HashSet::from(["implementation", "affected_code", "public_exposure"])
+        );
+    }
+
+    #[test]
+    fn budget_refresh_does_not_claim_omitted_required_roles() {
+        let pack = build_evidence_pack(EvidencePackInput {
+            question: "trace how events cross the bridge".to_string(),
+            target: "event".to_string(),
+            shape: InvestigationShape::CallTrace,
+            primary: vec![
+                location(10, "onBeforeToolUse(event);"),
+                location(20, "webContents.send(event);"),
+                location(30, "ipcRenderer.on(event);"),
+            ],
+            secondary: Vec::new(),
+            secondary_via: None,
+            extra_candidates: Vec::new(),
+        });
+        let mut value = pack_to_value(&pack);
+        let selected =
+            select_pack_rows_for_budget(value["rows"].as_array().unwrap(), &value["coverage"], 1);
+        refresh_coverage_after_budget(&mut value["coverage"], &selected, 2);
+
+        assert_eq!(value["coverage"]["status"], "partial");
+        assert_eq!(value["coverage"]["resolved_roles"], json!(["producer"]));
+        assert_eq!(
+            value["coverage"]["missing_roles"],
+            json!(["bridge", "subscriber"])
+        );
+    }
+
+    #[test]
     fn empty_pack_reports_no_hits() {
         let pack = build_evidence_pack(EvidencePackInput {
             question: "what is target_fn".to_string(),
@@ -1692,6 +2373,10 @@ mod tests {
 
         assert_eq!(value["kind"], "symbol_lookup");
         assert_eq!(value["coverage"]["status"], "no_hits");
+        assert_eq!(
+            value["coverage"]["missing_roles"],
+            json!(["canonical_definition"])
+        );
         assert_eq!(value["rows"].as_array().unwrap().len(), 0);
     }
 }

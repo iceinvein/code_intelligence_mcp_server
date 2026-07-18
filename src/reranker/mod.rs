@@ -2,9 +2,12 @@
 
 pub mod cache;
 pub mod deferred;
+#[cfg(feature = "native-llama")]
 pub mod llamacpp;
 
-use crate::path::{Utf8Path, Utf8PathBuf};
+use crate::path::Utf8Path;
+#[cfg(feature = "native-llama")]
+use crate::path::Utf8PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -18,6 +21,10 @@ pub trait Reranker: Send + Sync {
 
     /// Get the top-k limit for this reranker
     fn top_k(&self) -> usize;
+
+    fn is_ready(&self) -> bool {
+        true
+    }
 }
 
 /// Document representation for reranking
@@ -55,62 +62,90 @@ pub fn create_reranker(
         return Ok(None);
     }
 
-    // Resolve the model file path: use explicit path or fall back to the
-    // default reranker model directory (bge-reranker-v2-m3, separate from
-    // the LLM description model).
-    let resolved_model_path: Utf8PathBuf = match model_path {
-        Some(p) => p.to_owned(),
-        None => {
-            let data_dir = crate::config::get_data_dir();
-            data_dir
-                .join("models/bge-reranker-v2-m3-gguf")
-                .join(llamacpp::HF_MODEL_FILE)
-        }
-    };
+    #[cfg(not(feature = "native-llama"))]
+    {
+        let _ = (model_path, cache_dir, top_k);
+        anyhow::bail!(
+            "reranking was enabled, but this binary was built without the \
+             'native-llama' feature; set RERANKER_ENABLED=false, or rebuild with \
+             `cargo build --features native-llama` after installing CMake"
+        );
+    }
 
-    // Auto-download if model file not found
-    if !resolved_model_path.exists() {
-        let model_dir = resolved_model_path
-            .parent()
-            .map(|p| p.to_owned())
-            .unwrap_or_else(|| {
-                crate::config::get_data_dir().join("models/bge-reranker-v2-m3-gguf")
-            });
+    #[cfg(feature = "native-llama")]
+    {
+        // Resolve the model file path: use explicit path or fall back to the
+        // default reranker model directory (bge-reranker-v2-m3, separate from
+        // the LLM description model).
+        let resolved_model_path: Utf8PathBuf = match model_path {
+            Some(p) => p.to_owned(),
+            None => {
+                let data_dir = crate::config::get_data_dir();
+                data_dir
+                    .join("models/bge-reranker-v2-m3-gguf")
+                    .join(llamacpp::HF_MODEL_FILE)
+            }
+        };
+
+        // Auto-download if model file not found
+        if !resolved_model_path.exists() {
+            let model_dir = resolved_model_path
+                .parent()
+                .map(|p| p.to_owned())
+                .unwrap_or_else(|| {
+                    crate::config::get_data_dir().join("models/bge-reranker-v2-m3-gguf")
+                });
+
+            tracing::info!(
+                model_path = %resolved_model_path,
+                "Reranker model not found, attempting auto-download"
+            );
+
+            match llamacpp::download_reranker_model(&model_dir) {
+                Ok(()) => {
+                    tracing::info!("Reranker model downloaded successfully");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to download reranker model. Set RERANKER_ENABLED=false to suppress."
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Build the inner reranker
+        let inner = llamacpp::LlamaCppReranker::new(&resolved_model_path, top_k)?;
+
+        // Determine cache size: 256 entries by default, respecting cache_dir
+        // presence as an opt-in signal (the cache itself is in-memory).
+        let cache_size = if cache_dir.is_some() { 256 } else { 64 };
+
+        let cached = cache::CachedReranker::new(Box::new(inner), cache_size);
 
         tracing::info!(
             model_path = %resolved_model_path,
-            "Reranker model not found, attempting auto-download"
+            top_k,
+            cache_size,
+            "Reranker initialised"
         );
 
-        match llamacpp::download_reranker_model(&model_dir) {
-            Ok(()) => {
-                tracing::info!("Reranker model downloaded successfully");
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to download reranker model. Set RERANKER_ENABLED=false to suppress."
-                );
-                return Ok(None);
-            }
-        }
+        Ok(Some(Arc::new(cached)))
     }
+}
 
-    // Build the inner reranker
-    let inner = llamacpp::LlamaCppReranker::new(&resolved_model_path, top_k)?;
+#[cfg(all(test, not(feature = "native-llama")))]
+mod lightweight_tests {
+    use super::*;
 
-    // Determine cache size: 256 entries by default, respecting cache_dir
-    // presence as an opt-in signal (the cache itself is in-memory).
-    let cache_size = if cache_dir.is_some() { 256 } else { 64 };
-
-    let cached = cache::CachedReranker::new(Box::new(inner), cache_size);
-
-    tracing::info!(
-        model_path = %resolved_model_path,
-        top_k,
-        cache_size,
-        "Reranker initialised"
-    );
-
-    Ok(Some(Arc::new(cached)))
+    #[test]
+    fn enabled_reranker_reports_missing_native_feature() {
+        let error = create_reranker(true, None, None, 20)
+            .err()
+            .expect("native-free builds must reject reranking")
+            .to_string();
+        assert!(error.contains("without the 'native-llama' feature"));
+        assert!(error.contains("RERANKER_ENABLED=false"));
+    }
 }

@@ -398,8 +398,9 @@ fn build_evidence_only_response(
     };
     let mut follow_up = if evidence_count == 0 && has_pack_rows {
         "ask_code returned structured `pack.rows` without hydrated evidence bodies. \
-            Synthesise the final answer from `pack.rows`, respecting `role=\"candidate\"` \
-            and `pack.coverage.status`; call specialist tools if definitive line-level \
+            Synthesise the final answer from `pack.rows`, respecting row `verification`, \
+            `source_backed`, and the required/missing roles in `pack.coverage`; call \
+            specialist tools if definitive line-level \
             verification is required."
             .to_string()
     } else {
@@ -494,6 +495,10 @@ fn forward_boundary_files(investigate_response: &Value, response: &mut Value) {
     }
 }
 
+// This is the serialization boundary for an already-computed answer. Keeping
+// the independent contract fields visible here is clearer than hiding them in
+// an orchestration bag; the typed investigation pipeline does not call it.
+#[allow(clippy::too_many_arguments)]
 fn build_synthesized_response(
     question: &str,
     quality: AnswerQuality,
@@ -517,8 +522,9 @@ fn build_synthesized_response(
     let follow_up = if evidence_count == 0 && has_pack_rows {
         Some(
             "ask_code returned structured `pack.rows` without hydrated evidence bodies. \
-            Synthesise the final answer from `pack.rows`, respecting `role=\"candidate\"` \
-            and `pack.coverage.status`; call specialist tools if definitive line-level \
+            Synthesise the final answer from `pack.rows`, respecting row `verification`, \
+            `source_backed`, and the required/missing roles in `pack.coverage`; call \
+            specialist tools if definitive line-level \
             verification is required.",
         )
     } else {

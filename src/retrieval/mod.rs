@@ -11,7 +11,6 @@ pub(crate) mod query;
 pub(crate) mod ranking;
 
 use crate::embeddings::SharedEmbedder;
-use crate::path::Utf8PathBuf;
 use crate::retrieval::hyde::HypotheticalCodeGenerator;
 use crate::text::get_related_terms;
 use crate::{
@@ -25,8 +24,8 @@ use crate::{
         vector::LanceVectorTable,
     },
 };
-use anyhow::{anyhow, Result};
-use cache::RetrieverCaches;
+use anyhow::{anyhow, Context, Result};
+use cache::{AsyncSingleFlight, RetrieverCaches};
 use query::{
     contains_code_snippet, decompose_query, detect_intent, normalize_and_expand_query,
     parse_query_controls, trim_query, Intent,
@@ -139,13 +138,14 @@ impl ContextMode {
 #[derive(Clone)]
 pub struct Retriever {
     pub(super) config: Arc<Config>,
-    pub(super) db_path: Utf8PathBuf,
+    pub(super) sqlite: Arc<SqliteStore>,
     pub(super) tantivy: Arc<TantivyIndex>,
     pub(super) vectors: Arc<LanceVectorTable>,
     pub(super) embedder: Arc<SharedEmbedder>,
     pub(super) reranker: Option<Arc<dyn Reranker>>,
     pub(super) hyde_generator: Option<HypotheticalCodeGenerator>,
     pub(super) cache: Arc<Mutex<RetrieverCaches>>,
+    pub(super) inflight_embeddings: AsyncSingleFlight<Vec<f32>>,
     pub(super) cache_config_key: String,
     pub(super) metrics: Arc<MetricsRegistry>,
 }
@@ -264,8 +264,13 @@ fn promote_vector_results(
 }
 
 impl Retriever {
+    // Repository binding constructs this service once from independently
+    // owned storage/model components. The explicit constructor documents that
+    // ownership graph; request-path orchestration uses the assembled service.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<Config>,
+        sqlite: Arc<SqliteStore>,
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
         embedder: Arc<SharedEmbedder>,
@@ -288,19 +293,53 @@ impl Retriever {
             config.rank_popularity_cap
         );
         Self {
-            db_path: config.db_path.clone(),
             config,
+            sqlite,
             tantivy,
             vectors,
             embedder,
             reranker,
             hyde_generator,
             cache: Arc::new(Mutex::new(cache)),
+            inflight_embeddings: AsyncSingleFlight::default(),
             cache_config_key,
             metrics,
         }
     }
 
+    pub fn metrics(&self) -> &MetricsRegistry {
+        let embedding_resident = matches!(
+            (
+                self.config.embeddings_backend,
+                self.config.embeddings_device
+            ),
+            (
+                crate::config::EmbeddingsBackend::LlamaCpp,
+                crate::config::EmbeddingsDevice::Metal
+            )
+        ) && self.embedder.is_ready();
+        self.metrics
+            .gpu_model_resident
+            .with_label_values(&["embedding"])
+            .set(if embedding_resident { 1.0 } else { 0.0 });
+        let reranker_resident = self
+            .reranker
+            .as_ref()
+            .map(|reranker| reranker.is_ready())
+            .unwrap_or(false);
+        self.metrics
+            .gpu_model_resident
+            .with_label_values(&["reranker"])
+            .set(if reranker_resident { 1.0 } else { 0.0 });
+        &self.metrics
+    }
+
+    /// Run mixed synchronous/async retrieval on Tokio's blocking pool.
+    ///
+    /// The pipeline performs many short SQLite reads and CPU-heavy ranking
+    /// passes around async embedding/vector operations. Driving the orchestration
+    /// future from a blocking worker prevents those synchronous sections from
+    /// occupying request-executor threads.
     pub async fn search(
         &self,
         query: &str,
@@ -309,19 +348,35 @@ impl Retriever {
         context_mode: ContextMode,
     ) -> Result<SearchResponseWithSignals> {
         let _timer = self.metrics.search_duration.start_timer();
+        let retriever = self.clone();
+        let query = query.to_string();
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            runtime.block_on(retriever.search_on_query_worker(
+                &query,
+                limit,
+                exported_only,
+                context_mode,
+            ))
+        })
+        .await
+        .context("Search query worker failed to join")?
+    }
 
+    async fn search_on_query_worker(
+        &self,
+        query: &str,
+        limit: usize,
+        exported_only: bool,
+        context_mode: ContextMode,
+    ) -> Result<SearchResponseWithSignals> {
         let started_at_unix_s = unix_now_s();
         let started = Instant::now();
 
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
+        let sqlite = self.sqlite.as_ref();
 
         let current_last_update = sqlite.most_recent_symbol_update().unwrap_or(None);
-        let current_index_run_started_at = sqlite
-            .latest_index_run()
-            .ok()
-            .flatten()
-            .map(|r| r.started_at_unix_s);
+        let current_index_run_version = sqlite.latest_index_run_version().unwrap_or(None);
         let cache_key = format!(
             "v2|cfg={}|q={}|l={}|e={}|c={}",
             self.cache_config_key,
@@ -330,23 +385,57 @@ impl Retriever {
             exported_only,
             context_mode.cache_tag()
         );
-        {
+        let cached_response = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.last_symbol_update_unix_s != current_last_update
-                || cache.last_index_run_started_at_unix_s != current_index_run_started_at
-            {
-                cache.responses.clear();
-                cache.embeddings.clear();
-                cache.contexts.clear();
-                cache.last_symbol_update_unix_s = current_last_update;
-                cache.last_index_run_started_at_unix_s = current_index_run_started_at;
+            let invalidated =
+                cache.invalidate_if_stale(current_last_update, current_index_run_version);
+            if invalidated.responses {
+                self.metrics
+                    .record_query_cache_event("response", "invalidation");
             }
-            if let Some(resp) = cache.responses.get(&cache_key) {
-                return Ok(SearchResponseWithSignals {
-                    response: resp,
-                    hit_signals: HashMap::new(),
-                });
+            if invalidated.embeddings {
+                self.metrics
+                    .record_query_cache_event("embedding", "invalidation");
             }
+            if invalidated.contexts {
+                self.metrics
+                    .record_query_cache_event("context", "invalidation");
+            }
+            let response = cache.responses.get(&cache_key);
+            if response.is_some() {
+                self.metrics.record_query_cache_event("response", "hit");
+            } else {
+                self.metrics.record_query_cache_event("response", "miss");
+            }
+            self.update_cache_gauges(&cache);
+            response
+        };
+        if let Some(resp) = cached_response {
+            let result_count = resp.response.hits.len() as u64;
+            let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            let _ = sqlite.insert_search_run(&crate::storage::sqlite::SearchRunRow {
+                started_at_unix_s,
+                duration_ms,
+                keyword_ms: 0,
+                vector_ms: 0,
+                merge_ms: 0,
+                query: redact_query_for_telemetry(query),
+                query_limit: limit as u64,
+                exported_only,
+                result_count,
+                embedding_ms: 0,
+                reranker_ms: 0,
+                scoring_ms: 0,
+                assembly_ms: 0,
+                fusion_ms: 0,
+                search_path: "cache".to_string(),
+                cache_status: "hit".to_string(),
+                subquery_count: 0,
+                keyword_candidates: 0,
+                vector_candidates: 0,
+                fused_candidates: result_count,
+            });
+            return Ok(resp);
         }
 
         let (query_without_controls, controls) = parse_query_controls(query);
@@ -354,7 +443,7 @@ impl Retriever {
         // Fast path: direct ID lookup
         if let Some(resp) = fast_paths::handle_id_lookup(
             self,
-            &sqlite,
+            sqlite,
             &controls,
             &query_without_controls,
             query,
@@ -392,7 +481,7 @@ impl Retriever {
         if let Some(Intent::Callers(name)) = &intent {
             if let Some(resp) = fast_paths::handle_callers_intent(
                 self,
-                &sqlite,
+                sqlite,
                 name,
                 &query_without_controls,
                 query,
@@ -409,7 +498,7 @@ impl Retriever {
         // Execute hybrid search (BM25 + vector + RRF fusion + structural scoring)
         let hybrid_result = hybrid::execute_hybrid_search(
             self,
-            &sqlite,
+            sqlite,
             &query_without_controls,
             &sub_queries,
             &intent,
@@ -421,9 +510,36 @@ impl Retriever {
         let ranked = hybrid_result.ranked;
         let mut hit_signals = hybrid_result.hit_signals;
         let vector_ranked_for_promotion = hybrid_result.vector_ranked_for_promotion;
-        let keyword_ms = hybrid_result.keyword_ms;
-        let vector_ms = hybrid_result.vector_ms;
-        let embedding_ms = hybrid_result.embedding_ms;
+        let keyword_elapsed = hybrid_result.keyword_elapsed;
+        let vector_elapsed = hybrid_result.vector_elapsed;
+        let embedding_elapsed = hybrid_result.embedding_elapsed;
+        let fusion_elapsed = hybrid_result.fusion_elapsed;
+        let keyword_ms = keyword_elapsed.as_millis().min(u64::MAX as u128) as u64;
+        let vector_ms = vector_elapsed.as_millis().min(u64::MAX as u128) as u64;
+        let embedding_ms = embedding_elapsed.as_millis().min(u64::MAX as u128) as u64;
+        let fusion_ms = fusion_elapsed.as_millis().min(u64::MAX as u128) as u64;
+        let keyword_candidates = hybrid_result.keyword_candidates;
+        let vector_candidates = hybrid_result.vector_candidates;
+        let fused_candidates = hybrid_result.fused_candidates;
+        let search_path = hybrid_result.search_path;
+        let subquery_count = hybrid_result.subquery_count;
+
+        for (stage, elapsed) in [
+            ("keyword", keyword_elapsed),
+            ("vector", vector_elapsed),
+            ("embedding", embedding_elapsed),
+            ("fusion", fusion_elapsed),
+        ] {
+            self.metrics.observe_query_stage("search", stage, elapsed);
+        }
+        for (stage, count) in [
+            ("keyword", keyword_candidates),
+            ("vector", vector_candidates),
+            ("fused", fused_candidates),
+        ] {
+            self.metrics
+                .observe_query_candidates("search", stage, count);
+        }
 
         let merge_t = Instant::now();
 
@@ -452,7 +568,7 @@ impl Retriever {
         // Inject framework pattern matches for NL queries
         let fw_injection_count = if is_nl_query {
             framework_patterns::inject_framework_patterns(
-                &sqlite,
+                sqlite,
                 &query_without_controls,
                 &mut uniq,
                 &mut seen,
@@ -467,7 +583,7 @@ impl Retriever {
         // for selection boost lookup — must match the key stored by report_selection.
         let original_query_normalized = query_without_controls.to_lowercase();
         let mut hits = postprocess::filter_and_boost(
-            &sqlite,
+            sqlite,
             uniq,
             &mut hit_signals,
             &controls,
@@ -488,13 +604,18 @@ impl Retriever {
         // Expand pool when framework patterns injected high-scoring symbols that
         // would otherwise squeeze genuine BM25 results out of the pool window.
         let pool_size = limit * 4 + fw_injection_count;
-        hits = diversify_by_cluster(&sqlite, hits, pool_size);
+        hits = diversify_by_cluster(sqlite, hits, pool_size);
         hits.truncate(pool_size);
 
         // Save pre-expansion candidates for gap-fill after file-symbol dedup.
         let pre_expansion_candidates = hits.clone();
+        let graph_expansion_t = Instant::now();
         let (hits, expanded_ids) =
-            expand_with_edges(&sqlite, hits, pool_size, &intent, &query_without_controls)?;
+            expand_with_edges(sqlite, hits, pool_size, &intent, &query_without_controls)?;
+        self.metrics
+            .observe_query_stage("search", "graph_expansion", graph_expansion_t.elapsed());
+        self.metrics
+            .observe_query_candidates("search", "expanded", hits.len());
 
         // Apply file/kind diversity on the expanded pool,
         // then truncate to final limit. This gives diversity enough headroom
@@ -597,12 +718,13 @@ impl Retriever {
         let rerank_t = Instant::now();
         hits = if let Some(reranker) = &self.reranker {
             if should_rerank(hits.len(), 3) {
-                let mut texts = HashMap::new();
-                for hit in &hits {
-                    if let Some(row) = sqlite.get_symbol_by_id(&hit.id).ok().flatten() {
-                        texts.insert(hit.id.clone(), row.text);
-                    }
-                }
+                let hit_ids = hits.iter().map(|hit| hit.id.clone()).collect::<Vec<_>>();
+                let texts = sqlite
+                    .batch_get_symbols_by_ids(&hit_ids)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id, row)| (id, row.text))
+                    .collect::<HashMap<_, _>>();
                 let docs = prepare_rerank_docs(&hits, &texts);
                 let rerank_query = &sub_queries[0];
                 if let Ok(rerank_scores) = reranker.rerank(rerank_query, &docs).await {
@@ -616,7 +738,8 @@ impl Retriever {
         } else {
             hits
         };
-        let reranker_ms = rerank_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let reranker_elapsed = rerank_t.elapsed();
+        let reranker_ms = reranker_elapsed.as_millis().min(u64::MAX as u128) as u64;
 
         // Post-pipeline gap fill: if fewer than `limit` results survived
         // enforcement + min-score filtering, backfill from the pre-expansion pool.
@@ -1077,11 +1200,15 @@ impl Retriever {
             }
         }
 
-        let mut roots = Vec::new();
+        let final_hit_ids = hits.iter().map(|hit| hit.id.clone()).collect::<Vec<_>>();
+        let mut symbol_rows = sqlite
+            .batch_get_symbols_by_ids(&final_hit_ids)
+            .unwrap_or_default();
+        let mut roots = Vec::with_capacity(hits.len());
         let mut extra = Vec::new();
 
         for h in &hits {
-            if let Some(row) = sqlite.get_symbol_by_id(&h.id).ok().flatten() {
+            if let Some(row) = symbol_rows.remove(&h.id) {
                 if expanded_ids.contains(&h.id) {
                     extra.push(row);
                 } else {
@@ -1090,17 +1217,29 @@ impl Retriever {
             }
         }
 
-        let scoring_ms = scoring_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let scoring_elapsed = scoring_t.elapsed();
+        let scoring_ms = scoring_elapsed.as_millis().min(u64::MAX as u128) as u64;
 
         let assembly_t = Instant::now();
         let (context, _context_items) = if context_mode == ContextMode::Full {
-            self.assemble_context_cached(&sqlite, &roots, &extra, smart_truncation_query)?
+            self.assemble_context_cached(sqlite, &roots, &extra, smart_truncation_query)?
         } else {
             // Modes other than Full skip graph expansion + markdown assembly
             // entirely. Snippets mode is fulfilled at the handler layer per-hit.
             (String::new(), Vec::new())
         };
-        let assembly_ms = assembly_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let assembly_elapsed = assembly_t.elapsed();
+        let assembly_ms = assembly_elapsed.as_millis().min(u64::MAX as u128) as u64;
+
+        for (stage, elapsed) in [
+            ("reranking", reranker_elapsed),
+            ("scoring", scoring_elapsed),
+            ("assembly", assembly_elapsed),
+        ] {
+            self.metrics.observe_query_stage("search", stage, elapsed);
+        }
+        self.metrics
+            .observe_query_candidates("search", "returned", hits.len());
 
         let merge_ms = merge_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -1119,6 +1258,13 @@ impl Retriever {
             reranker_ms,
             scoring_ms,
             assembly_ms,
+            fusion_ms,
+            search_path: search_path.to_string(),
+            cache_status: "miss".to_string(),
+            subquery_count: subquery_count as u64,
+            keyword_candidates: keyword_candidates as u64,
+            vector_candidates: vector_candidates as u64,
+            fused_candidates: fused_candidates as u64,
         };
         let _ = sqlite.insert_search_run(&run);
 
@@ -1142,7 +1288,12 @@ impl Retriever {
             hits,
             context,
         };
-        self.cache_insert_response(cache_key, resp.clone(), &_context_items);
+        self.cache_insert_response(
+            cache_key,
+            resp.clone(),
+            hit_signals.clone(),
+            &_context_items,
+        );
 
         // Note: timer observes duration when dropped
         Ok(SearchResponseWithSignals {
@@ -1155,11 +1306,22 @@ impl Retriever {
         &self,
         key: String,
         resp: SearchResponse,
-        context_items: &[ContextItem],
+        hit_signals: HashMap<String, HitSignals>,
+        _context_items: &[ContextItem],
     ) {
-        let size = resp.context.len() + context_items.iter().map(|i| i.tokens * 4).sum::<usize>();
+        let size = serde_json::to_vec(&resp)
+            .map(|encoded| encoded.len())
+            .unwrap_or(resp.context.len());
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.responses.insert(key, resp, size);
+        cache.responses.insert(
+            key,
+            SearchResponseWithSignals {
+                response: resp,
+                hit_signals,
+            },
+            size,
+        );
+        self.update_cache_gauges(&cache);
     }
 
     pub(super) async fn get_query_vector_cached(&self, query: &str) -> Result<Vec<f32>> {
@@ -1167,19 +1329,31 @@ impl Retriever {
         {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(v) = cache.embeddings.get(&key) {
+                self.metrics.record_query_cache_event("embedding", "hit");
+                self.update_cache_gauges(&cache);
                 return Ok(v);
             }
+            self.metrics.record_query_cache_event("embedding", "miss");
         }
 
-        let v = {
-            let mut out = self.embedder.query_embed(vec![query.to_string()]).await?;
-            out.pop()
-                .ok_or_else(|| anyhow!("Embedder returned no vector"))?
-        };
+        let (v, is_leader) = self
+            .inflight_embeddings
+            .run(key.clone(), || async {
+                let mut out = self.embedder.query_embed(vec![query.to_string()]).await?;
+                out.pop()
+                    .ok_or_else(|| anyhow!("Embedder returned no vector"))
+            })
+            .await?;
+
+        if !is_leader {
+            self.metrics
+                .record_query_cache_event("embedding", "coalesced");
+        }
 
         let size = v.len().saturating_mul(4);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.embeddings.insert(key, v.clone(), size);
+        self.update_cache_gauges(&cache);
         Ok(v)
     }
 
@@ -1216,8 +1390,11 @@ impl Retriever {
         {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(v) = cache.contexts.get(&key) {
+                self.metrics.record_query_cache_event("context", "hit");
+                self.update_cache_gauges(&cache);
                 return Ok(v);
             }
+            self.metrics.record_query_cache_event("context", "miss");
         }
 
         let assembler = ContextAssembler::new(self.config.clone());
@@ -1225,7 +1402,32 @@ impl Retriever {
         let size = v.0.len() + v.1.iter().map(|i| i.tokens * 4).sum::<usize>();
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.contexts.insert(key, v.clone(), size);
+        self.update_cache_gauges(&cache);
         Ok(v)
+    }
+
+    fn update_cache_gauges(&self, cache: &RetrieverCaches) {
+        for (name, entries, bytes) in [
+            (
+                "response",
+                cache.responses.len(),
+                cache.responses.used_bytes(),
+            ),
+            (
+                "embedding",
+                cache.embeddings.len(),
+                cache.embeddings.used_bytes(),
+            ),
+            ("context", cache.contexts.len(), cache.contexts.used_bytes()),
+        ] {
+            self.metrics.set_query_cache_usage(name, entries, bytes);
+        }
+        self.metrics
+            .cache_entries
+            .set(cache.embeddings.len() as f64);
+        self.metrics
+            .cache_size_bytes
+            .set(cache.embeddings.used_bytes() as f64);
     }
 
     /// Get reference to vector store for vector queries
@@ -1242,24 +1444,23 @@ impl Retriever {
     }
 
     pub fn assemble_definitions(&self, symbols: &[SymbolRow]) -> Result<String> {
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
         let assembler = ContextAssembler::new(self.config.clone());
         Ok(assembler
-            .format_context(&sqlite, symbols, &[], &[], None)?
+            .format_context(&self.sqlite, symbols, &[], &[], None)?
             .0)
     }
 
     pub fn load_symbol_rows_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
-        let mut out = Vec::new();
-        for id in ids {
-            if let Some(row) = sqlite.get_symbol_by_id(id)? {
-                out.push(row);
-            }
-        }
-        Ok(out)
+        let mut rows = self.sqlite.batch_get_symbols_by_ids(ids)?;
+        Ok(ids.iter().filter_map(|id| rows.remove(id)).collect())
+    }
+
+    pub async fn load_symbol_rows_by_ids_async(&self, ids: &[String]) -> Result<Vec<SymbolRow>> {
+        let retriever = self.clone();
+        let ids = ids.to_vec();
+        tokio::task::spawn_blocking(move || retriever.load_symbol_rows_by_ids(&ids))
+            .await
+            .context("Symbol hydration worker failed to join")?
     }
 }
 

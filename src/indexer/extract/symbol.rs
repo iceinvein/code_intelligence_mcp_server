@@ -196,12 +196,49 @@ pub struct Import {
     pub name: String,
     pub source: String,
     pub alias: Option<String>,
+    pub at_line: u32,
+}
+
+/// A module-level name binding kept separate from ordinary symbol references.
+///
+/// Empty strings represent fields that do not apply to a binding kind. Keeping
+/// the fields non-null gives persisted bindings a deterministic uniqueness key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModuleBindingKind {
+    Import,
+    Export,
+    ReExport,
+    ExportAll,
+}
+
+impl ModuleBindingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Import => "import",
+            Self::Export => "export",
+            Self::ReExport => "re_export",
+            Self::ExportAll => "export_all",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleBinding {
+    pub kind: ModuleBindingKind,
+    pub source: String,
+    pub imported_name: String,
+    pub local_name: String,
+    pub exported_name: String,
+    /// One-based source line containing the binding.
+    pub at_line: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtractedFile {
     pub symbols: Vec<ExtractedSymbol>,
     pub imports: Vec<Import>,
+    pub module_bindings: Vec<ModuleBinding>,
     pub type_edges: Vec<(String, String)>, // (parent_symbol_name, type_name)
     /// Inheritance edges: (subclass_name, base_name). The base keeps its
     /// dotted form ("models.Model") so edge resolution can use the import map.

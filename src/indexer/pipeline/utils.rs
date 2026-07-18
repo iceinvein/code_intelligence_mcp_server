@@ -5,7 +5,7 @@ use crate::storage::sqlite::queries;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
 };
@@ -77,6 +77,27 @@ pub fn stable_symbol_id(file_path: &str, name: &str, start_byte: u32) -> String 
     format!("{:016x}", fnv1a_64(&data))
 }
 
+/// Stable logical identity for a same-name declaration that occupies a
+/// distinct language namespace/kind. The common one-kind case deliberately
+/// keeps using `stable_symbol_id(path, qualified_name, 0)` for compatibility.
+pub fn stable_typed_logical_symbol_id(file_path: &str, qualified_name: &str, kind: &str) -> String {
+    let key = format!("logical\u{1f}{file_path}\u{1f}{qualified_name}\u{1f}{kind}");
+    format!("{:016x}", fnv1a_64(key.as_bytes()))
+}
+
+/// Deterministic id for a non-canonical declaration occurrence in a logical
+/// overload/partial-declaration set. A unique signature remains stable across
+/// harmless source movement; `duplicate_ordinal` distinguishes identical
+/// partial declarations when syntax provides no stronger discriminator.
+pub fn stable_symbol_occurrence_id(
+    logical_id: &str,
+    signature: &str,
+    duplicate_ordinal: usize,
+) -> String {
+    let key = format!("occurrence\u{1f}{logical_id}\u{1f}{signature}\u{1f}{duplicate_ordinal}");
+    format!("{:016x}", fnv1a_64(key.as_bytes()))
+}
+
 pub fn language_string(language_id: LanguageId) -> &'static str {
     match language_id {
         LanguageId::Typescript => "typescript",
@@ -126,75 +147,46 @@ pub fn resolve_imported_symbol_id_with_db(
     imp: &Import,
     conn: &Connection,
 ) -> Option<String> {
-    // First, try to resolve the path and find the symbol in the expected file
-    if let Some(target_path) = resolve_path(current_file_path, &imp.source) {
-        // Try to find an exported symbol with matching name in the target file
-        if let Ok(results) =
-            queries::symbols::search_symbols_by_exact_name(conn, &imp.name, Some(&target_path), 1)
-        {
-            if let Some(symbol) = results.iter().find(|s| s.exported) {
-                return Some(symbol.id.clone());
-            }
+    let language = language_for_module_path(current_file_path)?;
+    let ModuleFileResolution::Exact(target_path) =
+        resolve_indexed_module_file(conn, current_file_path, &imp.source, language).ok()?
+    else {
+        return None;
+    };
+    let results =
+        queries::symbols::search_symbols_by_exact_name(conn, &imp.name, Some(&target_path), 64)
+            .ok()?;
+    let exported = results
+        .into_iter()
+        .filter(|symbol| symbol.exported)
+        .collect::<Vec<_>>();
+    if !exported.is_empty() {
+        let ids = exported
+            .iter()
+            .map(|symbol| symbol.id.clone())
+            .collect::<Vec<_>>();
+        let identities = queries::symbol_identities::get_by_symbol_ids(conn, &ids).ok()?;
+        let logical_ids = exported
+            .iter()
+            .map(|symbol| {
+                identities
+                    .get(&symbol.id)
+                    .map(|identity| identity.logical_id.clone())
+                    .unwrap_or_else(|| symbol.id.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        if let [logical_id] = logical_ids.into_iter().collect::<Vec<_>>().as_slice() {
+            return Some(logical_id.clone());
         }
-
-        // Try alternative file extensions (.tsx, .jsx, .js, index.ts, index.tsx)
-        for alt_path in alternative_import_paths(&target_path) {
-            if let Ok(results) =
-                queries::symbols::search_symbols_by_exact_name(conn, &imp.name, Some(&alt_path), 1)
-            {
-                if let Some(symbol) = results.iter().find(|s| s.exported) {
-                    return Some(symbol.id.clone());
-                }
-            }
-        }
+        return None;
     }
 
-    // Fallback: search by name only across all files (prefer exported symbols)
-    // This handles cases where path resolution is wrong (e.g., monorepo packages,
-    // re-exports, or unusual directory structures)
-    if let Ok(results) = queries::symbols::search_symbols_by_exact_name(conn, &imp.name, None, 10) {
-        // Prefer exported symbols - the query already orders by exported DESC
-        if let Some(symbol) = results.iter().find(|s| s.exported) {
-            return Some(symbol.id.clone());
-        }
+    let public_targets =
+        queries::module_bindings::list_public_target_ids(conn, &target_path, &imp.name).ok()?;
+    match public_targets.as_slice() {
+        [target] => Some(target.clone()),
+        _ => None,
     }
-
-    // The persisted graph is symbol-to-symbol. Do not manufacture an ID for an
-    // unresolved import: it would not have a corresponding symbols row and
-    // would violate the edges table's foreign-key contract. External and
-    // ambiguous bindings need explicit endpoint types before they can be
-    // represented safely.
-    None
-}
-
-/// Generate alternative import paths to try when the default resolution fails
-fn alternative_import_paths(base_path: &str) -> Vec<String> {
-    let mut alternatives = Vec::new();
-
-    // If path ends with .ts, try .tsx
-    if let Some(dir_path) = base_path.strip_suffix(".ts") {
-        let tsx_path = format!("{}x", base_path);
-        alternatives.push(tsx_path);
-
-        // Also try index files in directory
-        alternatives.push(format!("{}/index.ts", dir_path));
-        alternatives.push(format!("{}/index.tsx", dir_path));
-    }
-    // If path ends with .tsx, try .ts
-    else if let Some(ts_path) = base_path.strip_suffix("x") {
-        if ts_path.ends_with(".ts") {
-            alternatives.push(ts_path.to_string());
-        }
-    }
-    // If no extension (shouldn't happen with resolve_path), try common extensions
-    else if !base_path.contains('.') {
-        alternatives.push(format!("{}.ts", base_path));
-        alternatives.push(format!("{}.tsx", base_path));
-        alternatives.push(format!("{}/index.ts", base_path));
-        alternatives.push(format!("{}/index.tsx", base_path));
-    }
-
-    alternatives
 }
 
 pub fn resolve_path(current: &str, source: &str) -> Option<String> {
@@ -238,6 +230,296 @@ pub fn resolve_path(current: &str, source: &str) -> Option<String> {
     Some(s)
 }
 
+/// Return repository-relative file candidates for a module specifier.
+///
+/// This is deliberately language-aware: the legacy import resolver above is
+/// TypeScript-biased and cannot represent Python package initializers. The
+/// caller must still verify candidates against indexed files before treating a
+/// binding as exact.
+pub fn module_source_candidates(current: &str, source: &str, language: &str) -> Vec<String> {
+    match language {
+        "python" => python_module_candidates(current, source),
+        "typescript" | "tsx" | "javascript" => ecmascript_module_candidates(current, source),
+        "rust" => rust_module_candidates(current, source),
+        "java" => dotted_language_candidates(source, "java"),
+        "kotlin" => dotted_language_candidates(source, "kt"),
+        "csharp" => dotted_language_candidates(source, "cs"),
+        "c" | "cpp" => include_module_candidates(current, source),
+        "ruby" => ruby_module_candidates(current, source),
+        _ => Vec::new(),
+    }
+}
+
+pub fn module_source_is_local(language: &str, source: &str) -> bool {
+    match language {
+        "typescript" | "tsx" | "javascript" | "python" | "ruby" => source.starts_with('.'),
+        "rust" => {
+            source == "crate"
+                || source == "self"
+                || source == "super"
+                || source.starts_with("crate::")
+                || source.starts_with("self::")
+                || source.starts_with("super::")
+        }
+        "c" | "cpp" => source.starts_with('.'),
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleFileResolution {
+    Exact(String),
+    Ambiguous,
+    Missing,
+}
+
+/// Resolve a module specifier only when it identifies one indexed file.
+///
+/// Python absolute imports are often rooted below the repository root (for
+/// example a `src/` layout), so each language-derived candidate may also match
+/// as a path suffix. More than one match is reported as ambiguous; callers must
+/// never fall back to a global same-name symbol.
+pub fn resolve_indexed_module_file(
+    conn: &Connection,
+    current_file: &str,
+    source: &str,
+    language: &str,
+) -> Result<ModuleFileResolution> {
+    let mut matches = BTreeSet::new();
+    let mut stmt = conn.prepare_cached(
+        r#"
+SELECT DISTINCT file_path
+FROM symbols
+WHERE file_path = ?1 OR file_path LIKE ?2
+LIMIT 3
+"#,
+    )?;
+    for candidate in module_source_candidates(current_file, source, language) {
+        let suffix_pattern = format!("%/{candidate}");
+        let rows = stmt.query_map(rusqlite::params![candidate, suffix_pattern], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for row in rows {
+            matches.insert(row?);
+            if matches.len() > 1 {
+                return Ok(ModuleFileResolution::Ambiguous);
+            }
+        }
+    }
+    Ok(match matches.into_iter().next() {
+        Some(file) => ModuleFileResolution::Exact(file),
+        None => ModuleFileResolution::Missing,
+    })
+}
+
+fn language_for_module_path(file_path: &str) -> Option<&'static str> {
+    if file_path.ends_with(".py") {
+        Some("python")
+    } else if file_path.ends_with(".tsx") {
+        Some("tsx")
+    } else if file_path.ends_with(".ts") {
+        Some("typescript")
+    } else if file_path.ends_with(".js") || file_path.ends_with(".jsx") {
+        Some("javascript")
+    } else {
+        None
+    }
+}
+
+fn normalize_relative_parts<'a>(
+    base_parts: impl IntoIterator<Item = &'a str>,
+    appended_parts: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut parts = base_parts
+        .into_iter()
+        .filter(|part| !part.is_empty() && *part != ".")
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for part in appended_parts {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part.to_string()),
+        }
+    }
+    parts
+}
+
+fn ecmascript_module_candidates(current: &str, source: &str) -> Vec<String> {
+    if !source.starts_with('.') {
+        return Vec::new();
+    }
+    let parent = current
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let parts = normalize_relative_parts(parent.split('/'), source.split('/'));
+    let stem = parts.join("/");
+    if stem.is_empty() {
+        return Vec::new();
+    }
+
+    if [".ts", ".tsx", ".js", ".jsx"]
+        .iter()
+        .any(|extension| stem.ends_with(extension))
+    {
+        return vec![stem];
+    }
+
+    [
+        format!("{stem}.ts"),
+        format!("{stem}.tsx"),
+        format!("{stem}.js"),
+        format!("{stem}.jsx"),
+        format!("{stem}/index.ts"),
+        format!("{stem}/index.tsx"),
+        format!("{stem}/index.js"),
+        format!("{stem}/index.jsx"),
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn python_module_candidates(current: &str, source: &str) -> Vec<String> {
+    if source.is_empty() {
+        return Vec::new();
+    }
+
+    let leading_dots = source.chars().take_while(|ch| *ch == '.').count();
+    let remainder = &source[leading_dots..];
+    let mut base = if leading_dots > 0 {
+        current
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.split('/').collect::<Vec<_>>())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // One dot means the current package; each additional dot ascends once.
+    for _ in 1..leading_dots {
+        base.pop();
+    }
+    let parts = normalize_relative_parts(base, remainder.split('.'));
+    let stem = parts.join("/");
+    if stem.is_empty() {
+        return Vec::new();
+    }
+    vec![format!("{stem}.py"), format!("{stem}/__init__.py")]
+}
+
+fn rust_module_candidates(current: &str, source: &str) -> Vec<String> {
+    if source.is_empty() || source == "*" {
+        return Vec::new();
+    }
+    let source_parts = source
+        .split("::")
+        .filter(|part| !part.is_empty() && *part != "*")
+        .collect::<Vec<_>>();
+    if source_parts.is_empty() {
+        return Vec::new();
+    }
+
+    let current_parent = current
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let (base, remaining) = match source_parts[0] {
+        "crate" => (vec!["src".to_string()], &source_parts[1..]),
+        "self" => (
+            current_parent
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect(),
+            &source_parts[1..],
+        ),
+        "super" => {
+            let mut base = current_parent
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let mut first_non_super = 0usize;
+            while source_parts.get(first_non_super) == Some(&"super") {
+                base.pop();
+                first_non_super += 1;
+            }
+            (base, &source_parts[first_non_super..])
+        }
+        _ => (Vec::new(), source_parts.as_slice()),
+    };
+    let full_parts =
+        normalize_relative_parts(base.iter().map(String::as_str), remaining.iter().copied());
+    let mut stems = BTreeSet::new();
+    if !full_parts.is_empty() {
+        stems.insert(full_parts.join("/"));
+    }
+    if full_parts.len() > 1 {
+        stems.insert(full_parts[..full_parts.len() - 1].join("/"));
+    }
+
+    stems
+        .into_iter()
+        .flat_map(|stem| [format!("{stem}.rs"), format!("{stem}/mod.rs")])
+        .collect()
+}
+
+fn dotted_language_candidates(source: &str, extension: &str) -> Vec<String> {
+    let stem = source.trim_end_matches(".*").replace('.', "/");
+    if stem.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!("{stem}.{extension}")]
+    }
+}
+
+fn include_module_candidates(current: &str, source: &str) -> Vec<String> {
+    if source.is_empty() {
+        return Vec::new();
+    }
+    let parent = current
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let relative = normalize_relative_parts(parent.split('/'), source.split('/')).join("/");
+    let mut candidates = BTreeSet::new();
+    candidates.insert(source.trim_start_matches("./").to_string());
+    if !relative.is_empty() {
+        candidates.insert(relative);
+    }
+    candidates
+        .into_iter()
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+fn ruby_module_candidates(current: &str, source: &str) -> Vec<String> {
+    if source.is_empty() {
+        return Vec::new();
+    }
+    let parent = current
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let relative = normalize_relative_parts(parent.split('/'), source.split('/')).join("/");
+    let raw = source.trim_start_matches("./");
+    let mut candidates = BTreeSet::new();
+    for stem in [raw, relative.as_str()] {
+        if stem.is_empty() {
+            continue;
+        }
+        if stem.ends_with(".rb") {
+            candidates.insert(stem.to_string());
+        } else {
+            candidates.insert(format!("{stem}.rb"));
+        }
+    }
+    candidates.into_iter().collect()
+}
+
 pub fn build_import_map(imports: &[Import]) -> HashMap<&str, &Import> {
     let mut map = HashMap::new();
     for imp in imports {
@@ -254,7 +536,7 @@ pub fn build_import_map(imports: &[Import]) -> HashMap<&str, &Import> {
 mod tests {
     use super::*;
     use crate::path::Utf8PathBuf;
-    use crate::storage::sqlite::SqliteStore;
+    use crate::storage::sqlite::{SqliteStore, SymbolIdentityRow, SymbolRow};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn tmp_dir() -> std::path::PathBuf {
@@ -406,6 +688,7 @@ mod tests {
             name: "helper".to_string(),
             source: "./utils".to_string(),
             alias: None,
+            at_line: 1,
         };
 
         // Test the enhanced resolution with database
@@ -414,6 +697,64 @@ mod tests {
 
         // Should resolve to the actual symbol ID from the database
         assert_eq!(resolved, Some("target_symbol_id".to_string()));
+    }
+
+    #[test]
+    fn db_import_resolution_collapses_overload_occurrences() {
+        let sqlite = SqliteStore::open_in_memory().unwrap();
+        sqlite.init().unwrap();
+        let conn = sqlite.read().unwrap();
+        let make_symbol = |id: &str, start_byte: u32| SymbolRow {
+            id: id.into(),
+            file_path: "src/utils.ts".into(),
+            language: "typescript".into(),
+            kind: "function".into(),
+            name: "helper".into(),
+            exported: true,
+            start_byte,
+            end_byte: start_byte + 20,
+            start_line: 1,
+            end_line: 1,
+            text: "export function helper(value: unknown);".into(),
+        };
+        queries::symbols::batch_upsert_symbols(
+            &conn,
+            &[make_symbol("helper", 0), make_symbol("helper-number", 30)],
+        )
+        .unwrap();
+        queries::symbol_identities::batch_upsert(
+            &conn,
+            &[
+                SymbolIdentityRow {
+                    symbol_id: "helper".into(),
+                    logical_id: "helper".into(),
+                    qualified_name: "helper".into(),
+                    signature: "helper(string)".into(),
+                    occurrence_discriminator: "string:0".into(),
+                    is_canonical: true,
+                },
+                SymbolIdentityRow {
+                    symbol_id: "helper-number".into(),
+                    logical_id: "helper".into(),
+                    qualified_name: "helper".into(),
+                    signature: "helper(number)".into(),
+                    occurrence_discriminator: "number:0".into(),
+                    is_canonical: false,
+                },
+            ],
+        )
+        .unwrap();
+        let import = Import {
+            name: "helper".into(),
+            source: "./utils".into(),
+            alias: None,
+            at_line: 1,
+        };
+
+        assert_eq!(
+            resolve_imported_symbol_id_with_db("src/index.ts", &import, &conn),
+            Some("helper".into())
+        );
     }
 
     #[test]
@@ -432,6 +773,7 @@ mod tests {
             name: "nonExistent".to_string(),
             source: "./utils".to_string(),
             alias: None,
+            at_line: 1,
         };
 
         // Database-backed resolution must not manufacture an orphan target.
@@ -439,6 +781,175 @@ mod tests {
         let resolved = resolve_imported_symbol_id_with_db("src/index.ts", &imp, &conn_guard);
 
         assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn db_import_resolution_follows_persisted_default_export_binding() {
+        let sqlite = SqliteStore::open_in_memory().unwrap();
+        sqlite.init().unwrap();
+        for row in [
+            SymbolRow {
+                id: "worker-root".into(),
+                file_path: "src/worker.ts".into(),
+                language: "typescript".into(),
+                kind: "file".into(),
+                name: "src/worker.ts".into(),
+                exported: false,
+                start_byte: 0,
+                end_byte: 20,
+                start_line: 1,
+                end_line: 1,
+                text: "export default class Worker {}".into(),
+            },
+            SymbolRow {
+                id: "worker".into(),
+                file_path: "src/worker.ts".into(),
+                language: "typescript".into(),
+                kind: "class".into(),
+                name: "Worker".into(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 20,
+                start_line: 1,
+                end_line: 1,
+                text: "export default class Worker {}".into(),
+            },
+        ] {
+            sqlite.upsert_symbol(&row).unwrap();
+        }
+        let conn = sqlite.write().unwrap();
+        queries::module_bindings::batch_upsert(
+            &conn,
+            &[crate::storage::sqlite::ModuleBindingRow {
+                id: 0,
+                file_path: "src/worker.ts".into(),
+                binding_kind: "export".into(),
+                source_module: String::new(),
+                source_file: None,
+                imported_name: String::new(),
+                local_name: "Worker".into(),
+                exported_name: "default".into(),
+                target_symbol_id: Some("worker".into()),
+                at_line: 1,
+                resolution: "exact".into(),
+                confidence: 1.0,
+            }],
+        )
+        .unwrap();
+        let import = Import {
+            name: "default".into(),
+            source: "./worker".into(),
+            alias: Some("DefaultWorker".into()),
+            at_line: 1,
+        };
+
+        assert_eq!(
+            resolve_imported_symbol_id_with_db("src/consumer.ts", &import, &conn),
+            Some("worker".into())
+        );
+    }
+
+    #[test]
+    fn module_candidates_cover_typescript_barrels_and_python_packages() {
+        assert_eq!(
+            module_source_candidates("src/api/index.ts", "../worker", "typescript"),
+            vec![
+                "src/worker.ts",
+                "src/worker.tsx",
+                "src/worker.js",
+                "src/worker.jsx",
+                "src/worker/index.ts",
+                "src/worker/index.tsx",
+                "src/worker/index.js",
+                "src/worker/index.jsx",
+            ]
+        );
+        assert_eq!(
+            module_source_candidates("django/urls/__init__.py", ".resolvers", "python"),
+            vec![
+                "django/urls/resolvers.py",
+                "django/urls/resolvers/__init__.py"
+            ]
+        );
+        assert_eq!(
+            module_source_candidates("django/urls/base.py", "..conf", "python"),
+            vec!["django/conf.py", "django/conf/__init__.py"]
+        );
+        let rust = module_source_candidates("src/api/mod.rs", "crate::worker::Worker", "rust");
+        assert!(rust.contains(&"src/worker.rs".to_string()));
+        assert!(rust.contains(&"src/worker/mod.rs".to_string()));
+        assert_eq!(
+            module_source_candidates("src/App.java", "com.example.Worker", "java"),
+            vec!["com/example/Worker.java"]
+        );
+        let ruby = module_source_candidates("lib/api.rb", "./worker", "ruby");
+        assert!(ruby.contains(&"lib/worker.rb".to_string()));
+        assert!(module_source_is_local("rust", "crate::worker::Worker"));
+        assert!(!module_source_is_local("java", "java.util.List"));
+    }
+
+    #[test]
+    fn db_import_resolution_uses_unique_module_path_not_global_same_name() {
+        let sqlite = SqliteStore::open_in_memory().unwrap();
+        sqlite.init().unwrap();
+        for (id, file_path, language) in [
+            (
+                "python-user-service",
+                "fixtures/python/pkg/services.py",
+                "python",
+            ),
+            ("go-user-service", "fixtures/go/service.go", "go"),
+        ] {
+            sqlite
+                .upsert_symbol(&SymbolRow {
+                    id: id.into(),
+                    file_path: file_path.into(),
+                    language: language.into(),
+                    kind: "class".into(),
+                    name: "UserService".into(),
+                    exported: true,
+                    start_byte: 0,
+                    end_byte: 10,
+                    start_line: 1,
+                    end_line: 1,
+                    text: "class UserService: pass".into(),
+                })
+                .unwrap();
+        }
+        let import = Import {
+            name: "UserService".into(),
+            source: "pkg.services".into(),
+            alias: None,
+            at_line: 1,
+        };
+        let conn = sqlite.read().unwrap();
+        assert_eq!(
+            resolve_imported_symbol_id_with_db("fixtures/python/pkg/views.py", &import, &conn),
+            Some("python-user-service".into())
+        );
+
+        queries::symbols::upsert_symbol(
+            &conn,
+            &SymbolRow {
+                id: "second-python-user-service".into(),
+                file_path: "other/pkg/services.py".into(),
+                language: "python".into(),
+                kind: "class".into(),
+                name: "UserService".into(),
+                exported: true,
+                start_byte: 0,
+                end_byte: 10,
+                start_line: 1,
+                end_line: 1,
+                text: "class UserService: pass".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_imported_symbol_id_with_db("fixtures/python/pkg/views.py", &import, &conn),
+            None,
+            "ambiguous module suffixes must not select a global same-name symbol"
+        );
     }
 }
 

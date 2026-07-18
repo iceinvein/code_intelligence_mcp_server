@@ -50,6 +50,67 @@ def test_orchestrator_runs_all_arms_in_order(monkeypatch, tmp_path):
     assert (results_dir / "runs.jsonl").exists()
 
 
+def test_orchestrator_persists_exact_round_provenance(monkeypatch, tmp_path):
+    fixture = _smoke_fixture()
+    repo_path = Path(__file__).resolve().parents[2]
+    monkeypatch.setattr(
+        runner,
+        "run_question",
+        lambda arm, q, daemon, repo_path, transcripts_dir: _fake_run(
+            arm, q, repo_path
+        ),
+    )
+    _no_daemon(monkeypatch)
+    monkeypatch.setattr(orchestrator.repos_mod, "current_daemon_sha", lambda: "git123")
+    monkeypatch.setattr(orchestrator.repos_mod, "daemon_binary_sha256", lambda: "bin123")
+    monkeypatch.setattr(
+        orchestrator.reuse_mod, "binary_version", lambda binary: f"{binary}-v1"
+    )
+
+    results_dir = tmp_path / "R001"
+    orchestrator.run_cycle(
+        arms_to_run=[arms.ARMS["default"], arms.ARMS["code_intel_shipped"]],
+        repos=[(fixture, repo_path)],
+        results_dir=results_dir,
+        judge_enabled=False,
+        repeats=2,
+    )
+
+    meta = json.loads((results_dir / "meta.json").read_text())
+    assert meta["daemon"] == {"git_sha": "git123", "binary_sha256": "bin123"}
+    assert meta["fixtures"][0]["fixture_sha256"] == fixture.meta.fixture_sha256
+    assert meta["configuration"]["repeats"] == 2
+    assert meta["models"]["agent"] == orchestrator.config_mod.AGENT_MODEL
+    assert meta["comparator"] == {
+        "baseline_arm": "default",
+        "candidate_arms": ["code_intel_shipped"],
+    }
+    run_records = [
+        json.loads(line) for line in (results_dir / "runs.jsonl").read_text().splitlines()
+    ]
+    shipped = next(rec for rec in run_records if rec["arm"] == "code_intel_shipped")
+    assert shipped["daemon_sha"] == "git123"
+    assert shipped["daemon_binary_sha256"] == "bin123"
+    assert shipped["fixture_sha256"] == fixture.meta.fixture_sha256
+
+
+def test_orchestrator_rejects_resume_with_changed_provenance(monkeypatch, tmp_path):
+    fixture = _smoke_fixture()
+    results_dir = tmp_path / "R001"
+    results_dir.mkdir()
+    (results_dir / "meta.json").write_text("{}")
+    monkeypatch.setattr(orchestrator.repos_mod, "current_daemon_sha", lambda: "git123")
+    monkeypatch.setattr(orchestrator.repos_mod, "daemon_binary_sha256", lambda: "bin123")
+
+    with pytest.raises(ValueError, match="metadata differs"):
+        orchestrator.run_cycle(
+            arms_to_run=[arms.ARMS["default"]],
+            repos=[(fixture, Path(__file__).resolve().parents[2])],
+            results_dir=results_dir,
+            judge_enabled=False,
+        )
+
+
 def _fake_run(arm, q, repo_path, answer="src/indexer/pipeline/mod.rs:85 IndexPipeline struct",
               run_error=None):
     return runner.Run(

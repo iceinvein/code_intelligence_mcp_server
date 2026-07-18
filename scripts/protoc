@@ -14,36 +14,159 @@ case "$ARCH" in
 esac
 
 PLATFORM="osx"
-
 CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}"
-CACHE_DIR="${CACHE_BASE}/code-intel-protoc/${VERSION}/${PLATFORM}-${ARCH}"
+CACHE_PARENT="${CACHE_BASE}/code-intel-protoc/${VERSION}"
+CACHE_DIR="${CACHE_PARENT}/${PLATFORM}-${ARCH}"
 BIN="${CACHE_DIR}/bin/protoc"
+LOCK_DIR="${CACHE_DIR}.lock"
+LOCK_TIMEOUT_SECONDS="${PROTOC_LOCK_TIMEOUT_SECONDS:-120}"
+STAGE_DIR=""
+LOCK_HELD=0
 
-if [ ! -x "$BIN" ]; then
-  rm -rf "$CACHE_DIR"
-  mkdir -p "$CACHE_DIR"
-
-  ZIP_NAME="protoc-${VERSION}-${PLATFORM}-${ARCH}.zip"
-  URL="https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/${ZIP_NAME}"
-  case "${VERSION}:${PLATFORM}-${ARCH}" in
-    "29.3:osx-aarch_64") EXPECTED_SHA256="2b8a3403cd097f95f3ba656e14b76c732b6b26d7f183330b11e36ef2bc028765" ;;
-    "29.3:osx-x86_64") EXPECTED_SHA256="9a788036d8f9854f7b03c305df4777cf0e54e5b081e25bf15252da87e0e90875" ;;
-    *)
-      echo "no pinned checksum for protoc ${VERSION} ${PLATFORM}-${ARCH}" 1>&2
-      exit 1
-      ;;
-  esac
-
-  TMP_DIR="$(mktemp -d)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
-
-  curl -fsSL "$URL" -o "${TMP_DIR}/${ZIP_NAME}"
-  ACTUAL_SHA256="$(shasum -a 256 "${TMP_DIR}/${ZIP_NAME}" | awk '{print $1}')"
-  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-    echo "checksum mismatch for ${ZIP_NAME}: expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}" 1>&2
+case "$LOCK_TIMEOUT_SECONDS" in
+  ''|*[!0-9]*)
+    echo "PROTOC_LOCK_TIMEOUT_SECONDS must be a non-negative integer" 1>&2
     exit 1
+    ;;
+esac
+
+cleanup() {
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    rm -rf "$LOCK_DIR"
   fi
-  unzip -o -q "${TMP_DIR}/${ZIP_NAME}" -d "$CACHE_DIR"
+  if [ -n "$STAGE_DIR" ] && [ -e "$STAGE_DIR" ]; then
+    rm -rf "$STAGE_DIR"
+  fi
+}
+trap cleanup EXIT
+
+cache_is_valid() {
+  local root="$1"
+  local candidate="${root}/bin/protoc"
+  local reported_version
+
+  [ -x "$candidate" ] || return 1
+  [ -s "${root}/include/google/protobuf/descriptor.proto" ] || return 1
+  [ -s "${root}/include/google/protobuf/compiler/plugin.proto" ] || return 1
+  reported_version="$($candidate --version 2>/dev/null)" || return 1
+  [ "$reported_version" = "libprotoc ${VERSION}" ]
+}
+
+acquire_lock() {
+  local started_at now owner_pid
+  started_at="$(date +%s)"
+
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    owner_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
+    now="$(date +%s)"
+
+    if [ -n "$owner_pid" ]; then
+      if ! kill -0 "$owner_pid" 2>/dev/null; then
+        rm -rf "$LOCK_DIR"
+        continue
+      fi
+    fi
+
+    if [ $((now - started_at)) -ge "$LOCK_TIMEOUT_SECONDS" ]; then
+      echo "timed out waiting ${LOCK_TIMEOUT_SECONDS}s for protoc cache lock: ${LOCK_DIR}" 1>&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+
+  LOCK_HELD=1
+  printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    echo "missing SHA-256 tool: install shasum or sha256sum" 1>&2
+    return 1
+  fi
+}
+
+if cache_is_valid "$CACHE_DIR"; then
+  exec "$BIN" "$@"
 fi
 
+mkdir -p "$CACHE_PARENT"
+acquire_lock
+
+# A process that waited for the lock can reuse the completed installation.
+if cache_is_valid "$CACHE_DIR"; then
+  rm -rf "$LOCK_DIR"
+  LOCK_HELD=0
+  exec "$BIN" "$@"
+fi
+
+for command_name in curl unzip mktemp; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "missing required command '${command_name}' for protoc bootstrap" 1>&2
+    exit 1
+  fi
+done
+
+ZIP_NAME="protoc-${VERSION}-${PLATFORM}-${ARCH}.zip"
+DEFAULT_URL="https://github.com/protocolbuffers/protobuf/releases/download/v${VERSION}/${ZIP_NAME}"
+URL="${PROTOC_DOWNLOAD_URL:-$DEFAULT_URL}"
+case "${VERSION}:${PLATFORM}-${ARCH}" in
+  "29.3:osx-aarch_64") PINNED_SHA256="2b8a3403cd097f95f3ba656e14b76c732b6b26d7f183330b11e36ef2bc028765" ;;
+  "29.3:osx-x86_64") PINNED_SHA256="9a788036d8f9854f7b03c305df4777cf0e54e5b081e25bf15252da87e0e90875" ;;
+  *)
+    echo "no pinned checksum for protoc ${VERSION} ${PLATFORM}-${ARCH}" 1>&2
+    exit 1
+    ;;
+esac
+EXPECTED_SHA256="${PROTOC_EXPECTED_SHA256:-$PINNED_SHA256}"
+
+# Staging lives beside the final cache so the final rename is on one filesystem.
+STAGE_DIR="$(mktemp -d "${CACHE_PARENT}/.${PLATFORM}-${ARCH}.tmp.XXXXXX")"
+ARCHIVE="${STAGE_DIR}/${ZIP_NAME}"
+curl -fsSL "$URL" -o "$ARCHIVE"
+
+ACTUAL_SHA256="$(sha256_file "$ARCHIVE")"
+if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+  echo "checksum mismatch for ${ZIP_NAME}: expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}" 1>&2
+  exit 1
+fi
+
+EXTRACT_DIR="${STAGE_DIR}/extract"
+mkdir -p "$EXTRACT_DIR"
+unzip -q "$ARCHIVE" -d "$EXTRACT_DIR"
+chmod +x "${EXTRACT_DIR}/bin/protoc" 2>/dev/null || true
+
+if ! cache_is_valid "$EXTRACT_DIR"; then
+  echo "downloaded protoc archive is incomplete or reports the wrong version" 1>&2
+  exit 1
+fi
+
+# Never mutate the live cache in place. Move an invalid cache aside only after
+# the staged tree is verified, then atomically rename the staged tree into place.
+OLD_DIR="${CACHE_DIR}.invalid.$$"
+rm -rf "$OLD_DIR"
+if [ -e "$CACHE_DIR" ]; then
+  mv "$CACHE_DIR" "$OLD_DIR"
+fi
+if ! mv "$EXTRACT_DIR" "$CACHE_DIR"; then
+  if [ -e "$OLD_DIR" ]; then
+    mv "$OLD_DIR" "$CACHE_DIR"
+  fi
+  echo "failed to publish verified protoc cache at ${CACHE_DIR}" 1>&2
+  exit 1
+fi
+rm -rf "$OLD_DIR"
+
+if ! cache_is_valid "$CACHE_DIR"; then
+  echo "published protoc cache failed post-install validation" 1>&2
+  exit 1
+fi
+
+rm -rf "$STAGE_DIR"
+STAGE_DIR=""
+rm -rf "$LOCK_DIR"
+LOCK_HELD=0
 exec "$BIN" "$@"

@@ -29,6 +29,8 @@ pub fn ensure_graph_index_version(conn: &Connection, current_version: &str) -> R
         .context("Failed to clear edge evidence for graph format change")?;
     tx.execute("DELETE FROM edges", [])
         .context("Failed to clear edges for graph format change")?;
+    tx.execute("DELETE FROM module_bindings", [])
+        .context("Failed to clear module bindings for graph format change")?;
     tx.execute("DELETE FROM file_fingerprints", [])
         .context("Failed to clear fingerprints for graph format change")?;
     tx.execute(

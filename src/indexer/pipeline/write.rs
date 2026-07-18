@@ -28,6 +28,8 @@ impl Drop for ForeignKeysOffGuard<'_> {
 pub struct WriteStats {
     pub files_written: usize,
     pub symbols_written: usize,
+    pub sqlite_ms: u64,
+    pub tantivy_ms: u64,
 }
 
 /// Write parsed files to SQLite and Tantivy in efficient batches.
@@ -52,6 +54,8 @@ pub fn write_batch(
     let mut stats = WriteStats {
         files_written: 0,
         symbols_written: 0,
+        sqlite_ms: 0,
+        tantivy_ms: 0,
     };
 
     // Disable FK enforcement during batch writes. Chunks of files are written
@@ -61,6 +65,7 @@ pub fn write_batch(
 
     for chunk in parsed_files.chunks(CHUNK_SIZE) {
         // --- SQLite: one transaction per chunk ---
+        let sqlite_t = std::time::Instant::now();
         let tx = conn
             .unchecked_transaction()
             .context("Failed to begin transaction for write_batch chunk")?;
@@ -78,6 +83,20 @@ pub fn write_batch(
                     )
                 },
             )?;
+            queries::module_bindings::delete_by_file(&tx, &file.rel_path).with_context(|| {
+                format!(
+                    "Failed to delete module bindings for file: {}",
+                    file.rel_path
+                )
+            })?;
+            // Foreign keys are intentionally disabled for chunk replacement,
+            // so delete occurrence metadata explicitly before its symbols.
+            queries::symbol_identities::delete_by_file(&tx, &file.rel_path).with_context(|| {
+                format!(
+                    "Failed to delete symbol identities for file: {}",
+                    file.rel_path
+                )
+            })?;
             queries::symbols::delete_symbols_by_file(&tx, &file.rel_path)
                 .with_context(|| format!("Failed to delete symbols for file: {}", file.rel_path))?;
             queries::misc::delete_usage_examples_by_file(&tx, &file.rel_path).with_context(
@@ -104,10 +123,27 @@ pub fn write_batch(
                     )
                 })?;
 
-            // Batch upsert new data
+            // Validate occurrence ids before any symbol row can overwrite an
+            // unrelated declaration, then persist symbols and their logical
+            // identity metadata in the same transaction.
+            queries::symbol_identities::validate_no_collisions(&tx, &file.symbol_identities)
+                .with_context(|| {
+                    format!(
+                        "Failed symbol identity collision validation for file: {}",
+                        file.rel_path
+                    )
+                })?;
             queries::symbols::batch_upsert_symbols(&tx, &file.symbol_rows).with_context(|| {
                 format!("Failed to batch upsert symbols for file: {}", file.rel_path)
             })?;
+            queries::symbol_identities::batch_upsert(&tx, &file.symbol_identities).with_context(
+                || {
+                    format!(
+                        "Failed to batch upsert symbol identities for file: {}",
+                        file.rel_path
+                    )
+                },
+            )?;
 
             queries::edges::batch_upsert_edges(&tx, &file.edges).with_context(|| {
                 format!("Failed to batch upsert edges for file: {}", file.rel_path)
@@ -185,8 +221,12 @@ pub fn write_batch(
 
         tx.commit()
             .context("Failed to commit transaction for write_batch chunk")?;
+        stats.sqlite_ms = stats
+            .sqlite_ms
+            .saturating_add(elapsed_ms(sqlite_t.elapsed()));
 
         // --- Tantivy: upsert for this chunk, no commit yet ---
+        let tantivy_t = std::time::Instant::now();
         for file in chunk {
             tantivy
                 .delete_symbols_by_file(&file.rel_path)
@@ -208,11 +248,15 @@ pub fn write_batch(
                     })?;
             }
         }
+        stats.tantivy_ms = stats
+            .tantivy_ms
+            .saturating_add(elapsed_ms(tantivy_t.elapsed()));
     }
 
     // Foreign keys are disabled while files are replaced so incoming edges to
     // stable IDs survive. Once every replacement symbol has been written,
     // remove incoming edges whose targets genuinely disappeared.
+    let sqlite_t = std::time::Instant::now();
     let orphaned_edges = queries::edges::delete_orphan_edges(conn)?;
     if orphaned_edges > 0 {
         tracing::debug!(
@@ -220,13 +264,56 @@ pub fn write_batch(
             "Removed orphan graph edges after symbol replacement"
         );
     }
+    let orphaned_bindings = queries::module_bindings::clear_orphan_targets(conn)?;
+    if orphaned_bindings > 0 {
+        tracing::debug!(
+            orphaned_bindings,
+            "Cleared orphan module-binding targets after symbol replacement"
+        );
+    }
+    let orphaned_usage_examples = queries::misc::delete_orphan_usage_examples(conn)?;
+    if orphaned_usage_examples > 0 {
+        tracing::debug!(
+            orphaned_usage_examples,
+            "Removed usage examples whose symbol endpoints do not exist"
+        );
+    }
+    stats.sqlite_ms = stats
+        .sqlite_ms
+        .saturating_add(elapsed_ms(sqlite_t.elapsed()));
 
     // Single Tantivy commit after ALL chunks
+    let tantivy_t = std::time::Instant::now();
     tantivy
         .commit()
         .context("Failed to commit Tantivy index after write_batch")?;
+    stats.tantivy_ms = stats
+        .tantivy_ms
+        .saturating_add(elapsed_ms(tantivy_t.elapsed()));
 
     Ok(stats)
+}
+
+fn elapsed_ms(elapsed: std::time::Duration) -> u64 {
+    elapsed.as_millis().min(u64::MAX as u128) as u64
+}
+
+pub fn write_module_bindings_batch(
+    bundles: &[Vec<crate::storage::sqlite::ModuleBindingRow>],
+    conn: &Connection,
+) -> Result<usize> {
+    let tx = conn
+        .unchecked_transaction()
+        .context("Failed to begin module binding write transaction")?;
+    let mut written = 0usize;
+    for rows in bundles {
+        queries::module_bindings::batch_upsert(&tx, rows)
+            .context("Failed to batch upsert module bindings")?;
+        written += rows.len();
+    }
+    tx.commit()
+        .context("Failed to commit module binding write transaction")?;
+    Ok(written)
 }
 
 /// Write the per-file edge bundles produced by the deferred edge-extraction
@@ -288,7 +375,7 @@ mod tests {
     use super::*;
     use crate::indexer::pipeline::utils::FileFingerprint;
     use crate::path::Utf8PathBuf;
-    use crate::storage::sqlite::schema::SymbolRow;
+    use crate::storage::sqlite::schema::{SymbolIdentityRow, SymbolRow};
     use crate::storage::sqlite::SqliteStore;
     use crate::storage::tantivy::TantivyIndex;
     use std::time::SystemTime;
@@ -315,7 +402,7 @@ mod tests {
         // Create SqliteStore and init schema
         let sqlite = SqliteStore::open(&db_path).unwrap();
         sqlite.init().unwrap();
-        let conn = sqlite.read().unwrap();
+        let conn = sqlite.write().unwrap();
 
         // Create TantivyIndex
         let tantivy = TantivyIndex::open_or_create(&tantivy_path).unwrap();
@@ -356,6 +443,24 @@ mod tests {
                     text: "fn bar() {}".to_string(),
                 },
             ],
+            symbol_identities: vec![
+                SymbolIdentityRow {
+                    symbol_id: "s1".into(),
+                    logical_id: "s1".into(),
+                    qualified_name: "foo".into(),
+                    signature: "fn foo()".into(),
+                    occurrence_discriminator: "foo:0".into(),
+                    is_canonical: true,
+                },
+                SymbolIdentityRow {
+                    symbol_id: "s2".into(),
+                    logical_id: "s2".into(),
+                    qualified_name: "bar".into(),
+                    signature: "fn bar()".into(),
+                    occurrence_discriminator: "bar:0".into(),
+                    is_canonical: true,
+                },
+            ],
             edges: vec![],
             usage_examples: vec![],
             import_tags: "std".to_string(),
@@ -366,6 +471,7 @@ mod tests {
             framework_patterns: vec![],
             is_test_file: false,
             imports: vec![],
+            module_bindings: vec![],
             type_edges: vec![],
             extends_edges: vec![],
             dataflow_edges: vec![],
@@ -383,6 +489,10 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+        let identity_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM symbol_identities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(identity_count, 2);
 
         // Assert fingerprint was stored
         let fp_count: i64 = conn
@@ -414,7 +524,7 @@ mod tests {
         // Create SqliteStore and init schema
         let sqlite = SqliteStore::open(&db_path).unwrap();
         sqlite.init().unwrap();
-        let conn = sqlite.read().unwrap();
+        let conn = sqlite.write().unwrap();
 
         // Create TantivyIndex
         let tantivy = TantivyIndex::open_or_create(&tantivy_path).unwrap();
@@ -444,6 +554,7 @@ mod tests {
                     end_line: 3,
                     text: format!("fn func{}() {{}}", i),
                 }],
+                symbol_identities: vec![],
                 edges: vec![],
                 usage_examples: vec![],
                 import_tags: "".to_string(),
@@ -454,6 +565,7 @@ mod tests {
                 framework_patterns: vec![],
                 is_test_file: false,
                 imports: vec![],
+                module_bindings: vec![],
                 type_edges: vec![],
                 extends_edges: vec![],
                 dataflow_edges: vec![],
@@ -497,7 +609,7 @@ mod tests {
         // Create SqliteStore and init schema
         let sqlite = SqliteStore::open(&db_path).unwrap();
         sqlite.init().unwrap();
-        let conn = sqlite.read().unwrap();
+        let conn = sqlite.write().unwrap();
 
         // Create TantivyIndex
         let tantivy = TantivyIndex::open_or_create(&tantivy_path).unwrap();
@@ -528,7 +640,7 @@ mod tests {
         // Create SqliteStore and init schema
         let sqlite = SqliteStore::open(&db_path).unwrap();
         sqlite.init().unwrap();
-        let conn = sqlite.read().unwrap();
+        let conn = sqlite.write().unwrap();
 
         // Create TantivyIndex
         let tantivy = TantivyIndex::open_or_create(&tantivy_path).unwrap();
@@ -554,6 +666,7 @@ mod tests {
                 end_line: 3,
                 text: "fn foo() {}".to_string(),
             }],
+            symbol_identities: vec![],
             edges: vec![],
             usage_examples: vec![],
             import_tags: "".to_string(),
@@ -564,6 +677,7 @@ mod tests {
             framework_patterns: vec![],
             is_test_file: false,
             imports: vec![],
+            module_bindings: vec![],
             type_edges: vec![],
             extends_edges: vec![],
             dataflow_edges: vec![],
@@ -613,6 +727,7 @@ mod tests {
                     text: "fn baz() {}".to_string(),
                 },
             ],
+            symbol_identities: vec![],
             edges: vec![],
             usage_examples: vec![],
             import_tags: "".to_string(),
@@ -623,6 +738,7 @@ mod tests {
             framework_patterns: vec![],
             is_test_file: false,
             imports: vec![],
+            module_bindings: vec![],
             type_edges: vec![],
             extends_edges: vec![],
             dataflow_edges: vec![],
@@ -669,7 +785,7 @@ mod tests {
     fn deferred_edge_write_rejects_missing_symbol_endpoint() {
         let sqlite = SqliteStore::open_in_memory().unwrap();
         sqlite.init().unwrap();
-        let conn = sqlite.read().unwrap();
+        let conn = sqlite.write().unwrap();
         queries::symbols::upsert_symbol(
             &conn,
             &SymbolRow {

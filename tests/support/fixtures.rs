@@ -29,7 +29,7 @@ use code_intelligence_mcp_server::{
 };
 use rstest::*;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -68,6 +68,13 @@ pub fn tmp_dir() -> PathBuf {
 /// - Test-friendly settings (no watch mode, metrics disabled)
 #[fixture]
 pub fn test_config(tmp_dir: PathBuf) -> Config {
+    test_config_for_dir(tmp_dir)
+}
+
+/// Build the shared hash-backend test configuration for a caller-owned
+/// directory. Integration gates use this directly when they need to write a
+/// complete source fixture before constructing [`AppState`].
+pub fn test_config_for_dir(tmp_dir: PathBuf) -> Config {
     let base_dir = tmp_dir.canonicalize().unwrap_or_else(|_| tmp_dir.clone());
     let base_dir_utf8 = Utf8PathBuf::from_path_buf(base_dir.clone())
         .unwrap_or_else(|_| Utf8PathBuf::from(base_dir.to_string_lossy().as_ref()));
@@ -94,7 +101,23 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         index_patterns: vec![
             "**/*.ts".to_string(),
             "**/*.tsx".to_string(),
+            "**/*.js".to_string(),
+            "**/*.jsx".to_string(),
             "**/*.rs".to_string(),
+            "**/*.py".to_string(),
+            "**/*.go".to_string(),
+            "**/*.java".to_string(),
+            "**/*.kt".to_string(),
+            "**/*.kts".to_string(),
+            "**/*.cs".to_string(),
+            "**/*.swift".to_string(),
+            "**/*.c".to_string(),
+            "**/*.h".to_string(),
+            "**/*.cpp".to_string(),
+            "**/*.cc".to_string(),
+            "**/*.cxx".to_string(),
+            "**/*.hpp".to_string(),
+            "**/*.rb".to_string(),
         ],
         exclude_patterns: vec![],
         watch_mode: false,
@@ -130,11 +153,12 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         metrics_enabled: false,
         metrics_port: 9090,
         package_detection_enabled: false,
-            external_index_auto: false,
-            external_index_producer: None,
-            external_index_on_refresh: "disabled".to_string(),
-            external_index_min_interval_ms: 60_000,
+        external_index_auto: false,
+        external_index_producer: None,
+        external_index_on_refresh: "disabled".to_string(),
+        external_index_min_interval_ms: 60_000,
         llm_enabled: false,
+        descriptions_enabled: false,
         llm_device: EmbeddingsDevice::Cpu,
         llm_model_dir: None,
         llm_max_tokens: 30,
@@ -146,6 +170,55 @@ pub fn test_config(tmp_dir: PathBuf) -> Config {
         leader_ttl_seconds: 30,
         embedding_truncate_dim: None,
         embedding_dim_override: None,
+    }
+}
+
+/// Construct a complete test state without nesting a Tokio runtime. This is
+/// the preferred path for async integration gates; the rstest fixtures above
+/// remain available for smaller dependency-injection tests.
+pub async fn app_state_for_config(config: Config) -> AppState {
+    let config = Arc::new(config);
+    let sqlite = Arc::new(SqliteStore::open(&config.db_path).unwrap());
+    sqlite.init().unwrap();
+    let tantivy_index = Arc::new(TantivyIndex::open_or_create(&config.tantivy_index_path).unwrap());
+    let hash_embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(
+        config.hash_embedding_dim,
+    ))));
+    let lancedb = LanceDbStore::connect(&config.vector_db_path).await.unwrap();
+    let vector_store = Arc::new(
+        lancedb
+            .open_or_create_table("symbols", config.hash_embedding_dim)
+            .await
+            .unwrap(),
+    );
+    let metrics = Arc::new(MetricsRegistry::new().unwrap());
+    let indexer = IndexPipeline::new(
+        config.clone(),
+        sqlite.clone(),
+        tantivy_index.clone(),
+        vector_store.clone(),
+        hash_embedder.clone(),
+        metrics.clone(),
+    );
+    let retriever = Retriever::new(
+        config.clone(),
+        sqlite.clone(),
+        tantivy_index,
+        vector_store,
+        hash_embedder,
+        None,
+        None,
+        metrics,
+    );
+
+    AppState {
+        config,
+        indexer,
+        retriever,
+        sqlite,
+        mcp_runtime: Arc::new(once_cell::sync::OnceCell::new()),
+        answer_generator: Arc::new(once_cell::sync::OnceCell::new()),
+        ask_code_cache: Arc::new(Default::default()),
     }
 }
 
@@ -251,6 +324,7 @@ pub fn app_state(
     // Create index pipeline
     let indexer = IndexPipeline::new(
         config.clone(),
+        sqlite.clone(),
         tantivy_index.clone(),
         vector_store.clone(),
         hash_embedder.clone(),
@@ -260,6 +334,7 @@ pub fn app_state(
     // Create retriever
     let retriever = Retriever::new(
         config.clone(),
+        sqlite.clone(),
         tantivy_index,
         vector_store,
         hash_embedder,

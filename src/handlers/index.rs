@@ -139,6 +139,18 @@ pub fn handle_get_index_stats(state: &AppState) -> Result<serde_json::Value, any
         "last_updated_unix_s": last_updated,
         "latest_index_run": latest_index_run,
         "latest_search_run": latest_search_run,
+        "performance_config": {
+            "embeddings_backend": state.config.embeddings_backend,
+            "embeddings_device": state.config.embeddings_device,
+            "embedding_dimension": state.retriever.get_vector_store().vector_dim(),
+            "vector_search_limit": state.config.vector_search_limit,
+            "hybrid_alpha": state.config.hybrid_alpha,
+            "rrf_enabled": state.config.rrf_enabled,
+            "rrf_k": state.config.rrf_k,
+            "reranker_enabled": state.config.reranker_enabled,
+            "descriptions_enabled": state.config.descriptions_enabled,
+            "learning_enabled": state.config.learning_enabled,
+        },
         "external_indexes": {
             "index_count": external.index_count,
             "symbol_count": external.symbol_count,

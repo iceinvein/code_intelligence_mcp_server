@@ -93,8 +93,7 @@ pub fn merged_references_to_internal_symbol(
 fn fetch_limit_for(limit: usize) -> usize {
     limit
         .saturating_mul(FETCH_MULTIPLIER)
-        .max(MIN_FETCH_LIMIT)
-        .min(MAX_FETCH_LIMIT)
+        .clamp(MIN_FETCH_LIMIT, MAX_FETCH_LIMIT)
 }
 
 fn native_reference(sqlite: &SqliteStore, edge: EdgeRow) -> Result<MergedReference> {

@@ -15,8 +15,8 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use code_intelligence_mcp_server::cli;
 use code_intelligence_mcp_server::embeddings::{
-    create_embedder, default_embedding_dim, DeferredEmbedder, Embedder, SharedEmbedder,
-    TruncatingEmbedder,
+    create_embedder, default_embedding_dim, ensure_native_llama_available, DeferredEmbedder,
+    Embedder, SharedEmbedder, TruncatingEmbedder,
 };
 use code_intelligence_mcp_server::reranker::{
     create_reranker, deferred::DeferredReranker, Reranker,
@@ -675,6 +675,16 @@ async fn run_standalone(
             .map_err(|e| McpSdkError::Internal {
                 description: e.to_string(),
             })?;
+
+    if matches!(
+        standalone_config.embeddings_backend,
+        code_intelligence_mcp_server::config::EmbeddingsBackend::LlamaCpp
+    ) || standalone_config.reranker_enabled
+    {
+        ensure_native_llama_available().map_err(|e| McpSdkError::Internal {
+            description: format!("Native model configuration is unavailable: {e}"),
+        })?;
+    }
 
     // Ensure data directories exist
     let data_dir = &standalone_config.data_dir;

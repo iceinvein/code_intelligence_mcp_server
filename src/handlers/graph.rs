@@ -3,6 +3,7 @@
 //! Covers dependency graphs, call hierarchies, type graphs, similarity
 //! clusters, and data-flow traces.
 
+use super::symbol_resolution::{resolve_symbol, SymbolResolution};
 use super::AppState;
 use crate::external_index::provider::{
     merged_references_to_internal_symbol, MergedReference, ReferenceSource,
@@ -51,11 +52,24 @@ fn resolve_root(
     sqlite: &SqliteStore,
     symbol_name: &str,
     file: Option<&str>,
-) -> Result<Option<SymbolRow>> {
-    Ok(sqlite
-        .search_symbols_by_exact_name(symbol_name, file, 10)?
-        .into_iter()
-        .next())
+) -> Result<SymbolResolution> {
+    resolve_symbol(sqlite, symbol_name, file, 100)
+}
+
+fn graph_resolution_failure(
+    mut response: Value,
+    direction: &str,
+    depth: usize,
+    collection: &str,
+) -> Value {
+    response["direction"] = json!(direction);
+    response["depth"] = json!(depth);
+    response[collection] = json!([]);
+    if collection != "nodes" {
+        return response;
+    }
+    response["edges"] = json!([]);
+    response
 }
 
 /// Handle explore_dependency_graph tool
@@ -70,19 +84,19 @@ pub fn handle_explore_dependency_graph(
     let sqlite = &state.sqlite;
 
     let root_file = normalize_file(state, tool.file.as_ref());
-    let root = resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?;
-
-    let Some(root) = root else {
-        return Ok(json!({
-            "symbol_name": tool.symbol_name,
-            "direction": direction,
-            "depth": depth,
-            "nodes": [],
-            "edges": [],
-        }));
+    let root = match resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?
+        .into_exact(&tool.symbol_name)
+    {
+        Ok(root) => root,
+        Err(response) => {
+            return Ok(graph_resolution_failure(
+                response, &direction, depth, "nodes",
+            ));
+        }
     };
 
-    let graph = build_dependency_graph(sqlite, &root, &direction, depth, limit, None)?;
+    let mut graph = build_dependency_graph(sqlite, &root, &direction, depth, limit, None)?;
+    graph["resolution"] = json!("exact");
     Ok(graph)
 }
 
@@ -98,19 +112,19 @@ pub fn handle_get_call_hierarchy(
     let sqlite = &state.sqlite;
 
     let root_file = normalize_file(state, tool.file.as_ref());
-    let root = resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?;
-
-    let Some(root) = root else {
-        return Ok(json!({
-            "symbol_name": tool.symbol_name,
-            "direction": direction,
-            "depth": depth,
-            "nodes": [],
-            "edges": [],
-        }));
+    let root = match resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?
+        .into_exact(&tool.symbol_name)
+    {
+        Ok(root) => root,
+        Err(response) => {
+            return Ok(graph_resolution_failure(
+                response, &direction, depth, "nodes",
+            ));
+        }
     };
 
     let mut graph = build_call_hierarchy(sqlite, &root, &direction, depth, limit)?;
+    graph["resolution"] = json!("exact");
     if direction == "callers" || direction == "both" {
         overlay_external_callers(sqlite, &mut graph, &root, limit)?;
     }
@@ -248,18 +262,18 @@ pub fn handle_get_type_graph(
     let sqlite = &state.sqlite;
 
     let root_file = normalize_file(state, tool.file.as_ref());
-    let root = resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?;
-
-    let Some(root) = root else {
-        return Ok(json!({
-            "symbol_name": tool.symbol_name,
-            "direction": direction,
-            "depth": depth,
-            "nodes": [],
-            "edges": [],
-        }));
+    let root = match resolve_root(sqlite, &tool.symbol_name, root_file.as_deref())?
+        .into_exact(&tool.symbol_name)
+    {
+        Ok(root) => root,
+        Err(response) => {
+            return Ok(graph_resolution_failure(
+                response, direction, depth, "nodes",
+            ));
+        }
     };
-    let graph = build_type_graph(sqlite, &root, direction, depth, limit)?;
+    let mut graph = build_type_graph(sqlite, &root, direction, depth, limit)?;
+    graph["resolution"] = json!("exact");
     Ok(graph)
 }
 
@@ -290,12 +304,24 @@ mod root_tests {
         store.upsert_symbol(&sym("foo_a", "a.rs", "foo")).unwrap();
         store.upsert_symbol(&sym("foo_b", "b.rs", "foo")).unwrap();
 
-        let a = resolve_root(&store, "foo", Some("a.rs")).unwrap().unwrap();
+        let a = resolve_root(&store, "foo", Some("a.rs"))
+            .unwrap()
+            .into_exact("foo")
+            .unwrap();
         assert_eq!(a.id, "foo_a");
-        let b = resolve_root(&store, "foo", Some("b.rs")).unwrap().unwrap();
+        let b = resolve_root(&store, "foo", Some("b.rs"))
+            .unwrap()
+            .into_exact("foo")
+            .unwrap();
         assert_eq!(b.id, "foo_b");
-        assert!(resolve_root(&store, "foo", None).unwrap().is_some());
-        assert!(resolve_root(&store, "nope", None).unwrap().is_none());
+        assert!(matches!(
+            resolve_root(&store, "foo", None).unwrap(),
+            SymbolResolution::Ambiguous(_)
+        ));
+        assert!(matches!(
+            resolve_root(&store, "nope", None).unwrap(),
+            SymbolResolution::Unresolved
+        ));
     }
 }
 
@@ -312,15 +338,15 @@ pub fn handle_trace_data_flow(
     let sqlite = &state.sqlite;
 
     // Find the root symbol
-    let roots =
-        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file_path.as_deref(), 1)?;
-    let Some(root) = roots.first() else {
-        return Ok(json!({
-            "symbol_name": tool.symbol_name,
-            "error": "SYMBOL_NOT_FOUND",
-            "message": format!("Symbol '{}' not found", tool.symbol_name),
-            "flows": [],
-        }));
+    let root = match resolve_root(sqlite, &tool.symbol_name, tool.file_path.as_deref())?
+        .into_exact(&tool.symbol_name)
+    {
+        Ok(root) => root,
+        Err(response) => {
+            return Ok(graph_resolution_failure(
+                response, &direction, depth, "flows",
+            ));
+        }
     };
 
     // Trace data flow using edge traversal
@@ -450,6 +476,7 @@ pub fn handle_trace_data_flow(
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "file_path": root.file_path,
+        "resolution": "exact",
         "direction": direction,
         "depth": depth,
         "read_count": read_count,
@@ -463,7 +490,7 @@ pub fn handle_trace_data_flow(
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        response["display"] = json!(format_data_flow(root, &flows));
+        response["display"] = json!(format_data_flow(&root, &flows));
     }
     Ok(response)
 }

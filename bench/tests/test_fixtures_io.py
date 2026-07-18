@@ -1,4 +1,5 @@
 """Tests for bench/fixtures_io.py."""
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ def test_load_smoke_fixture():
     fixture = fixtures_io.load_fixture(SMOKE_PATH)
     assert fixture.meta.repo == "smoke"
     assert fixture.meta.upstream_sha == "HEAD"
+    assert fixture.meta.fixture_sha256 == hashlib.sha256(SMOKE_PATH.read_bytes()).hexdigest()
     assert len(fixture.questions) == 3
 
 

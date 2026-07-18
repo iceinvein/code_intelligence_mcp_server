@@ -448,7 +448,7 @@ All data lives in `~/.code-intelligence/`:
 ```bash
 cargo build --release
 cargo test                                        # Full test suite
-EMBEDDINGS_BACKEND=hash cargo test                # Fast (no model download)
+EMBEDDINGS_BACKEND=hash cargo test --no-default-features  # Fast; no llama.cpp/CMake/model
 ./scripts/start_mcp.sh                            # Start MCP server
 ```
 

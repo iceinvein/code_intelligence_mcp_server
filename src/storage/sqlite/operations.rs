@@ -1,38 +1,64 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Mutex, MutexGuard};
 
+use super::pool::{PooledConnection, SqlitePool};
 use super::schema::SCHEMA_SQL;
 use crate::path::Utf8Path;
 
+const DEFAULT_READ_POOL_SIZE: usize = 8;
+
+pub enum SqliteReadConnection<'a> {
+    Pooled(PooledConnection<'a>),
+    Single(MutexGuard<'a, Connection>),
+}
+
+impl Deref for SqliteReadConnection<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Pooled(conn) => conn,
+            Self::Single(conn) => conn,
+        }
+    }
+}
+
 pub struct SqliteStore {
-    // A single rusqlite Connection behind a Mutex. Every rusqlite operation --
-    // even a SELECT -- mutably borrows the Connection's internal RefCell, so all
-    // access must be serialized (Connection is Send but not Sync). A Mutex does
-    // that; an RwLock would hand out concurrent read guards, letting two readers
-    // double-borrow the RefCell and panic ("RefCell already borrowed"). Because
-    // Connection is Send, Mutex<Connection> is Send + Sync, so no unsafe impls.
+    // Mutations are serialized deliberately through one writer. File-backed
+    // stores use independent WAL reader connections so concurrent requests do
+    // not contend on this mutex for SELECTs. In-memory/test connections fall
+    // back to the writer because independent `:memory:` connections do not
+    // share a database.
     pub(crate) conn: Mutex<Connection>,
+    read_pool: Option<SqlitePool>,
 }
 
 impl SqliteStore {
-    /// Acquire exclusive access to the connection.
-    ///
-    /// Named `read` for historical call-site compatibility, but it takes the
-    /// same exclusive lock as `write`: rusqlite needs exclusive access for every
-    /// operation, including reads. Returns Result to surface a poisoned lock
-    /// (a previous panic while holding it) instead of panicking again.
-    pub fn read(&self) -> Result<MutexGuard<'_, Connection>> {
+    /// Checkout a pooled read connection, or the single test connection for an
+    /// in-memory store.
+    pub fn read(&self) -> Result<SqliteReadConnection<'_>> {
+        if let Some(pool) = &self.read_pool {
+            return pool.get().map(SqliteReadConnection::Pooled);
+        }
+        self.conn
+            .lock()
+            .map(SqliteReadConnection::Single)
+            .map_err(|e| {
+                anyhow::anyhow!("Database connection lock is poisoned: {}", e).context(
+                    "Connection lock poisoned - indicates a previous panic while holding it",
+                )
+            })
+    }
+
+    /// Acquire exclusive access to the repository's single writer connection.
+    pub fn write(&self) -> Result<MutexGuard<'_, Connection>> {
         self.conn.lock().map_err(|e| {
             anyhow::anyhow!("Database connection lock is poisoned: {}", e)
                 .context("Connection lock poisoned - indicates a previous panic while holding it")
         })
-    }
-
-    /// Acquire exclusive access to the connection (alias of `read`; see above).
-    pub fn write(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.read()
     }
 }
 
@@ -64,12 +90,14 @@ impl SqliteStore {
 
         Ok(Self {
             conn: Mutex::new(conn),
+            read_pool: Some(SqlitePool::new(db_path, DEFAULT_READ_POOL_SIZE)?),
         })
     }
 
     pub fn from_connection(conn: Connection) -> Self {
         Self {
             conn: Mutex::new(conn),
+            read_pool: None,
         }
     }
 
@@ -80,6 +108,7 @@ impl SqliteStore {
             .context("Failed to enable foreign keys on in-memory connection")?;
         Ok(Self {
             conn: Mutex::new(conn),
+            read_pool: None,
         })
     }
 
@@ -102,6 +131,11 @@ impl SqliteStore {
             migrate_add_search_runs_timing_columns(&conn).with_context(|| {
                 "Failed to run migration: migrate_add_search_runs_timing_columns"
             })?;
+            migrate_add_search_runs_stage_columns(&conn).with_context(|| {
+                "Failed to run migration: migrate_add_search_runs_stage_columns"
+            })?;
+            migrate_add_index_runs_stage_columns(&conn)
+                .with_context(|| "Failed to run migration: migrate_add_index_runs_stage_columns")?;
             migrate_external_reference_dedupe_columns(&conn).with_context(|| {
                 "Failed to run migration: migrate_external_reference_dedupe_columns"
             })?;
@@ -117,6 +151,7 @@ DELETE FROM cross_repo_edges;
 DELETE FROM external_indexes;
 DELETE FROM edges;
 DELETE FROM edge_evidence;
+DELETE FROM module_bindings;
 DELETE FROM index_metadata;
 DELETE FROM symbols;
 DELETE FROM file_fingerprints;
@@ -197,6 +232,41 @@ fn migrate_add_search_runs_timing_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE search_runs ADD COLUMN assembly_ms INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    Ok(())
+}
+
+fn migrate_add_search_runs_stage_columns(conn: &Connection) -> Result<()> {
+    for sql in [
+        "ALTER TABLE search_runs ADD COLUMN fusion_ms INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE search_runs ADD COLUMN search_path TEXT NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE search_runs ADD COLUMN cache_status TEXT NOT NULL DEFAULT 'miss'",
+        "ALTER TABLE search_runs ADD COLUMN subquery_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE search_runs ADD COLUMN keyword_candidates INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE search_runs ADD COLUMN vector_candidates INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE search_runs ADD COLUMN fused_candidates INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = conn.execute(sql, []);
+    }
+    Ok(())
+}
+
+fn migrate_add_index_runs_stage_columns(conn: &Connection) -> Result<()> {
+    for column in [
+        "scan_ms",
+        "cleanup_ms",
+        "parse_ms",
+        "sqlite_write_ms",
+        "tantivy_ms",
+        "binding_ms",
+        "edge_ms",
+        "embedding_ms",
+        "vector_write_ms",
+        "pagerank_ms",
+        "optimize_ms",
+    ] {
+        let sql = format!("ALTER TABLE index_runs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0");
+        let _ = conn.execute(&sql, []);
+    }
     Ok(())
 }
 
@@ -303,6 +373,72 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_external_references_index_dedupe
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::path::Utf8PathBuf;
+    use crate::storage::sqlite::SymbolRow;
+    use std::sync::{Arc, Barrier};
+
+    fn symbol(id: usize) -> SymbolRow {
+        SymbolRow {
+            id: format!("symbol-{id}"),
+            file_path: format!("src/file_{id}.rs"),
+            language: "rust".to_string(),
+            kind: "function".to_string(),
+            name: format!("function_{id}"),
+            exported: true,
+            start_byte: 0,
+            end_byte: 2,
+            start_line: 1,
+            end_line: 1,
+            text: "fn f() {}".to_string(),
+        }
+    }
+
+    #[test]
+    fn pooled_reads_and_single_writer_are_safe_under_concurrency() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = Utf8PathBuf::from_path_buf(temp.path().join("concurrency.db")).unwrap();
+        let store = Arc::new(SqliteStore::open(&db_path).unwrap());
+        store.init().unwrap();
+        store.upsert_symbol(&symbol(0)).unwrap();
+        let barrier = Arc::new(Barrier::new(5));
+
+        std::thread::scope(|scope| {
+            let writer_store = store.clone();
+            let writer_barrier = barrier.clone();
+            let writer = scope.spawn(move || {
+                writer_barrier.wait();
+                for id in 1..100 {
+                    writer_store.upsert_symbol(&symbol(id)).unwrap();
+                }
+            });
+
+            let readers = (0..4)
+                .map(|_| {
+                    let reader_store = store.clone();
+                    let reader_barrier = barrier.clone();
+                    scope.spawn(move || {
+                        reader_barrier.wait();
+                        for _ in 0..100 {
+                            assert!(reader_store.count_symbols().unwrap() >= 1);
+                            assert!(reader_store.get_symbol_by_id("symbol-0").unwrap().is_some());
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            writer.join().unwrap();
+            for reader in readers {
+                reader.join().unwrap();
+            }
+        });
+
+        assert_eq!(store.count_symbols().unwrap(), 100);
+    }
+}
+
 fn table_exists(conn: &Connection, table_name: &str) -> Result<bool> {
     let count: i64 = conn
         .query_row(
@@ -329,6 +465,48 @@ fn column_exists(conn: &Connection, table_name: &str, column_name: &str) -> Resu
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod telemetry_migration_tests {
+    use super::*;
+
+    #[test]
+    fn init_adds_stage_telemetry_to_existing_run_tables() {
+        let conn = Connection::open_in_memory().expect("memory sqlite");
+        conn.execute_batch(
+            r#"
+CREATE TABLE index_runs (
+  id INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+  files_scanned INTEGER NOT NULL, files_indexed INTEGER NOT NULL, files_skipped INTEGER NOT NULL,
+  files_unchanged INTEGER NOT NULL, files_deleted INTEGER NOT NULL, symbols_indexed INTEGER NOT NULL
+);
+CREATE TABLE search_runs (
+  id INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+  keyword_ms INTEGER NOT NULL, vector_ms INTEGER NOT NULL, merge_ms INTEGER NOT NULL,
+  query TEXT NOT NULL, query_limit INTEGER NOT NULL, exported_only INTEGER NOT NULL,
+  result_count INTEGER NOT NULL
+);
+"#,
+        )
+        .expect("legacy run tables");
+        let store = SqliteStore::from_connection(conn);
+        store.init().expect("migrate schema");
+        let conn = store.read().expect("read migrated schema");
+
+        for column in ["scan_ms", "vector_write_ms", "optimize_ms"] {
+            assert!(column_exists(&conn, "index_runs", column).unwrap());
+        }
+        for column in [
+            "embedding_ms",
+            "fusion_ms",
+            "search_path",
+            "cache_status",
+            "fused_candidates",
+        ] {
+            assert!(column_exists(&conn, "search_runs", column).unwrap());
+        }
+    }
 }
 
 #[cfg(test)]

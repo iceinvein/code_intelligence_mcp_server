@@ -1,4 +1,5 @@
 pub mod hash;
+#[cfg(feature = "native-llama")]
 pub mod llamacpp;
 pub mod shared;
 
@@ -6,6 +7,23 @@ use anyhow::Result;
 use std::sync::Arc;
 
 pub use shared::SharedEmbedder;
+
+/// Fail early when a runtime configuration requires llama.cpp but this binary
+/// was deliberately built without the native backend.
+pub fn ensure_native_llama_available() -> Result<()> {
+    #[cfg(feature = "native-llama")]
+    {
+        Ok(())
+    }
+    #[cfg(not(feature = "native-llama"))]
+    {
+        anyhow::bail!(
+            "this binary was built without the 'native-llama' feature; set \
+             EMBEDDINGS_BACKEND=hash for the lightweight build, or rebuild with \
+             `cargo build --features native-llama` after installing CMake"
+        )
+    }
+}
 
 /// L2-normalize a vector in place.
 ///
@@ -32,6 +50,10 @@ pub(crate) fn l2_normalize(v: &mut [f32]) {
 pub trait Embedder: Send + Sync {
     fn dim(&self) -> usize;
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+
+    fn is_ready(&self) -> bool {
+        true
+    }
 
     /// Embed query texts with model-specific instruction prefix for retrieval.
     ///
@@ -113,6 +135,10 @@ impl Embedder for DeferredEmbedder {
         self.dim
     }
 
+    fn is_ready(&self) -> bool {
+        self.is_ready()
+    }
+
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let guard = self.inner.lock().expect("DeferredEmbedder mutex poisoned");
         match guard.as_ref() {
@@ -183,6 +209,10 @@ impl Embedder for TruncatingEmbedder {
         self.target_dim
     }
 
+    fn is_ready(&self) -> bool {
+        self.inner.is_ready()
+    }
+
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let full = self.inner.embed(texts)?;
         Ok(full
@@ -209,9 +239,11 @@ impl Embedder for TruncatingEmbedder {
 }
 
 /// HuggingFace repository for the GGUF-format jina-code embedding model.
+#[cfg(feature = "native-llama")]
 const EMBEDDING_HF_REPO: &str = "jinaai/jina-code-embeddings-1.5b-GGUF";
 /// Q8_0 quantized GGUF file (~1.6 GB). Higher precision than Q4 because
 /// embedding quality degrades more from quantization than generation quality.
+#[cfg(feature = "native-llama")]
 const EMBEDDING_HF_MODEL_FILE: &str = "jina-code-embeddings-1.5b-Q8_0.gguf";
 
 /// Factory function to create an embedder based on the backend configuration.
@@ -229,21 +261,33 @@ pub fn create_embedder(
 ) -> Result<Box<dyn Embedder>> {
     match backend {
         crate::config::EmbeddingsBackend::LlamaCpp => {
-            let model_dir = model_dir
-                .ok_or_else(|| anyhow::anyhow!("LlamaCpp embedder requires a model directory"))?;
+            ensure_native_llama_available()?;
 
-            let model_file = model_dir.join(EMBEDDING_HF_MODEL_FILE);
-
-            // Auto-download if model not found
-            if !model_file.exists() {
-                tracing::info!(
-                    "Embedding model not found at {}, attempting auto-download...",
-                    model_file
-                );
-                download_embedding_model(model_dir)?;
+            #[cfg(not(feature = "native-llama"))]
+            {
+                let _ = model_dir;
+                unreachable!("ensure_native_llama_available returned success without support")
             }
 
-            Ok(Box::new(llamacpp::LlamaCppEmbedder::new(&model_file)?))
+            #[cfg(feature = "native-llama")]
+            {
+                let model_dir = model_dir.ok_or_else(|| {
+                    anyhow::anyhow!("LlamaCpp embedder requires a model directory")
+                })?;
+
+                let model_file = model_dir.join(EMBEDDING_HF_MODEL_FILE);
+
+                // Auto-download if model not found
+                if !model_file.exists() {
+                    tracing::info!(
+                        "Embedding model not found at {}, attempting auto-download...",
+                        model_file
+                    );
+                    download_embedding_model(model_dir)?;
+                }
+
+                Ok(Box::new(llamacpp::LlamaCppEmbedder::new(&model_file)?))
+            }
         }
         crate::config::EmbeddingsBackend::Hash => Ok(Box::new(hash::HashEmbedder::new(hash_dim))),
     }
@@ -254,6 +298,7 @@ pub fn create_embedder(
 /// Downloads a single GGUF file (~1.6 GB) into the HuggingFace cache,
 /// then creates a symlink in `target_dir`. Uses the same pattern as
 /// the LLM model download in `src/llm/mod.rs`.
+#[cfg(feature = "native-llama")]
 fn download_embedding_model(target_dir: &crate::path::Utf8Path) -> Result<()> {
     use anyhow::Context;
 
@@ -287,6 +332,7 @@ fn download_embedding_model(target_dir: &crate::path::Utf8Path) -> Result<()> {
 }
 
 /// Create a symlink from `source` to `target`.
+#[cfg(feature = "native-llama")]
 fn symlink_or_copy(source: &std::path::Path, target: &std::path::Path) -> Result<()> {
     if target.exists() || target.symlink_metadata().is_ok() {
         std::fs::remove_file(target).ok();
@@ -384,5 +430,14 @@ mod truncating_tests {
             (norm - 1.0).abs() < 1e-5,
             "Full-dim truncated vector should be L2-normalized, got norm={norm}"
         );
+    }
+
+    #[cfg(not(feature = "native-llama"))]
+    #[test]
+    fn native_backend_reports_actionable_error_when_not_compiled() {
+        let error = ensure_native_llama_available().unwrap_err().to_string();
+        assert!(error.contains("without the 'native-llama' feature"));
+        assert!(error.contains("EMBEDDINGS_BACKEND=hash"));
+        assert!(error.contains("cargo build --features native-llama"));
     }
 }

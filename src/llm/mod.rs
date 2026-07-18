@@ -6,12 +6,15 @@
 
 use crate::path::Utf8Path;
 use anyhow::Result;
+#[cfg(feature = "native-llama")]
 use llama_cpp_2::llama_backend::LlamaBackend;
+#[cfg(feature = "native-llama")]
 use once_cell::sync::OnceCell;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 pub mod answer;
+#[cfg(feature = "native-llama")]
 pub mod llamacpp;
 pub mod sampling;
 
@@ -22,8 +25,10 @@ pub mod sampling;
 /// that both the LLM generator and embedding model can share. The backend
 /// lives for the entire process — its `Drop` never runs, which is correct
 /// since freeing it would invalidate all loaded models.
+#[cfg(feature = "native-llama")]
 static LLAMA_BACKEND: OnceCell<&'static LlamaBackend> = OnceCell::new();
 
+#[cfg(feature = "native-llama")]
 pub fn get_or_init_backend() -> anyhow::Result<&'static LlamaBackend> {
     LLAMA_BACKEND
         .get_or_try_init(|| {
@@ -203,41 +208,55 @@ pub fn create_llm_generator_with_ctx(
         return Ok(None);
     }
 
-    let model_dir = match &config.llm_model_dir {
-        Some(dir) => dir.clone(),
-        None => {
-            tracing::info!("No LLM model directory configured, descriptions disabled");
-            return Ok(None);
-        }
-    };
-
-    // GGUF model file path
-    let model_filename = hf_model_file();
-    let model_file = model_dir.join(&model_filename);
-
-    // Auto-download if model not found
-    if !model_file.exists() {
-        tracing::info!(
-            "LLM model not found at {}, attempting auto-download...",
-            model_file
+    #[cfg(not(feature = "native-llama"))]
+    {
+        let _ = n_ctx;
+        anyhow::bail!(
+            "LLM generation was enabled, but this binary was built without the \
+             'native-llama' feature; disable DESCRIPTIONS_ENABLED and \
+             ASK_CODE_LLM_SYNTHESIS, or rebuild with `cargo build --features native-llama` \
+             after installing CMake"
         );
-        match download_model(&model_dir) {
-            Ok(()) => {
-                tracing::info!("LLM model downloaded successfully");
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to download LLM model: {}. Set LLM_ENABLED=false to suppress.",
-                    e
-                );
-                return Ok(None);
-            }
-        }
     }
 
-    // LLM_DEVICE is ignored — llama.cpp auto-detects Metal on macOS.
-    let generator = llamacpp::LlamaCppGenerator::new(&model_file, n_ctx)?;
-    Ok(Some(Arc::new(generator)))
+    #[cfg(feature = "native-llama")]
+    {
+        let model_dir = match &config.llm_model_dir {
+            Some(dir) => dir.clone(),
+            None => {
+                tracing::info!("No LLM model directory configured, descriptions disabled");
+                return Ok(None);
+            }
+        };
+
+        // GGUF model file path
+        let model_filename = hf_model_file();
+        let model_file = model_dir.join(&model_filename);
+
+        // Auto-download if model not found
+        if !model_file.exists() {
+            tracing::info!(
+                "LLM model not found at {}, attempting auto-download...",
+                model_file
+            );
+            match download_model(&model_dir) {
+                Ok(()) => {
+                    tracing::info!("LLM model downloaded successfully");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to download LLM model: {}. Set LLM_ENABLED=false to suppress.",
+                        e
+                    );
+                    return Ok(None);
+                }
+            }
+        }
+
+        // LLM_DEVICE is ignored — llama.cpp auto-detects Metal on macOS.
+        let generator = llamacpp::LlamaCppGenerator::new(&model_file, n_ctx)?;
+        Ok(Some(Arc::new(generator)))
+    }
 }
 
 /// Download the configured Qwen2.5-Coder GGUF model from HuggingFace.
@@ -444,5 +463,23 @@ mod tests {
         let generator = MockLlmGenerator;
         let result = generator.generate("", 50).unwrap();
         assert_eq!(result, "Mock description");
+    }
+
+    #[cfg(not(feature = "native-llama"))]
+    #[test]
+    fn enabled_llm_reports_missing_native_feature() {
+        let repo_data_dir = crate::path::Utf8PathBuf::from("/tmp/code-intelligence-llm-test");
+        let config = crate::config::StandaloneConfig::default().repo_config(
+            crate::path::Utf8PathBuf::from("/tmp/code-intelligence-llm-repo"),
+            &repo_data_dir,
+        );
+
+        let error = create_llm_generator(&config)
+            .err()
+            .expect("native-free builds must reject enabled LLM generation")
+            .to_string();
+        assert!(error.contains("without the 'native-llama' feature"));
+        assert!(error.contains("DESCRIPTIONS_ENABLED"));
+        assert!(error.contains("ASK_CODE_LLM_SYNTHESIS"));
     }
 }

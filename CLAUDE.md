@@ -88,7 +88,7 @@ cargo test                                      # All tests
 ./target/release/code-intelligence-mcp-server --port 18000          # custom port
 
 # For faster testing (skip model download)
-EMBEDDINGS_BACKEND=hash cargo test
+EMBEDDINGS_BACKEND=hash cargo test --no-default-features
 
 # Lifecycle subcommands (production install)
 ./target/release/code-intelligence-mcp-server install               # write plist + bootstrap

@@ -1,0 +1,4 @@
+[env]
+# rust-mcp-sdk builds protobuf schemas. Route every Cargo invocation through
+# the pinned, locked bootstrap so clean builds do not depend on a system protoc.
+PROTOC = { value = "scripts/protoc", relative = true }

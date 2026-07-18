@@ -76,8 +76,13 @@ def daemon_binary_hash() -> str:
     the index, so bench-only (or docs-only) commits must not invalidate hours
     of cached embedding work, and an unrebuilt binary after Rust changes must.
     """
+    return daemon_binary_sha256()[:16]
+
+
+def daemon_binary_sha256() -> str:
+    """Full SHA-256 of the daemon binary for release provenance."""
     h = hashlib.sha256()
     with open(config.DAEMON_BINARY, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
-    return h.hexdigest()[:16]
+    return h.hexdigest()

@@ -1,7 +1,13 @@
 use crate::path::{Utf8Path, Utf8PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+
+#[derive(Default)]
+struct PoolState {
+    available: Vec<Connection>,
+    created: usize,
+}
 
 /// Simple SQLite connection pool backed by Mutex<Vec<Connection>>.
 ///
@@ -10,9 +16,9 @@ use std::sync::Mutex;
 /// and busy_timeout=5000ms.
 pub struct SqlitePool {
     db_path: Utf8PathBuf,
-    pool: Mutex<Vec<Connection>>,
+    state: Mutex<PoolState>,
+    available: Condvar,
     max_size: usize,
-    created: Mutex<usize>,
 }
 
 impl SqlitePool {
@@ -21,6 +27,7 @@ impl SqlitePool {
     /// Connections are created lazily on first `get()` call, up to `max_size`.
     /// Creates parent directory if it doesn't exist.
     pub fn new(db_path: &Utf8Path, max_size: usize) -> Result<Self> {
+        anyhow::ensure!(max_size > 0, "SQLite pool size must be greater than zero");
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create db parent dir: {}", parent))?;
@@ -28,58 +35,61 @@ impl SqlitePool {
 
         Ok(Self {
             db_path: db_path.to_path_buf(),
-            pool: Mutex::new(Vec::with_capacity(max_size)),
+            state: Mutex::new(PoolState {
+                available: Vec::with_capacity(max_size),
+                created: 0,
+            }),
+            available: Condvar::new(),
             max_size,
-            created: Mutex::new(0),
         })
     }
 
     /// Get a connection from the pool or create a new one.
     ///
-    /// Returns error if max_size connections are already checked out.
+    /// Waits when all connections are checked out. The returned guard wakes one
+    /// waiter when it returns its connection to the pool.
     pub fn get(&self) -> Result<PooledConnection<'_>> {
-        // Try to pop from pool
-        if let Some(conn) = self.pool.lock().unwrap().pop() {
-            return Ok(PooledConnection {
-                conn: Some(conn),
-                pool: self,
-            });
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("SQLite pool lock is poisoned: {e}"))?;
+        loop {
+            if let Some(conn) = state.available.pop() {
+                return Ok(PooledConnection {
+                    conn: Some(conn),
+                    pool: self,
+                });
+            }
+            if state.created < self.max_size {
+                let conn = self.create_connection()?;
+                state.created += 1;
+                return Ok(PooledConnection {
+                    conn: Some(conn),
+                    pool: self,
+                });
+            }
+            state = self
+                .available
+                .wait(state)
+                .map_err(|e| anyhow::anyhow!("SQLite pool lock is poisoned: {e}"))?;
         }
-
-        // Create new connection if under max_size
-        let mut created = self.created.lock().unwrap();
-        if *created < self.max_size {
-            let conn = self.create_connection()?;
-            *created += 1;
-            return Ok(PooledConnection {
-                conn: Some(conn),
-                pool: self,
-            });
-        }
-
-        anyhow::bail!(
-            "Connection pool exhausted: {} connections in use",
-            self.max_size
-        )
     }
 
     /// Try to get a connection without blocking.
     ///
     /// Returns None if all connections are checked out.
     pub fn try_get(&self) -> Option<PooledConnection<'_>> {
-        // Try to pop from pool
-        if let Some(conn) = self.pool.lock().unwrap().pop() {
+        let mut state = self.state.lock().ok()?;
+        if let Some(conn) = state.available.pop() {
             return Some(PooledConnection {
                 conn: Some(conn),
                 pool: self,
             });
         }
 
-        // Try to create new connection if under max_size
-        let mut created = self.created.lock().unwrap();
-        if *created < self.max_size {
+        if state.created < self.max_size {
             let conn = self.create_connection().ok()?;
-            *created += 1;
+            state.created += 1;
             return Some(PooledConnection {
                 conn: Some(conn),
                 pool: self,
@@ -91,7 +101,11 @@ impl SqlitePool {
 
     /// Number of connections currently available in the pool.
     pub fn available(&self) -> usize {
-        self.pool.lock().unwrap().len()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .available
+            .len()
     }
 
     /// Create a new connection with standard PRAGMAs.
@@ -114,12 +128,22 @@ impl SqlitePool {
         // Set busy timeout to 5 seconds
         let _ = conn.execute("PRAGMA busy_timeout=5000", []).ok();
 
+        // Enforce the architectural split: pooled connections serve SELECTs;
+        // all mutations go through SqliteStore's single writer connection.
+        conn.execute("PRAGMA query_only=ON", [])
+            .context("Failed to mark pooled SQLite connection query-only")?;
+
         Ok(conn)
     }
 
     /// Return a connection to the pool (called by PooledConnection::drop).
     fn return_connection(&self, conn: Connection) {
-        self.pool.lock().unwrap().push(conn);
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .available
+            .push(conn);
+        self.available.notify_one();
     }
 }
 
@@ -158,6 +182,8 @@ impl Drop for PooledConnection<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
     use std::time::SystemTime;
 
     fn temp_db_path() -> Utf8PathBuf {
@@ -204,15 +230,7 @@ mod tests {
         let conn2 = pool.get().unwrap();
         assert_eq!(pool.available(), 0);
 
-        // Next get should fail
-        let result = pool.get();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Connection pool exhausted"));
-
-        // try_get should return None
+        // Non-blocking checkout reports exhaustion.
         assert!(pool.try_get().is_none());
 
         // Drop one connection
@@ -261,8 +279,34 @@ mod tests {
             .unwrap();
         assert_eq!(busy_timeout, 5000);
 
+        let query_only: i32 = conn
+            .query_row("PRAGMA query_only", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(query_only, 1);
+
         // Cleanup
         drop(conn);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn pool_waits_until_a_connection_is_returned() {
+        let db_path = temp_db_path();
+        let pool = SqlitePool::new(&db_path, 1).unwrap();
+        let first = pool.get().unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _second = pool.get().unwrap();
+                tx.send(()).unwrap();
+            });
+
+            assert!(rx.recv_timeout(Duration::from_millis(25)).is_err());
+            drop(first);
+            rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        });
+
         let _ = std::fs::remove_file(db_path);
     }
 }

@@ -196,23 +196,20 @@ WHERE NOT EXISTS (SELECT 1 FROM symbols s WHERE s.id = edges.from_symbol_id)
 
 /// Enforce the graph contracts that can be checked without source parsing.
 pub fn validate_graph_integrity(conn: &Connection) -> Result<()> {
-    for table_name in ["edges", "edge_evidence"] {
-        let sql = format!("PRAGMA foreign_key_check({table_name})");
-        let mut fk_stmt = conn
-            .prepare(&sql)
-            .context("Failed to prepare graph foreign-key validation")?;
-        let mut fk_rows = fk_stmt
-            .query([])
-            .context("Failed to run graph foreign-key validation")?;
-        if let Some(row) = fk_rows.next()? {
-            let table: String = row.get(0)?;
-            let rowid: Option<i64> = row.get(1)?;
-            let parent: String = row.get(2)?;
-            let fk_index: i64 = row.get(3)?;
-            bail!(
-                "Graph foreign-key violation: table={table}, rowid={rowid:?}, parent={parent}, fk_index={fk_index}"
-            );
-        }
+    let mut fk_stmt = conn
+        .prepare("PRAGMA foreign_key_check")
+        .context("Failed to prepare index foreign-key validation")?;
+    let mut fk_rows = fk_stmt
+        .query([])
+        .context("Failed to run index foreign-key validation")?;
+    if let Some(row) = fk_rows.next()? {
+        let table: String = row.get(0)?;
+        let rowid: Option<i64> = row.get(1)?;
+        let parent: String = row.get(2)?;
+        let fk_index: i64 = row.get(3)?;
+        bail!(
+            "Index foreign-key violation: table={table}, rowid={rowid:?}, parent={parent}, fk_index={fk_index}"
+        );
     }
 
     let invalid_locations: i64 = conn

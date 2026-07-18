@@ -363,6 +363,13 @@ Works out of the box with no configuration. All settings are optional environmen
 | `MAX_CONTEXT_TOKENS` | `8192` | Token budget for assembled context |
 | `MAX_CONTEXT_BYTES` | `200000` | Byte-based fallback limit |
 
+**Investigation diagnostics:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `INVESTIGATION_DISABLED_PASSES` | — | Comma-separated typed enrichment pass IDs to disable for isolation: `supporting_definition`, `question_route`, `evidence_route`, `sibling_route`, `handler_dependency`, `module_breadth`, `breadth_dependency`, or `hub_type` |
+| `INVESTIGATION_TRACE` | `false` | Include pass applicability, cost, timing, provenance, and per-candidate allocation decisions in `investigate` output |
+
 **Learning (on by default):**
 
 | Variable | Default | Description |
@@ -445,12 +452,21 @@ All data lives in `~/.code-intelligence/`:
 
 ## Development
 
+Production builds require the Xcode command-line tools and CMake
+(`brew install cmake`). Cargo automatically uses the repository's pinned,
+checksummed `protoc` bootstrap; no system protobuf installation is required.
+
 ```bash
 cargo build --release
 cargo test                                        # Full test suite
-EMBEDDINGS_BACKEND=hash cargo test                # Fast (no model download)
+EMBEDDINGS_BACKEND=hash cargo test --no-default-features  # Fast; no llama.cpp/CMake/model
 ./scripts/start_mcp.sh                            # Start MCP server
 ```
+
+The default `native-llama` feature builds the Metal-backed embeddings, optional
+description LLM, and reranker used by production. `EMBEDDINGS_BACKEND=hash` is
+the runtime selection; add `--no-default-features` when a deterministic test
+build should omit the native llama.cpp dependency entirely.
 
 <details>
 <summary>Project structure</summary>

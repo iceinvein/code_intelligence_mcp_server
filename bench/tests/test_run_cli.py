@@ -3,9 +3,11 @@
 These tests only verify argparse plumbing and command routing. The
 underlying logic is tested in the respective modules.
 """
+import json
 import os
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -156,3 +158,55 @@ def test_question_set_with_no_matching_ids_raises():
     fixture = fixtures_io.load_fixture(config.FIXTURES_DIR / "smoke.yaml")
     with pytest.raises(SystemExit):
         run_mod.apply_question_set([fixture], {"nonexistent-question-id"})
+
+
+def test_report_loads_persisted_round_provenance(tmp_path, monkeypatch):
+    from bench import run as run_mod
+
+    round_dir = tmp_path / "R123"
+    round_dir.mkdir()
+    score = {
+        "arm": "code_intel_shipped",
+        "repo": "fixture-repo",
+        "question_id": "q1",
+        "task_type": "symbol_lookup",
+        "mech": 1.0,
+        "judge_median": 9.0,
+        "judge_range": 0,
+        "citation_hit": True,
+        "forbidden_hit": False,
+        "hallucinated": False,
+        "tool_calls": 1,
+        "input_tokens": 100,
+        "wall_ms": 10,
+        "hit_turn_cap": False,
+    }
+    (round_dir / "scores.json").write_text(json.dumps(score) + "\n")
+    (round_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "daemon": {"git_sha": "git-exact", "binary_sha256": "bin-exact"},
+                "fixtures": [{
+                    "repo": "fixture-repo",
+                    "upstream_sha": "upstream-exact",
+                    "fixture_sha256": "fixture-exact",
+                    "authored_against_schema_version": 22,
+                    "question_ids": ["q1"],
+                }],
+                "models": {"agent": "agent-exact", "judges": {}},
+                "binaries": {"agent_cli": "cli-exact", "codegraph": None},
+                "configuration": {"arms": []},
+                "comparator": {
+                    "baseline_arm": "default",
+                    "candidate_arms": ["code_intel_shipped"],
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(run_mod.config, "RESULTS_DIR", tmp_path)
+
+    assert run_mod.cmd_report(Namespace(round="R123", out=None)) == 0
+    rendered = (round_dir / "report.md").read_text()
+    assert "git-exact" in rendered
+    assert "fixture-exact" in rendered
+    assert "default → code_intel_shipped" in rendered

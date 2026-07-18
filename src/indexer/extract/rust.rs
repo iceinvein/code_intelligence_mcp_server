@@ -227,6 +227,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
+        module_bindings: Vec::new(),
         type_edges,
         extends_edges: Vec::new(),
         dataflow_edges,
@@ -423,6 +424,7 @@ fn extract_use_tree(node: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Im
                 name,
                 source: source_path,
                 alias: None,
+                at_line: node.start_position().row as u32 + 1,
             });
         }
 
@@ -439,6 +441,7 @@ fn extract_use_tree(node: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Im
                 name,
                 source: source_path,
                 alias: None,
+                at_line: node.start_position().row as u32 + 1,
             });
         }
 
@@ -516,6 +519,7 @@ fn extract_use_tree(node: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Im
                 name,
                 source: source_path,
                 alias,
+                at_line: node.start_position().row as u32 + 1,
             });
         }
 
@@ -556,6 +560,7 @@ fn extract_use_tree(node: Node<'_>, source: &str, prefix: &str, out: &mut Vec<Im
                 name: "*".to_string(),
                 source: source_path,
                 alias: None,
+                at_line: node.start_position().row as u32 + 1,
             });
         }
 

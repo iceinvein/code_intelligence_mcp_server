@@ -6,6 +6,16 @@ use crate::storage::sqlite::{CrossRepoEdgeRow, SqliteStore, SymbolRow};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+const DEFAULT_DEPENDENCY_EDGE_TYPES: &[&str] = &[
+    "call",
+    "delegates_to",
+    "reference",
+    "import",
+    "export",
+    "re_export",
+    "export_all",
+];
+
 /// Build a compact JSON node payload for graph responses.
 ///
 /// `language` is intentionally omitted: callers can derive it from `file_path`
@@ -74,6 +84,7 @@ fn edge_json(
         "at_file": edge.at_file,
         "at_line": edge.at_line,
         "evidence_count": edge.evidence_count,
+        "confidence": edge.confidence,
         "resolution": edge.resolution,
     });
     for (key, value) in extra_fields {
@@ -143,7 +154,7 @@ pub fn build_dependency_graph(
     let traverse_downstream = direction == "downstream" || direction == "bidirectional";
 
     // Compute allowed edge types once before the loop
-    let allowed_types = edge_types.unwrap_or(&["call", "reference"]);
+    let allowed_types = edge_types.unwrap_or(DEFAULT_DEPENDENCY_EDGE_TYPES);
 
     for _ in 0..depth {
         if edges.len() >= limit || frontier.is_empty() {
@@ -647,6 +658,108 @@ mod tests {
     }
 
     #[test]
+    fn dependency_graph_follows_public_export_chain_by_default() {
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+
+        let mut implementation = sym("implementation", "Implementation");
+        implementation.file_path = "src/implementation.ts".into();
+        let mut implementation_file = sym("implementation-file", "src/implementation.ts");
+        implementation_file.file_path = "src/implementation.ts".into();
+        implementation_file.kind = "file".into();
+        implementation_file.exported = false;
+        let mut barrel = sym("barrel", "src/index.ts");
+        barrel.file_path = "src/index.ts".into();
+        barrel.kind = "file".into();
+        barrel.exported = false;
+        for symbol in [&implementation, &implementation_file, &barrel] {
+            sqlite.upsert_symbol(symbol).unwrap();
+        }
+
+        for (from, to, edge_type) in [
+            ("implementation-file", "implementation", "export"),
+            ("barrel", "implementation-file", "export_all"),
+        ] {
+            sqlite
+                .upsert_edge(&EdgeRow {
+                    from_symbol_id: from.into(),
+                    to_symbol_id: to.into(),
+                    edge_type: edge_type.into(),
+                    at_file: Some("src/index.ts".into()),
+                    at_line: Some(1),
+                    confidence: 1.0,
+                    evidence_count: 1,
+                    resolution: "exact".into(),
+                })
+                .unwrap();
+        }
+
+        let graph =
+            build_dependency_graph(&sqlite, &implementation, "upstream", 2, 100, None).unwrap();
+        let node_ids = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(node_ids.contains(&"implementation-file"));
+        assert!(node_ids.contains(&"barrel"));
+        assert!(graph["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["edge_type"] == "export_all"));
+    }
+
+    #[test]
+    fn dependency_graph_is_cycle_safe_for_public_aliases_and_wrappers() {
+        let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
+        sqlite.init().unwrap();
+        let implementation = sym("implementation", "Implementation");
+        let mut wrapper = sym("wrapper", "publicWrapper");
+        wrapper.file_path = "src/wrapper.ts".into();
+        let mut barrel = sym("barrel", "src/index.ts");
+        barrel.file_path = "src/index.ts".into();
+        barrel.kind = "file".into();
+        barrel.exported = false;
+        for symbol in [&implementation, &wrapper, &barrel] {
+            sqlite.upsert_symbol(symbol).unwrap();
+        }
+        for (from, to, edge_type) in [
+            ("wrapper", "implementation", "delegates_to"),
+            ("barrel", "wrapper", "re_export"),
+            ("wrapper", "barrel", "re_export"),
+        ] {
+            sqlite
+                .upsert_edge(&EdgeRow {
+                    from_symbol_id: from.into(),
+                    to_symbol_id: to.into(),
+                    edge_type: edge_type.into(),
+                    at_file: Some("src/index.ts".into()),
+                    at_line: Some(1),
+                    confidence: 0.95,
+                    evidence_count: 1,
+                    resolution: "exact".into(),
+                })
+                .unwrap();
+        }
+
+        let graph =
+            build_dependency_graph(&sqlite, &implementation, "upstream", 10, 100, None).unwrap();
+        let node_ids = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["id"].as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            node_ids,
+            std::collections::HashSet::from(["implementation", "wrapper", "barrel"])
+        );
+        assert!(graph["edges"].as_array().unwrap().len() <= 3);
+    }
+
+    #[test]
     fn type_graph_follows_extends_implements_and_alias() {
         let sqlite = SqliteStore::from_connection(rusqlite::Connection::open_in_memory().unwrap());
         sqlite.init().unwrap();
@@ -847,11 +960,22 @@ mod tests {
 
 #[cfg(test)]
 mod edge_types_tests {
+    use super::DEFAULT_DEPENDENCY_EDGE_TYPES;
+
     #[test]
     fn test_default_edge_types() {
-        // Verify default is call + reference (matches build_dependency_graph's unwrap_or)
-        let allowed = ["call", "reference"];
-        assert_eq!(allowed, ["call", "reference"]);
+        assert_eq!(
+            DEFAULT_DEPENDENCY_EDGE_TYPES,
+            [
+                "call",
+                "delegates_to",
+                "reference",
+                "import",
+                "export",
+                "re_export",
+                "export_all"
+            ]
+        );
     }
 
     #[test]

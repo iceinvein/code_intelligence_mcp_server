@@ -11,7 +11,8 @@
 
 # Rust build artifacts
 target
-.cargo
+.cargo/*
+!.cargo/config.toml
 
 # Test workspace
 test_workspace

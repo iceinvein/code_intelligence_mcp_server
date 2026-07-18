@@ -210,8 +210,10 @@ questions:
   - id: wolfmax-concept-04
     task_type: concept
     difficulty: medium
-    question: "Where are background jobs scheduled in the backend? What jobs run, and how often?"
+    question: "Which background jobs are wired into the backend scheduler at startup, and how often does each scheduled job run?"
     rubric: |
+      Scope this answer to jobs actually registered by startScheduler, rather
+      than every maintenance helper or worker that can run in the repository.
       Must cite packages/backend/src/jobs/scheduler.ts (startScheduler, line 21).
       Must explain: release sync runs every 5 minutes (RELEASE_SYNC_INTERVAL_MS),
       with an initial 10-second delay. Must cite packages/backend/src/jobs/release-sync.ts
@@ -220,8 +222,10 @@ questions:
       called during server startup.
       Bonus: notes the syncReleases job fetches S3 update manifests for
       darwin-aarch64 and windows-x86_64 targets.
-      Penalize: claiming there are multiple distinct jobs with different schedules, or
-      stating the scheduler uses cron expressions (it uses setInterval).
+      Penalize: claiming there are multiple distinct jobs wired into this scheduler
+      with different schedules, or stating the scheduler uses cron expressions (it
+      uses setInterval). Do not penalize an answer that explicitly distinguishes an
+      unrelated maintenance task from the scheduler's registered jobs.
     expected:
       citations:
         - { file: "packages/backend/src/jobs/scheduler.ts", line_range: [21, 56], symbol: "startScheduler" }
@@ -382,19 +386,30 @@ questions:
   - id: wolfmax-impact-01
     task_type: impact
     difficulty: medium
-    question: "If the signature of `withTransaction` in packages/backend/src/db/transaction.ts were changed to add a required third argument, which files would need updating?"
+    question: "If the signature of `withTransaction` in packages/backend/src/db/transaction.ts were changed to add a required third argument, which production TypeScript files (excluding tests) would need updating?"
     rubric: |
-      Must identify all call sites of withTransaction across the backend. Key files:
-      - packages/backend/src/api/invitations.ts (line 391 and implicitly via helper)
-      - packages/backend/src/api/desktop-auth.ts (line 74)
-      - packages/backend/src/api/crypto/severance.ts (line 44 and ~80)
-      - packages/backend/src/api/admin/organizations/details.ts (line 264)
-      - packages/backend/src/api/user-keys.ts (multiple calls)
-      Also packages/backend/src/db/transaction-helpers.ts if it wraps withTransaction.
+      Scope this answer to production TypeScript in the pinned fixture; tests are
+      deliberately excluded. The definition and examples in db/transaction.ts need
+      updating, along with call sites in these 13 API files:
+      - packages/backend/src/api/invitations.ts
+      - packages/backend/src/api/desktop-auth.ts
+      - packages/backend/src/api/user-keys.ts
+      - packages/backend/src/api/crypto/severance.ts
+      - packages/backend/src/api/admin/app-templates.ts
+      - packages/backend/src/api/admin/invitations.ts
+      - packages/backend/src/api/admin/verification.ts
+      - packages/backend/src/api/admin/organizations/details.ts
+      - packages/backend/src/api/admin/organizations/list.ts
+      - packages/backend/src/api/admin/organizations/members.ts
+      - packages/backend/src/api/admin/users/access.ts
+      - packages/backend/src/api/admin/users/bulk.ts
+      - packages/backend/src/api/admin/users/create.ts
       Bonus: notes that withStep (same file) would not need changes unless its call
-      convention also changes.
+      convention also changes, and that transaction.test.ts is affected outside the
+      production-only scope.
       Penalize: listing only one or two call sites and claiming the impact is small,
-      or including files that only import types from transaction.ts.
+      inventing a transaction-helpers.ts wrapper that does not exist at the pinned
+      revision, or penalizing an answer for separately identifying excluded tests.
     expected:
       citations:
         - { file: "packages/backend/src/db/transaction.ts", line_range: [142, 194], symbol: "withTransaction" }
@@ -405,11 +420,19 @@ questions:
         - "packages/backend/src/api/invitations.ts"
         - "packages/backend/src/api/desktop-auth.ts"
         - "packages/backend/src/api/crypto/severance.ts"
+        - "packages/backend/src/api/admin/app-templates.ts"
+        - "packages/backend/src/api/admin/invitations.ts"
         - "packages/backend/src/api/admin/organizations/details.ts"
+        - "packages/backend/src/api/admin/organizations/list.ts"
+        - "packages/backend/src/api/admin/organizations/members.ts"
+        - "packages/backend/src/api/admin/users/access.ts"
+        - "packages/backend/src/api/admin/users/bulk.ts"
+        - "packages/backend/src/api/admin/users/create.ts"
+        - "packages/backend/src/api/admin/verification.ts"
         - "packages/backend/src/api/user-keys.ts"
       facts:
         - ["invitations.ts", "desktop-auth.ts", "severance.ts"]
-        - ["multiple call sites", "6", "5", "4"]
+        - ["13 API files", "multiple call sites", "admin/users", "admin/organizations"]
       forbidden: []
       forbidden_strict: false
 

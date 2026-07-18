@@ -106,6 +106,10 @@ impl Reranker for CachedReranker {
         Ok(scores)
     }
 
+    fn is_ready(&self) -> bool {
+        self.inner.is_ready()
+    }
+
     fn top_k(&self) -> usize {
         self.inner.top_k()
     }

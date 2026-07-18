@@ -53,7 +53,7 @@ pub async fn run_description_worker(
 
         // Clean up descriptions for deleted symbols
         {
-            let conn = db.read().context("read conn for orphan cleanup")?;
+            let conn = db.write().context("write conn for orphan cleanup")?;
             let orphaned = desc_queries::cleanup_orphaned_descriptions(&conn).unwrap_or(0);
             if orphaned > 0 {
                 tracing::info!("Cleaned up {} orphaned descriptions", orphaned);
@@ -133,7 +133,9 @@ pub async fn run_description_worker(
                 ) {
                     let content_hash = llm::compute_content_hash(&sym.name, &sym.kind, &sym.text);
                     {
-                        let conn = db.read().context("read conn for skip-description upsert")?;
+                        let conn = db
+                            .write()
+                            .context("write conn for skip-description upsert")?;
                         let _ = desc_queries::upsert_description(&conn, &sym.id, &content_hash, "");
                     }
                     continue;
@@ -161,8 +163,8 @@ pub async fn run_description_worker(
                         // Mark as described (empty) to prevent infinite retry on
                         // permanently-failing symbols (e.g. text too large for context window).
                         let conn = db
-                            .read()
-                            .context("read conn for failed-description upsert")?;
+                            .write()
+                            .context("write conn for failed-description upsert")?;
                         let _ = desc_queries::upsert_description(&conn, &sym.id, &content_hash, "");
                         continue;
                     }
@@ -170,7 +172,7 @@ pub async fn run_description_worker(
 
                 // Cache in SQLite
                 {
-                    let conn = db.read().context("read conn for description upsert")?;
+                    let conn = db.write().context("write conn for description upsert")?;
                     desc_queries::upsert_description(&conn, &sym.id, &content_hash, &description)?;
                 }
 

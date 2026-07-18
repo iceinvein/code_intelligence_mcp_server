@@ -1,5 +1,7 @@
+pub mod bindings;
 pub mod describe;
 pub mod edges;
+pub mod identity;
 pub mod parallel;
 pub mod parse;
 pub mod parsing;
@@ -38,12 +40,17 @@ use std::{
 use tokio::time::sleep;
 
 use self::scan::{scan_files, should_index_file};
-use self::stats::IndexRunStats;
+use self::stats::{EmbeddingRunStats, IndexRunStats};
 use self::utils::{cluster_key_from_vector, file_fingerprint, file_key_path, unix_now_s};
 
-/// Version of persisted graph extraction semantics. Increment whenever existing
-/// edges cannot be trusted and every source file must regenerate its graph.
-const GRAPH_INDEX_VERSION: &str = "2";
+/// Version of persisted extraction semantics. Increment whenever existing
+/// symbols, identities, or edges cannot be trusted and every source file must
+/// be parsed again. The metadata key retains its historical graph name.
+const GRAPH_INDEX_VERSION: &str = "4";
+
+fn elapsed_ms(elapsed: Duration) -> u64 {
+    elapsed.as_millis().min(u64::MAX as u128) as u64
+}
 
 /// Determine whether a symbol warrants embedding and LLM description generation.
 ///
@@ -91,6 +98,7 @@ pub struct IndexRunOutcome {
 pub struct IndexPipeline {
     config: Arc<Config>,
     db_path: Utf8PathBuf,
+    sqlite: Arc<SqliteStore>,
     tantivy: Arc<TantivyIndex>,
     vectors: Arc<LanceVectorTable>,
     embedder: Arc<SharedEmbedder>,
@@ -118,23 +126,23 @@ impl IndexPipeline {
     }
 
     fn ensure_graph_index_version(&self) -> Result<bool> {
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
-        sqlite.ensure_graph_index_version(GRAPH_INDEX_VERSION)
+        self.sqlite.ensure_graph_index_version(GRAPH_INDEX_VERSION)
     }
 
     pub fn new(
         config: Arc<Config>,
+        sqlite: Arc<SqliteStore>,
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
         embedder: Arc<SharedEmbedder>,
         metrics: Arc<MetricsRegistry>,
     ) -> Self {
-        Self::new_with_jobs(config, tantivy, vectors, embedder, metrics, None)
+        Self::new_with_jobs(config, sqlite, tantivy, vectors, embedder, metrics, None)
     }
 
     pub fn new_with_jobs(
         config: Arc<Config>,
+        sqlite: Arc<SqliteStore>,
         tantivy: Arc<TantivyIndex>,
         vectors: Arc<LanceVectorTable>,
         embedder: Arc<SharedEmbedder>,
@@ -148,14 +156,12 @@ impl IndexPipeline {
             String::new()
         };
 
-        // Initialize cache
-        let sqlite = SqliteStore::open(&db_path).expect("Failed to open SQLite database");
         let model_name = match config.embeddings_backend {
             crate::config::EmbeddingsBackend::LlamaCpp => "jinaai/jina-code-embeddings-1.5b",
             crate::config::EmbeddingsBackend::Hash => "hash",
         };
         let cache = Arc::new(EmbeddingCache::new(
-            Arc::new(sqlite),
+            sqlite.clone(),
             model_name,
             config.embedding_cache_enabled,
             1024 * 1024 * 1024, // 1GB max
@@ -168,6 +174,7 @@ impl IndexPipeline {
         Self {
             config,
             db_path,
+            sqlite,
             tantivy,
             vectors,
             embedder,
@@ -210,11 +217,14 @@ impl IndexPipeline {
             }
         }
 
+        let scan_t = Instant::now();
         let mut files = Vec::new();
         for root in &self.config.repo_roots {
             files.extend(scan_files(&self.config, root.as_std_path())?);
         }
-        let stats = self.index_files(files, true).await?;
+        let scan_ms = elapsed_ms(scan_t.elapsed());
+        let mut stats = self.index_files(files, true).await?;
+        stats.scan_ms = scan_ms;
 
         // Record Prometheus metrics
         self.metrics
@@ -230,23 +240,17 @@ impl IndexPipeline {
             .index_files_unchanged
             .inc_by(stats.files_unchanged as f64);
 
-        // Cache metrics
-        let cache_stats = self.cache.stats();
         self.metrics
             .index_cache_hits
-            .inc_by(cache_stats.hits as f64);
+            .inc_by(stats.embedding_cache_hits as f64);
         self.metrics
             .index_cache_misses
-            .inc_by(cache_stats.misses as f64);
-
-        self.persist_index_run_metrics(started_at_unix_s, started_at.elapsed(), &stats)?;
-
-        // Update resource gauges
-        self.update_resource_gauges()?;
+            .inc_by(stats.embedding_cache_misses as f64);
 
         // Compact LanceDB fragments and prune old versions after index runs
         // that modified data. This prevents unbounded growth of the vectors directory.
         if stats.files_indexed > 0 || stats.files_deleted > 0 {
+            let optimize_t = Instant::now();
             if let Err(e) = self.vectors.optimize().await {
                 tracing::warn!(
                     repo = %self.repo_name(),
@@ -254,7 +258,14 @@ impl IndexPipeline {
                     "LanceDB optimization failed (non-fatal)"
                 );
             }
+            stats.optimize_ms = elapsed_ms(optimize_t.elapsed());
         }
+
+        self.persist_index_run_metrics(started_at_unix_s, started_at.elapsed(), &stats)?;
+
+        // Update resource gauges after compaction so storage bytes and vector
+        // counts describe the completed run.
+        self.update_resource_gauges().await?;
 
         // Note: timer observes duration when dropped
         Ok(stats)
@@ -272,30 +283,108 @@ impl IndexPipeline {
         })
     }
 
-    fn update_resource_gauges(&self) -> Result<()> {
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        let symbol_count = sqlite.count_symbols()?;
+    async fn update_resource_gauges(&self) -> Result<()> {
+        let symbol_count = self.sqlite.count_symbols()?;
+        let edge_count = self.sqlite.count_edges()?;
+        let vector_count = self.vectors.count_rows().await?;
 
         self.metrics.symbol_count.set(symbol_count as f64);
 
         // Get index sizes
         let tantivy_size = Self::dir_size(&self.config.tantivy_index_path)?;
-        let db_size = std::fs::metadata(&self.db_path)?.len() as u64;
+        let vector_size = Self::dir_size(&self.config.vector_db_path)?;
+        let db_size = Self::sqlite_size(&self.db_path)?;
 
         self.metrics
             .index_size_bytes
-            .set((tantivy_size + db_size) as f64);
+            .set((tantivy_size + vector_size + db_size) as f64);
+
+        for (component, bytes) in [
+            ("sqlite", db_size),
+            ("tantivy", tantivy_size),
+            ("vectors", vector_size),
+        ] {
+            self.metrics
+                .storage_bytes
+                .with_label_values(&[component])
+                .set(bytes as f64);
+        }
+        for (entity, count) in [
+            ("symbols", symbol_count),
+            ("edges", edge_count),
+            ("vectors", vector_count as u64),
+        ] {
+            self.metrics
+                .index_entities
+                .with_label_values(&[entity])
+                .set(count as f64);
+        }
+        let denominator = symbol_count.max(1) as f64;
+        for (ratio, value) in [
+            (
+                "total_storage_bytes_per_symbol",
+                (tantivy_size + vector_size + db_size) as f64 / denominator,
+            ),
+            ("sqlite_bytes_per_symbol", db_size as f64 / denominator),
+            (
+                "tantivy_bytes_per_symbol",
+                tantivy_size as f64 / denominator,
+            ),
+            ("vector_bytes_per_symbol", vector_size as f64 / denominator),
+            ("edges_per_symbol", edge_count as f64 / denominator),
+            ("vectors_per_symbol", vector_count as f64 / denominator),
+        ] {
+            self.metrics
+                .index_ratios
+                .with_label_values(&[ratio])
+                .set(value);
+        }
+        self.metrics.refresh_process_peak_rss();
+        let embedding_resident = matches!(
+            (
+                self.config.embeddings_backend,
+                self.config.embeddings_device
+            ),
+            (
+                crate::config::EmbeddingsBackend::LlamaCpp,
+                crate::config::EmbeddingsDevice::Metal
+            )
+        ) && self.embedder.is_ready();
+        self.metrics
+            .gpu_model_resident
+            .with_label_values(&["embedding"])
+            .set(if embedding_resident { 1.0 } else { 0.0 });
 
         Ok(())
     }
 
     fn dir_size(path: &Utf8PathBuf) -> Result<u64> {
-        Ok(std::fs::read_dir(path)?
-            .filter_map(|e| e.ok())
-            .filter_map(|e| e.metadata().ok())
-            .filter(|m| m.is_file())
-            .map(|m| m.len())
-            .sum())
+        fn recurse(path: &std::path::Path) -> std::io::Result<u64> {
+            let mut total = 0u64;
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                total = total.saturating_add(if metadata.is_dir() {
+                    recurse(&entry.path())?
+                } else {
+                    metadata.len()
+                });
+            }
+            Ok(total)
+        }
+
+        Ok(recurse(path.as_std_path())?)
+    }
+
+    fn sqlite_size(path: &Utf8PathBuf) -> Result<u64> {
+        let mut total = std::fs::metadata(path)?.len();
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = Utf8PathBuf::from(format!("{path}{suffix}"));
+            if let Ok(metadata) = std::fs::metadata(sidecar) {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+        Ok(total)
     }
 
     /// Discover packages and repositories and store them in SQLite.
@@ -305,8 +394,7 @@ impl IndexPipeline {
     /// 2. Detects git repositories
     /// 3. Stores repositories and packages in the database
     fn index_packages_and_repositories(&self) -> Result<()> {
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
+        let sqlite = self.sqlite.as_ref();
 
         // Discover packages from all repo roots
         let mut packages = package::discover_packages(&self.config, &self.config.repo_roots)?;
@@ -395,6 +483,7 @@ impl IndexPipeline {
             return self.index_all().await;
         }
 
+        let scan_t = Instant::now();
         let mut files = Vec::new();
         for p in paths {
             let std_path = p.as_std_path();
@@ -406,8 +495,11 @@ impl IndexPipeline {
                 files.push(std_path.to_path_buf());
             }
         }
-        let stats = self.index_files(files, false).await?;
+        let scan_ms = elapsed_ms(scan_t.elapsed());
+        let mut stats = self.index_files(files, false).await?;
+        stats.scan_ms = scan_ms;
         self.persist_index_run_metrics(started_at_unix_s, started_at.elapsed(), &stats)?;
+        self.update_resource_gauges().await?;
         Ok(stats)
     }
 
@@ -438,7 +530,7 @@ impl IndexPipeline {
             }));
         }
 
-        let db_path = self.db_path.clone();
+        let sqlite = self.sqlite.clone();
         let base_dir = self.config.base_dir.clone();
         let repo_data_dir = self
             .db_path
@@ -450,7 +542,6 @@ impl IndexPipeline {
 
         Some(
             match tokio::task::spawn_blocking(move || -> Result<Value> {
-                let sqlite = SqliteStore::open(&db_path)?;
                 crate::external_index::producers::generate_and_import(
                     &sqlite,
                     base_dir.as_str(),
@@ -527,8 +618,7 @@ impl IndexPipeline {
     /// or Err() if checking fails.
     #[allow(dead_code)]
     fn check_for_changes(&self) -> Result<bool> {
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
+        let sqlite = self.sqlite.as_ref();
 
         // Scan all files in the workspace
         let mut files = Vec::new();
@@ -758,9 +848,7 @@ impl IndexPipeline {
         llm: std::sync::Arc<dyn crate::llm::LlmGenerator>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
-        let db = std::sync::Arc::new(
-            SqliteStore::open(&self.db_path).expect("Failed to open SQLite for description worker"),
-        );
+        let db = self.sqlite.clone();
         let tantivy = self.tantivy.clone();
         let max_tokens = self.config.llm_max_tokens;
         let batch_size = self.config.llm_batch_commit;
@@ -782,8 +870,6 @@ impl IndexPipeline {
         elapsed: Duration,
         stats: &IndexRunStats,
     ) -> Result<()> {
-        let sqlite = SqliteStore::open(&self.db_path)?;
-        sqlite.init()?;
         let run = crate::storage::sqlite::IndexRunRow {
             started_at_unix_s,
             duration_ms: elapsed.as_millis().min(u64::MAX as u128) as u64,
@@ -793,13 +879,50 @@ impl IndexPipeline {
             files_unchanged: stats.files_unchanged as u64,
             files_deleted: stats.files_deleted as u64,
             symbols_indexed: stats.symbols_indexed as u64,
+            scan_ms: stats.scan_ms,
+            cleanup_ms: stats.cleanup_ms,
+            parse_ms: stats.parse_ms,
+            sqlite_write_ms: stats.sqlite_write_ms,
+            tantivy_ms: stats.tantivy_ms,
+            binding_ms: stats.binding_ms,
+            edge_ms: stats.edge_ms,
+            embedding_ms: stats.embedding_ms,
+            vector_write_ms: stats.vector_write_ms,
+            pagerank_ms: stats.pagerank_ms,
+            optimize_ms: stats.optimize_ms,
         };
-        let _ = sqlite.insert_index_run(&run);
+        let _ = self.sqlite.insert_index_run(&run);
+
+        for (stage, duration_ms) in [
+            ("scan", stats.scan_ms),
+            ("cleanup", stats.cleanup_ms),
+            ("parse", stats.parse_ms),
+            ("sqlite_write", stats.sqlite_write_ms),
+            ("tantivy", stats.tantivy_ms),
+            ("binding", stats.binding_ms),
+            ("edge", stats.edge_ms),
+            ("embedding", stats.embedding_ms),
+            ("vector_write", stats.vector_write_ms),
+            ("pagerank", stats.pagerank_ms),
+            ("optimize", stats.optimize_ms),
+        ] {
+            self.metrics
+                .observe_index_stage(stage, Duration::from_millis(duration_ms));
+        }
+        for (stage, count) in [
+            ("files_scanned", stats.files_scanned),
+            ("files_indexed", stats.files_indexed),
+            ("symbols_indexed", stats.symbols_indexed),
+            ("embeddings_generated", stats.embeddings_generated),
+            ("embeddings_skipped", stats.embeddings_skipped),
+        ] {
+            self.metrics.observe_index_items(stage, count);
+        }
 
         // Refresh the dashboard cache so /api/repos/:id can skip the
         // COUNT(*) scans on symbols/edges/descriptions. Best-effort:
         // a failed cache write should not fail the index run.
-        if let Err(e) = sqlite.recompute_repo_stats() {
+        if let Err(e) = self.sqlite.recompute_repo_stats() {
             tracing::warn!(error = %e, "Failed to refresh repo_stats cache after index run");
         }
 
@@ -825,15 +948,12 @@ impl IndexPipeline {
             ..Default::default()
         };
 
-        // Open a single SQLite handle for the prep work below. Both branches
-        // here used to open (and drop) a fresh connection per call/iteration,
-        // which under WAL mode opens three FDs each (.db, -wal, -shm) and
-        // could pile up alongside the parallel parse pool.
+        let cleanup_t = Instant::now();
+
+        // Reuse the repository-scoped store for prep and cleanup work.
         let needs_setup_sqlite = self.tantivy.was_recreated() || cleanup_deleted;
         let setup_sqlite = if needs_setup_sqlite {
-            let s = SqliteStore::open(&self.db_path)?;
-            s.init()?;
-            Some(s)
+            Some(self.sqlite.clone())
         } else {
             None
         };
@@ -876,6 +996,7 @@ impl IndexPipeline {
                 // Reuse the single SQLite connection across all deletions
                 // instead of opening one per file (each open = 3 WAL FDs).
                 sqlite.delete_symbols_by_file(&file_path)?;
+                sqlite.delete_module_bindings_by_file(&file_path)?;
                 sqlite.delete_usage_examples_by_file(&file_path)?;
                 sqlite.delete_todos_by_file(&file_path)?;
                 sqlite.delete_docstrings_by_file(&file_path)?;
@@ -895,8 +1016,11 @@ impl IndexPipeline {
             }
         }
         drop(setup_sqlite);
+        stats.cleanup_ms = elapsed_ms(cleanup_t.elapsed());
 
-        // Unified pipeline: parse → write → embed
+        // Unified pipeline: parse → write → embed. The temporary pool is
+        // query-only and serves parallel parser/resolver lookups; mutations use
+        // the repository store's single writer below.
         use crate::storage::sqlite::pool::SqlitePool;
 
         let pool = std::sync::Arc::new(SqlitePool::new(
@@ -905,6 +1029,7 @@ impl IndexPipeline {
         )?);
 
         // Phase 1: Parse (Rayon, parallel)
+        let parse_t = Instant::now();
         let parse_results = {
             let files_clone = uniq.clone();
             let config_clone = self.config.clone();
@@ -915,6 +1040,7 @@ impl IndexPipeline {
             .await
             .context("Join error in parse phase")??
         };
+        stats.parse_ms = elapsed_ms(parse_t.elapsed());
 
         // Tally stats from parse results
         let mut parsed_files = Vec::new();
@@ -938,11 +1064,12 @@ impl IndexPipeline {
         }
 
         if !skipped_changed_files.is_empty() {
-            let sqlite = SqliteStore::open(&self.db_path)?;
-            sqlite.init()?;
+            let cleanup_t = Instant::now();
+            let sqlite = self.sqlite.as_ref();
             let mut any_tantivy_delete = false;
             for file_path in skipped_changed_files {
                 sqlite.delete_symbols_by_file(&file_path)?;
+                sqlite.delete_module_bindings_by_file(&file_path)?;
                 sqlite.delete_usage_examples_by_file(&file_path)?;
                 sqlite.delete_todos_by_file(&file_path)?;
                 sqlite.delete_docstrings_by_file(&file_path)?;
@@ -957,6 +1084,9 @@ impl IndexPipeline {
             if any_tantivy_delete {
                 self.tantivy.commit()?;
             }
+            stats.cleanup_ms = stats
+                .cleanup_ms
+                .saturating_add(elapsed_ms(cleanup_t.elapsed()));
         }
 
         // Phase 2: Write (single thread, batched) — symbols, fingerprints,
@@ -964,20 +1094,49 @@ impl IndexPipeline {
         // parsed_files at this point; they get extracted next, after the
         // freshly-written symbols are visible to cross-file lookups.
         if !parsed_files.is_empty() {
-            let conn = pool.get()?;
-            write::write_batch(&parsed_files, &conn, &self.tantivy)?;
-            drop(conn);
+            let conn = self.sqlite.write()?;
+            let write_stats = write::write_batch(&parsed_files, &conn, &self.tantivy)?;
+            stats.sqlite_write_ms = stats.sqlite_write_ms.saturating_add(write_stats.sqlite_ms);
+            stats.tantivy_ms = stats.tantivy_ms.saturating_add(write_stats.tantivy_ms);
         }
 
-        // Phase 2.5: Extract edges in parallel using the populated DB.
-        // Receiver-based resolution (e.g. `sessionManager.createSession`)
-        // queries SQLite for non-exported class methods. Running this AFTER
-        // Phase 2 is what makes a fresh full re-index produce the same
-        // cross-file call edges as an incremental one.
-        let edge_bundles = if !parsed_files.is_empty() {
+        let parsed_arc = std::sync::Arc::new(std::mem::take(&mut parsed_files));
+
+        // Phase 2.5: Resolve and persist public module bindings first. The
+        // ordinary edge resolver can then follow names such as `default` or a
+        // renamed re-export through the binding table without guessing.
+        let binding_t = Instant::now();
+        let binding_bundles = if !parsed_arc.is_empty() {
             let config_clone = self.config.clone();
             let pool_clone = pool.clone();
-            let parsed_arc = std::sync::Arc::new(std::mem::take(&mut parsed_files));
+            let parsed_for_task = parsed_arc.clone();
+            tokio::task::spawn_blocking(move || {
+                parse::resolve_bindings_for_files(&parsed_for_task, &config_clone, &pool_clone)
+            })
+            .await
+            .context("Join error in module binding resolution phase")??
+        } else {
+            Vec::new()
+        };
+
+        if !binding_bundles.is_empty() {
+            let conn = self.sqlite.write()?;
+            let module_binding_rows = binding_bundles
+                .iter()
+                .map(|bundle| bundle.module_bindings.clone())
+                .collect::<Vec<_>>();
+            write::write_module_bindings_batch(&module_binding_rows, &conn)?;
+        }
+        stats.binding_ms = elapsed_ms(binding_t.elapsed());
+
+        // Phase 2.75: Extract ordinary symbol edges against the populated
+        // symbol and binding tables, then append binding-derived graph edges.
+        // Receiver/default-import resolution now behaves the same on fresh and
+        // incremental indexes.
+        let edge_t = Instant::now();
+        let mut edge_bundles = if !parsed_arc.is_empty() {
+            let config_clone = self.config.clone();
+            let pool_clone = pool.clone();
             let parsed_for_task = parsed_arc.clone();
             tokio::task::spawn_blocking(move || {
                 parse::extract_edges_for_files(&parsed_for_task, &config_clone, &pool_clone)
@@ -987,13 +1146,14 @@ impl IndexPipeline {
         } else {
             Vec::new()
         };
-
-        // Phase 2.75: Write the edges that the deferred extraction produced.
-        if !edge_bundles.is_empty() {
-            let conn = pool.get()?;
-            write::write_edges_batch(&edge_bundles, &conn)?;
-            drop(conn);
+        for (edges, bindings) in edge_bundles.iter_mut().zip(binding_bundles) {
+            edges.extend(bindings.binding_edges);
         }
+        if !edge_bundles.is_empty() {
+            let conn = self.sqlite.write()?;
+            write::write_edges_batch(&edge_bundles, &conn)?;
+        }
+        stats.edge_ms = elapsed_ms(edge_t.elapsed());
 
         // Phase 3: Embed + PageRank (concurrent)
         // Embedding reads symbols from SQLite → writes to LanceDB.
@@ -1003,18 +1163,17 @@ impl IndexPipeline {
 
         let pagerank_fut = {
             let need_pagerank = stats.files_indexed > 0 || stats.files_deleted > 0;
-            let db_path = self.db_path.clone();
+            let sqlite = self.sqlite.clone();
             let config = self.config.clone();
             let fi = stats.files_indexed;
             let fd = stats.files_deleted;
             async move {
                 if !need_pagerank {
                     tracing::debug!("Skipping PageRank computation (no files indexed or deleted)");
-                    return Ok::<(), anyhow::Error>(());
+                    return Ok::<Duration, anyhow::Error>(Duration::ZERO);
                 }
+                let pagerank_t = Instant::now();
                 tokio::task::spawn_blocking(move || {
-                    let sqlite = SqliteStore::open(&db_path)?;
-                    sqlite.init()?;
                     pagerank::compute_and_store_pagerank(&sqlite, &config).with_context(|| {
                         format!(
                             "Failed to compute PageRank scores: files_indexed={}, files_deleted={}",
@@ -1023,18 +1182,29 @@ impl IndexPipeline {
                     })
                 })
                 .await
-                .context("Join error in PageRank computation")?
+                .context("Join error in PageRank computation")??;
+                Ok(pagerank_t.elapsed())
             }
         };
 
         let (embed_result, pagerank_result) = tokio::join!(embed_fut, pagerank_fut);
-        if let Err(e) = embed_result {
-            tracing::warn!(
-                "Embedding generation failed (model may still be loading): {e}. \
-                 Vectors will be generated once the model is ready."
-            );
+        match embed_result {
+            Ok(embedding_stats) => {
+                stats.embedding_ms = embedding_stats.embedding_ms;
+                stats.vector_write_ms = embedding_stats.vector_write_ms;
+                stats.embeddings_generated = embedding_stats.embedded;
+                stats.embeddings_skipped = embedding_stats.skipped;
+                stats.embedding_cache_hits = embedding_stats.cache_hits;
+                stats.embedding_cache_misses = embedding_stats.cache_misses;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Embedding generation failed (model may still be loading): {e}. \
+                     Vectors will be generated once the model is ready."
+                );
+            }
         }
-        pagerank_result?;
+        stats.pagerank_ms = elapsed_ms(pagerank_result?);
 
         // Log cache statistics
         let cache_stats = self.cache.stats();
@@ -1078,7 +1248,7 @@ impl IndexPipeline {
     ///
     /// I/O is pipelined: while embedding batch N, batch N-1's vectors are
     /// written to LanceDB in a background task, overlapping compute and I/O.
-    pub async fn generate_embeddings_for_orphaned_symbols(&self) -> Result<()> {
+    pub async fn generate_embeddings_for_orphaned_symbols(&self) -> Result<EmbeddingRunStats> {
         // Acquire lock to prevent concurrent runs (background startup recovery
         // vs post-indexing can race, duplicating LanceDB records).
         let _guard = self.embedding_generation_lock.lock().await;
@@ -1088,14 +1258,15 @@ impl IndexPipeline {
         const BATCH_SIZE: usize = 200;
         let mut total_embedded: usize = 0;
         let mut total_skipped: usize = 0;
-        let mut pending_write: Option<tokio::task::JoinHandle<Result<()>>> = None;
+        let mut embedding_elapsed = Duration::ZERO;
+        let mut vector_write_elapsed = Duration::ZERO;
+        let cache_before = self.cache.stats();
+        let mut pending_write: Option<tokio::task::JoinHandle<Result<Duration>>> = None;
 
         loop {
-            let sqlite = SqliteStore::open(&self.db_path)?;
-            sqlite.init()?;
-
-            let symbols_need_embeddings =
-                sqlite.list_symbols_without_similarity_clusters(BATCH_SIZE)?;
+            let symbols_need_embeddings = self
+                .sqlite
+                .list_symbols_without_similarity_clusters(BATCH_SIZE)?;
 
             if symbols_need_embeddings.is_empty() {
                 break;
@@ -1147,17 +1318,19 @@ impl IndexPipeline {
             if !to_skip_ids.is_empty() {
                 total_skipped += to_skip_ids.len();
                 for id in &to_skip_ids {
-                    let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
-                        symbol_id: id.clone(),
-                        cluster_key: "__skipped__".to_string(),
-                    });
+                    let _ = self
+                        .sqlite
+                        .upsert_similarity_cluster(&SimilarityClusterRow {
+                            symbol_id: id.clone(),
+                            cluster_key: "__skipped__".to_string(),
+                        });
                 }
             }
 
             // Wait for the previous background write to finish before starting
             // a new one — limits concurrency to one in-flight write at a time.
             if let Some(handle) = pending_write.take() {
-                handle
+                vector_write_elapsed += handle
                     .await
                     .context("Background write task panicked")?
                     .context(
@@ -1175,6 +1348,7 @@ impl IndexPipeline {
             }
 
             // Generate embeddings for this batch
+            let embedding_t = Instant::now();
             let vectors = self
                 .embed_and_build_vector_records(&to_embed)
                 .await
@@ -1185,6 +1359,7 @@ impl IndexPipeline {
                         total_embedded
                     )
                 })?;
+            embedding_elapsed += embedding_t.elapsed();
 
             total_embedded += vectors.len();
 
@@ -1192,18 +1367,17 @@ impl IndexPipeline {
             // so that the next batch's embedding runs concurrently with I/O.
             let vectors_to_write = vectors;
             let vectors_arc = Arc::clone(&self.vectors);
-            let db_path = self.db_path.clone();
+            let sqlite = self.sqlite.clone();
             pending_write = Some(tokio::spawn(async move {
+                let write_t = Instant::now();
                 vectors_arc.add_records(&vectors_to_write).await?;
-                let write_sqlite = SqliteStore::open(&db_path)?;
-                write_sqlite.init()?;
                 for rec in &vectors_to_write {
-                    let _ = write_sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
+                    let _ = sqlite.upsert_similarity_cluster(&SimilarityClusterRow {
                         symbol_id: rec.id.clone(),
                         cluster_key: cluster_key_from_vector(&rec.vector),
                     });
                 }
-                Ok(())
+                Ok(write_t.elapsed())
             }));
 
             // If we got fewer than BATCH_SIZE, there are no more symbols left
@@ -1214,7 +1388,7 @@ impl IndexPipeline {
 
         // Flush the final pending write
         if let Some(handle) = pending_write.take() {
-            handle
+            vector_write_elapsed += handle
                 .await
                 .context("Background write task panicked")?
                 .context("Failed to add vector records for parallel indexing (final flush)")?;
@@ -1229,7 +1403,15 @@ impl IndexPipeline {
             );
         }
 
-        Ok(())
+        let cache_after = self.cache.stats();
+        Ok(EmbeddingRunStats {
+            embedded: total_embedded,
+            skipped: total_skipped,
+            embedding_ms: elapsed_ms(embedding_elapsed),
+            vector_write_ms: elapsed_ms(vector_write_elapsed),
+            cache_hits: cache_after.hits.saturating_sub(cache_before.hits) as usize,
+            cache_misses: cache_after.misses.saturating_sub(cache_before.misses) as usize,
+        })
     }
 
     /// Build enriched text for embedding that includes semantic context.

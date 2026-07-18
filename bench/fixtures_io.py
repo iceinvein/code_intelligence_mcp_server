@@ -1,6 +1,7 @@
 """Load and validate YAML fixture files."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ class FixtureMeta:
     repo: str
     upstream_url: str
     upstream_sha: str
+    fixture_sha256: str
     authored_at: str
     authored_against_schema_version: int
 
@@ -84,13 +86,15 @@ def _parse_question(raw: dict) -> Question:
 
 
 def load_fixture(path: Path) -> Fixture:
-    data = yaml.safe_load(path.read_text())
+    fixture_bytes = path.read_bytes()
+    data = yaml.safe_load(fixture_bytes)
     meta = data["meta"]
     return Fixture(
         meta=FixtureMeta(
             repo=meta["repo"],
             upstream_url=meta["upstream_url"],
             upstream_sha=meta["upstream_sha"],
+            fixture_sha256=hashlib.sha256(fixture_bytes).hexdigest(),
             authored_at=meta["authored_at"],
             authored_against_schema_version=int(meta["authored_against_schema_version"]),
         ),

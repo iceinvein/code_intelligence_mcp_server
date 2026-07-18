@@ -259,6 +259,65 @@ fn find_affected_code_includes_external_overlay_when_native_edge_absent() {
 }
 
 #[test]
+fn find_affected_code_labels_transparent_wrapper_with_exact_delegation() {
+    let (_tmp, app_state) = test_app_state();
+    insert_symbol(
+        &app_state.sqlite,
+        "target_internal",
+        "src/app.ts",
+        "target",
+        1,
+        3,
+    );
+    insert_symbol(
+        &app_state.sqlite,
+        "wrapper_internal",
+        "src/wrapper.ts",
+        "publicWrapper",
+        5,
+        10,
+    );
+    insert_edge(
+        &app_state.sqlite,
+        "wrapper_internal",
+        "target_internal",
+        "delegates_to",
+        "src/wrapper.ts",
+        8,
+        0.95,
+    );
+
+    let response = handle_find_affected_code(
+        &app_state,
+        FindAffectedCodeTool {
+            symbol_name: "target".to_string(),
+            file_path: Some("src/app.ts".to_string()),
+            depth: Some(2),
+            limit: Some(20),
+            include_tests: Some(true),
+            edge_types: None,
+            include_display: Some(false),
+        },
+    )
+    .expect("affected code");
+
+    let wrapper = response["affected"]
+        .as_array()
+        .expect("affected array")
+        .iter()
+        .find(|entry| entry["symbol_id"] == "wrapper_internal")
+        .expect("wrapper affected entry");
+    assert_eq!(wrapper["evidence_role"], "wrapper");
+    assert_eq!(wrapper["at_file"], "src/wrapper.ts");
+    assert_eq!(wrapper["at_line"], 8);
+    assert_eq!(wrapper["delegation"][0]["edge_type"], "delegates_to");
+    let confidence = wrapper["delegation"][0]["confidence"]
+        .as_f64()
+        .expect("numeric confidence");
+    assert!((confidence - 0.95).abs() < 1e-6);
+}
+
+#[test]
 fn refresh_index_runs_external_producer_when_enabled_for_explicit_refresh() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let (_tmp, app_state) =
@@ -1147,6 +1206,13 @@ fn reimport_removes_stale_mapping_when_symbol_becomes_unmapped() {
         1
     );
 
+    // Production reindexing replaces a file atomically: delete its old rows,
+    // then insert declarations under the new identity contract. Mutating a
+    // function into a class in-place with the same id is now deliberately
+    // rejected as a collision.
+    store
+        .delete_symbols_by_file("src/app.ts")
+        .expect("delete replaced source symbols");
     insert_symbol_with_kind(
         &store,
         "target_internal",
@@ -1471,6 +1537,7 @@ fn test_app_state_with_external_index(
     });
     let indexer = IndexPipeline::new(
         config.clone(),
+        sqlite.clone(),
         tantivy_index.clone(),
         vector_store.clone(),
         hash_embedder.clone(),
@@ -1478,6 +1545,7 @@ fn test_app_state_with_external_index(
     );
     let retriever = Retriever::new(
         config.clone(),
+        sqlite.clone(),
         tantivy_index,
         vector_store,
         hash_embedder,

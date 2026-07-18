@@ -6,7 +6,10 @@
 //! the second-hop specialist (call-graph, data-flow, impact, or dependency)
 //! whose result the agent would otherwise have to fetch by hand.
 
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Instant,
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -20,6 +23,9 @@ use crate::handlers::planning::plan_code_investigation;
 use crate::tools::InvestigateTool;
 
 use super::evidence_pack::{build_evidence_pack, pack_to_value, EvidencePackInput, PackLocation};
+use super::investigation_pipeline::{
+    trace_enabled_from_env, InvestigationContext, InvestigationEnrichmentPipeline, PipelineOutput,
+};
 use super::non_callgraph_edges::{extract_non_callgraph_candidates, NonCallgraphShape};
 use super::AppState;
 
@@ -609,22 +615,45 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
 
     // Step 1: planner provides the recommended chain (always included so the
     // agent can audit our routing).
+    let planning_t = Instant::now();
     let plan_value = serde_json::to_value(plan_code_investigation(
         &question,
         target,
         file_path,
         max_hops as usize,
     )?)?;
+    state
+        .retriever
+        .metrics()
+        .observe_query_stage("investigate", "planning", planning_t.elapsed());
 
     // Step 2: run the first specialist hop (search_code + bodies).
+    let primary_t = Instant::now();
     let mut primary = run_primary_hop(state, &question, target, file_path).await?;
+    state.retriever.metrics().observe_query_stage(
+        "investigate",
+        "primary_hop",
+        primary_t.elapsed(),
+    );
+    state.retriever.metrics().observe_query_candidates(
+        "investigate",
+        "primary",
+        primary.locations.len(),
+    );
 
     // Step 3: run the shape-driven second hop, if any.
+    let secondary_t = Instant::now();
     let secondary = if max_hops >= 2 {
         run_secondary_hop(state, shape, &primary, target, file_path).await?
     } else {
         None
     };
+    state.retriever.metrics().observe_query_stage(
+        "investigate",
+        "secondary_hop",
+        secondary_t.elapsed(),
+    );
+    let enrichment_t = Instant::now();
 
     // Step 3.5: auto-include test files for test-coverage questions.
     // ask_code's BM25 ranking returns production symbols when the user
@@ -661,428 +690,46 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         None
     };
 
-    // Step 3.7.05: inject the top referenced/called cross-file definitions
-    // (schema tables, shared helpers) into the verified-location channel.
-    // R014 measured that agents cite `evidence[]` rows and ignore side
-    // blocks, so these must be evidence, not commentary. dedup_locations in
-    // build_response drops any that the trace already carries.
     let mut secondary = secondary;
-    if let Some(sm) = supporting_modules.as_ref() {
-        // Don't spend injection slots on symbols the trace already carries;
-        // dedup would drop them after they displaced genuinely new rows.
-        let present: std::collections::HashSet<&str> = primary
-            .locations
-            .iter()
-            .chain(secondary.iter().flat_map(|s| s.locations.iter()))
-            .map(|l| l.symbol_id.as_str())
-            .collect();
-        let fresh_targets: Vec<_> = sm
-            .definition_targets
-            .iter()
-            .filter(|(row, _)| !present.contains(row.id.as_str()))
-            .cloned()
-            .collect();
-        let defs = supporting_definition_locations(fresh_targets, SUPPORTING_DEFINITION_CAP);
-        if !defs.is_empty() {
-            match secondary.as_mut() {
-                Some(s) => s.locations.extend(defs),
-                None => {
-                    secondary = Some(SecondaryHop {
-                        via: "supporting_definition",
-                        raw: json!({"note": "referenced definitions used by the traced flow"}),
-                        locations: defs,
-                    })
-                }
-            }
-        }
-    }
 
-    // Step 3.7.08: inject route handlers matching endpoint paths named in
-    // the question ("trace from the /proof endpoint"). See
-    // route_endpoint_locations for the rationale. When the trace already
-    // carries a router symbol it rides as one anonymous node among dozens
-    // and the stage-4 positional cut drops it (live-verified on the R015
-    // concept-03 question), so the injected copy REPLACES any secondary-hop
-    // copy instead of deferring to it: the injected row has the focused
-    // body window and budget-stage exemption the trace copy lacks. Primary
-    // (search) hits keep precedence: they ride at the top with full bodies.
-    {
-        let present_primary: HashSet<&str> = primary
-            .locations
-            .iter()
-            .map(|l| l.symbol_id.as_str())
-            .collect();
-        let fresh: Vec<_> = route_endpoint_locations(&state.sqlite, &question)?
-            .into_iter()
-            .filter(|l| !present_primary.contains(l.symbol_id.as_str()))
-            .collect();
-        if !fresh.is_empty() {
-            let fresh_ids: HashSet<String> = fresh.iter().map(|l| l.symbol_id.clone()).collect();
-            match secondary.as_mut() {
-                Some(s) => {
-                    s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
-                    s.locations.extend(fresh);
-                }
-                None => {
-                    secondary = Some(SecondaryHop {
-                        via: "route_endpoint",
-                        raw: json!({"note": "route handlers matching endpoint paths in the question"}),
-                        locations: fresh,
-                    })
-                }
-            }
-        }
-    }
-
-    // Step 3.7.09: mine route mentions from evidence BODIES and inject their
-    // server handlers. R018 (8-rep probe on wolfmax-multi-hop-03): agents ask
-    // natural-language questions with no route token, so step 3.7.08 fired in
-    // 0/8 first calls -- but the client-side evidence it retrieved named the
-    // server route verbatim in a fetch URL. Resolving those mentions closes
-    // the client -> server hop that trace rubrics dock as a missing secondary
-    // citation. Runs after 3.7.08 so question-owned tokens and already-present
-    // symbols are excluded; injected rows get the same budget exemptions.
-    {
-        let secondary_locs: &[VerifiedLocation] = secondary
+    // Step 3.7.05-3.7.13: run evidence enrichment through typed passes. The
+    // allocator is the sole owner of deduplication, replacement, evidence
+    // budget, confidence, and provenance policy.
+    let context = InvestigationContext {
+        question: question.clone(),
+        target: target.map(str::to_owned),
+        shape,
+        supporting_definition_targets: supporting_modules
             .as_ref()
-            .map(|s| s.locations.as_slice())
-            .unwrap_or(&[]);
-        let fresh = evidence_route_injections(
-            &state.sqlite,
-            &question,
-            &primary.locations,
-            secondary_locs,
-        )?;
-        if !fresh.is_empty() {
-            // The injected copy REPLACES doomed duplicates (primary tails,
-            // anonymous trace nodes): dedup is keep-first, so a leftover
-            // earlier copy would win and then die in the stage-4 cut.
-            let fresh_ids: HashSet<String> = fresh.iter().map(|l| l.symbol_id.clone()).collect();
-            primary
-                .locations
-                .retain(|l| !fresh_ids.contains(&l.symbol_id));
-            match secondary.as_mut() {
-                Some(s) => {
-                    s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
-                    s.locations.extend(fresh);
-                }
-                None => {
-                    secondary = Some(SecondaryHop {
-                        via: "route_endpoint",
-                        raw: json!({"note": "route handlers resolved from endpoint paths mined out of evidence bodies"}),
-                        locations: fresh,
-                    })
-                }
-            }
+            .map(|modules| modules.definition_targets.clone())
+            .unwrap_or_default(),
+    };
+    let secondary_locations = secondary
+        .as_ref()
+        .map(|hop| hop.locations.clone())
+        .unwrap_or_default();
+    let PipelineOutput {
+        primary: pipeline_primary,
+        secondary: pipeline_secondary,
+        coverage: pipeline_coverage,
+        trace: pipeline_trace,
+    } = InvestigationEnrichmentPipeline::all_from_env()
+        .run(state, &context, primary.locations, secondary_locations)
+        .await?;
+    primary.locations = pipeline_primary;
+    match secondary.as_mut() {
+        Some(hop) => hop.locations = pipeline_secondary,
+        None if !pipeline_secondary.is_empty() => {
+            let via = pipeline_secondary[0].via;
+            secondary = Some(SecondaryHop {
+                via,
+                raw: json!({"note": "typed evidence-enrichment pipeline"}),
+                locations: pipeline_secondary,
+            });
         }
+        None => {}
     }
-
-    // Step 3.7.095: inject same-file sibling route handlers of the routes
-    // steps 3.7.08/3.7.09 resolved. R023: transaction.ts rode only when the
-    // /exchange router was itself injected (2/8 -- needs the exchange fetch
-    // URL in evidence); siblings of a resolved handler are the flow's other
-    // steps. See sibling_route_locations.
-    {
-        let route_rows: Vec<VerifiedLocation> = secondary
-            .as_ref()
-            .map(|s| {
-                s.locations
-                    .iter()
-                    .filter(|l| l.via == "route_endpoint")
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !route_rows.is_empty() {
-            let fresh = {
-                let secondary_locs: &[VerifiedLocation] = secondary
-                    .as_ref()
-                    .map(|s| s.locations.as_slice())
-                    .unwrap_or(&[]);
-                let present = delivered_ids(&primary.locations, secondary_locs);
-                sibling_route_locations(&state.sqlite, &route_rows, &present)?
-            };
-            if !fresh.is_empty() {
-                // Same replace semantics as 3.7.09: a sibling that already
-                // rides as a primary-tail hit or anonymous trace node is
-                // doomed by the stage-4 cut and must not win the dedup.
-                let fresh_ids: HashSet<String> =
-                    fresh.iter().map(|l| l.symbol_id.clone()).collect();
-                primary
-                    .locations
-                    .retain(|l| !fresh_ids.contains(&l.symbol_id));
-                match secondary.as_mut() {
-                    Some(s) => {
-                        s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
-                        s.locations.extend(fresh);
-                    }
-                    None => unreachable!("route_rows came from secondary"),
-                }
-            }
-        }
-    }
-
-    // Step 3.7.10: inject the cross-file dependencies CALLED BY the route
-    // handlers steps 3.7.08/3.7.09 injected (and their 3.7.095 siblings).
-    // R022 residual: agents stop after one ask_code call, so the handler's
-    // callees (the rubric's remaining secondary citations) never surface --
-    // step 3.7.05 only walks the primary hit's file. See
-    // handler_dependency_locations.
-    {
-        let handler_ids: Vec<String> = secondary
-            .as_ref()
-            .map(|s| {
-                s.locations
-                    .iter()
-                    .filter(|l| l.via == "route_endpoint" || l.via == "sibling_route")
-                    .map(|l| l.symbol_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !handler_ids.is_empty() {
-            let fresh = {
-                let present: HashSet<&str> = primary
-                    .locations
-                    .iter()
-                    .chain(secondary.iter().flat_map(|s| s.locations.iter()))
-                    .map(|l| l.symbol_id.as_str())
-                    .collect();
-                handler_dependency_locations(
-                    &state.sqlite,
-                    &handler_ids,
-                    &present,
-                    "handler_dependency",
-                    HANDLER_DEPENDENCY_CAP,
-                )?
-            };
-            if !fresh.is_empty() {
-                match secondary.as_mut() {
-                    Some(s) => s.locations.extend(fresh),
-                    None => unreachable!("handler_ids came from secondary"),
-                }
-            }
-        }
-    }
-
-    // Step 3.7.11: inject one representative evidence row per un-covered
-    // module for breadth/architecture questions. R027: injection-era agents
-    // answer arch questions from one ask_code call, so the split's other
-    // side (worker binaries, adapter layers) must ride the first response --
-    // arch-03 lost mech 0.57 -> 0.39 purely on file coverage while the
-    // judge stayed flat.
-    //
-    // Two passes share the MODULE_BREADTH_CAP slots:
-    //
-    // 1. Subsystem-scoped: the question names its subsystems ("the Rust
-    //    backend-worker", "`django.db.backends`") but their files can carry
-    //    ZERO question vocabulary (live wolfmax: no backend-worker file
-    //    mentions "anchoring"), so no ranking depth on the raw question
-    //    reaches them. Path segments ARE indexed, so a search scoped by the
-    //    subsystem token itself finds its files; each named-but-undelivered
-    //    subsystem gets reserved slots.
-    // 2. Generic: a wider search on the raw question (the primary hop keeps
-    //    only 5 hits), aggregated per-file, fills the remaining slots.
-    //
-    // Files already delivered as citable evidence (top-3 primary + injected
-    // rows) are skipped in both passes.
-    if shape == InvestigationShape::ModuleSurvey || is_module_breadth_question(&question) {
-        let mut covered: HashSet<String> = {
-            let secondary_locs: &[VerifiedLocation] = secondary
-                .as_ref()
-                .map(|s| s.locations.as_slice())
-                .unwrap_or(&[]);
-            primary
-                .locations
-                .iter()
-                .take(3)
-                .chain(secondary_locs.iter().filter(|l| is_injected_via_str(l.via)))
-                .map(|l| l.file_path.clone())
-                .collect()
-        };
-        let mut fresh: Vec<VerifiedLocation> = Vec::new();
-
-        // Pass 1: subsystem-scoped searches for named-but-undelivered
-        // subsystems.
-        let segments = path_segment_set(
-            state
-                .sqlite
-                .list_indexed_files()?
-                .iter()
-                .map(|(p, _)| p.as_str()),
-        );
-        let mut scoped_subsystems = 0usize;
-        for token in subsystem_candidate_tokens(&question) {
-            if scoped_subsystems >= MODULE_BREADTH_SUBSYSTEM_CAP {
-                break;
-            }
-            if !token_segments_indexed(&token, &segments) {
-                continue;
-            }
-            if covered.iter().any(|f| path_matches_subsystem(f, &token)) {
-                continue;
-            }
-            let scoped: Vec<crate::storage::sqlite::SymbolRow> =
-                run_module_breadth_search(state, &token, None)
-                    .await?
-                    .into_iter()
-                    .filter(|r| path_matches_subsystem(&r.file_path, &token))
-                    .collect();
-            let covered_refs: HashSet<&str> = covered.iter().map(|s| s.as_str()).collect();
-            let rows =
-                module_breadth_locations(scoped, &covered_refs, MODULE_BREADTH_ROWS_PER_SUBSYSTEM);
-            if rows.is_empty() {
-                continue;
-            }
-            scoped_subsystems += 1;
-            covered.extend(rows.iter().map(|l| l.file_path.clone()));
-            fresh.extend(rows);
-        }
-
-        // Pass 2: generic per-file aggregation of a wider question search.
-        if fresh.len() < MODULE_BREADTH_CAP {
-            let broad = run_module_breadth_search(state, &question, target).await?;
-            let covered_refs: HashSet<&str> = covered.iter().map(|s| s.as_str()).collect();
-            fresh.extend(module_breadth_locations(
-                broad,
-                &covered_refs,
-                MODULE_BREADTH_CAP - fresh.len(),
-            ));
-        }
-
-        if !fresh.is_empty() {
-            // Same replace semantics as 3.7.09: a representative that already
-            // rides as a primary-tail hit or anonymous trace node is doomed
-            // by the stage-4 cut and must not win the dedup.
-            let fresh_ids: HashSet<String> = fresh.iter().map(|l| l.symbol_id.clone()).collect();
-            primary
-                .locations
-                .retain(|l| !fresh_ids.contains(&l.symbol_id));
-            match secondary.as_mut() {
-                Some(s) => {
-                    s.locations.retain(|l| !fresh_ids.contains(&l.symbol_id));
-                    s.locations.extend(fresh);
-                }
-                None => {
-                    secondary = Some(SecondaryHop {
-                        via: "module_breadth",
-                        raw: json!({"note": "one representative symbol per module matching the question"}),
-                        locations: fresh,
-                    })
-                }
-            }
-        }
-    }
-
-    // Step 3.7.12: inject the cross-file dependencies CALLED BY the
-    // module-breadth representatives step 3.7.11 injected. R028 residual on
-    // arch-03: the rubric wants lib/receipt-signer.ts but nothing in the
-    // question names lib/ or receipts, so neither the raw search nor the
-    // subsystem pass reaches it. It IS a direct callee of the injected
-    // api/crypto handler (cryptoEpochsRouter -> getReceiptSigner), so the
-    // 3.7.10 edge-walk pattern anchored on breadth rows surfaces it.
-    {
-        let breadth_ids: Vec<String> = secondary
-            .as_ref()
-            .map(|s| {
-                s.locations
-                    .iter()
-                    .filter(|l| l.via == "module_breadth")
-                    .map(|l| l.symbol_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !breadth_ids.is_empty() {
-            let fresh = {
-                let present: HashSet<&str> = primary
-                    .locations
-                    .iter()
-                    .chain(secondary.iter().flat_map(|s| s.locations.iter()))
-                    .map(|l| l.symbol_id.as_str())
-                    .collect();
-                handler_dependency_locations(
-                    &state.sqlite,
-                    &breadth_ids,
-                    &present,
-                    "breadth_dependency",
-                    BREADTH_DEPENDENCY_CAP,
-                )?
-            };
-            if !fresh.is_empty() {
-                match secondary.as_mut() {
-                    Some(s) => s.locations.extend(fresh),
-                    None => unreachable!("breadth_ids came from secondary"),
-                }
-            }
-        }
-    }
-
-    // Step 3.7.13: inject hub type definitions named by the question. R034
-    // residual on django-arch-03: MiddlewareMixin (django/utils/deprecation.py)
-    // is structurally unreachable from the traced flow -- load_middleware
-    // instantiates middleware classes from settings strings via import_string,
-    // so no call/extends path leads to the adapter base class. The question
-    // itself names the subsystem ("middleware"); the class most subclassed /
-    // type-referenced under that name IS the concept's definition surface
-    // (MiddlewareMixin 28 vs CsrfViewMiddleware 9 by type-kind fan-in; same
-    // shape ranks View for "view", Storage hubs for "storage").
-    if is_system_mechanics_question(&question)
-        || is_module_breadth_question(&question)
-        || should_include_supporting_modules(&question, shape)
-    {
-        let present: HashSet<&str> = primary
-            .locations
-            .iter()
-            .chain(secondary.iter().flat_map(|s| s.locations.iter()))
-            .map(|l| l.symbol_id.as_str())
-            .collect();
-        // Same subsystem-reality filter module_breadth uses: a token must
-        // name an indexed path segment. R035: "does" (from "how does it
-        // wrap") substring-matched TemplateDoesNotExist, and junk tokens
-        // ("assembled", "startup") crowded real ones out of the cap.
-        let segments = {
-            let files = state.sqlite.list_indexed_files()?;
-            path_segment_set(files.iter().map(|(path, _)| path.as_str()))
-        };
-        let mut hubs: Vec<(crate::storage::sqlite::SymbolRow, u64)> = Vec::new();
-        for token in subsystem_candidate_tokens(&question)
-            .into_iter()
-            .filter(|t| token_segments_indexed(t, &segments))
-            .take(HUB_TYPE_TOKENS_CAP)
-        {
-            for (row, fan_in) in state.sqlite.list_hub_types_matching(
-                &token,
-                HUB_TYPE_MIN_FAN_IN,
-                HUB_TYPE_CAP * 2,
-            )? {
-                if present.contains(row.id.as_str())
-                    || crate::classify::is_test_file(&row.file_path)
-                    || crate::classify::is_generated_output_path(&row.file_path)
-                    || hubs.iter().any(|(seen, _)| seen.id == row.id)
-                {
-                    continue;
-                }
-                hubs.push((row, fan_in));
-            }
-        }
-        hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
-        let fresh: Vec<VerifiedLocation> = hubs
-            .into_iter()
-            .take(HUB_TYPE_CAP)
-            .map(|(row, _)| injected_location(row, "hub_type", MODULE_BREADTH_BODY_LINES))
-            .collect();
-        if !fresh.is_empty() {
-            match secondary.as_mut() {
-                Some(s) => s.locations.extend(fresh),
-                None => {
-                    secondary = Some(SecondaryHop {
-                        via: "hub_type",
-                        raw: json!({"note": "widely-implemented type definitions matching the question's subject"}),
-                        locations: fresh,
-                    })
-                }
-            }
-        }
-    }
+    let enrichment_trace = trace_enabled_from_env().then_some((pipeline_coverage, pipeline_trace));
 
     // Step 3.7.1: auto-include IPC boundary files for flow questions that
     // cross the renderer / preload / main process line. The supporting
@@ -1125,6 +772,22 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         super::evidence_pack::short_cite_forms(&files)
     };
 
+    state.retriever.metrics().observe_query_stage(
+        "investigate",
+        "enrichment",
+        enrichment_t.elapsed(),
+    );
+    let secondary_candidates = secondary
+        .as_ref()
+        .map(|hop| hop.locations.len())
+        .unwrap_or(0);
+    state.retriever.metrics().observe_query_candidates(
+        "investigate",
+        "secondary",
+        secondary_candidates,
+    );
+
+    let evidence_t = Instant::now();
     let mut bundle = build_response(
         &question,
         shape,
@@ -1138,6 +801,17 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         max_hops,
         &cite_forms,
     );
+    state.retriever.metrics().observe_query_stage(
+        "investigate",
+        "evidence_allocation",
+        evidence_t.elapsed(),
+    );
+    if let Some((coverage, passes)) = enrichment_trace {
+        bundle["enrichment_pipeline"] = json!({
+            "coverage": coverage,
+            "passes": passes,
+        });
+    }
 
     // Step 3.8: append a conciseness directive for scalar-value lookups
     // ("what dimensions / port / timeout"). The verified body of the
@@ -1402,7 +1076,7 @@ struct TestCoverage {
 /// walkthrough phrasing: R010-R013 judge mining showed trace answers lose
 /// points for omitting the files where referenced tables and helpers are
 /// defined, regardless of how the question was phrased.
-fn should_include_supporting_modules(question: &str, shape: InvestigationShape) -> bool {
+pub(super) fn should_include_supporting_modules(question: &str, shape: InvestigationShape) -> bool {
     is_pipeline_walkthrough_question(question)
         || matches!(
             shape,
@@ -1437,7 +1111,7 @@ fn is_supporting_edge(edge_type: &str, callee_kind: &str) -> bool {
 
 /// Cap for injected supporting-definition evidence rows. Small on purpose:
 /// they supplement the trace, they must not displace it.
-const SUPPORTING_DEFINITION_CAP: usize = 3;
+pub(super) const SUPPORTING_DEFINITION_CAP: usize = 3;
 const SUPPORTING_DEFINITION_BODY_LINES: usize = 24;
 
 /// Shape the top cross-file definition targets into verified locations so
@@ -1445,7 +1119,7 @@ const SUPPORTING_DEFINITION_BODY_LINES: usize = 24;
 /// evidence rows and ignore side blocks (supporting_modules surfaced the
 /// schema files; zero answers cited them), so the definitions must ride the
 /// evidence channel itself.
-fn supporting_definition_locations(
+pub(super) fn supporting_definition_locations(
     defs: Vec<(crate::storage::sqlite::SymbolRow, usize)>,
     cap: usize,
 ) -> Vec<VerifiedLocation> {
@@ -1480,7 +1154,7 @@ fn supporting_definition_locations(
 
 /// Shape a symbol row into an injected evidence row with a head-trimmed
 /// body. Shared by the supporting_definition and handler_dependency shapers.
-fn injected_location(
+pub(super) fn injected_location(
     row: crate::storage::sqlite::SymbolRow,
     via: &'static str,
     body_lines: usize,
@@ -1517,7 +1191,7 @@ const ROUTE_ENDPOINT_BODY_LINES: usize = 24;
 /// A whitespace-delimited token starting with '/' in a code question is a
 /// route mention. Tokens containing a dot are skipped so filesystem paths
 /// ("/Users/x/src/a.ts") never trigger route injection.
-fn endpoint_path_tokens(question: &str) -> Vec<String> {
+pub(super) fn endpoint_path_tokens(question: &str) -> Vec<String> {
     let mut out = Vec::new();
     for raw in question.split_whitespace() {
         let token = raw
@@ -1590,7 +1264,7 @@ const EVIDENCE_ROUTE_TOKEN_CAP: usize = 6;
 /// bodies are too noisy (JSX closers, division, comment slashes), and the
 /// question path already covers "the /proof endpoint" phrasing. Dotted
 /// fragments are file paths or hostnames, never routes.
-fn evidence_route_tokens(bodies: &[&str]) -> Vec<String> {
+pub(super) fn evidence_route_tokens(bodies: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for body in bodies {
         for fragment in
@@ -1708,7 +1382,7 @@ fn route_endpoint_locations_for_tokens(
 
 /// Route-endpoint rows mined from evidence bodies, minus what the question
 /// pass already covers and what evidence already carries.
-fn evidence_route_injections(
+pub(super) fn evidence_route_injections(
     sqlite: &crate::storage::sqlite::SqliteStore,
     question: &str,
     primary_locations: &[VerifiedLocation],
@@ -1746,7 +1420,7 @@ fn evidence_route_injections(
 /// evidence instead of hoping the graph walk surfaces them. Shape-agnostic
 /// on purpose: endpoint-anchored concept questions classify as Discover,
 /// which has no secondary hop at all.
-fn route_endpoint_locations(
+pub(super) fn route_endpoint_locations(
     sqlite: &crate::storage::sqlite::SqliteStore,
     question: &str,
 ) -> Result<Vec<VerifiedLocation>> {
@@ -1765,7 +1439,7 @@ const SIBLING_ROUTE_CAP: usize = 2;
 /// (2/8 reps). Endpoints registered in one file are one flow surface --
 /// injecting the siblings of a resolved handler covers the flow's other
 /// steps and gives step 3.7.10 their callees to walk.
-fn sibling_route_locations(
+pub(super) fn sibling_route_locations(
     sqlite: &crate::storage::sqlite::SqliteStore,
     injected_routes: &[VerifiedLocation],
     present: &HashSet<&str>,
@@ -1823,13 +1497,13 @@ fn sibling_route_locations(
 
 /// Cap for injected handler-dependency evidence rows. Small like the other
 /// injection caps: they supplement the trace, they must not displace it.
-const HANDLER_DEPENDENCY_CAP: usize = 3;
+pub(super) const HANDLER_DEPENDENCY_CAP: usize = 3;
 const HANDLER_DEPENDENCY_BODY_LINES: usize = 24;
 /// Cap for step 3.7.12 (callees of module-breadth rows). Tighter than the
 /// handler walk: breadth packs already carry MODULE_BREADTH_CAP extra rows,
 /// and the walk's job is the one shared library the split's sides call into
 /// (receipt-signer.ts on arch-03), not another module list.
-const BREADTH_DEPENDENCY_CAP: usize = 2;
+pub(super) const BREADTH_DEPENDENCY_CAP: usize = 2;
 
 /// Cross-file callees of injected route handlers, shaped as evidence rows.
 /// R022 residual on wolfmax-multi-hop-03: agents stop after one ask_code
@@ -1839,7 +1513,7 @@ const BREADTH_DEPENDENCY_CAP: usize = 2;
 /// only (summed edge evidence_count): the targets here are service
 /// functions, which the 3.7.05 data-first kind bias would bury beneath
 /// consts and types.
-fn handler_dependency_locations(
+pub(super) fn handler_dependency_locations(
     sqlite: &crate::storage::sqlite::SqliteStore,
     handler_ids: &[String],
     present: &HashSet<&str>,
@@ -1910,12 +1584,12 @@ fn handler_dependency_locations(
 
 /// Cap for injected module-breadth evidence rows. Four covers a two-sided
 /// architecture split (2 modules per side) without flooding the response.
-const MODULE_BREADTH_CAP: usize = 4;
-const MODULE_BREADTH_BODY_LINES: usize = 24;
+pub(super) const MODULE_BREADTH_CAP: usize = 4;
+pub(super) const MODULE_BREADTH_BODY_LINES: usize = 24;
 /// At most this many named subsystems get a scoped search, each reserving
 /// up to MODULE_BREADTH_ROWS_PER_SUBSYSTEM of the MODULE_BREADTH_CAP slots.
-const MODULE_BREADTH_SUBSYSTEM_CAP: usize = 2;
-const MODULE_BREADTH_ROWS_PER_SUBSYSTEM: usize = 2;
+pub(super) const MODULE_BREADTH_SUBSYSTEM_CAP: usize = 2;
+pub(super) const MODULE_BREADTH_ROWS_PER_SUBSYSTEM: usize = 2;
 
 /// Breadth/architecture questions ask how responsibility is divided across
 /// modules, not how one flow executes. R027: injection-era agents answer
@@ -1924,20 +1598,20 @@ const MODULE_BREADTH_ROWS_PER_SUBSYSTEM: usize = 2;
 /// on file coverage; judge flat).
 /// Rows injected by step 3.7.13. Two is enough to carry the concept's base
 /// type plus one adjacent hub without diluting the pack.
-const HUB_TYPE_CAP: usize = 2;
+pub(super) const HUB_TYPE_CAP: usize = 2;
 /// A type must be pointed at by at least this many distinct type-kind
 /// symbols to count as a hub; filters ordinary classes that happen to match
 /// a question word.
-const HUB_TYPE_MIN_FAN_IN: usize = 3;
+pub(super) const HUB_TYPE_MIN_FAN_IN: usize = 3;
 /// Subsystem tokens tried against the hub query; each is one indexed SQL
 /// lookup.
-const HUB_TYPE_TOKENS_CAP: usize = 8;
+pub(super) const HUB_TYPE_TOKENS_CAP: usize = 8;
 
 /// Architecture-mechanics phrasings ("How does the middleware system work?",
 /// "How is the chain assembled at startup?") that the walkthrough and
 /// breadth gates miss: they name no pipeline verb and no split/boundary
 /// vocabulary, but the answer still lives partly in a concept-defining type.
-fn is_system_mechanics_question(question: &str) -> bool {
+pub(super) fn is_system_mechanics_question(question: &str) -> bool {
     let q = question.to_lowercase();
     (q.contains("how does") || q.contains("how is") || q.contains("how are"))
         && contains_any(
@@ -1955,7 +1629,7 @@ fn is_system_mechanics_question(question: &str) -> bool {
         )
 }
 
-fn is_module_breadth_question(question: &str) -> bool {
+pub(super) fn is_module_breadth_question(question: &str) -> bool {
     let q = question.to_lowercase();
     contains_any(
         &q,
@@ -1981,7 +1655,7 @@ fn is_module_breadth_question(question: &str) -> bool {
 /// signal the question is about that module. Plain words (length >= 4)
 /// follow in order of appearance; the caller filters both kinds against
 /// the indexed path segments, so ordinary prose words cost nothing.
-fn subsystem_candidate_tokens(question: &str) -> Vec<String> {
+pub(super) fn subsystem_candidate_tokens(question: &str) -> Vec<String> {
     // Question-structure vocabulary that also names real directories in many
     // repos (django has gis/gdal/layer.py; most repos have src/, tests/):
     // the segment check alone cannot filter these, and each false candidate
@@ -2060,7 +1734,7 @@ fn subsystem_candidate_tokens(question: &str) -> Vec<String> {
 /// Whole-segment match only ("backend" must not match "backend-worker");
 /// dotted module paths match consecutive path segments; the file stem
 /// counts as a segment so "crypto.ts" belongs to subsystem "crypto".
-fn path_matches_subsystem(file_path: &str, token: &str) -> bool {
+pub(super) fn path_matches_subsystem(file_path: &str, token: &str) -> bool {
     let wanted: Vec<&str> = token.split('.').filter(|s| !s.is_empty()).collect();
     if wanted.is_empty() {
         return false;
@@ -2087,7 +1761,7 @@ fn path_matches_subsystem(file_path: &str, token: &str) -> bool {
 /// Lowercased path segments (directories + file stems) of the indexed tree.
 /// Candidate subsystem tokens are filtered against this set so prose words
 /// that name no real module never trigger a scoped search.
-fn path_segment_set<'a>(paths: impl Iterator<Item = &'a str>) -> HashSet<String> {
+pub(super) fn path_segment_set<'a>(paths: impl Iterator<Item = &'a str>) -> HashSet<String> {
     let mut out = HashSet::new();
     for path in paths {
         let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -2104,7 +1778,7 @@ fn path_segment_set<'a>(paths: impl Iterator<Item = &'a str>) -> HashSet<String>
 }
 
 /// Whether every dot-part of a candidate token names a real path segment.
-fn token_segments_indexed(token: &str, segments: &HashSet<String>) -> bool {
+pub(super) fn token_segments_indexed(token: &str, segments: &HashSet<String>) -> bool {
     let mut parts = token.split('.').filter(|s| !s.is_empty()).peekable();
     parts.peek().is_some() && parts.all(|p| segments.contains(p))
 }
@@ -2117,7 +1791,7 @@ const MODULE_BREADTH_SEARCH_LIMIT: u32 = 20;
 /// Re-run the hybrid search with a breadth-sized limit and resolve the hits
 /// to symbol rows in rank order. The primary hop's 5 hits cluster on the
 /// majority side of a split; per-file aggregation needs the full ranking.
-async fn run_module_breadth_search(
+pub(super) async fn run_module_breadth_search(
     state: &AppState,
     question: &str,
     target: Option<&str>,
@@ -2130,8 +1804,7 @@ async fn run_module_breadth_search(
         exported_only: None,
         context: None,
     };
-    let raw =
-        super::search::handle_search_code(&state.retriever, &state.config.db_path, tool).await?;
+    let raw = super::search::handle_search_code(&state.retriever, tool).await?;
     let mut out = Vec::new();
     if let Some(hits) = raw.get("hits").and_then(|v| v.as_array()) {
         for hit in hits {
@@ -2152,7 +1825,7 @@ async fn run_module_breadth_search(
 /// answer), then by their best rank. Within a file the representative is the
 /// best-ranked exported symbol (the module's citable surface), falling back
 /// to the best-ranked hit.
-fn module_breadth_locations(
+pub(super) fn module_breadth_locations(
     ranked_hits: Vec<crate::storage::sqlite::SymbolRow>,
     covered_files: &HashSet<&str>,
     cap: usize,
@@ -2530,17 +2203,17 @@ struct PrimaryHop {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct VerifiedLocation {
-    symbol_id: String,
-    symbol_name: String,
-    file_path: String,
-    kind: String,
-    start_line: u32,
-    end_line: u32,
-    via: &'static str,
-    body: String,
+pub(super) struct VerifiedLocation {
+    pub(super) symbol_id: String,
+    pub(super) symbol_name: String,
+    pub(super) file_path: String,
+    pub(super) kind: String,
+    pub(super) start_line: u32,
+    pub(super) end_line: u32,
+    pub(super) via: &'static str,
+    pub(super) body: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    route_exposure: Vec<Value>,
+    pub(super) route_exposure: Vec<Value>,
 }
 
 async fn run_primary_hop(
@@ -2558,8 +2231,7 @@ async fn run_primary_hop(
         exported_only: None,
         context: Some("full".to_string()),
     };
-    let raw =
-        super::search::handle_search_code(&state.retriever, &state.config.db_path, tool).await?;
+    let raw = super::search::handle_search_code(&state.retriever, tool).await?;
 
     let locations = extract_locations_from_search(state, &raw, "search_code", file_path)?;
     Ok(PrimaryHop { raw, locations })
@@ -2717,7 +2389,7 @@ async fn run_find_affected_hop(
     let tool = FindAffectedCodeTool {
         symbol_name: pivot.to_string(),
         file_path: file_path.map(ToOwned::to_owned),
-        depth: Some(2),
+        depth: Some(3),
         limit: Some(50),
         include_tests: Some(false),
         edge_types: None,
@@ -2859,15 +2531,63 @@ fn extract_locations_from_affected(
         let Some(row) = sqlite.get_symbol_by_id(id)? else {
             continue;
         };
-        let body = body_with_cap(&row.text, PER_BODY_LINES_CAP);
+        let is_public_exposure =
+            entry.get("evidence_role").and_then(|v| v.as_str()) == Some("public_exposure");
+        let is_wrapper = entry.get("evidence_role").and_then(|v| v.as_str()) == Some("wrapper");
+        let public_line = entry
+            .get("at_line")
+            .and_then(|value| value.as_u64())
+            .and_then(|line| u32::try_from(line).ok());
+        let (body, start_line, end_line) = if is_public_exposure || is_wrapper {
+            if let Some(line) = public_line {
+                let line_text = row
+                    .text
+                    .lines()
+                    .nth(line.saturating_sub(row.start_line) as usize)
+                    .unwrap_or_default()
+                    .trim_end()
+                    .to_string();
+                (line_text, line, line)
+            } else {
+                (
+                    body_with_cap(&row.text, PER_BODY_LINES_CAP),
+                    1,
+                    row.end_line,
+                )
+            }
+        } else {
+            (
+                body_with_cap(&row.text, PER_BODY_LINES_CAP),
+                row.start_line,
+                row.end_line,
+            )
+        };
         let route_exposure = route_exposures_for_symbol(sqlite, &row, 20)?;
         out.push(VerifiedLocation {
             symbol_id: row.id,
-            symbol_name: row.name,
+            symbol_name: if is_public_exposure {
+                entry
+                    .get("public_api")
+                    .and_then(|value| value.as_array())
+                    .and_then(|bindings| bindings.first())
+                    .and_then(|binding| binding.get("exported_name"))
+                    .and_then(|value| value.as_str())
+                    .filter(|name| !name.is_empty() && *name != "*")
+                    .unwrap_or(&row.name)
+                    .to_string()
+            } else {
+                row.name.clone()
+            },
             file_path: row.file_path,
-            kind: row.kind,
-            start_line: row.start_line,
-            end_line: row.end_line,
+            kind: if is_public_exposure {
+                "public_exposure".to_string()
+            } else if is_wrapper {
+                "wrapper".to_string()
+            } else {
+                row.kind
+            },
+            start_line,
+            end_line,
             via,
             body,
             route_exposure,
@@ -3117,13 +2837,17 @@ fn build_response(
         "secondary": secondary_summary,
         "pack": pack_to_value(&pack),
         "context_chain": context_chain,
-        "answer_hint": "Cite only entries from `verified_locations` or `pack.rows` \
-            with line-level file evidence. When citing, copy the entry's `cite` \
+        "answer_hint": "Cite only entries from `verified_locations` (always source-backed) \
+            or `pack.rows` where `source_backed=true`; exact path:line claims are unsupported for \
+            any other row. When citing, copy the entry's `cite` \
             value verbatim -- it is the shortest path form that stays unambiguous \
             in this repo; shortening it further can collide with a same-named \
-            file. Respect `pack.coverage.status`: `partial` \
-            means returned rows are candidates or a truncated subset, not exhaustive \
-            proof. Identifiers mentioned inside `body` text or in `context_chain` but \
+            file. Respect `pack.coverage.required_roles`, `missing_roles`, \
+            `ambiguous_roles`, `candidate_roles`, and `pack.coverage.status`: \
+            `partial` means the \
+            required evidence contract is unresolved or the returned rows are a \
+            truncated subset, not exhaustive proof. Identifiers mentioned inside \
+            `body` text or in `context_chain` but \
             NOT listed in verified_locations or pack.rows are NOT verified locations - \
             do not state their file paths or line numbers without a separate \
             get_definition, find_references, or specialist graph call."
@@ -3248,7 +2972,7 @@ pub(crate) fn is_injected_via_str(via: &str) -> bool {
 /// primary rank 4 blocked the evidence and sibling passes, and the doomed
 /// copy never reached the agent). The wiring replaces such copies with the
 /// injected row instead.
-fn delivered_ids<'a>(
+pub(super) fn delivered_ids<'a>(
     primary: &'a [VerifiedLocation],
     secondary: &'a [VerifiedLocation],
 ) -> HashSet<&'a str> {
@@ -3334,7 +3058,13 @@ fn apply_response_budget(response: &mut Value) {
     }
 
     fn mark_pack_coverage_partial_for_truncation(response: &mut Value, original_count: usize) {
-        let returned_count = pack_row_count(response).unwrap_or(0);
+        let returned_rows = response
+            .get("pack")
+            .and_then(|v| v.get("rows"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let returned_count = returned_rows.len();
         let omitted_count = original_count.saturating_sub(returned_count);
         let Some(coverage) = response
             .get_mut("pack")
@@ -3343,53 +3073,33 @@ fn apply_response_budget(response: &mut Value) {
         else {
             return;
         };
-
-        coverage.insert("status".to_string(), json!("partial"));
-        coverage.insert(
-            "basis".to_string(),
-            json!("evidence rows were truncated for response budget"),
+        let mut refreshed = Value::Object(coverage.clone());
+        super::evidence_pack::refresh_coverage_after_budget(
+            &mut refreshed,
+            &returned_rows,
+            omitted_count,
         );
-        coverage.insert(
-            "missing".to_string(),
-            json!(format!(
-                "{omitted_count} rows omitted by response budget; returned rows are not exhaustive"
-            )),
-        );
+        if let Value::Object(refreshed) = refreshed {
+            *coverage = refreshed;
+        }
     }
 
     fn truncate_pack_rows(response: &mut Value, limit: usize, original_count: usize) -> bool {
-        let Some(rows) = response
-            .get_mut("pack")
-            .and_then(|v| v.get_mut("rows"))
-            .and_then(|v| v.as_array_mut())
-        else {
+        let Some(pack) = response.get("pack") else {
             return false;
         };
-
+        let Some(rows) = pack.get("rows").and_then(Value::as_array) else {
+            return false;
+        };
         if rows.len() <= limit {
             return false;
         }
-
-        // Injected rows ride at the end of the row list (after the trace
-        // rows) and keep their via as the role; a keep-first cut would drop
-        // exactly the rows the injections exist to deliver (R024: agents
-        // outline from pack.rows, and the injected evidence never made the
-        // first 20).
-        let injected: Vec<Value> = rows
-            .iter()
-            .filter(|r| is_injected_via(&r["role"]))
-            .take(limit)
-            .cloned()
-            .collect();
-        let keep_others = limit.saturating_sub(injected.len());
-        let mut kept: Vec<Value> = rows
-            .iter()
-            .filter(|r| !is_injected_via(&r["role"]))
-            .take(keep_others)
-            .cloned()
-            .collect();
-        kept.extend(injected);
-        *rows = kept;
+        let kept = super::evidence_pack::select_pack_rows_for_budget(
+            rows,
+            pack.get("coverage").unwrap_or(&Value::Null),
+            limit,
+        );
+        response["pack"]["rows"] = json!(kept);
         mark_pack_rows_truncated(response, original_count);
         true
     }
@@ -3472,6 +3182,10 @@ fn apply_response_budget(response: &mut Value) {
             .to_string();
         let ordinal = row.get("ordinal").cloned();
         let line = row.get("line").cloned();
+        let cite = row.get("cite").cloned();
+        let coverage_role = row.get("coverage_role").cloned();
+        let verification = row.get("verification").cloned();
+        let source_backed = row.get("source_backed").cloned();
         let evidence = row
             .get("evidence")
             .and_then(|v| v.as_str())
@@ -3485,6 +3199,18 @@ fn apply_response_budget(response: &mut Value) {
         }
         if let Some(line) = line {
             compact.insert("line".to_string(), line);
+        }
+        if let Some(cite) = cite {
+            compact.insert("cite".to_string(), cite);
+        }
+        if let Some(coverage_role) = coverage_role {
+            compact.insert("coverage_role".to_string(), coverage_role);
+        }
+        if let Some(verification) = verification {
+            compact.insert("verification".to_string(), verification);
+        }
+        if let Some(source_backed) = source_backed {
+            compact.insert("source_backed".to_string(), source_backed);
         }
         compact.insert("evidence".to_string(), json!(evidence));
         *row = Value::Object(compact);
@@ -3518,6 +3244,10 @@ fn apply_response_budget(response: &mut Value) {
                     rows_truncated = true;
                 }
                 if let Some(row) = rows.first_mut().and_then(|v| v.as_object_mut()) {
+                    let coverage_role = row.get("coverage_role").cloned();
+                    let verification = row.get("verification").cloned();
+                    let source_backed = row.get("source_backed").cloned();
+                    let cite = row.get("cite").cloned();
                     let evidence = row
                         .get("evidence")
                         .and_then(|v| v.as_str())
@@ -3525,6 +3255,18 @@ fn apply_response_budget(response: &mut Value) {
                         .unwrap_or_default();
                     row.clear();
                     row.insert("role".to_string(), json!("evidence"));
+                    if let Some(coverage_role) = coverage_role {
+                        row.insert("coverage_role".to_string(), coverage_role);
+                    }
+                    if let Some(verification) = verification {
+                        row.insert("verification".to_string(), verification);
+                    }
+                    if let Some(source_backed) = source_backed {
+                        row.insert("source_backed".to_string(), source_backed);
+                    }
+                    if let Some(cite) = cite {
+                        row.insert("cite".to_string(), cite);
+                    }
                     row.insert("evidence".to_string(), json!(evidence));
                 }
             }

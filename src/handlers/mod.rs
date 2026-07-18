@@ -17,6 +17,7 @@ mod framework_routes;
 mod graph;
 mod index;
 mod investigation;
+mod investigation_pipeline;
 mod learning;
 mod navigation;
 mod non_callgraph_edges;
@@ -24,6 +25,7 @@ mod planning;
 mod repo_map;
 mod search;
 mod state;
+mod symbol_resolution;
 
 use crate::path::PathError;
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams};

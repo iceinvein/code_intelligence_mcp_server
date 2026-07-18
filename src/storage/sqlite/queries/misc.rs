@@ -68,6 +68,27 @@ pub fn delete_usage_examples_by_file(conn: &Connection, file_path: &str) -> Resu
     Ok(())
 }
 
+pub fn delete_orphan_usage_examples(conn: &Connection) -> Result<u64> {
+    let deleted = conn
+        .execute(
+            r#"
+DELETE FROM usage_examples
+WHERE NOT EXISTS (
+        SELECT 1 FROM symbols WHERE symbols.id = usage_examples.to_symbol_id
+      )
+   OR (
+        from_symbol_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM symbols WHERE symbols.id = usage_examples.from_symbol_id
+        )
+      )
+"#,
+            [],
+        )
+        .context("Failed to delete orphan usage examples")?;
+    Ok(deleted as u64)
+}
+
 pub fn upsert_usage_example(conn: &Connection, example: &UsageExampleRow) -> Result<()> {
     conn.execute(
         r#"
@@ -392,5 +413,37 @@ mod tests {
         let clusters = list_duplicate_clusters(&conn, 100).unwrap();
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].0, "real_cluster");
+    }
+
+    #[test]
+    fn orphan_usage_examples_are_removed_after_symbol_replacement() {
+        let conn = setup_test_db();
+        insert_symbol(&conn, "target", "src/a.rs", "function", "target");
+        upsert_usage_example(
+            &conn,
+            &UsageExampleRow {
+                to_symbol_id: "target".into(),
+                from_symbol_id: None,
+                example_type: "import".into(),
+                file_path: "src/index.rs".into(),
+                line: Some(1),
+                snippet: "use crate::target;".into(),
+            },
+        )
+        .unwrap();
+
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn.execute("DELETE FROM symbols WHERE id = 'target'", [])
+            .unwrap();
+        conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+
+        assert_eq!(delete_orphan_usage_examples(&conn).unwrap(), 1);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM usage_examples", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
     }
 }

@@ -58,9 +58,13 @@ def test_daemon_binary_hash_is_stable_16_hex(monkeypatch, tmp_path):
 
     h1 = repos.daemon_binary_hash()
     h2 = repos.daemon_binary_hash()
+    full = repos.daemon_binary_sha256()
     assert h1 == h2
     assert len(h1) == 16
+    assert len(full) == 64
+    assert full.startswith(h1)
     int(h1, 16)  # hex
+    int(full, 16)
 
     fake_bin.write_bytes(b"binary-contents-v2")
     assert repos.daemon_binary_hash() != h1

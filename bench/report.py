@@ -64,6 +64,75 @@ def _has_judge(agg: dict | None) -> bool:
     return bool(agg and not agg["skipped"] and agg.get("judge_median") is not None)
 
 
+def _escape_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _provenance_lines(meta: dict) -> list[str]:
+    daemon = meta.get("daemon", {})
+    models = meta.get("models", {})
+    binaries = meta.get("binaries", {})
+    comparator = meta.get("comparator", {})
+    configuration = meta.get("configuration", {})
+    fixtures = meta.get("fixtures", [])
+
+    if not any((daemon, models, binaries, comparator, configuration, fixtures)):
+        return []
+
+    baseline = comparator.get("baseline_arm") or "not specified"
+    candidates = comparator.get("candidate_arms", [])
+    lines = ["## Reproducibility\n"]
+    lines.append(
+        f"**Comparator:** {_escape_cell(baseline)} → "
+        f"{_escape_cell(', '.join(candidates) or 'none')}  "
+        f"**Daemon binary SHA-256:** "
+        f"{_escape_cell(daemon.get('binary_sha256') or 'unavailable')}  "
+        f"**Agent CLI:** {_escape_cell(binaries.get('agent_cli') or 'unknown')}"
+    )
+    lines.append("")
+
+    if fixtures:
+        lines.append("### Fixture revisions\n")
+        lines.append("| repo | upstream SHA | fixture SHA-256 | schema | questions |")
+        lines.append("|---|---|---|---:|---:|")
+        for fixture in fixtures:
+            lines.append(
+                f"| {_escape_cell(fixture.get('repo', '?'))} | "
+                f"{_escape_cell(fixture.get('upstream_sha', '?'))} | "
+                f"{_escape_cell(fixture.get('fixture_sha256', '?'))} | "
+                f"{_escape_cell(fixture.get('authored_against_schema_version', '?'))} | "
+                f"{len(fixture.get('question_ids', []))} |"
+            )
+        lines.append("")
+
+    if models:
+        lines.append("### Models and execution\n")
+        lines.append("| role | model |")
+        lines.append("|---|---|")
+        lines.append(f"| agent | {_escape_cell(models.get('agent', '?'))} |")
+        for role, model in sorted(models.get("judges", {}).items()):
+            lines.append(f"| judge/{_escape_cell(role)} | {_escape_cell(model)} |")
+        lines.append("")
+
+    arms = configuration.get("arms", [])
+    if arms:
+        lines.append("### Arm configuration\n")
+        lines.append("| arm | index | daemon env |")
+        lines.append("|---|---|---|")
+        for arm in arms:
+            daemon_env = ", ".join(
+                f"{key}={value}" for key, value in arm.get("daemon_env", {}).items()
+            ) or "default"
+            lines.append(
+                f"| {_escape_cell(arm.get('name', '?'))} | "
+                f"{_escape_cell(arm.get('index_variant') or 'none')} | "
+                f"{_escape_cell(daemon_env)} |"
+            )
+        lines.append("")
+
+    return lines
+
+
 def _build_headline(arms_data: dict[str, dict]) -> str:
     full = arms_data.get("code_intel_full")
     default = arms_data.get("default")
@@ -102,11 +171,17 @@ def render_markdown(
     meta: dict,
 ) -> str:
     lines: list[str] = []
+    daemon = meta.get("daemon", {})
+    models = meta.get("models", {})
+    binaries = meta.get("binaries", {})
+    daemon_sha = daemon.get("git_sha") or meta.get("daemon_sha", "?")
+    agent_model = models.get("agent") or meta.get("agent_model", "?")
+    codegraph_version = binaries.get("codegraph") or meta.get("codegraph_version")
     lines.append(f"# Bench Round {round_id}\n")
     lines.append(
         f"**Repos:** {', '.join(repos)}  **Arms:** {len(arms_data)}  "
-        f"**Daemon SHA:** {meta.get('daemon_sha', '?')}  **Codegraph:** {meta.get('codegraph_version') or 'not installed'}  "
-        f"**Agent:** {meta.get('agent_model', '?')}\n"
+        f"**Daemon SHA:** {daemon_sha}  **Codegraph:** {codegraph_version or 'not installed'}  "
+        f"**Agent:** {agent_model}\n"
     )
     lines.append("## Headline\n")
     lines.append(_build_headline(arms_data))
@@ -132,6 +207,7 @@ def render_markdown(
                 f"{_fmt(agg['wall_seconds_mean'], 0)}s |"
             )
     lines.append("")
+    lines.extend(_provenance_lines(meta))
     lines.append("## Failures worth inspecting\n")
     for category, items in outliers.items():
         lines.append(f"### {category}")

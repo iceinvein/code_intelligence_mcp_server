@@ -81,6 +81,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
+        module_bindings: Vec::new(),
         type_edges,
         extends_edges: Vec::new(),
         dataflow_edges: Vec::<DataFlowEdge>::new(),
@@ -317,6 +318,7 @@ fn extract_require(node: Node<'_>, source: &str, imports: &mut Vec<Import>) {
                 },
                 source: content,
                 alias: None,
+                at_line: args_node.start_position().row as u32 + 1,
             });
             return;
         }

@@ -193,7 +193,7 @@ questions:
     rubric: |
       Must cite django/utils/autoreload.py. The two strategies are:
         StatReloader (line 384): polls file mtimes at a fixed interval using
-        inotify-style stat checks. Always available.
+        pathlib stat calls. Always available.
         WatchmanReloader (line 431): uses Facebook Watchman via pywatchman for
         event-driven file watching. Preferred when available.
       get_reloader (line 640) decides: tries WatchmanReloader first, falls back to
@@ -464,20 +464,24 @@ questions:
   - id: django-impact-02
     task_type: impact
     difficulty: medium
-    question: "If `get_resolver` in `django/urls/resolvers.py` were renamed to `build_resolver`, which files would need updating?"
+    question: "If `get_resolver` in `django/urls/resolvers.py` were renamed to `build_resolver`, which production Python files (excluding tests) would need updating?"
     rubric: |
-      get_resolver is imported and used in multiple Django modules:
+      Scope this answer to production Python files in the pinned fixture; tests are
+      deliberately excluded. get_resolver is defined, imported, or used in:
+        - django/urls/resolvers.py (definition and internal uses)
+        - django/urls/__init__.py (public re-export)
+        - django/urls/base.py (import and calls)
+        - django/conf/urls/i18n.py (import and call)
         - django/core/handlers/base.py (line 11 import, line 309/311 calls)
         - django/core/handlers/exception.py (line 19 import, multiple calls)
         - django/core/checks/urls.py (three import+call sites: lines 13, 41, 127)
         - django/utils/autoreload.py (line 332 import, line 337 call)
         - django/contrib/admindocs/views.py (line 20 import, line 146 call)
-        Also django/urls/__init__.py re-exports get_resolver; renaming requires
-        updating the __init__.py barrel export too.
       Bonus: notes that _get_cached_resolver (the private cache wrapper at line 115)
       would also be renamed for consistency, impacting only resolvers.py internals.
       Penalize: listing only one or two import sites and claiming the impact is small,
-      or missing the django/urls/__init__.py re-export which is the public API.
+      missing the django/urls/__init__.py public re-export, or penalizing an answer for
+      omitting test-only references that the question excludes.
     expected:
       citations:
         - { file: "django/urls/resolvers.py", line_range: [108, 117], symbol: "get_resolver" }
@@ -487,12 +491,15 @@ questions:
       files:
         - "django/urls/resolvers.py"
         - "django/urls/__init__.py"
+        - "django/urls/base.py"
+        - "django/conf/urls/i18n.py"
         - "django/core/handlers/base.py"
         - "django/core/handlers/exception.py"
         - "django/core/checks/urls.py"
         - "django/utils/autoreload.py"
         - "django/contrib/admindocs/views.py"
       facts:
+        - ["django/urls/base.py", "django/conf/urls/i18n.py"]
         - ["django/core/handlers/base.py", "django/core/handlers/exception.py"]
         - ["django/core/checks/urls.py", "autoreload.py"]
         - ["django/urls/__init__.py", "re-export"]
@@ -502,10 +509,11 @@ questions:
   - id: django-impact-03
     task_type: impact
     difficulty: hard
-    question: "If `Apps.populate()` in `django/apps/registry.py` were changed to skip Phase 3 (i.e., never call `app_config.ready()`), what would break?"
+    question: "If `Apps.populate()` in `django/apps/registry.py` stopped calling `app_config.ready()` but still set `self.ready` and `ready_event`, what would break?"
     rubric: |
-      Phase 3 calls AppConfig.ready() for each installed app. This is where
-      apps register signal handlers, connect receivers, and run startup logic.
+      Scope the answer to the stated mutation: the ready() loop is removed, but the
+      registry still sets self.ready and ready_event. AppConfig.ready() is where apps
+      register signal handlers, connect receivers, and run startup logic.
       Concrete impacts:
         - Signal receivers registered in ready() (e.g., django.contrib.auth's
           post_migrate signal in apps.py) would never connect.
@@ -513,14 +521,12 @@ questions:
           not be registered.
         - Third-party apps and user apps that connect signals or perform one-time
           setup in their AppConfig.ready() would silently break.
-        - self.ready and self.ready_event.set() (line 126-127) would never be set,
-          causing check_apps_ready() to consider the registry not ready, blocking
-          any code that awaits that event.
       Must cite registry.py (populate, lines 122-127) and config.py (ready, line 271).
-      Bonus: notes that ready_event (line 127) would not be set, which could hang
-      multi-threaded startup scenarios.
+      Bonus: explicitly distinguishes skipped application hooks from the registry's
+      still-completed readiness flags.
       Penalize: claiming only "signals won't work" without naming specific Django
-      internals that use ready(), or not citing the ready_event.set() consequence.
+      internals that use ready(), or claiming ready_event remains unset despite the
+      question explicitly preserving it.
     expected:
       citations:
         - { file: "django/apps/registry.py", line_range: [61, 128], symbol: "populate" }
@@ -531,7 +537,7 @@ questions:
       facts:
         - ["app_config.ready", "AppConfig.ready"]
         - ["signal", "receiver", "post_migrate"]
-        - ["ready_event", "apps_ready"]
+        - ["check", "startup", "one-time setup"]
       forbidden: []
       forbidden_strict: false
 
@@ -692,18 +698,21 @@ questions:
       Must conclude that Django does NOT include any JWT authentication support.
       There is no JWTAuthentication class, no JWT token generation, and no
       jwt import anywhere in django.contrib.auth or django.contrib. Django's
-      built-in auth uses session-based authentication (django.contrib.sessions)
-      and provides a token auth model in django.contrib.auth.models (Token is a
-      simple DB token, not JWT). JWT support requires a third-party package such
-      as djangorestframework-simplejwt or PyJWT.
-      Penalize: citing django/contrib/auth/tokens.py (which implements
-      password-reset tokens, not JWT), or claiming any built-in JWT class exists.
+      built-in auth commonly uses session-based authentication
+      (django.contrib.sessions). django/contrib/auth/tokens.py implements
+      password-reset tokens, not a general authentication-token model and not JWT.
+      JWT support requires a third-party package such as
+      djangorestframework-simplejwt or PyJWT.
+      Penalize: citing django/contrib/auth/tokens.py as JWT support (it only
+      implements password-reset tokens), or claiming any built-in JWT class exists.
+      Do not penalize an answer that cites tokens.py specifically to distinguish it
+      from JWT authentication.
     expected:
       citations: []
       files: []
       facts:
         - ["does not exist", "no JWT", "not built-in", "third-party"]
-        - ["session", "Token model", "password-reset"]
+        - ["session", "password-reset token", "password-reset"]
       # PyJWT is deliberately NOT forbidden: the rubric names it as the
       # expected third-party pointer, so forbidding it contradicts the rubric.
       forbidden:

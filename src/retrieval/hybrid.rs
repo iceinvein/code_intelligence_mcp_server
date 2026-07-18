@@ -4,19 +4,25 @@ use super::query::{contains_code_snippet, Intent};
 use super::ranking::{self, get_graph_ranked_hits, rank_hits_with_signals, reciprocal_rank_fusion};
 use super::{detect_language_from_query, HitSignals, RankedHit, Retriever};
 use crate::storage::sqlite::SqliteStore;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Aggregated result from the hybrid search execution phase.
 pub(super) struct HybridSearchResult {
     pub ranked: Vec<RankedHit>,
     pub hit_signals: HashMap<String, HitSignals>,
     pub vector_ranked_for_promotion: Vec<RankedHit>,
-    pub keyword_ms: u64,
-    pub vector_ms: u64,
-    /// Time to generate query embedding(s) via llama.cpp (subset of vector_ms)
-    pub embedding_ms: u64,
+    pub keyword_elapsed: Duration,
+    pub vector_elapsed: Duration,
+    /// Time to generate query embedding(s) via llama.cpp (subset of vector_elapsed)
+    pub embedding_elapsed: Duration,
+    pub fusion_elapsed: Duration,
+    pub keyword_candidates: usize,
+    pub vector_candidates: usize,
+    pub fused_candidates: usize,
+    pub search_path: &'static str,
+    pub subquery_count: usize,
 }
 
 /// Execute hybrid search across keyword (Tantivy) and vector (LanceDB) backends.
@@ -74,9 +80,16 @@ async fn execute_single_query_search(
         retriever.config.vector_search_limit.max(limit * 3).max(40)
     };
 
-    let keyword_t = Instant::now();
-    let keyword_hits = retriever.tantivy.search(search_query, k)?;
-    let keyword_ms = keyword_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    // Tantivy is synchronous. Start it on the blocking pool before awaiting
+    // embedding/vector retrieval so both independent branches overlap without
+    // occupying a Tokio worker.
+    let tantivy = retriever.tantivy.clone();
+    let keyword_query = search_query.to_string();
+    let keyword_task = tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        let hits = tantivy.search(&keyword_query, k);
+        (hits, started.elapsed())
+    });
 
     let vector_t = Instant::now();
 
@@ -86,63 +99,72 @@ async fn execute_single_query_search(
     // The embedding model already captures synonyms through its training.
     let vector_query = query_without_controls;
     let embed_t = Instant::now();
-    let (vector_hits, _vector_degraded, embedding_ms) =
-        match retriever.get_query_vector_cached(vector_query).await {
-            Ok(query_vector) => {
-                let emb_ms = embed_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                match retriever.vectors.search(&query_vector, k).await {
-                    Ok(mut hits) => {
-                        // HyDE: Add hypothetical document retrieval (best-effort)
-                        if retriever.config.hyde_enabled {
-                            if let Some(generator) = &retriever.hyde_generator {
-                                let language = detect_language_from_query(search_query);
-                                if let Ok(hyde_result) =
-                                    generator.generate(search_query, language).await
-                                {
-                                    if let Ok(hyde_embeddings) = retriever
-                                        .embedder
-                                        .embed(vec![hyde_result.hypothetical_code])
-                                        .await
-                                    {
-                                        if let Some(hyde_vector) = hyde_embeddings.first() {
-                                            if let Ok(mut hyde_hits) =
-                                                retriever.vectors.search(hyde_vector, k / 2).await
-                                            {
-                                                hits.append(&mut hyde_hits);
-                                            }
+    let query_vector = retriever.get_query_vector_cached(vector_query).await;
+    let mut embedding_elapsed = embed_t.elapsed();
+    let vector_hits = match query_vector {
+        Ok(query_vector) => {
+            match retriever.vectors.search(&query_vector, k).await {
+                Ok(mut hits) => {
+                    // HyDE: Add hypothetical document retrieval (best-effort)
+                    if retriever.config.hyde_enabled {
+                        if let Some(generator) = &retriever.hyde_generator {
+                            let language = detect_language_from_query(search_query);
+                            if let Ok(hyde_result) =
+                                generator.generate(search_query, language).await
+                            {
+                                let hyde_embedding_t = Instant::now();
+                                let hyde_embeddings = retriever
+                                    .embedder
+                                    .embed(vec![hyde_result.hypothetical_code])
+                                    .await;
+                                embedding_elapsed += hyde_embedding_t.elapsed();
+                                if let Ok(hyde_embeddings) = hyde_embeddings {
+                                    if let Some(hyde_vector) = hyde_embeddings.first() {
+                                        if let Ok(mut hyde_hits) =
+                                            retriever.vectors.search(hyde_vector, k / 2).await
+                                        {
+                                            hits.append(&mut hyde_hits);
                                         }
                                     }
                                 }
-                                // HyDE failures are silently ignored - it's a best-effort enhancement
                             }
+                            // HyDE failures are silently ignored - it's a best-effort enhancement
                         }
-                        (hits, false, emb_ms)
                     }
-                    Err(e) => {
-                        // Vector search failed - degrade gracefully
-                        tracing::warn!(
-                            query = %search_query,
-                            error = %e,
-                            "LanceDB vector search failed, degrading to keyword-only search"
-                        );
-                        retriever.metrics.search_errors_total.inc();
-                        (Vec::new(), true, emb_ms)
-                    }
+                    hits
+                }
+                Err(e) => {
+                    // Vector search failed - degrade gracefully
+                    tracing::warn!(
+                        query = %search_query,
+                        error = %e,
+                        "LanceDB vector search failed, degrading to keyword-only search"
+                    );
+                    retriever.metrics.search_errors_total.inc();
+                    Vec::new()
                 }
             }
-            Err(e) => {
-                // Embedding generation failed - degrade gracefully
-                tracing::warn!(
-                    query = %search_query,
-                    error = %e,
-                    "Query embedding generation failed, degrading to keyword-only search"
-                );
-                retriever.metrics.search_errors_total.inc();
-                (Vec::new(), true, 0)
-            }
-        };
+        }
+        Err(e) => {
+            // Embedding generation failed - degrade gracefully
+            tracing::warn!(
+                query = %search_query,
+                error = %e,
+                "Query embedding generation failed, degrading to keyword-only search"
+            );
+            retriever.metrics.search_errors_total.inc();
+            Vec::new()
+        }
+    };
 
-    let vector_ms = vector_t.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let vector_elapsed = vector_t.elapsed();
+    let (keyword_hits, keyword_elapsed) = keyword_task
+        .await
+        .context("Tantivy keyword task failed to join")?;
+    let keyword_hits = keyword_hits?;
+    let keyword_candidates = keyword_hits.len();
+    let vector_candidates = vector_hits.len();
+    let fusion_t = Instant::now();
 
     // Use RRF if enabled, otherwise use existing score fusion
     if retriever.config.rrf_enabled {
@@ -224,13 +246,20 @@ async fn execute_single_query_search(
                 .then_with(|| a.name.cmp(&b.name))
         });
 
+        let fused_candidates = rrf_results.len();
         Ok(HybridSearchResult {
             ranked: rrf_results,
             hit_signals: signals,
             vector_ranked_for_promotion: vector_ranked,
-            keyword_ms,
-            vector_ms,
-            embedding_ms,
+            keyword_elapsed,
+            vector_elapsed,
+            embedding_elapsed,
+            fusion_elapsed: fusion_t.elapsed(),
+            keyword_candidates,
+            vector_candidates,
+            fused_candidates,
+            search_path: "single",
+            subquery_count: 1,
         })
     } else {
         // Use existing score fusion (no vector promotion in non-RRF path)
@@ -241,13 +270,20 @@ async fn execute_single_query_search(
             intent,
             search_query,
         );
+        let fused_candidates = ranked.len();
         Ok(HybridSearchResult {
             ranked,
             hit_signals: signals,
             vector_ranked_for_promotion: Vec::new(),
-            keyword_ms,
-            vector_ms,
-            embedding_ms,
+            keyword_elapsed,
+            vector_elapsed,
+            embedding_elapsed,
+            fusion_elapsed: fusion_t.elapsed(),
+            keyword_candidates,
+            vector_candidates,
+            fused_candidates,
+            search_path: "single",
+            subquery_count: 1,
         })
     }
 }
@@ -273,25 +309,51 @@ async fn execute_multi_query_search(
         base_k
     };
 
-    let mut combined_keyword_hits: Vec<crate::storage::tantivy::SearchHit> = Vec::new();
     let mut combined_vector_hits: Vec<crate::storage::vector::VectorHit> = Vec::new();
+    let mut vector_elapsed = Duration::ZERO;
+    let mut embedding_elapsed = Duration::ZERO;
+
+    // Batch all synchronous keyword lookups into one blocking task while the
+    // independent vector branch embeds and searches the full user query.
+    let tantivy = retriever.tantivy.clone();
+    let full_query = query_without_controls.to_string();
+    let keyword_queries = sub_queries.to_vec();
+    let keyword_task = tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        let mut combined = Vec::new();
+        if keyword_queries.len() > 1 {
+            combined.extend(tantivy.search(&full_query, k)?);
+        }
+        for query in keyword_queries {
+            combined.extend(tantivy.search(&query, k)?);
+        }
+        Ok::<_, anyhow::Error>((combined, started.elapsed()))
+    });
 
     // Vector search uses raw query (pre-expansion) — one embedding for
     // full user intent. BM25 still loops over expanded sub-queries.
     let vector_query = query_without_controls;
-    let multi_vector_hits = match retriever.get_query_vector_cached(vector_query).await {
-        Ok(query_vector) => match retriever.vectors.search(&query_vector, k).await {
-            Ok(hits) => hits,
-            Err(e) => {
-                tracing::warn!(
-                    query = %vector_query,
-                    error = %e,
-                    "LanceDB vector search failed for multi-query, degrading to keyword-only"
-                );
-                retriever.metrics.search_errors_total.inc();
-                Vec::new()
+    let embedding_t = Instant::now();
+    let query_vector = retriever.get_query_vector_cached(vector_query).await;
+    embedding_elapsed += embedding_t.elapsed();
+    let multi_vector_hits = match query_vector {
+        Ok(query_vector) => {
+            let vector_t = Instant::now();
+            let result = retriever.vectors.search(&query_vector, k).await;
+            vector_elapsed += vector_t.elapsed();
+            match result {
+                Ok(hits) => hits,
+                Err(e) => {
+                    tracing::warn!(
+                        query = %vector_query,
+                        error = %e,
+                        "LanceDB vector search failed for multi-query, degrading to keyword-only"
+                    );
+                    retriever.metrics.search_errors_total.inc();
+                    Vec::new()
+                }
             }
-        },
+        }
         Err(e) => {
             tracing::warn!(
                 query = %vector_query,
@@ -304,33 +366,24 @@ async fn execute_multi_query_search(
     };
     combined_vector_hits.extend(multi_vector_hits);
 
-    // Also search with the full original query for broader recall.
-    // Sub-queries require matching 2+ terms from a SPLIT query, which can miss
-    // symbols that partially match across split boundaries. The full query with
-    // OR semantics gives partial matches a chance to survive.
-    if sub_queries.len() > 1 {
-        let full_keyword_hits = retriever.tantivy.search(query_without_controls, k)?;
-        combined_keyword_hits.extend(full_keyword_hits);
-    }
-
     for sub_query in sub_queries {
-        let sub_keyword_hits = retriever.tantivy.search(sub_query, k)?;
-        combined_keyword_hits.extend(sub_keyword_hits);
-
         // HyDE per sub-query (best-effort)
         if retriever.config.hyde_enabled {
             if let Some(generator) = &retriever.hyde_generator {
                 let language = detect_language_from_query(sub_query);
                 if let Ok(hyde_result) = generator.generate(sub_query, language).await {
-                    if let Ok(hyde_embeddings) = retriever
+                    let embedding_t = Instant::now();
+                    let hyde_embeddings = retriever
                         .embedder
                         .embed(vec![hyde_result.hypothetical_code])
-                        .await
-                    {
+                        .await;
+                    embedding_elapsed += embedding_t.elapsed();
+                    if let Ok(hyde_embeddings) = hyde_embeddings {
                         if let Some(hyde_vector) = hyde_embeddings.first() {
-                            if let Ok(hyde_hits) =
-                                retriever.vectors.search(hyde_vector, k / 2).await
-                            {
+                            let vector_t = Instant::now();
+                            let hyde_hits = retriever.vectors.search(hyde_vector, k / 2).await;
+                            vector_elapsed += vector_t.elapsed();
+                            if let Ok(hyde_hits) = hyde_hits {
                                 combined_vector_hits.extend(hyde_hits);
                             }
                         }
@@ -340,7 +393,14 @@ async fn execute_multi_query_search(
         }
     }
 
+    let (combined_keyword_hits, keyword_elapsed) = keyword_task
+        .await
+        .context("Tantivy multi-query task failed to join")??;
+
     // UNIFIED RRF: Single RRF pass over combined hits from all sub-queries
+    let keyword_candidates = combined_keyword_hits.len();
+    let vector_candidates = combined_vector_hits.len();
+    let fusion_t = Instant::now();
     let keyword_ranked: Vec<RankedHit> = combined_keyword_hits
         .iter()
         .map(|h| RankedHit {
@@ -415,13 +475,20 @@ async fn execute_multi_query_search(
             .then_with(|| a.name.cmp(&b.name))
     });
 
+    let fused_candidates = ranked.len();
     Ok(HybridSearchResult {
         ranked,
         hit_signals: signals,
         vector_ranked_for_promotion: vector_ranked,
-        keyword_ms: 0,
-        vector_ms: 0,
-        embedding_ms: 0, // multi-query path doesn't track individual timings yet
+        keyword_elapsed,
+        vector_elapsed: vector_elapsed + embedding_elapsed,
+        embedding_elapsed,
+        fusion_elapsed: fusion_t.elapsed(),
+        keyword_candidates,
+        vector_candidates,
+        fused_candidates,
+        search_path: "multi",
+        subquery_count: sub_queries.len(),
     })
 }
 

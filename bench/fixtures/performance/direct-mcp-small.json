@@ -1,0 +1,32 @@
+{
+  "name": "typescript-producer-fixture",
+  "size_class": "small",
+  "repo": "../../../producers/tests/fixtures/typescript",
+  "operations": [
+    {
+      "name": "search",
+      "tool": "search_code",
+      "arguments": {"query": "load a user by id", "limit": 10, "context": "none"}
+    },
+    {
+      "name": "investigate",
+      "tool": "investigate",
+      "arguments": {"question": "How does renderUser load a user?", "target": "renderUser"}
+    },
+    {
+      "name": "definition",
+      "tool": "get_definition",
+      "arguments": {"symbol_name": "UserService"}
+    },
+    {
+      "name": "references",
+      "tool": "find_references",
+      "arguments": {"symbol_name": "UserService", "reference_type": "all"}
+    },
+    {
+      "name": "impact",
+      "tool": "find_affected_code",
+      "arguments": {"symbol_name": "UserService", "depth": 3, "limit": 50}
+    }
+  ]
+}

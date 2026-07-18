@@ -218,6 +218,13 @@ impl LanceVectorTable {
         self.vector_dim
     }
 
+    pub async fn count_rows(&self) -> Result<usize> {
+        self.table
+            .count_rows(None)
+            .await
+            .context("Failed to count LanceDB vector rows")
+    }
+
     pub async fn delete_records_by_file_path(&self, file_path: &str) -> Result<()> {
         let escaped = escape_lancedb_string(file_path);
         let predicate = format!("file_path = '{escaped}'");

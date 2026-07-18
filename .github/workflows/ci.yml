@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test (macOS)
+  rust:
+    name: Rust gates (macOS)
     runs-on: macos-latest
 
     steps:
@@ -27,8 +27,74 @@ jobs:
         with:
           shared-key: "workflow-cache-macos"
 
-      - name: Install Protoc
-        run: brew install protobuf
+      - name: Install native build prerequisites
+        run: brew install cmake
 
-      - name: Run Tests
-        run: cargo test
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run lightweight Clippy
+        env:
+          EMBEDDINGS_BACKEND: hash
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+      - name: Compile production native backend
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run deterministic quality and graph-integrity gate
+        env:
+          EMBEDDINGS_BACKEND: hash
+        run: >-
+          cargo test --no-default-features --test deterministic_quality
+          deterministic_engine_quality_gate
+
+      - name: Run lightweight Rust test suite
+        env:
+          EMBEDDINGS_BACKEND: hash
+        run: cargo test --no-default-features
+
+  benchmark-harness:
+    name: Benchmark harness tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: bench/requirements.txt
+
+      - name: Install benchmark dependencies
+        run: python -m pip install -r bench/requirements.txt
+
+      - name: Test benchmark harness
+        run: python -m pytest bench/tests
+
+  ui:
+    name: UI build and tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --frozen-lockfile
+
+      - name: Type-check UI
+        working-directory: ui
+        run: bun run lint
+
+      - name: Test UI
+        working-directory: ui
+        run: bun run test
+
+      - name: Build UI
+        working-directory: ui
+        run: bun run build

@@ -1,7 +1,6 @@
 //! Search-related MCP tool handlers
 
 use crate::retrieval::{ContextMode, Retriever};
-use crate::storage::sqlite::SqliteStore;
 use crate::tools::*;
 use serde_json::json;
 
@@ -51,7 +50,6 @@ fn build_next_step(
 /// `context: "full"` for the legacy markdown bundle with graph expansion.
 pub async fn handle_search_code(
     retriever: &Retriever,
-    db_path: &camino::Utf8Path,
     tool: SearchCodeTool,
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = clamp_limit(tool.limit, 5, 100);
@@ -88,7 +86,7 @@ pub async fn handle_search_code(
             if let Some(map) = response.as_object_mut() {
                 map.remove("context");
             }
-            attach_hit_snippets(db_path, &mut response, &result.response.hits)?;
+            attach_hit_snippets(retriever, &mut response, &result.response.hits).await?;
         }
         ContextMode::Full => {
             budget_string_field(&mut response, "context", DEFAULT_MAX_STRING_CHARS);
@@ -99,22 +97,27 @@ pub async fn handle_search_code(
 
 /// Attach a compact per-hit `snippet` (first N body lines) to each entry in
 /// `response["hits"]`. Used by `context="snippets"`.
-fn attach_hit_snippets(
-    db_path: &camino::Utf8Path,
+async fn attach_hit_snippets(
+    retriever: &Retriever,
     response: &mut serde_json::Value,
     hits: &[crate::retrieval::RankedHit],
 ) -> Result<(), anyhow::Error> {
     if hits.is_empty() {
         return Ok(());
     }
-    let sqlite = SqliteStore::open(db_path)?;
-    sqlite.init()?;
+    let ids = hits.iter().map(|hit| hit.id.clone()).collect::<Vec<_>>();
+    let rows = retriever
+        .load_symbol_rows_by_ids_async(&ids)
+        .await?
+        .into_iter()
+        .map(|row| (row.id.clone(), row))
+        .collect::<std::collections::HashMap<_, _>>();
     let Some(arr) = response.get_mut("hits").and_then(|v| v.as_array_mut()) else {
         return Ok(());
     };
     for (i, slot) in arr.iter_mut().enumerate() {
         let Some(hit) = hits.get(i) else { break };
-        let Some(row) = sqlite.get_symbol_by_id(&hit.id)? else {
+        let Some(row) = rows.get(&hit.id) else {
             continue;
         };
         let snippet = compact_snippet(&row.text, SNIPPET_LINES);

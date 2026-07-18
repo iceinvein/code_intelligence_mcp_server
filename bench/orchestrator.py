@@ -10,6 +10,7 @@ judged rows are skipped.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,6 +23,9 @@ from bench import repos as repos_mod
 from bench import reuse as reuse_mod
 from bench import runner, score
 from bench.fixtures_io import Fixture, Question
+
+
+META_SCHEMA_VERSION = 1
 
 
 def _append_jsonl(path: Path, record: dict) -> None:
@@ -73,6 +77,114 @@ def _run_record(run: runner.Run, repo_name: str, rep: int = 0) -> dict:
         "model": run.model,
         "run_error": run.run_error,
     }
+
+
+def _safe_daemon_git_sha() -> str | None:
+    try:
+        return repos_mod.current_daemon_sha()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _safe_daemon_binary_sha256() -> str | None:
+    try:
+        return repos_mod.daemon_binary_sha256()
+    except OSError:
+        return None
+
+
+def _comparator(arms_to_run: list[arms_mod.Arm]) -> dict:
+    arm_names = [arm.name for arm in arms_to_run]
+    baseline = "default" if "default" in arm_names else (arm_names[0] if arm_names else None)
+    return {
+        "baseline_arm": baseline,
+        "candidate_arms": [name for name in arm_names if name != baseline],
+    }
+
+
+def _cycle_metadata(
+    arms_to_run: list[arms_mod.Arm],
+    repos: list[tuple[Fixture, Path]],
+    *,
+    judge_enabled: bool,
+    repeats: int,
+) -> dict:
+    daemon_git_sha = _safe_daemon_git_sha()
+    daemon_binary_sha256 = _safe_daemon_binary_sha256()
+    return {
+        "schema_version": META_SCHEMA_VERSION,
+        "daemon": {
+            "git_sha": daemon_git_sha,
+            "binary_sha256": daemon_binary_sha256,
+        },
+        "fixtures": [
+            {
+                "repo": fixture.meta.repo,
+                "upstream_url": fixture.meta.upstream_url,
+                "upstream_sha": fixture.meta.upstream_sha,
+                "fixture_sha256": fixture.meta.fixture_sha256,
+                "authored_at": fixture.meta.authored_at,
+                "authored_against_schema_version": (
+                    fixture.meta.authored_against_schema_version
+                ),
+                "question_ids": sorted(q.id for q in fixture.questions),
+            }
+            for fixture, _repo_path in sorted(repos, key=lambda entry: entry[0].meta.repo)
+        ],
+        "configuration": {
+            "arms": [
+                {
+                    "name": arm.name,
+                    "needs_daemon": arm.needs_daemon,
+                    "is_codegraph": arm.is_codegraph,
+                    "index_variant": arm.index_variant,
+                    "daemon_env": dict(sorted(arm.daemon_env.items())),
+                    "allowed_tools": list(arm.allowed_tools),
+                    "tool_guidance": arm.tool_guidance,
+                }
+                for arm in arms_to_run
+            ],
+            "repeats": max(1, repeats),
+            "judge_enabled": judge_enabled,
+            "max_turns": config_mod.MAX_TURNS,
+            "per_question_timeout_s": config_mod.PER_QUESTION_TIMEOUT_S,
+            "run_concurrency": config_mod.RUN_CONCURRENCY,
+            "judge_concurrency": config_mod.JUDGE_CONCURRENCY,
+            "run_reuse": config_mod.RUN_REUSE,
+            "judge_tiered": config_mod.JUDGE_TIERED,
+        },
+        "models": {
+            "agent": config_mod.AGENT_MODEL,
+            "judges": {
+                "haiku": config_mod.JUDGE_HAIKU,
+                "sonnet": config_mod.JUDGE_SONNET,
+                "opus": config_mod.JUDGE_OPUS,
+            },
+        },
+        "binaries": {
+            "agent_cli": reuse_mod.binary_version(config_mod.CLAUDE_BINARY),
+            "codegraph": (
+                reuse_mod.binary_version(config_mod.CODEGRAPH_BINARY)
+                if any(arm.is_codegraph for arm in arms_to_run)
+                else None
+            ),
+        },
+        "comparator": _comparator(arms_to_run),
+    }
+
+
+def _persist_cycle_metadata(results_dir: Path, metadata: dict, *, resume: bool) -> None:
+    """Write immutable round provenance before executing the first sample."""
+    path = results_dir / "meta.json"
+    if path.exists() and resume:
+        existing = json.loads(path.read_text())
+        if existing != metadata:
+            raise ValueError(
+                "benchmark round metadata differs from the persisted provenance; "
+                "start a new round instead of mixing revisions or configurations"
+            )
+        return
+    path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 
 
 def _score_record(
@@ -173,6 +285,13 @@ def run_cycle(
 ) -> dict:
     """Run one bench cycle. Returns a summary dict; writes results to results_dir."""
     results_dir.mkdir(parents=True, exist_ok=True)
+    cycle_metadata = _cycle_metadata(
+        arms_to_run,
+        repos,
+        judge_enabled=judge_enabled,
+        repeats=repeats,
+    )
+    _persist_cycle_metadata(results_dir, cycle_metadata, resume=resume)
     transcripts_dir = results_dir / "transcripts"
     runs_path = results_dir / "runs.jsonl"
     judge_path = results_dir / "judge.jsonl"
@@ -247,6 +366,16 @@ def run_cycle(
             rec = _run_record(run, fixture.meta.repo, rep=rep)
             rec["run_key"] = run_keys.get((_arm.name, q.id, rep))
             rec["reused_from"] = None
+            rec["fixture_sha256"] = fixture.meta.fixture_sha256
+            rec["fixture_upstream_sha"] = fixture.meta.upstream_sha
+            rec["daemon_sha"] = (
+                cycle_metadata["daemon"]["git_sha"] if _arm.needs_daemon else None
+            )
+            rec["daemon_binary_sha256"] = (
+                cycle_metadata["daemon"]["binary_sha256"]
+                if _arm.needs_daemon
+                else None
+            )
             with write_lock:
                 if run.run_error:
                     consecutive_failures += 1

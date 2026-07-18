@@ -78,6 +78,13 @@ pub(super) fn handle_id_lookup(
         reranker_ms: 0,
         scoring_ms: 0,
         assembly_ms: 0,
+        fusion_ms: 0,
+        search_path: "direct_id".to_string(),
+        cache_status: "miss".to_string(),
+        subquery_count: 0,
+        keyword_candidates: 0,
+        vector_candidates: 0,
+        fused_candidates: hits.len() as u64,
     };
     let _ = sqlite.insert_search_run(&run);
 
@@ -87,11 +94,17 @@ pub(super) fn handle_id_lookup(
         hits,
         context,
     };
-    retriever.cache_insert_response(cache_key, resp.clone(), &[]);
-    Ok(Some(SearchResponseWithSignals {
+    let result = SearchResponseWithSignals {
         response: resp,
         hit_signals: HashMap::new(),
-    }))
+    };
+    retriever.cache_insert_response(
+        cache_key,
+        result.response.clone(),
+        result.hit_signals.clone(),
+        &[],
+    );
+    Ok(Some(result))
 }
 
 /// Handle `callers:FunctionName` intent (fast path: graph traversal, no search).
@@ -172,6 +185,13 @@ pub(super) fn handle_callers_intent(
         reranker_ms: 0,
         scoring_ms: 0,
         assembly_ms: 0,
+        fusion_ms: 0,
+        search_path: "callers".to_string(),
+        cache_status: "miss".to_string(),
+        subquery_count: 0,
+        keyword_candidates: 0,
+        vector_candidates: 0,
+        fused_candidates: hits.len() as u64,
     };
     let _ = sqlite.insert_search_run(&run);
 
@@ -181,9 +201,15 @@ pub(super) fn handle_callers_intent(
         hits,
         context,
     };
-    retriever.cache_insert_response(cache_key, resp.clone(), &[]);
-    Ok(Some(SearchResponseWithSignals {
+    let result = SearchResponseWithSignals {
         response: resp,
         hit_signals: HashMap::new(),
-    }))
+    };
+    retriever.cache_insert_response(
+        cache_key,
+        result.response.clone(),
+        result.hit_signals.clone(),
+        &[],
+    );
+    Ok(Some(result))
 }

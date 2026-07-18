@@ -112,20 +112,48 @@ fn resolve_method_on_receiver(
     let target_path = super::utils::resolve_path(from_file, &receiver_import.source).or(None)?;
 
     // Try the canonical target path, then common alternatives (.tsx,
-    // /index.ts, /index.tsx). For each, accept the first matching
-    // symbol regardless of `exported` -- class methods carry the call
-    // edge on the class, not the file's top-level export list.
+    // /index.ts, /index.tsx). Bare method names are accepted only when
+    // unique. Otherwise use the owner-qualified identity recorded by F2;
+    // choosing the first same-name method silently linked calls to whichever
+    // class happened to be indexed first.
     let mut candidate_paths = vec![target_path.clone()];
     candidate_paths.extend(alternative_import_paths(&target_path));
 
     for path in candidate_paths {
         let Ok(results) =
-            queries::symbols::search_symbols_by_exact_name(conn, method, Some(&path), 1)
+            queries::symbols::search_symbols_by_exact_name(conn, method, Some(&path), 2)
         else {
             continue;
         };
-        if let Some(symbol) = results.into_iter().next() {
-            return Some(symbol.id);
+        if let [symbol] = results.as_slice() {
+            return Some(symbol.id.clone());
+        }
+
+        let mut owners = Vec::new();
+        if !matches!(receiver_import.name.as_str(), "" | "*" | "default") {
+            owners.push(receiver_import.name.clone());
+        }
+        if let Ok(target_ids) =
+            queries::module_bindings::list_public_target_ids(conn, &path, &receiver_import.name)
+        {
+            for target_id in target_ids {
+                if let Ok(Some(target)) = queries::symbols::get_symbol_by_id(conn, &target_id) {
+                    owners.push(target.name);
+                }
+            }
+        }
+        owners.sort();
+        owners.dedup();
+        let qualified_names = owners
+            .into_iter()
+            .flat_map(|owner| [format!("{owner}.{method}"), format!("{owner}::{method}")])
+            .collect::<Vec<_>>();
+        if let Ok(Some(logical_id)) = queries::symbol_identities::find_unique_by_qualified_names(
+            conn,
+            &path,
+            &qualified_names,
+        ) {
+            return Some(logical_id);
         }
     }
     None
@@ -231,6 +259,82 @@ fn dataflow_belongs_to_symbol(edge: &DataFlowEdge, row: &SymbolRow) -> bool {
     context_matches && location_matches
 }
 
+/// Conservative transparent-wrapper classifier.
+///
+/// A wrapper must have exactly one semantic call, and its body must consist of
+/// a direct return/expression forwarding to that call. Validation, mutation,
+/// branching, or post-processing keeps the ordinary `call` edge but does not
+/// receive the stronger `delegates_to` relationship.
+fn is_transparent_wrapper(text: &str, method: &str) -> bool {
+    let needle = format!("{method}(");
+    let Some(call_start) = text.find(&needle) else {
+        return false;
+    };
+    let before_call = &text[..call_start];
+
+    enum Marker {
+        Return(usize),
+        Arrow(usize),
+    }
+    let marker = match (before_call.rfind("return"), before_call.rfind("=>")) {
+        (Some(return_pos), Some(arrow_pos)) if arrow_pos > return_pos => Marker::Arrow(arrow_pos),
+        (Some(return_pos), _) => Marker::Return(return_pos),
+        (None, Some(arrow_pos)) => Marker::Arrow(arrow_pos),
+        (None, None) => return false,
+    };
+    let (marker_start, marker_end) = match marker {
+        Marker::Return(pos) => (pos, pos + "return".len()),
+        Marker::Arrow(pos) => (pos, pos + "=>".len()),
+    };
+
+    let mut target_prefix = before_call[marker_end..].trim();
+    if let Some(rest) = target_prefix.strip_prefix("await") {
+        target_prefix = rest.trim_start();
+    }
+    if !target_prefix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$' | '.' | '?' | ':' | '('))
+    {
+        return false;
+    }
+
+    let before_marker = &text[..marker_start];
+    let body_prefix = if let Some(open_brace) = before_marker.rfind('{') {
+        &before_marker[open_brace + 1..]
+    } else if let Some(signature_end) = before_marker.find('\n') {
+        &before_marker[signature_end + 1..]
+    } else {
+        ""
+    };
+    if !body_prefix.trim().is_empty() {
+        return false;
+    }
+
+    let open_paren = call_start + method.len();
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut close_paren = None;
+    for (offset, byte) in bytes[open_paren..].iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close_paren = Some(open_paren + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close_paren) = close_paren else {
+        return false;
+    };
+    text[close_paren + 1..]
+        .chars()
+        .all(|ch| ch.is_whitespace() || matches!(ch, ';' | '}' | ')' | ']'))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn extract_edges_for_symbol(
     row: &SymbolRow,
@@ -254,6 +358,17 @@ pub fn extract_edges_for_symbol(
         _ => 0.7,
     };
     let evidence_for = |name: &str| identifier_evidence(&row.text, name, row.start_line);
+    let call_sites = extract_calls(&row.text);
+    let own_name = row.name.rsplit('.').next().unwrap_or(&row.name);
+    let semantic_calls = call_sites
+        .iter()
+        .filter(|call| call.method != own_name)
+        .collect::<Vec<_>>();
+    let delegation_method = (matches!(row.kind.as_str(), "function" | "const")
+        && semantic_calls.len() == 1
+        && (row.kind != "const" || row.text.contains("=>"))
+        && is_transparent_wrapper(&row.text, &semantic_calls[0].method))
+    .then(|| semantic_calls[0].method.clone());
 
     // Map import alias/name to Import struct for fast lookup
     let import_map = build_import_map(imports);
@@ -279,7 +394,7 @@ pub fn extract_edges_for_symbol(
         }
     };
 
-    for call in extract_calls(&row.text) {
+    for call in call_sites {
         let callee = call.method.clone();
         let (to_id, was_import) = if let Some(local_id) = name_to_id.get(&callee) {
             if local_id == &row.id {
@@ -339,6 +454,31 @@ pub fn extract_edges_for_symbol(
                 })
                 .collect(),
         ));
+    }
+
+    if let Some(delegation_method) = delegation_method {
+        let matching_calls = out
+            .iter()
+            .filter(|(edge, _)| edge.edge_type == "call")
+            .collect::<Vec<_>>();
+        if let [call] = matching_calls.as_slice() {
+            let (call_edge, call_evidence) = *call;
+            let mut delegation = call_edge.clone();
+            delegation.edge_type = "delegates_to".to_string();
+            delegation.confidence = 0.95;
+            let delegation_evidence = call_evidence
+                .iter()
+                .cloned()
+                .map(|mut evidence| {
+                    evidence.edge_type = "delegates_to".to_string();
+                    evidence
+                })
+                .collect();
+            if used_edges.insert(("delegates_to".to_string(), delegation.to_symbol_id.clone())) {
+                debug_assert!(row.text.contains(&delegation_method));
+                out.push((delegation, delegation_evidence));
+            }
+        }
     }
 
     // Handle extends/implements
@@ -488,12 +628,24 @@ pub fn extract_edges_for_symbol(
         let (to_id, was_import, evidence_name) =
             if let Some((receiver, attr)) = base_name.rsplit_once('.') {
                 // Dotted base ("models.Model"): the import binding is the
-                // receiver module; resolve the class through its source.
+                // receiver module; resolve the class through its source. For
+                // Python's `from django.db import models`, the receiver is a
+                // submodule below the stated source, not a globally unique
+                // symbol name.
                 if let Some(imp) = import_map.get(receiver) {
+                    let source = if row.file_path.ends_with(".py")
+                        && imp.source != imp.name
+                        && !imp.source.ends_with(&format!(".{}", imp.name))
+                    {
+                        format!("{}.{}", imp.source, imp.name)
+                    } else {
+                        imp.source.clone()
+                    };
                     let synthesized = Import {
                         name: attr.to_string(),
-                        source: imp.source.clone(),
+                        source,
                         alias: None,
+                        at_line: imp.at_line,
                     };
                     (resolve_import(&row.file_path, &synthesized), true, attr)
                 } else {
@@ -783,6 +935,7 @@ mod tests {
             name: "sessionManager".to_string(),
             source: "./session-manager".to_string(),
             alias: None,
+            at_line: 1,
         }];
 
         let edges = extract_edges_for_symbol(
@@ -810,11 +963,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transparent_forwarder_emits_typed_delegation_edge() {
+        let row = symbol(
+            "wrapper-id",
+            "publicWrapper",
+            "function",
+            "export function publicWrapper(value) { return implementation(value); }",
+            "src/wrapper.ts",
+        );
+        let mut name_to_id = HashMap::new();
+        name_to_id.insert("implementation".into(), "implementation-id".into());
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &HashMap::new(),
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+        );
+
+        assert!(edges.iter().any(|(edge, _)| {
+            edge.edge_type == "call" && edge.to_symbol_id == "implementation-id"
+        }));
+        assert!(edges.iter().any(|(edge, _)| {
+            edge.edge_type == "delegates_to"
+                && edge.to_symbol_id == "implementation-id"
+                && edge.confidence == 0.95
+        }));
+    }
+
+    #[test]
+    fn forwarder_with_preprocessing_keeps_call_but_not_delegation() {
+        let row = symbol(
+            "wrapper-id",
+            "publicWrapper",
+            "function",
+            "export function publicWrapper(value) { const normalized = value + 1; return implementation(normalized); }",
+            "src/wrapper.ts",
+        );
+        let mut name_to_id = HashMap::new();
+        name_to_id.insert("implementation".into(), "implementation-id".into());
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &HashMap::new(),
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+        );
+
+        assert!(edges.iter().any(|(edge, _)| edge.edge_type == "call"));
+        assert!(!edges
+            .iter()
+            .any(|(edge, _)| edge.edge_type == "delegates_to"));
+    }
+
     /// Python inheritance: extractor-provided (subclass, base) pairs become
     /// "extends" edges. A plain base resolves through the file-local name
-    /// map; a dotted base ("models.Model") resolves through the import map
-    /// with the DB exact-name fallback that Python's absolute module
-    /// sources rely on.
+    /// map; a dotted base ("models.Model") resolves through the uniquely
+    /// indexed module imported as the receiver.
     #[test]
     fn python_extends_edges_resolve_local_and_imported_bases() {
         use crate::storage::sqlite::queries;
@@ -830,9 +1046,20 @@ mod tests {
             "Model",
             "class",
             "class Model:\n    pass",
-            "django/db/models/base.py",
+            "django/db/models/__init__.py",
         );
         queries::symbols::batch_upsert_symbols(&conn, std::slice::from_ref(&model)).unwrap();
+
+        // A same-name class elsewhere must not be selected by global-name
+        // fallback when resolving the imported receiver.
+        let unrelated_model = symbol(
+            "unrelated_model_id",
+            "Model",
+            "class",
+            "class Model:\n    pass",
+            "other/models.py",
+        );
+        queries::symbols::batch_upsert_symbols(&conn, &[unrelated_model]).unwrap();
 
         let row = symbol(
             "article_id",
@@ -848,6 +1075,7 @@ mod tests {
             name: "models".to_string(),
             source: "django.db".to_string(),
             alias: None,
+            at_line: 1,
         }];
         let extends_edges = vec![
             ("Article".to_string(), "models.Model".to_string()),
@@ -878,9 +1106,10 @@ mod tests {
         );
         assert!(
             extends.contains(&"model_id".to_string()),
-            "dotted base models.Model should resolve via import fallback, got: {:?}",
+            "dotted base models.Model should resolve through its imported module, got: {:?}",
             extends
         );
+        assert!(!extends.contains(&"unrelated_model_id".to_string()));
     }
 
     /// Pairs belonging to a different symbol in the same file must not
@@ -942,6 +1171,7 @@ mod tests {
             name: "b".to_string(),
             source: "./b".to_string(),
             alias: None,
+            at_line: 1,
         }];
         let type_edges = vec![];
         let dataflow_edges = vec![];
@@ -993,6 +1223,7 @@ mod tests {
             name: "exchangeCodes".to_string(),
             source: "./schema".to_string(),
             alias: None,
+            at_line: 1,
         }];
 
         let edges = extract_edges_for_symbol(
@@ -1048,6 +1279,7 @@ mod tests {
             name: "b".to_string(),
             source: "../utils/b".to_string(),
             alias: None,
+            at_line: 1,
         }];
         let type_edges = vec![];
         let dataflow_edges = vec![];
@@ -1373,6 +1605,7 @@ mod tests {
             name: "b".to_string(),
             source: "../utils/b".to_string(),
             alias: None,
+            at_line: 1,
         }];
         let type_edges = vec![];
         let dataflow_edges = vec![];

@@ -23,6 +23,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut module_bindings = Vec::new();
 
     walk(cursor, &mut |node| {
         let kind = node.kind();
@@ -64,6 +65,20 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             }
             "import_statement" => {
                 extract_imports(node, source, &mut imports);
+                super::typescript::extract_import_bindings(node, source, &mut module_bindings);
+            }
+            "export_statement" => {
+                if super::typescript::default_export_local_name(node, source).as_deref()
+                    == Some("default")
+                {
+                    symbols.push(symbol_from_node(
+                        "default".to_string(),
+                        SymbolKind::Const,
+                        true,
+                        node,
+                    ));
+                }
+                super::typescript::extract_export_bindings(node, source, &mut module_bindings);
             }
             _ => {}
         }
@@ -90,6 +105,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
+        module_bindings,
         type_edges: Vec::new(),
         extends_edges: Vec::new(),
         dataflow_edges: Vec::new(),
@@ -143,8 +159,8 @@ fn symbol_from_node(name: String, kind: SymbolKind, exported: bool, node: Node) 
             end: node.end_byte(),
         },
         lines: LineSpan {
-            start: start.row as u32,
-            end: end.row as u32,
+            start: start.row as u32 + 1,
+            end: end.row as u32 + 1,
         },
     }
 }
@@ -179,8 +195,8 @@ fn extract_variable_declarators(node: Node, source: &str, symbols: &mut Vec<Extr
                             end: child.end_byte(),
                         };
                         last.lines = LineSpan {
-                            start: start.row as u32,
-                            end: end.row as u32,
+                            start: start.row as u32 + 1,
+                            end: end.row as u32 + 1,
                         };
                     }
                 }
@@ -228,11 +244,12 @@ fn extract_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
             for child in clause.children(&mut cursor) {
                 if child.kind() == "identifier" {
                     // Default import
-                    let name = child.utf8_text(source.as_bytes()).unwrap().to_string();
+                    let local_name = child.utf8_text(source.as_bytes()).unwrap().to_string();
                     imports.push(Import {
-                        name: name.clone(),
+                        name: "default".to_string(),
                         source: source_path.clone(),
-                        alias: Some(name), // It is aliased to local name
+                        alias: Some(local_name),
+                        at_line: child.start_position().row as u32 + 1,
                     });
                 } else if child.kind() == "named_imports" {
                     // { x, y as z }
@@ -251,6 +268,7 @@ fn extract_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
                                     name: name.clone(),
                                     source: source_path.clone(),
                                     alias,
+                                    at_line: specifier.start_position().row as u32 + 1,
                                 });
                             }
                         }
@@ -267,6 +285,7 @@ fn extract_imports(node: Node, source: &str, imports: &mut Vec<Import>) {
                                 name: "*".to_string(),
                                 source: source_path.clone(),
                                 alias: Some(name),
+                                at_line: child.start_position().row as u32 + 1,
                             });
                         }
                     }
@@ -342,10 +361,9 @@ export const CONSTANT = 42;
         // React (default), useState (named), utils (namespace)
         assert_eq!(extracted.imports.len(), 3);
 
-        assert!(extracted
-            .imports
-            .iter()
-            .any(|i| i.name == "React" && i.source == "react"));
+        assert!(extracted.imports.iter().any(|i| i.name == "default"
+            && i.alias.as_deref() == Some("React")
+            && i.source == "react"));
         assert!(extracted
             .imports
             .iter()
@@ -354,6 +372,29 @@ export const CONSTANT = 42;
             .imports
             .iter()
             .any(|i| i.alias.as_deref() == Some("utils") && i.source == "./utils"));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.imported_name == "default"
+                && binding.local_name == "React"
+                && binding.at_line == 2
+        }));
+        assert_eq!(comp.lines.start, 5);
+    }
+
+    #[test]
+    fn extracts_named_and_anonymous_default_exports() {
+        let named = extract_javascript_symbols("export default class Worker {}\n").unwrap();
+        assert!(named.module_bindings.iter().any(|binding| {
+            binding.local_name == "Worker" && binding.exported_name == "default"
+        }));
+
+        let anonymous = extract_javascript_symbols("export default () => doWork();\n").unwrap();
+        assert!(anonymous
+            .symbols
+            .iter()
+            .any(|symbol| symbol.name == "default" && symbol.exported));
+        assert!(anonymous.module_bindings.iter().any(|binding| {
+            binding.local_name == "default" && binding.exported_name == "default"
+        }));
     }
 
     #[test]

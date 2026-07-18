@@ -216,7 +216,6 @@ See `bench/fixtures/AUTHORING.md` for the rules.
 ## Open follow-ups
 
 - Wire `cmd_arm`, `cmd_question`, `cmd_diff`, `cmd_clean` (stubs today).
-- Fix `cmd_report` so codegraph version + daemon SHA in the round header come from real run metadata instead of the placeholder `"?"`.
 - Investigate why the description worker stagnates around 90-95% on large repos. Either it is a real failure mode (some symbols never get described) or a timing issue with the 2-minute stagnant detection.
 - Curate a ~15-question iteration fixture from the most discriminative questions in R005-R008; keep the full 40 for release rounds.
 - Re-prep and re-run the django external arm (the R008 django overlay used the wrong producer; the fix landed but the decisive Python-overlay A/B never ran).
@@ -234,6 +233,16 @@ agent tokens. Judging is never reused (judge-side changes must apply to all
 rows uniformly), the smoke fixture is never keyed (it runs against the live
 working tree), and rounds recorded before 2026-07-10 carry no key. Opt out with
 `BENCH_RUN_REUSE=0`. See `bench/reuse.py`.
+
+## Round provenance
+
+Every new round writes an immutable `meta.json` before its first question runs.
+It records the daemon Git SHA and binary hash, fixture content and upstream SHAs,
+selected question IDs, full arm definitions, model and CLI versions, execution
+settings, and the baseline/candidate comparator. Resuming with different
+provenance fails rather than mixing samples from different configurations.
+`./bench report <round>` renders the identifying hashes and comparator in the
+report; the full machine-readable configuration remains in `meta.json`.
 
 ## Re-running
 

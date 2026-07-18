@@ -1,0 +1,3 @@
+export function canonicalQualityTarget(value: number): number {
+  return value * 2;
+}

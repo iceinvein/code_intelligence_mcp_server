@@ -581,6 +581,18 @@ def cmd_report(args) -> int:
         for arm_name, rows in by_arm.items()
     }
 
+    meta_path = round_dir / "meta.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+    else:
+        # Legacy rounds predate immutable provenance. Keep them renderable, but
+        # make the missing revision explicit rather than inventing one.
+        meta = {
+            "daemon_sha": "?",
+            "codegraph_version": None,
+            "agent_model": config.AGENT_MODEL,
+        }
+
     md = report_mod.render_markdown(
         round_id=args.round,
         repos=sorted({s["repo"] for s in scores}),
@@ -591,11 +603,7 @@ def cmd_report(args) -> int:
             "forbidden_hits": [],
             "regressed_vs_full": [],
         },
-        meta={
-            "daemon_sha": "?",
-            "codegraph_version": None,
-            "agent_model": config.AGENT_MODEL,
-        },
+        meta=meta,
     )
 
     out_path = Path(args.out) if args.out else round_dir / "report.md"

@@ -16,7 +16,7 @@ CHECK="✅"
 CROSS="❌"
 
 echo -e "${BLUE}Building server...${NC}"
-cargo build --quiet
+cargo build --quiet --no-default-features
 
 echo -e "${BLUE}Setting up test workspace in $TEST_DIR...${NC}"
 rm -rf "$TEST_DIR"

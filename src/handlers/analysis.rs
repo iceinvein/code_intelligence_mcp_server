@@ -9,6 +9,7 @@ use crate::tools::*;
 use serde_json::json;
 
 use super::framework_routes::route_exposures_for_symbol;
+use super::symbol_resolution::resolve_symbol;
 use super::AppState;
 
 use super::budget::{budget_array, clamp_limit, insert_budgeted_array};
@@ -25,15 +26,14 @@ pub fn handle_find_affected_code(
     let sqlite = &state.sqlite;
 
     // Find the root symbol
-    let roots =
-        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file_path.as_deref(), 1)?;
-    let Some(root) = roots.first() else {
-        return Ok(json!({
-            "symbol_name": tool.symbol_name,
-            "error": "SYMBOL_NOT_FOUND",
-            "message": format!("Symbol '{}' not found", tool.symbol_name),
-            "affected": [],
-        }));
+    let root = match resolve_symbol(sqlite, &tool.symbol_name, tool.file_path.as_deref(), 100)?
+        .into_exact(&tool.symbol_name)
+    {
+        Ok(root) => root,
+        Err(mut response) => {
+            response["affected"] = json!([]);
+            return Ok(response);
+        }
     };
 
     // Convert edge_types from Vec<String> to Option<&[&str]>
@@ -45,15 +45,38 @@ pub fn handle_find_affected_code(
 
     // Use build_dependency_graph with "upstream" direction
     let graph_result =
-        build_dependency_graph(sqlite, root, "upstream", depth, limit, edge_types_slice);
+        build_dependency_graph(sqlite, &root, "upstream", depth, limit, edge_types_slice);
 
     let (affected, warning) = match graph_result {
         Ok(graph) => {
             let empty_nodes: Vec<serde_json::Value> = vec![];
+            let empty_edges: Vec<serde_json::Value> = vec![];
             let nodes = graph
                 .get("nodes")
                 .and_then(|v| v.as_array())
                 .unwrap_or(&empty_nodes);
+            let graph_edges = graph
+                .get("edges")
+                .and_then(|v| v.as_array())
+                .unwrap_or(&empty_edges);
+            let mut relationships_by_source =
+                std::collections::HashMap::<String, Vec<serde_json::Value>>::new();
+            for edge in graph_edges {
+                let Some(from) = edge.get("from").and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                relationships_by_source
+                    .entry(from.to_string())
+                    .or_default()
+                    .push(json!({
+                        "edge_type": edge.get("edge_type"),
+                        "to_symbol_id": edge.get("to"),
+                        "at_file": edge.get("at_file"),
+                        "at_line": edge.get("at_line"),
+                        "confidence": edge.get("confidence"),
+                        "resolution": edge.get("resolution"),
+                    }));
+            }
 
             // Build affected list with impact info
             let mut affected_list = Vec::new();
@@ -67,6 +90,12 @@ pub fn handle_find_affected_code(
                 }
 
                 let file_path = node.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
+                let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                // The defining file root is an internal traversal bridge from
+                // a declaration to export-all barrels, not an affected site.
+                if kind == "file" && file_path == root.file_path {
+                    continue;
+                }
                 let exported = node
                     .get("exported")
                     .and_then(|v| v.as_bool())
@@ -79,10 +108,30 @@ pub fn handle_find_affected_code(
 
                 *file_counts.entry(file_path.to_string()).or_insert(0) += 1;
 
+                let relationships = relationships_by_source.get(id).cloned().unwrap_or_default();
+                let is_public_exposure = relationships.iter().any(|relationship| {
+                    matches!(
+                        relationship
+                            .get("edge_type")
+                            .and_then(|value| value.as_str()),
+                        Some("export" | "re_export" | "export_all")
+                    )
+                });
+                let is_wrapper = relationships.iter().any(|relationship| {
+                    relationship
+                        .get("edge_type")
+                        .and_then(|value| value.as_str())
+                        == Some("delegates_to")
+                });
+
                 // Severity scoring: depth (40%) + export (30%) + in-degree (30%)
                 let in_degree = sqlite.count_incoming_edges(id).unwrap_or(0);
                 let depth_score = 8.0_f64; // Direct callers get high depth score
-                let export_score = if exported { 10.0 } else { 4.0 };
+                let export_score = if exported || is_public_exposure {
+                    10.0
+                } else {
+                    4.0
+                };
                 let indegree_score = ((in_degree as f64).ln().max(0.0) * 3.0 + 1.0).min(10.0);
 
                 let severity = ((depth_score * 0.4 + export_score * 0.3 + indegree_score * 0.3)
@@ -109,7 +158,102 @@ pub fn handle_find_affected_code(
                     "severity": severity,
                     "impact": impact_level,
                     "in_degree": in_degree,
+                    "relationships": relationships,
                 });
+                let primary_location = affected_entry
+                    .get("relationships")
+                    .and_then(|value| value.as_array())
+                    .and_then(|values| {
+                        values
+                            .iter()
+                            .find(|relationship| {
+                                matches!(
+                                    relationship
+                                        .get("edge_type")
+                                        .and_then(|value| value.as_str()),
+                                    Some("export" | "re_export" | "export_all")
+                                )
+                            })
+                            .or_else(|| {
+                                values.iter().find(|relationship| {
+                                    relationship
+                                        .get("edge_type")
+                                        .and_then(|value| value.as_str())
+                                        == Some("delegates_to")
+                                })
+                            })
+                            .or_else(|| values.first())
+                    })
+                    .map(|relationship| {
+                        (
+                            relationship
+                                .get("at_file")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                            relationship
+                                .get("at_line")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        )
+                    });
+                if let Some((at_file, at_line)) = primary_location {
+                    affected_entry["at_file"] = at_file;
+                    affected_entry["at_line"] = at_line;
+                }
+                if is_public_exposure {
+                    let target_ids = affected_entry
+                        .get("relationships")
+                        .and_then(|value| value.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|relationship| {
+                            relationship
+                                .get("to_symbol_id")
+                                .and_then(|value| value.as_str())
+                        })
+                        .collect::<std::collections::HashSet<_>>();
+                    let public_bindings = sqlite
+                        .list_module_bindings_by_file(file_path)?
+                        .into_iter()
+                        .filter(|binding| {
+                            binding.binding_kind != "import"
+                                && binding
+                                    .target_symbol_id
+                                    .as_deref()
+                                    .is_some_and(|target| target_ids.contains(target))
+                        })
+                        .map(|binding| {
+                            json!({
+                                "binding_kind": binding.binding_kind,
+                                "source_module": binding.source_module,
+                                "source_file": binding.source_file,
+                                "imported_name": binding.imported_name,
+                                "local_name": binding.local_name,
+                                "exported_name": binding.exported_name,
+                                "at_line": binding.at_line,
+                                "resolution": binding.resolution,
+                                "confidence": binding.confidence,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    affected_entry["evidence_role"] = json!("public_exposure");
+                    affected_entry["public_api"] = json!(public_bindings);
+                } else if is_wrapper {
+                    affected_entry["evidence_role"] = json!("wrapper");
+                    affected_entry["delegation"] = json!(affected_entry
+                        .get("relationships")
+                        .and_then(|value| value.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter(|relationship| {
+                            relationship
+                                .get("edge_type")
+                                .and_then(|value| value.as_str())
+                                == Some("delegates_to")
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>());
+                }
                 if !route_exposure.is_empty() {
                     affected_entry["route_exposure"] = json!(route_exposure);
                 }
@@ -118,7 +262,7 @@ pub fn handle_find_affected_code(
 
             append_external_affected_entries(
                 sqlite,
-                root,
+                &root,
                 &mut affected_list,
                 limit,
                 include_tests,
@@ -156,6 +300,7 @@ pub fn handle_find_affected_code(
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "file_path": root.file_path,
+        "resolution": "exact",
         "depth": depth,
         "affected_count": affected.len(),
         "affected_files": affected_files,
@@ -182,7 +327,7 @@ pub fn handle_find_affected_code(
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        response["display"] = json!(format_affected_code(root, &affected, affected_files));
+        response["display"] = json!(format_affected_code(&root, &affected, affected_files));
     }
     Ok(response)
 }
@@ -271,10 +416,10 @@ fn external_affected_relationships(edge_types: Option<&[&str]>) -> Vec<&'static 
         return vec!["call", "reference"];
     };
     let mut relationships = Vec::new();
-    if edge_types.iter().any(|edge_type| *edge_type == "call") {
+    if edge_types.contains(&"call") {
         relationships.push("call");
     }
-    if edge_types.iter().any(|edge_type| *edge_type == "reference") {
+    if edge_types.contains(&"reference") {
         relationships.push("reference");
     }
     relationships
@@ -372,15 +517,15 @@ pub fn handle_find_tests_for_symbol(
     let sqlite = &state.sqlite;
 
     // Find the symbol
-    let roots =
-        sqlite.search_symbols_by_exact_name(&tool.symbol_name, tool.file_path.as_deref(), 1)?;
-    let Some(root) = roots.first() else {
-        return Ok(json!({
-            "symbol_name": tool.symbol_name,
-            "error": "SYMBOL_NOT_FOUND",
-            "message": format!("Symbol '{}' not found", tool.symbol_name),
-            "test_files": [],
-        }));
+    let root = match resolve_symbol(sqlite, &tool.symbol_name, tool.file_path.as_deref(), 100)?
+        .into_exact(&tool.symbol_name)
+    {
+        Ok(root) => root,
+        Err(mut response) => {
+            response["test_files"] = json!([]);
+            response["tests"] = json!([]);
+            return Ok(response);
+        }
     };
 
     // Get test files for this symbol's source file
@@ -412,7 +557,7 @@ pub fn handle_find_tests_for_symbol(
     let budgeted_symbols_with_tests = budget_array(symbols_with_tests, limit);
     let display = include_display.then(|| {
         format_test_results(
-            root,
+            &root,
             &budgeted_test_files.items,
             &budgeted_symbols_with_tests.items,
         )
@@ -439,6 +584,7 @@ pub fn handle_find_tests_for_symbol(
         "symbol_name": root.name,
         "symbol_kind": root.kind,
         "source_file": root.file_path,
+        "resolution": "exact",
         "test_file_count": budgeted_test_files.returned_count,
         "tests_for_symbol": tests_for_symbol,
         "follow_up": follow_up,

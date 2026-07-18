@@ -11,7 +11,8 @@ use super::nestjs::extract_nestjs_patterns;
 use super::nextjs;
 use super::symbol::{
     ByteSpan, DataFlowEdge, DataFlowType, DecoratorEntry, DecoratorType, ExtractedFile,
-    ExtractedSymbol, Import, JSDocEntry, JSDocParam, LineSpan, SymbolKind, TodoEntry, TodoKind,
+    ExtractedSymbol, Import, JSDocEntry, JSDocParam, LineSpan, ModuleBinding, ModuleBindingKind,
+    SymbolKind, TodoEntry, TodoKind,
 };
 use super::trpc::extract_trpc_patterns;
 
@@ -46,6 +47,7 @@ fn extract_symbols_with_parser(
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let mut module_bindings = Vec::new();
     let mut type_edges = Vec::new();
     let mut dataflow_edges = Vec::new();
 
@@ -139,12 +141,22 @@ fn extract_symbols_with_parser(
             }
             "import_statement" => {
                 extract_imports(node, source, &mut imports);
+                extract_import_bindings(node, source, &mut module_bindings);
             }
             "export_statement" => {
                 // handle export ... from ...
                 if node.child_by_field_name("source").is_some() {
                     extract_imports(node, source, &mut imports);
                 }
+                if default_export_local_name(node, source).as_deref() == Some("default") {
+                    symbols.push(symbol_from_node(
+                        "default".to_string(),
+                        SymbolKind::Const,
+                        true,
+                        node,
+                    ));
+                }
+                extract_export_bindings(node, source, &mut module_bindings);
             }
             "object" => {
                 // Object literal: emit Property symbols for hook-shaped or
@@ -190,6 +202,7 @@ fn extract_symbols_with_parser(
     Ok(ExtractedFile {
         symbols,
         imports,
+        module_bindings,
         type_edges,
         extends_edges: Vec::new(),
         dataflow_edges,
@@ -329,19 +342,15 @@ fn text_for_node(node: Node<'_>, source: &str) -> String {
 }
 
 fn definition_node_for_declaration(node: Node<'_>) -> (Node<'_>, bool) {
-    let mut current = node;
-    let mut exported = false;
-    for _ in 0..4 {
-        let Some(parent) = current.parent() else {
-            break;
-        };
+    // Tree-sitter wraps a module-level exported declaration directly in an
+    // export_statement. Walking arbitrary ancestors incorrectly marks nested
+    // declarations as exported and gives them the outer declaration's span.
+    if let Some(parent) = node.parent() {
         if parent.kind() == "export_statement" {
-            exported = true;
-            return (parent, exported);
+            return (parent, true);
         }
-        current = parent;
     }
-    (node, exported)
+    (node, false)
 }
 
 fn extract_const_declarators(
@@ -652,9 +661,10 @@ fn extract_imports(node: Node<'_>, source: &str, out: &mut Vec<Import>) {
                     "identifier" => {
                         // default import: `import A from "..."`
                         out.push(Import {
-                            name: text_for_node(clause_child, source),
+                            name: "default".to_string(),
                             source: source_path.clone(),
-                            alias: Some("default".to_string()),
+                            alias: Some(text_for_node(clause_child, source)),
+                            at_line: clause_child.start_position().row as u32 + 1,
                         });
                     }
                     "named_imports" => {
@@ -671,6 +681,7 @@ fn extract_imports(node: Node<'_>, source: &str, out: &mut Vec<Import>) {
                                 name: "*".to_string(),
                                 source: source_path.clone(),
                                 alias: Some(text_for_node(alias_node, source)),
+                                at_line: clause_child.start_position().row as u32 + 1,
                             });
                         }
                     }
@@ -715,6 +726,7 @@ fn extract_import_specifiers(
                 name,
                 source: source_path.to_string(),
                 alias,
+                at_line: child.start_position().row as u32 + 1,
             });
         }
     }
@@ -743,9 +755,231 @@ fn extract_export_specifiers(
                 name,
                 source: source_path.to_string(),
                 alias: None,
+                at_line: child.start_position().row as u32 + 1,
             });
         }
     }
+}
+
+pub(super) fn extract_import_bindings(node: Node<'_>, source: &str, out: &mut Vec<ModuleBinding>) {
+    let Some(source_node) = node.child_by_field_name("source") else {
+        return;
+    };
+    let source_path = text_for_node(source_node, source)
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_string();
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "import_clause" {
+            continue;
+        }
+        let mut clause_cursor = child.walk();
+        for clause_child in child.children(&mut clause_cursor) {
+            match clause_child.kind() {
+                "identifier" => out.push(ModuleBinding {
+                    kind: ModuleBindingKind::Import,
+                    source: source_path.clone(),
+                    imported_name: "default".to_string(),
+                    local_name: text_for_node(clause_child, source),
+                    exported_name: String::new(),
+                    at_line: clause_child.start_position().row as u32 + 1,
+                }),
+                "named_imports" => {
+                    let mut named_cursor = clause_child.walk();
+                    for specifier in clause_child.children(&mut named_cursor) {
+                        if specifier.kind() != "import_specifier" {
+                            continue;
+                        }
+                        let mut spec_cursor = specifier.walk();
+                        let identifiers = specifier
+                            .children(&mut spec_cursor)
+                            .filter(|node| node.kind() == "identifier")
+                            .collect::<Vec<_>>();
+                        let Some(imported) = identifiers.first() else {
+                            continue;
+                        };
+                        let imported_name = text_for_node(*imported, source);
+                        let local_name = identifiers
+                            .get(1)
+                            .map(|node| text_for_node(*node, source))
+                            .unwrap_or_else(|| imported_name.clone());
+                        out.push(ModuleBinding {
+                            kind: ModuleBindingKind::Import,
+                            source: source_path.clone(),
+                            imported_name,
+                            local_name,
+                            exported_name: String::new(),
+                            at_line: specifier.start_position().row as u32 + 1,
+                        });
+                    }
+                }
+                "namespace_import" => {
+                    let mut ns_cursor = clause_child.walk();
+                    if let Some(alias) = clause_child
+                        .children(&mut ns_cursor)
+                        .find(|node| node.kind() == "identifier")
+                    {
+                        out.push(ModuleBinding {
+                            kind: ModuleBindingKind::Import,
+                            source: source_path.clone(),
+                            imported_name: "*".to_string(),
+                            local_name: text_for_node(alias, source),
+                            exported_name: String::new(),
+                            at_line: clause_child.start_position().row as u32 + 1,
+                        });
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+pub(super) fn extract_export_bindings(node: Node<'_>, source: &str, out: &mut Vec<ModuleBinding>) {
+    if let Some(local_name) = default_export_local_name(node, source) {
+        out.push(ModuleBinding {
+            kind: ModuleBindingKind::Export,
+            source: String::new(),
+            imported_name: String::new(),
+            local_name,
+            exported_name: "default".to_string(),
+            at_line: node.start_position().row as u32 + 1,
+        });
+        return;
+    }
+
+    let source_path = node
+        .child_by_field_name("source")
+        .map(|source_node| {
+            text_for_node(source_node, source)
+                .trim_matches(|c| c == '"' || c == '\'')
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    let mut found_clause = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "export_clause" {
+            continue;
+        }
+        found_clause = true;
+        let mut clause_cursor = child.walk();
+        for specifier in child.children(&mut clause_cursor) {
+            if specifier.kind() != "export_specifier" {
+                continue;
+            }
+            let mut spec_cursor = specifier.walk();
+            let identifiers = specifier
+                .children(&mut spec_cursor)
+                .filter(|node| node.kind() == "identifier")
+                .collect::<Vec<_>>();
+            let Some(local) = identifiers.first() else {
+                continue;
+            };
+            let local_name = text_for_node(*local, source);
+            let exported_name = identifiers
+                .get(1)
+                .map(|node| text_for_node(*node, source))
+                .unwrap_or_else(|| local_name.clone());
+            out.push(ModuleBinding {
+                kind: if source_path.is_empty() {
+                    ModuleBindingKind::Export
+                } else {
+                    ModuleBindingKind::ReExport
+                },
+                source: source_path.clone(),
+                imported_name: if source_path.is_empty() {
+                    String::new()
+                } else {
+                    local_name.clone()
+                },
+                local_name: if source_path.is_empty() {
+                    local_name
+                } else {
+                    String::new()
+                },
+                exported_name,
+                at_line: specifier.start_position().row as u32 + 1,
+            });
+        }
+    }
+
+    if source_path.is_empty() || found_clause {
+        return;
+    }
+
+    // `export * from` and `export * as Namespace from` do not contain an
+    // export_clause in tree-sitter-typescript. Parse only the small prefix
+    // before `from`; the module source still comes from the AST field above.
+    let statement = text_for_node(node, source);
+    let export_head = statement
+        .strip_prefix("export")
+        .and_then(|rest| rest.split_once("from").map(|(head, _)| head.trim()))
+        .unwrap_or_default();
+    if let Some(namespace) = export_head.strip_prefix("* as ") {
+        out.push(ModuleBinding {
+            kind: ModuleBindingKind::ReExport,
+            source: source_path,
+            imported_name: "*".to_string(),
+            local_name: String::new(),
+            exported_name: namespace.trim().to_string(),
+            at_line: node.start_position().row as u32 + 1,
+        });
+    } else if export_head == "*" {
+        out.push(ModuleBinding {
+            kind: ModuleBindingKind::ExportAll,
+            source: source_path,
+            imported_name: "*".to_string(),
+            local_name: String::new(),
+            exported_name: "*".to_string(),
+            at_line: node.start_position().row as u32 + 1,
+        });
+    }
+}
+
+/// Return the local declaration/expression name behind an ECMAScript default
+/// export. Anonymous declarations and expressions receive the stable public
+/// identity `default`, while `export default Worker` and named declarations
+/// retain their local symbol name.
+pub(super) fn default_export_local_name(node: Node<'_>, source: &str) -> Option<String> {
+    let statement = text_for_node(node, source);
+    let after_export = statement.trim_start().strip_prefix("export")?.trim_start();
+    if !after_export.starts_with("default") {
+        return None;
+    }
+    let boundary = after_export.as_bytes().get("default".len()).copied();
+    if boundary.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+        return None;
+    }
+
+    if let Some(declaration) = node.child_by_field_name("declaration") {
+        return Some(
+            declaration
+                .child_by_field_name("name")
+                .map(|name| text_for_node(name, source))
+                .unwrap_or_else(|| "default".to_string()),
+        );
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor).filter(|child| child.is_named()) {
+        match child.kind() {
+            "function_declaration" | "generator_function_declaration" | "class_declaration" => {
+                return Some(
+                    child
+                        .child_by_field_name("name")
+                        .map(|name| text_for_node(name, source))
+                        .unwrap_or_else(|| "default".to_string()),
+                );
+            }
+            "identifier" => return Some(text_for_node(child, source)),
+            _ => {}
+        }
+    }
+
+    Some("default".to_string())
 }
 
 /// Extract data flow edges from function/method bodies
@@ -1724,6 +1958,76 @@ export const BIG = {
         assert!(big_snip.contains("export const BIG"));
         assert!(big_snip.contains("nested"));
         assert!(big_snip.contains("arr"));
+    }
+
+    #[test]
+    fn extracts_import_and_public_export_bindings_without_losing_aliases() {
+        let source = r#"
+import DefaultWorker, { Worker as LocalWorker } from "./worker";
+export { Worker as PublicWorker } from "./worker";
+export * from "./shared";
+export * as SharedNamespace from "./shared";
+export { LocalWorker as WorkerAlias };
+export default class DefaultWorkerClass {}
+"#;
+        let extracted = extract_typescript_symbols(LanguageId::Typescript, source).unwrap();
+
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Import
+                && binding.imported_name == "default"
+                && binding.local_name == "DefaultWorker"
+                && binding.source == "./worker"
+        }));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Import
+                && binding.imported_name == "Worker"
+                && binding.local_name == "LocalWorker"
+        }));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::ReExport
+                && binding.imported_name == "Worker"
+                && binding.exported_name == "PublicWorker"
+                && binding.at_line == 3
+        }));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::ExportAll
+                && binding.source == "./shared"
+                && binding.exported_name == "*"
+        }));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::ReExport
+                && binding.imported_name == "*"
+                && binding.exported_name == "SharedNamespace"
+        }));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Export
+                && binding.local_name == "LocalWorker"
+                && binding.exported_name == "WorkerAlias"
+        }));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Export
+                && binding.local_name == "DefaultWorkerClass"
+                && binding.exported_name == "default"
+        }));
+    }
+
+    #[test]
+    fn anonymous_default_export_gets_stable_public_symbol() {
+        let extracted = extract_typescript_symbols(
+            LanguageId::Typescript,
+            "export default function () { return 1; }",
+        )
+        .unwrap();
+
+        assert!(extracted
+            .symbols
+            .iter()
+            .any(|symbol| symbol.name == "default" && symbol.exported));
+        assert!(extracted.module_bindings.iter().any(|binding| {
+            binding.kind == ModuleBindingKind::Export
+                && binding.local_name == "default"
+                && binding.exported_name == "default"
+        }));
     }
 
     #[test]

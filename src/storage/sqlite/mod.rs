@@ -13,7 +13,7 @@ pub use schema::{TodoEntry, TodoKind};
 
 impl SqliteStore {
     pub fn upsert_symbol(&self, symbol: &SymbolRow) -> Result<()> {
-        let conn = self.read()?;
+        let conn = self.write()?;
         queries::symbols::upsert_symbol(&conn, symbol)
     }
 
@@ -37,6 +37,16 @@ impl SqliteStore {
         queries::files::ensure_graph_index_version(&conn, current_version)
     }
 
+    pub fn delete_module_bindings_by_file(&self, file_path: &str) -> Result<u64> {
+        let conn = self.write()?;
+        queries::module_bindings::delete_by_file(&conn, file_path)
+    }
+
+    pub fn list_module_bindings_by_file(&self, file_path: &str) -> Result<Vec<ModuleBindingRow>> {
+        let conn = self.read()?;
+        queries::module_bindings::list_by_file(&conn, file_path)
+    }
+
     pub fn search_symbols_by_exact_name(
         &self,
         name: &str,
@@ -45,6 +55,21 @@ impl SqliteStore {
     ) -> Result<Vec<SymbolRow>> {
         let conn = self.read()?;
         queries::symbols::search_symbols_by_exact_name(&conn, name, file_path, limit)
+    }
+
+    pub fn search_symbols_by_qualified_name(
+        &self,
+        qualified_name: &str,
+        file_path: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SymbolRow>> {
+        let conn = self.read()?;
+        queries::symbol_identities::search_symbols_by_qualified_name(
+            &conn,
+            qualified_name,
+            file_path,
+            limit,
+        )
     }
 
     pub fn search_symbols_by_text_substr(
@@ -59,6 +84,27 @@ impl SqliteStore {
     pub fn get_symbol_by_id(&self, id: &str) -> Result<Option<SymbolRow>> {
         let conn = self.read()?;
         queries::symbols::get_symbol_by_id(&conn, id)
+    }
+
+    pub fn batch_get_symbols_by_ids(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, SymbolRow>> {
+        let conn = self.read()?;
+        queries::symbols::batch_get_symbols_by_ids(&conn, symbol_ids)
+    }
+
+    pub fn get_symbol_identity(&self, symbol_id: &str) -> Result<Option<SymbolIdentityRow>> {
+        let conn = self.read()?;
+        queries::symbol_identities::get_by_symbol_id(&conn, symbol_id)
+    }
+
+    pub fn get_symbol_identities(
+        &self,
+        symbol_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, SymbolIdentityRow>> {
+        let conn = self.read()?;
+        queries::symbol_identities::get_by_symbol_ids(&conn, symbol_ids)
     }
 
     pub fn list_hub_types_matching(

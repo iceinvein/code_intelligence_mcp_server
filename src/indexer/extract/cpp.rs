@@ -251,6 +251,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                         name: name.clone(),
                         source: name,
                         alias: None,
+                        at_line: node.start_position().row as u32 + 1,
                     });
                 }
             }
@@ -264,6 +265,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     Ok(ExtractedFile {
         symbols,
         imports,
+        module_bindings: Vec::new(),
         type_edges,
         extends_edges: Vec::new(),
         dataflow_edges: Vec::new(),

@@ -318,6 +318,7 @@ impl SessionManager {
         // Create IndexPipeline
         let indexer = IndexPipeline::new_with_jobs(
             config_arc.clone(),
+            sqlite_arc.clone(),
             tantivy_arc.clone(),
             vectors_arc.clone(),
             self.embedder.clone(),
@@ -329,6 +330,7 @@ impl SessionManager {
         // repos; hyde is still unwired.
         let retriever = Retriever::new(
             config_arc.clone(),
+            sqlite_arc.clone(),
             tantivy_arc,
             vectors_arc,
             self.embedder.clone(),

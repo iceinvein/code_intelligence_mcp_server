@@ -1,0 +1,32 @@
+{
+  "name": "code-intelligence-self-index",
+  "size_class": "medium",
+  "repo": "../../..",
+  "operations": [
+    {
+      "name": "search",
+      "tool": "search_code",
+      "arguments": {"query": "hybrid search reciprocal rank fusion", "limit": 10, "context": "none"}
+    },
+    {
+      "name": "investigate",
+      "tool": "investigate",
+      "arguments": {"question": "How does Retriever search combine keyword and vector results?", "target": "Retriever"}
+    },
+    {
+      "name": "definition",
+      "tool": "get_definition",
+      "arguments": {"symbol_name": "Retriever", "file": "src/retrieval/mod.rs"}
+    },
+    {
+      "name": "references",
+      "tool": "find_references",
+      "arguments": {"symbol_name": "execute_hybrid_search", "file": "src/retrieval/hybrid.rs", "reference_type": "all"}
+    },
+    {
+      "name": "impact",
+      "tool": "find_affected_code",
+      "arguments": {"symbol_name": "Retriever", "file_path": "src/retrieval/mod.rs", "depth": 3, "limit": 100}
+    }
+  ]
+}

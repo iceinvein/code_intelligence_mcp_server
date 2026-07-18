@@ -70,6 +70,10 @@ impl SharedEmbedder {
         self.dim
     }
 
+    pub fn is_ready(&self) -> bool {
+        self.inner.is_ready()
+    }
+
     /// Embed a batch of texts. The call is gated by the concurrency semaphore
     /// and runs on the blocking thread pool.
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {

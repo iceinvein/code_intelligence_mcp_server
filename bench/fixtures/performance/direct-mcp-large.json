@@ -1,0 +1,32 @@
+{
+  "name": "django-large-repository",
+  "size_class": "large",
+  "repo_env": "CODE_INTEL_PERF_LARGE_REPO",
+  "operations": [
+    {
+      "name": "search",
+      "tool": "search_code",
+      "arguments": {"query": "middleware request response processing", "limit": 10, "context": "none"}
+    },
+    {
+      "name": "investigate",
+      "tool": "investigate",
+      "arguments": {"question": "How does BaseHandler load and execute middleware?", "target": "BaseHandler"}
+    },
+    {
+      "name": "definition",
+      "tool": "get_definition",
+      "arguments": {"symbol_name": "BaseHandler"}
+    },
+    {
+      "name": "references",
+      "tool": "find_references",
+      "arguments": {"symbol_name": "BaseHandler", "reference_type": "all"}
+    },
+    {
+      "name": "impact",
+      "tool": "find_affected_code",
+      "arguments": {"symbol_name": "BaseHandler", "depth": 3, "limit": 100}
+    }
+  ]
+}

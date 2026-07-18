@@ -182,19 +182,33 @@ pub fn all_tools() -> Vec<rust_mcp_sdk::schema::Tool> {
 
 /// Dispatch helper: parse tool args, call sync handler, serialize result.
 macro_rules! dispatch_sync {
-    ($params:expr, $tool_ty:ty, |$tool:ident| $handler:expr) => {{
+    ($state:expr, $params:expr, $tool_ty:ty, |$tool:ident| $handler:expr) => {{
         let $tool: $tool_ty = parse_tool_args(&$params)?;
         let result = { $handler }.map_err(tool_internal_error)?;
-        Ok(tool_json_content(&result))
+        let serialization_t = std::time::Instant::now();
+        let response = tool_json_content(&result);
+        $state.retriever.metrics().observe_query_stage(
+            metric_operation($params.name.as_str()),
+            "serialization",
+            serialization_t.elapsed(),
+        );
+        Ok(response)
     }};
 }
 
 /// Dispatch helper: parse tool args, call async handler, serialize result.
 macro_rules! dispatch_async {
-    ($params:expr, $tool_ty:ty, |$tool:ident| $handler:expr) => {{
+    ($state:expr, $params:expr, $tool_ty:ty, |$tool:ident| $handler:expr) => {{
         let $tool: $tool_ty = parse_tool_args(&$params)?;
         let result = { $handler }.await.map_err(tool_internal_error)?;
-        Ok(tool_json_content(&result))
+        let serialization_t = std::time::Instant::now();
+        let response = tool_json_content(&result);
+        $state.retriever.metrics().observe_query_stage(
+            metric_operation($params.name.as_str()),
+            "serialization",
+            serialization_t.elapsed(),
+        );
+        Ok(response)
     }};
 }
 
@@ -207,6 +221,37 @@ pub(crate) fn tool_json_content(value: &serde_json::Value) -> CallToolResult {
         .into()])
 }
 
+/// Collapse client-provided tool names onto the bounded set implemented by
+/// this dispatcher. Unknown names must never become Prometheus labels.
+fn metric_operation(tool_name: &str) -> &'static str {
+    match tool_name {
+        "refresh_index" => "refresh_index",
+        "search_code" => "search_code",
+        "get_definition" => "get_definition",
+        "report_selection" => "report_selection",
+        "report_file_access" => "report_file_access",
+        "explain_search" => "explain_search",
+        "import_external_index" => "import_external_index",
+        "generate_external_index" => "generate_external_index",
+        "get_file_symbols" => "get_file_symbols",
+        "hydrate_symbols" => "hydrate_symbols",
+        "investigate" => "investigate",
+        "ask_code" => "ask_code",
+        "explore_dependency_graph" => "explore_dependency_graph",
+        "find_references" => "find_references",
+        "get_usage_examples" => "get_usage_examples",
+        "get_call_hierarchy" => "get_call_hierarchy",
+        "get_type_graph" => "get_type_graph",
+        "summarize_file" => "summarize_file",
+        "get_module_summary" => "get_module_summary",
+        "trace_data_flow" => "trace_data_flow",
+        "find_affected_code" => "find_affected_code",
+        "find_tests_for_symbol" => "find_tests_for_symbol",
+        "get_index_stats" => "get_index_stats",
+        _ => "unknown",
+    }
+}
+
 /// Shared tool dispatch — used by both embedded and standalone handlers
 pub async fn dispatch_tool_call(
     state: &AppState,
@@ -217,98 +262,100 @@ pub async fn dispatch_tool_call(
 
     let result = match params.name.as_str() {
         // --- Async handlers ---
-        "refresh_index" => dispatch_async!(params, RefreshIndexTool, |tool| handle_refresh_index(
-            state, tool
-        )),
-        "search_code" => dispatch_async!(params, SearchCodeTool, |tool| handle_search_code(
+        "refresh_index" => dispatch_async!(state, params, RefreshIndexTool, |tool| {
+            handle_refresh_index(state, tool)
+        }),
+        "search_code" => dispatch_async!(state, params, SearchCodeTool, |tool| handle_search_code(
             &state.retriever,
-            &state.config.db_path,
             tool
         )),
         "get_definition" => {
-            dispatch_async!(params, GetDefinitionTool, |tool| handle_get_definition(
-                state, tool
-            ))
+            dispatch_async!(state, params, GetDefinitionTool, |tool| {
+                handle_get_definition(state, tool)
+            })
         }
         "report_selection" => {
-            dispatch_async!(params, ReportSelectionTool, |tool| handle_report_selection(
-                state, tool
-            ))
+            dispatch_async!(state, params, ReportSelectionTool, |tool| {
+                handle_report_selection(state, tool)
+            })
         }
-        "report_file_access" => dispatch_async!(params, ReportFileAccessTool, |tool| {
+        "report_file_access" => dispatch_async!(state, params, ReportFileAccessTool, |tool| {
             handle_report_file_access(state, tool)
         }),
         "explain_search" => {
-            dispatch_async!(params, ExplainSearchTool, |tool| handle_explain_search(
-                &state.retriever,
-                tool
-            ))
+            dispatch_async!(state, params, ExplainSearchTool, |tool| {
+                handle_explain_search(&state.retriever, tool)
+            })
         }
         "import_external_index" => {
-            dispatch_async!(params, ImportExternalIndexTool, |tool| {
+            dispatch_async!(state, params, ImportExternalIndexTool, |tool| {
                 handle_import_external_index(state, tool)
             })
         }
 
         "generate_external_index" => {
-            dispatch_async!(params, GenerateExternalIndexTool, |tool| {
+            dispatch_async!(state, params, GenerateExternalIndexTool, |tool| {
                 handle_generate_external_index(state, tool)
             })
         }
 
         // --- Sync handlers ---
         "get_file_symbols" => {
-            dispatch_sync!(params, GetFileSymbolsTool, |tool| handle_get_file_symbols(
-                state, tool
-            ))
+            dispatch_sync!(state, params, GetFileSymbolsTool, |tool| {
+                handle_get_file_symbols(state, tool)
+            })
         }
         "hydrate_symbols" => {
-            dispatch_sync!(params, HydrateSymbolsTool, |tool| handle_hydrate_symbols(
-                state, tool
-            ))
+            dispatch_sync!(state, params, HydrateSymbolsTool, |tool| {
+                handle_hydrate_symbols(state, tool)
+            })
         }
         "investigate" => {
-            dispatch_async!(params, InvestigateTool, |tool| handle_investigate(
+            dispatch_async!(state, params, InvestigateTool, |tool| handle_investigate(
                 state, tool
             ))
         }
         "ask_code" => {
-            dispatch_async!(params, AskCodeTool, |tool| handle_ask_code(state, tool))
-        }
-        "explore_dependency_graph" => dispatch_sync!(params, ExploreDependencyGraphTool, |tool| {
-            handle_explore_dependency_graph(state, tool)
-        }),
-        "find_references" => {
-            dispatch_sync!(params, FindReferencesTool, |tool| handle_find_references(
+            dispatch_async!(state, params, AskCodeTool, |tool| handle_ask_code(
                 state, tool
             ))
         }
-        "get_usage_examples" => dispatch_sync!(params, GetUsageExamplesTool, |tool| {
+        "explore_dependency_graph" => {
+            dispatch_sync!(state, params, ExploreDependencyGraphTool, |tool| {
+                handle_explore_dependency_graph(state, tool)
+            })
+        }
+        "find_references" => {
+            dispatch_sync!(state, params, FindReferencesTool, |tool| {
+                handle_find_references(state, tool)
+            })
+        }
+        "get_usage_examples" => dispatch_sync!(state, params, GetUsageExamplesTool, |tool| {
             handle_get_usage_examples(state, tool)
         }),
-        "get_call_hierarchy" => dispatch_sync!(params, GetCallHierarchyTool, |tool| {
+        "get_call_hierarchy" => dispatch_sync!(state, params, GetCallHierarchyTool, |tool| {
             handle_get_call_hierarchy(state, tool)
         }),
-        "get_type_graph" => dispatch_sync!(params, GetTypeGraphTool, |tool| handle_get_type_graph(
-            state, tool
-        )),
+        "get_type_graph" => dispatch_sync!(state, params, GetTypeGraphTool, |tool| {
+            handle_get_type_graph(state, tool)
+        }),
         "summarize_file" => {
-            dispatch_sync!(params, SummarizeFileTool, |tool| handle_summarize_file(
-                state, tool
-            ))
+            dispatch_sync!(state, params, SummarizeFileTool, |tool| {
+                handle_summarize_file(state, tool)
+            })
         }
-        "get_module_summary" => dispatch_sync!(params, GetModuleSummaryTool, |tool| {
+        "get_module_summary" => dispatch_sync!(state, params, GetModuleSummaryTool, |tool| {
             handle_get_module_summary(state, tool)
         }),
         "trace_data_flow" => {
-            dispatch_sync!(params, TraceDataFlowTool, |tool| handle_trace_data_flow(
-                state, tool
-            ))
+            dispatch_sync!(state, params, TraceDataFlowTool, |tool| {
+                handle_trace_data_flow(state, tool)
+            })
         }
-        "find_affected_code" => dispatch_sync!(params, FindAffectedCodeTool, |tool| {
+        "find_affected_code" => dispatch_sync!(state, params, FindAffectedCodeTool, |tool| {
             handle_find_affected_code(state, tool)
         }),
-        "find_tests_for_symbol" => dispatch_sync!(params, FindTestsForSymbolTool, |tool| {
+        "find_tests_for_symbol" => dispatch_sync!(state, params, FindTestsForSymbolTool, |tool| {
             handle_find_tests_for_symbol(state, tool)
         }),
 
@@ -316,14 +363,27 @@ pub async fn dispatch_tool_call(
         "get_index_stats" => {
             let _tool: GetIndexStatsTool = parse_tool_args(&params).unwrap_or(GetIndexStatsTool {});
             let result = handle_get_index_stats(state).map_err(tool_internal_error)?;
-            Ok(tool_json_content(&result))
+            let serialization_t = std::time::Instant::now();
+            let response = tool_json_content(&result);
+            state.retriever.metrics().observe_query_stage(
+                "get_index_stats",
+                "serialization",
+                serialization_t.elapsed(),
+            );
+            Ok(response)
         }
 
         _ => Err(CallToolError::unknown_tool(params.name)),
     };
 
-    let duration_ms = start.elapsed().as_millis();
+    let elapsed = start.elapsed();
+    let duration_ms = elapsed.as_millis();
     let status = if result.is_ok() { "ok" } else { "error" };
+    state.retriever.metrics().observe_query_operation(
+        metric_operation(&tool_name),
+        status,
+        elapsed,
+    );
     tracing::info!(
         target: "mcp_access",
         tool = %tool_name,
@@ -337,6 +397,12 @@ pub async fn dispatch_tool_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metric_operation_bounds_unknown_label_cardinality() {
+        assert_eq!(metric_operation("search_code"), "search_code");
+        assert_eq!(metric_operation("client_supplied_name"), "unknown");
+    }
 
     #[test]
     fn capabilities_advertise_task_support() {

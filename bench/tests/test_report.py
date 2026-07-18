@@ -71,12 +71,41 @@ def test_render_markdown_includes_headline():
         arms_data=arms_data,
         outliers={"high_judge_disagreement": [], "hallucinated_citations": [],
                   "forbidden_hits": [], "regressed_vs_full": []},
-        meta={"daemon_sha": "abc", "codegraph_version": None, "agent_model": "claude-sonnet-4-6"},
+        meta={
+            "daemon": {"git_sha": "abc", "binary_sha256": "binary123"},
+            "binaries": {"agent_cli": "claude 1.2.3", "codegraph": None},
+            "models": {
+                "agent": "claude-sonnet-4-6",
+                "judges": {"haiku": "claude-haiku-4-5"},
+            },
+            "comparator": {
+                "baseline_arm": "default",
+                "candidate_arms": ["code_intel_full"],
+            },
+            "fixtures": [{
+                "repo": "smoke",
+                "upstream_sha": "fixture-upstream",
+                "fixture_sha256": "fixture123",
+                "authored_against_schema_version": 22,
+                "question_ids": ["q1", "q2"],
+            }],
+            "configuration": {
+                "arms": [{
+                    "name": "code_intel_full",
+                    "index_variant": "full",
+                    "daemon_env": {"RERANKER_ENABLED": "1"},
+                }],
+            },
+        },
     )
     assert "# Bench Round R042" in md
     assert "Headline" in md
     assert "skipped" in md
     assert "code_intel_full" in md
+    assert "binary123" in md
+    assert "fixture-upstream" in md
+    assert "fixture123" in md
+    assert "default → code_intel_full" in md
 
 
 def test_render_markdown_handles_unjudged_multi_arm():

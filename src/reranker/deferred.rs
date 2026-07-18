@@ -72,6 +72,10 @@ impl Reranker for DeferredReranker {
     fn top_k(&self) -> usize {
         self.top_k
     }
+
+    fn is_ready(&self) -> bool {
+        self.is_ready()
+    }
 }
 
 #[cfg(test)]

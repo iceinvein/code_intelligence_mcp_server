@@ -444,6 +444,8 @@ mod tests {
             created_at: "2026-05-25T00:00:00Z".to_string(),
             last_accessed: "2026-05-25T00:00:00Z".to_string(),
             consent: crate::registry::IndexConsent::Approved,
+            initial_index_approved_at: None,
+            initial_index_completed_at: None,
         };
 
         let activity = read_repo_persisted_activity(&entry);

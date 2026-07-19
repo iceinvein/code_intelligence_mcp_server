@@ -82,6 +82,10 @@ pub struct RepoEntry {
     pub last_accessed: String, // RFC3339 timestamp
     #[serde(default = "default_consent")]
     pub consent: IndexConsent,
+    #[serde(default)]
+    pub initial_index_approved_at: Option<String>,
+    #[serde(default)]
+    pub initial_index_completed_at: Option<String>,
 }
 
 /// Internal structure for JSON serialization
@@ -131,9 +135,6 @@ impl RepoRegistry {
 
         // Check if already exists
         if let Some(existing) = registry.repos.get_mut(&hash) {
-            // register() is only reached when we are about to index this repo,
-            // so registering implies approval (and flips a prior decline).
-            existing.consent = IndexConsent::Approved;
             // Touch last_accessed
             existing.last_accessed = now;
             let entry = existing.clone();
@@ -158,12 +159,46 @@ impl RepoRegistry {
             created_at: now.clone(),
             last_accessed: now,
             consent: IndexConsent::Approved,
+            initial_index_approved_at: None,
+            initial_index_completed_at: None,
         };
 
         registry.repos.insert(hash, entry.clone());
         self.save(&registry)?;
 
         Ok(entry)
+    }
+
+    /// Persist one-time authorization for a repository's first full index.
+    pub fn approve_initial_index(&self, repo_path: &str) -> Result<RepoEntry> {
+        let _ = self.register(repo_path)?;
+        let hash = Self::path_hash(repo_path);
+        let mut registry = self.load()?;
+        let entry = registry
+            .repos
+            .get_mut(&hash)
+            .with_context(|| format!("Repository disappeared during approval: {repo_path}"))?;
+        entry.consent = IndexConsent::Approved;
+        if entry.initial_index_approved_at.is_none() {
+            entry.initial_index_approved_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+        let approved = entry.clone();
+        self.save(&registry)?;
+        Ok(approved)
+    }
+
+    /// Persist successful completion of a repository's first full index.
+    pub fn mark_initial_index_completed(&self, repo_path: &str) -> Result<RepoEntry> {
+        let hash = Self::path_hash(repo_path);
+        let mut registry = self.load()?;
+        let entry = registry
+            .repos
+            .get_mut(&hash)
+            .with_context(|| format!("Cannot complete unregistered repository: {repo_path}"))?;
+        entry.initial_index_completed_at = Some(chrono::Utc::now().to_rfc3339());
+        let completed = entry.clone();
+        self.save(&registry)?;
+        Ok(completed)
     }
 
     /// Look up a repository by path
@@ -237,6 +272,9 @@ impl RepoRegistry {
 
         if let Some(existing) = registry.repos.get_mut(&hash) {
             existing.consent = consent;
+            if consent == IndexConsent::Declined && existing.initial_index_completed_at.is_none() {
+                existing.initial_index_approved_at = None;
+            }
             let entry = existing.clone();
             self.save(&registry)?;
             return Ok(entry);
@@ -250,6 +288,8 @@ impl RepoRegistry {
             created_at: now.clone(),
             last_accessed: now,
             consent,
+            initial_index_approved_at: None,
+            initial_index_completed_at: None,
         };
         registry.repos.insert(hash, entry.clone());
         self.save(&registry)?;
@@ -384,6 +424,55 @@ mod tests {
         let e2 = reg.register("/Users/dev/project").unwrap();
         assert_eq!(e1.path, e2.path);
         assert_eq!(e1.data_dir, e2.data_dir);
+    }
+
+    #[test]
+    fn register_does_not_authorize_or_complete_first_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(root.join("registry.json"), root.join("repos"));
+
+        let entry = reg.register("/Users/dev/project").unwrap();
+
+        assert!(entry.initial_index_approved_at.is_none());
+        assert!(entry.initial_index_completed_at.is_none());
+    }
+
+    #[test]
+    fn approval_and_completion_survive_registry_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let registry_path = root.join("registry.json");
+        let repos_dir = root.join("repos");
+        let reg = RepoRegistry::new(registry_path.clone(), repos_dir.clone());
+
+        let approved = reg.approve_initial_index("/Users/dev/project").unwrap();
+        assert!(approved.initial_index_approved_at.is_some());
+        assert!(approved.initial_index_completed_at.is_none());
+
+        reg.mark_initial_index_completed("/Users/dev/project")
+            .unwrap();
+        let reloaded = RepoRegistry::new(registry_path, repos_dir)
+            .get("/Users/dev/project")
+            .unwrap()
+            .unwrap();
+        assert!(reloaded.initial_index_approved_at.is_some());
+        assert!(reloaded.initial_index_completed_at.is_some());
+    }
+
+    #[test]
+    fn legacy_entry_defaults_first_index_timestamps_to_none() {
+        let json = r#"{
+          "path":"/repo",
+          "name":"repo",
+          "data_dir":"/data/repo",
+          "created_at":"2026-01-01T00:00:00Z",
+          "last_accessed":"2026-01-01T00:00:00Z",
+          "consent":"approved"
+        }"#;
+        let entry: RepoEntry = serde_json::from_str(json).unwrap();
+        assert!(entry.initial_index_approved_at.is_none());
+        assert!(entry.initial_index_completed_at.is_none());
     }
 
     #[test]
@@ -542,15 +631,20 @@ mod tests {
     }
 
     #[test]
-    fn register_flips_declined_entry_back_to_approved() {
+    fn registration_preserves_decline_until_explicit_approval() {
         let dir = tempfile::tempdir().unwrap();
         let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
-        reg.set_consent("/Users/dev/p", IndexConsent::Declined)
+        reg.set_consent("/Users/dev/project", IndexConsent::Declined)
             .unwrap();
-        // register() is only called when we are about to index, so it asserts approval.
-        let entry = reg.register("/Users/dev/p").unwrap();
-        assert_eq!(entry.consent, IndexConsent::Approved);
+
+        let registered = reg.register("/Users/dev/project").unwrap();
+        assert_eq!(registered.consent, IndexConsent::Declined);
+        assert!(registered.initial_index_approved_at.is_none());
+
+        let approved = reg.approve_initial_index("/Users/dev/project").unwrap();
+        assert_eq!(approved.consent, IndexConsent::Approved);
+        assert!(approved.initial_index_approved_at.is_some());
     }
 
     #[test]

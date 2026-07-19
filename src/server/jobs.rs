@@ -2,8 +2,7 @@
 //!
 //! Three job kinds are tracked:
 //! - `ManualReindex`: triggered by `POST /api/repos/{id}/reindex`.
-//! - `InitialBind`: the first index pass after a session binds a repo
-//!   (registered from the watch loop's first fire on a fresh AppState).
+//! - `InitialBind`: the first index pass after a user authorizes a repo.
 //! - `WatchReindex`: subsequent incremental reindex runs driven by the
 //!   file watcher in `IndexPipeline::spawn_watch_loop`.
 //!
@@ -193,6 +192,22 @@ pub fn most_recent_running_for_repo(registry: &JobRegistry, repo_id: &str) -> Op
         .filter(|e| e.value().repo_id == repo_id && e.value().status == JobStatus::Running)
         .map(|e| e.value().clone())
         .max_by_key(|j| j.started_at_unix_s)
+}
+
+/// Most recent `Running` job of `kind` for `repo_id`, if any.
+pub fn most_recent_running_for_repo_kind(
+    registry: &JobRegistry,
+    repo_id: &str,
+    kind: JobKind,
+) -> Option<Job> {
+    registry
+        .iter()
+        .filter(|entry| {
+            let job = entry.value();
+            job.repo_id == repo_id && job.kind == kind && job.status == JobStatus::Running
+        })
+        .map(|entry| entry.value().clone())
+        .max_by_key(|job| job.started_at_unix_s)
 }
 
 /// Most recent finished (`Succeeded` or `Failed`) job for `repo_id`, if
@@ -617,6 +632,28 @@ mod tests {
 
         let found = most_recent_running_for_repo(&reg, "target").unwrap();
         assert_eq!(found.id, "new");
+    }
+
+    #[test]
+    fn running_job_lookup_filters_by_kind() {
+        let reg = new_job_registry();
+        register_running(
+            &reg,
+            "manual".to_string(),
+            JobKind::ManualReindex,
+            "repo".to_string(),
+            "/repo".to_string(),
+        );
+        register_running(
+            &reg,
+            "initial".to_string(),
+            JobKind::InitialBind,
+            "repo".to_string(),
+            "/repo".to_string(),
+        );
+
+        let found = most_recent_running_for_repo_kind(&reg, "repo", JobKind::InitialBind).unwrap();
+        assert_eq!(found.id, "initial");
     }
 
     #[test]

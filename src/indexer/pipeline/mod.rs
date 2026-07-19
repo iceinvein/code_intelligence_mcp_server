@@ -85,6 +85,7 @@ pub(crate) fn should_generate_embedding(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalIndexTrigger {
+    InitialBind,
     ManualRefresh,
     Watch,
 }
@@ -604,11 +605,11 @@ impl IndexPipeline {
         }
 
         match config.external_index_on_refresh.as_str() {
-            "explicit" => trigger == ExternalIndexTrigger::ManualRefresh,
-            "watch" => matches!(
+            "explicit" => matches!(
                 trigger,
-                ExternalIndexTrigger::ManualRefresh | ExternalIndexTrigger::Watch
+                ExternalIndexTrigger::InitialBind | ExternalIndexTrigger::ManualRefresh
             ),
+            "watch" => true,
             _ => false,
         }
     }
@@ -674,7 +675,6 @@ impl IndexPipeline {
             let mut consecutive_failures: u32 = 0;
             let max_backoff_ms: u64 = 5000;
             let mut last_index_time: Option<Instant> = None;
-            let mut first_run = true;
 
             let repo_name = pipeline
                 .config
@@ -750,13 +750,8 @@ impl IndexPipeline {
                         // "indexing…" against this repo. `coalesced - 1`
                         // because the first event is the one that triggered
                         // the run itself; the rest were absorbed.
-                        let kind = if first_run {
-                            crate::server::jobs::JobKind::InitialBind
-                        } else {
-                            crate::server::jobs::JobKind::WatchReindex
-                        };
                         let job_id = pipeline.register_watch_job(
-                            kind,
+                            Self::watch_job_kind(),
                             &repo_path,
                             coalesced.saturating_sub(1),
                         );
@@ -765,7 +760,6 @@ impl IndexPipeline {
                             Ok(outcome) => {
                                 last_index_time = Some(Instant::now());
                                 consecutive_failures = 0;
-                                first_run = false;
                                 tracing::info!(
                                     repo = %repo_name,
                                     files_indexed = outcome.stats.files_indexed,
@@ -803,6 +797,10 @@ impl IndexPipeline {
                 }
             }
         })
+    }
+
+    fn watch_job_kind() -> crate::server::jobs::JobKind {
+        crate::server::jobs::JobKind::WatchReindex
     }
 
     /// Insert a Running `Job` for the upcoming watch index pass. Returns
@@ -1590,12 +1588,34 @@ mod tests {
         ));
         assert!(!IndexPipeline::should_run_external_index(
             &cfg,
+            ExternalIndexTrigger::InitialBind
+        ));
+        assert!(!IndexPipeline::should_run_external_index(
+            &cfg,
             ExternalIndexTrigger::Watch
         ));
     }
 
     #[test]
-    fn external_index_explicit_policy_runs_only_for_manual_refresh() {
+    fn external_index_explicit_policy_runs_for_initial_bind() {
+        let standalone = StandaloneConfig {
+            external_index_auto: true,
+            external_index_on_refresh: "explicit".to_string(),
+            ..StandaloneConfig::default()
+        };
+        let config = standalone.repo_config(
+            Utf8PathBuf::from("/tmp/repo"),
+            &Utf8PathBuf::from("/tmp/data"),
+        );
+
+        assert!(IndexPipeline::should_run_external_index(
+            &config,
+            ExternalIndexTrigger::InitialBind,
+        ));
+    }
+
+    #[test]
+    fn external_index_explicit_policy_runs_for_initial_and_manual_refresh() {
         let standalone = StandaloneConfig {
             external_index_auto: true,
             external_index_on_refresh: "explicit".to_string(),
@@ -1634,8 +1654,20 @@ mod tests {
         ));
         assert!(IndexPipeline::should_run_external_index(
             &cfg,
+            ExternalIndexTrigger::InitialBind
+        ));
+        assert!(IndexPipeline::should_run_external_index(
+            &cfg,
             ExternalIndexTrigger::Watch
         ));
+    }
+
+    #[test]
+    fn filesystem_events_are_always_watch_reindex_jobs() {
+        assert_eq!(
+            IndexPipeline::watch_job_kind(),
+            crate::server::jobs::JobKind::WatchReindex
+        );
     }
 
     #[test]

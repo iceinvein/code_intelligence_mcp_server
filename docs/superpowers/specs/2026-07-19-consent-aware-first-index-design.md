@@ -16,6 +16,7 @@ This design introduces a durable, one-time first-index permission gate. Every bi
 - Deduplicate concurrent approval and tool-call races so only one first-index job runs per repository.
 - Keep later watcher updates and deliberate reindexes automatic after the first successful index.
 - Preserve compatibility with repositories indexed by older server versions.
+- Preserve `INDEX_CONSENT_REQUIRED=false` as an operator-controlled opt-out for CI and benchmarks.
 
 ## Non-Goals
 
@@ -68,6 +69,8 @@ All binding sources use the same lifecycle gate:
 - Dashboard Add followed by MCP use
 
 Project-marker and unsafe-root checks remain unchanged. The permission rule is independent of whether the binding is explicit or implicit.
+
+The default `INDEX_CONSENT_REQUIRED=true` applies this gate to every binding source. When an operator explicitly sets it to `false`, the coordinator records authorization and starts the real first-index job without a chat prompt. The opt-out changes permission handling only; it does not restore the old watcher-dependent cold-start behavior.
 
 `bind_workspace` records the session binding, evaluates the lifecycle, and returns the relevant lifecycle payload. It must not prewarm an unapproved repository. URL and roots-based bindings are evaluated by `resolve_state` on the first tool call.
 

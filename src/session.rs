@@ -1,4 +1,8 @@
-//! Session management for standalone mode — maps repo paths to per-repo AppState instances
+//! Session management for standalone mode: maps repo paths to per-repo AppState instances.
+
+mod initial_index;
+
+pub use initial_index::RepoAccess;
 
 use crate::{
     config::StandaloneConfig,
@@ -10,14 +14,14 @@ use crate::{
     registry::{RepoEntry, RepoRegistry},
     reranker::Reranker,
     retrieval::Retriever,
-    server::jobs::JobRegistry,
+    server::jobs::{self, JobRegistry},
     storage::{sqlite::SqliteStore, tantivy::TantivyIndex, vector::LanceDbStore},
 };
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use serde::Serialize;
 use std::{
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
@@ -68,18 +72,42 @@ pub struct SessionManager {
     /// once). `None` when `reranker_enabled` is false. Each repo's `Retriever`
     /// receives a clone of this handle.
     reranker: Option<Arc<dyn Reranker>>,
-    /// Keyed by canonical repo path string. Value is (AppState, watcher cancel token).
-    repos: DashMap<String, (Arc<AppState>, CancellationToken)>,
+    /// Keyed by canonical repo path string.
+    repos: DashMap<String, Arc<RepoRuntime>>,
     /// Per-key init locks to prevent TOCTOU races when two sessions init the same repo
     init_locks: DashMap<String, Arc<Mutex<()>>>,
+    /// Separate locks for first-index readiness checks and job registration.
+    initial_index_locks: DashMap<String, Arc<Mutex<()>>>,
     /// Tracks the last time each repo was accessed, for TTL-based eviction
     last_accessed: DashMap<String, Instant>,
     /// Repos an agent bound implicitly that are awaiting a user indexing decision.
     pending_consent: DashMap<String, PendingConsent>,
     metrics: Arc<MetricsRegistry>,
-    /// Optional handle so watch-driven runs surface as `Job` entries for
-    /// the dashboard. Tests construct managers without one.
-    job_registry: Option<JobRegistry>,
+    /// Shared handle for all background indexing jobs.
+    job_registry: JobRegistry,
+}
+
+struct RepoRuntime {
+    state: Arc<AppState>,
+    watch_cancel: CancellationToken,
+    watcher_started: AtomicBool,
+}
+
+impl RepoRuntime {
+    fn ensure_watcher_started(&self) -> bool {
+        use std::sync::atomic::Ordering;
+
+        if !self.state.config.watch_mode {
+            return false;
+        }
+        if self.watcher_started.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.state
+            .indexer
+            .spawn_watch_loop(self.watch_cancel.clone());
+        true
+    }
 }
 
 impl SessionManager {
@@ -91,6 +119,7 @@ impl SessionManager {
         reranker: Option<Arc<dyn Reranker>>,
     ) -> Result<Self> {
         let metrics = Arc::new(MetricsRegistry::new().context("Failed to create MetricsRegistry")?);
+        let job_registry = job_registry.unwrap_or_else(jobs::new_job_registry);
 
         Ok(Self {
             standalone_config: Arc::new(standalone_config),
@@ -99,6 +128,7 @@ impl SessionManager {
             reranker,
             repos: DashMap::new(),
             init_locks: DashMap::new(),
+            initial_index_locks: DashMap::new(),
             last_accessed: DashMap::new(),
             pending_consent: DashMap::new(),
             metrics,
@@ -106,7 +136,20 @@ impl SessionManager {
         })
     }
 
+    pub fn job_registry(&self) -> JobRegistry {
+        self.job_registry.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn loaded_repo_count(&self) -> usize {
+        self.repos.len()
+    }
+
     pub async fn get_or_create_repo(&self, repo_path: &Utf8PathBuf) -> Result<Arc<AppState>> {
+        Ok(self.get_or_create_runtime(repo_path).await?.state.clone())
+    }
+
+    async fn get_or_create_runtime(&self, repo_path: &Utf8PathBuf) -> Result<Arc<RepoRuntime>> {
         let repo_path = crate::path::canonicalize_existing_dir(repo_path)
             .context("Failed to canonicalize repository path")?;
         let canonical = repo_path.as_str().to_string();
@@ -115,7 +158,7 @@ impl SessionManager {
         if let Some(entry) = self.repos.get(&canonical) {
             let _ = self.registry.touch(&canonical);
             self.last_accessed.insert(canonical, Instant::now());
-            return Ok(entry.0.clone());
+            return Ok(entry.value().clone());
         }
 
         // Slow path: acquire per-key init lock to prevent TOCTOU race
@@ -131,7 +174,7 @@ impl SessionManager {
         if let Some(entry) = self.repos.get(&canonical) {
             let _ = self.registry.touch(&canonical);
             self.last_accessed.insert(canonical, Instant::now());
-            return Ok(entry.0.clone());
+            return Ok(entry.value().clone());
         }
 
         let repo_entry = self
@@ -144,12 +187,15 @@ impl SessionManager {
             .await
             .context("Failed to initialize repository state")?;
 
-        let state_arc = Arc::new(state);
-        self.repos
-            .insert(canonical.clone(), (state_arc.clone(), watch_cancel));
+        let runtime = Arc::new(RepoRuntime {
+            state: Arc::new(state),
+            watch_cancel,
+            watcher_started: AtomicBool::new(false),
+        });
+        self.repos.insert(canonical.clone(), runtime.clone());
         self.last_accessed.insert(canonical, Instant::now());
 
-        Ok(state_arc)
+        Ok(runtime)
     }
 
     /// Record (or refresh) a repo awaiting a consent decision. Keyed by repo id
@@ -226,17 +272,15 @@ impl SessionManager {
 
         for key in to_evict {
             // Cancel the watcher before dropping the AppState.
-            if let Some((_, (_, cancel))) = self.repos.remove(&key) {
-                cancel.cancel();
+            if let Some((_, runtime)) = self.repos.remove(&key) {
+                runtime.watch_cancel.cancel();
             }
-            if let Some(registry) = &self.job_registry {
-                let repo_id = RepoRegistry::path_hash(&key);
-                crate::server::jobs::mark_running_watch_jobs_for_repo_failed(
-                    registry,
-                    &repo_id,
-                    "repo evicted while watch job was running".to_string(),
-                );
-            }
+            let repo_id = RepoRegistry::path_hash(&key);
+            crate::server::jobs::mark_running_watch_jobs_for_repo_failed(
+                &self.job_registry,
+                &repo_id,
+                "repo evicted while watch job was running".to_string(),
+            );
             self.last_accessed.remove(&key);
             self.init_locks.remove(&key);
 
@@ -323,7 +367,7 @@ impl SessionManager {
             vectors_arc.clone(),
             self.embedder.clone(),
             self.metrics.clone(),
-            self.job_registry.clone(),
+            Some(self.job_registry.clone()),
         );
 
         // Create Retriever. The reranker (if enabled) is shared across all
@@ -349,12 +393,9 @@ impl SessionManager {
             ask_code_cache: std::sync::Arc::new(Default::default()),
         };
 
-        // Start file watcher for auto-reindexing.
-        // Store the cancel token so we can stop the watcher on eviction.
+        // The first-index coordinator starts the watcher only after a
+        // successful native full index.
         let watch_cancel = CancellationToken::new();
-        if state.config.watch_mode {
-            state.indexer.spawn_watch_loop(watch_cancel.clone());
-        }
 
         // Spawn the LLM description worker (gated by BENCH_DISABLE_DESCRIPTIONS env).
         // The worker pulls undescribed symbols from SQLite, runs Qwen to generate
@@ -432,18 +473,17 @@ impl SessionManager {
 
         // 1. Cancel watcher and drop in-memory AppState (releases SQLite,
         //    Tantivy, LanceDB handles before we rmtree the dir).
-        if let Some((_, (_state, cancel))) = self.repos.remove(&canonical) {
-            cancel.cancel();
+        if let Some((_, runtime)) = self.repos.remove(&canonical) {
+            runtime.watch_cancel.cancel();
         }
-        if let Some(registry) = &self.job_registry {
-            crate::server::jobs::mark_running_watch_jobs_for_repo_failed(
-                registry,
-                hash,
-                "repo deleted while watch job was running".to_string(),
-            );
-        }
+        crate::server::jobs::mark_running_watch_jobs_for_repo_failed(
+            &self.job_registry,
+            hash,
+            "repo deleted while watch job was running".to_string(),
+        );
         self.last_accessed.remove(&canonical);
         self.init_locks.remove(&canonical);
+        self.initial_index_locks.remove(&canonical);
 
         // 2. Remove on-disk data directory. Missing dirs are treated as
         //    success; permission errors propagate and leave the registry entry
@@ -502,7 +542,7 @@ impl SessionManager {
 
         // Check if the repo is currently loaded
         let state = match self.repos.get(&entry.path) {
-            Some(s) => s.0.clone(),
+            Some(runtime) => runtime.state.clone(),
             None => return Ok(None),
         };
 
@@ -614,6 +654,238 @@ mod tests {
         crate::path::canonicalize_existing_dir(path)
             .unwrap()
             .to_string()
+    }
+
+    async fn wait_for_terminal_job(
+        registry: &crate::server::jobs::JobRegistry,
+        job_id: &str,
+    ) -> crate::server::jobs::Job {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let job = registry.get(job_id).unwrap().clone();
+                if job.status != crate::server::jobs::JobStatus::Running {
+                    break job;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initial index job timed out")
+    }
+
+    #[tokio::test]
+    async fn unindexed_repo_requires_approval_even_when_explicitly_selected() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+
+        let access = manager.resolve_repo(repo_path.as_path()).await.unwrap();
+        assert!(matches!(access, RepoAccess::NeedsApproval));
+        assert_eq!(manager.loaded_repo_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn approval_starts_real_initial_index_without_file_event() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+        std::fs::write(
+            repo_path.join("lib.rs"),
+            "pub fn indexed_after_approval() -> usize { 1 }\n",
+        )
+        .unwrap();
+
+        let access = manager
+            .approve_and_start_initial_index(repo_path.as_path())
+            .await
+            .unwrap();
+        let job_id = match access {
+            RepoAccess::Indexing { job, started: true } => job.id,
+            _ => panic!("approval must start the initial job"),
+        };
+        let finished = wait_for_terminal_job(&manager.job_registry, &job_id).await;
+        assert_eq!(finished.status, crate::server::jobs::JobStatus::Succeeded);
+
+        let ready = manager.resolve_repo(repo_path.as_path()).await.unwrap();
+        let state = match ready {
+            RepoAccess::Ready(state) => state,
+            _ => panic!("successful initial index must unlock the repo"),
+        };
+        assert!(state.sqlite.count_symbols().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn concurrent_approvals_share_one_initial_job() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+
+        let (left, right) = tokio::join!(
+            manager.approve_and_start_initial_index(repo_path.as_path()),
+            manager.approve_and_start_initial_index(repo_path.as_path())
+        );
+        let ids = [left.unwrap(), right.unwrap()]
+            .into_iter()
+            .map(|access| match access {
+                RepoAccess::Indexing { job, .. } => job.id,
+                RepoAccess::Ready(_) => String::from("ready"),
+                _ => panic!("approval must not request consent again"),
+            })
+            .collect::<Vec<_>>();
+        assert!(ids[0] == ids[1] || ids.iter().any(|id| id == "ready"));
+    }
+
+    #[tokio::test]
+    async fn legacy_successful_index_run_is_backfilled_as_ready() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+        std::fs::write(repo_path.join("lib.rs"), "pub fn legacy_probe() {}\n").unwrap();
+        let canonical = crate::path::canonicalize_existing_dir(&repo_path).unwrap();
+
+        manager.registry.register(canonical.as_str()).unwrap();
+        let runtime = manager.get_or_create_runtime(&canonical).await.unwrap();
+        runtime.state.indexer.index_all().await.unwrap();
+
+        let access = manager.resolve_repo(canonical.as_path()).await.unwrap();
+        assert!(matches!(access, RepoAccess::Ready(_)));
+        let entry = manager.registry.get(canonical.as_str()).unwrap().unwrap();
+        assert!(entry.initial_index_completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn empty_repo_becomes_ready_after_successful_full_scan() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+
+        let started = manager
+            .approve_and_start_initial_index(repo_path.as_path())
+            .await
+            .unwrap();
+        let job_id = match started {
+            RepoAccess::Indexing { job, .. } => job.id,
+            _ => panic!("empty repository must still start a full scan"),
+        };
+        let finished = wait_for_terminal_job(&manager.job_registry, &job_id).await;
+        assert_eq!(finished.status, crate::server::jobs::JobStatus::Succeeded);
+        assert!(matches!(
+            manager.resolve_repo(repo_path.as_path()).await.unwrap(),
+            RepoAccess::Ready(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn persisted_approval_restarts_without_another_prompt() {
+        let (_data, data_dir) = temp_data_dir();
+        let (_repo, repo_path) = temp_repo_dir();
+        let canonical = crate::path::canonicalize_existing_dir(&repo_path).unwrap();
+        let first = SessionManager::new_for_test(data_dir.clone()).await;
+        first
+            .registry
+            .approve_initial_index(canonical.as_str())
+            .unwrap();
+        drop(first);
+
+        let restarted = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let access = restarted.resolve_repo(canonical.as_path()).await.unwrap();
+        assert!(matches!(access, RepoAccess::Indexing { started: true, .. }));
+    }
+
+    #[tokio::test]
+    async fn failed_initial_job_retries_without_another_prompt() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+        let canonical = crate::path::canonicalize_existing_dir(&repo_path).unwrap();
+        let repo_id = RepoRegistry::path_hash(canonical.as_str());
+        manager
+            .registry
+            .approve_initial_index(canonical.as_str())
+            .unwrap();
+        crate::server::jobs::register_running(
+            &manager.job_registry,
+            "failed-initial".to_string(),
+            crate::server::jobs::JobKind::InitialBind,
+            repo_id,
+            canonical.to_string(),
+        );
+        crate::server::jobs::mark_failed(
+            &manager.job_registry,
+            "failed-initial",
+            "intentional failure".to_string(),
+        );
+
+        let access = manager.resolve_repo(canonical.as_path()).await.unwrap();
+        match access {
+            RepoAccess::Indexing { job, started: true } => {
+                assert_ne!(job.id, "failed-initial");
+            }
+            _ => panic!("persisted approval must start a replacement job"),
+        }
+    }
+
+    #[tokio::test]
+    async fn decline_never_initializes_repository_runtime() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+        let canonical = crate::path::canonicalize_existing_dir(&repo_path).unwrap();
+
+        manager.decline_initial_index(canonical.as_path()).unwrap();
+        assert!(matches!(
+            manager.resolve_repo(canonical.as_path()).await.unwrap(),
+            RepoAccess::Declined
+        ));
+        assert_eq!(manager.loaded_repo_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn watcher_starts_only_when_persisted_index_is_ready() {
+        use std::sync::atomic::Ordering;
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = Arc::new(SessionManager::new_for_test(data_dir).await);
+        let (_repo, repo_path) = temp_repo_dir();
+        let canonical = crate::path::canonicalize_existing_dir(&repo_path).unwrap();
+        manager.registry.register(canonical.as_str()).unwrap();
+        let runtime = manager.get_or_create_runtime(&canonical).await.unwrap();
+        assert!(!runtime.watcher_started.load(Ordering::Acquire));
+
+        runtime.state.indexer.index_all().await.unwrap();
+        assert!(matches!(
+            manager.resolve_repo(canonical.as_path()).await.unwrap(),
+            RepoAccess::Ready(_)
+        ));
+        assert!(runtime.watcher_started.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn disabled_consent_gate_auto_authorizes_but_still_starts_index() {
+        use crate::config::EmbeddingsBackend;
+        use crate::embeddings::hash::HashEmbedder;
+
+        let (_data, data_dir) = temp_data_dir();
+        let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
+        let config = StandaloneConfig {
+            data_dir: data_dir.clone(),
+            embeddings_backend: EmbeddingsBackend::Hash,
+            hash_embedding_dim: 64,
+            index_consent_required: false,
+            ..StandaloneConfig::default()
+        };
+        let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
+        let manager = Arc::new(
+            SessionManager::new(config, registry, embedder, None, None)
+                .await
+                .unwrap(),
+        );
+        let (_repo, repo_path) = temp_repo_dir();
+
+        assert!(matches!(
+            manager.resolve_repo(repo_path.as_path()).await.unwrap(),
+            RepoAccess::Indexing { started: true, .. }
+        ));
     }
 
     // ─── existing tests ──────────────────────────────────────────────────────────

@@ -55,18 +55,30 @@ Unbound tool calls return an actionable JSON-RPC error pointing at all four opti
 
 ### What Claude Code Gets
 
-Once connected, Claude Code gains access to 18 MCP tools including:
+Once connected, Claude Code gains access to 18 advertised MCP tools (the full list is `all_tools()` in `src/server/mod.rs`; a further 7 operational tools remain dispatchable but unadvertised):
 
-- **`ask_code`** — Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
-- **`investigate`** — Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
-- **`search_code`** — Primary semantic + keyword hybrid search (e.g., "how does auth work?" or "class User")
-- **`get_definition`** / **`find_references`** — Jump to definitions and find all usages
-- **`get_call_hierarchy`** / **`get_type_graph`** — Navigate call chains and type hierarchies
-- **`explore_dependency_graph`** — Trace module-level imports/exports
-- **`find_affected_code`** — Impact analysis before refactoring
-- **`trace_data_flow`** — Follow variable reads/writes through the code
-- **`get_index_stats`** / **`refresh_index`** — Monitor and trigger re-indexing
-- **`approve_indexing`**: Approve or decline indexing for a newly-detected implicitly-bound repo. The server returns a `consent_required` result for never-indexed repos (for example git worktrees / temp copies); relay it to the user and call `approve_indexing` with their decision.
+**Core retrieval**
+- **`ask_code`** - Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
+- **`investigate`** - Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
+- **`search_code`** - Primary semantic + keyword hybrid search (e.g., "how does auth work?" or "class User"). Returns ranked hits with symbol IDs only, no bodies.
+- **`hydrate_symbols`** - Fetch source bodies for symbol IDs returned by any other tool, instead of falling back to Read/grep.
+
+**Navigation**
+- **`get_definition`** / **`find_references`** - Jump to definitions and find all usages
+- **`get_call_hierarchy`** / **`get_type_graph`** - Navigate call chains and type hierarchies
+- **`explore_dependency_graph`** - Trace module-level imports/exports
+- **`trace_data_flow`** - Follow variable reads/writes through the code
+- **`find_affected_code`** - Impact analysis before refactoring
+
+**Overview and tests**
+- **`summarize_file`** - Symbol-level summary of one file: defined symbols, kinds, brief descriptions
+- **`get_module_summary`** - Public API surface of a module or directory
+- **`find_tests_for_symbol`** - Tests linked to a symbol or file (path-pattern test-file links plus call-graph test callers)
+
+**Lifecycle / admin**
+- **`get_index_stats`** / **`refresh_index`** - Monitor and trigger re-indexing
+- **`bind_workspace`** - Bind the session to a repo by absolute path (for clients without roots or query-string support)
+- **`approve_indexing`** - Approve or decline indexing for a newly-detected implicitly-bound repo. The server returns a `consent_required` result for never-indexed repos (for example git worktrees / temp copies); relay it to the user and call `approve_indexing` with their decision.
 
 ### Dashboard and JSON API
 
@@ -79,16 +91,23 @@ Open `http://127.0.0.1:17802/` to see repos (expandable for per-repo stats), MCP
 cargo build                    # Debug build
 cargo build --release          # Release build
 
-# Run tests
-cargo test                                      # All tests
+# Run tests (fast path: no llama.cpp compile, no CMake, no model download)
+EMBEDDINGS_BACKEND=hash cargo test --no-default-features
+EMBEDDINGS_BACKEND=hash cargo test --no-default-features <filter>   # single test / module
+cargo test                                      # full build (compiles llama.cpp, needs CMake)
 ./scripts/test_local.sh                         # End-to-end test with dummy workspace
+
+# Lint gates (CI "Rust gates (macOS)" check; required for release tags)
+cargo fmt --all -- --check
+EMBEDDINGS_BACKEND=hash cargo clippy --all-targets --no-default-features -- -D warnings
+
+# Engine-only retrieval quality gate (recall@5, MRR, nDCG@5, graph precision on a temp polyglot index)
+EMBEDDINGS_BACKEND=hash cargo test --no-default-features \
+  --test deterministic_quality deterministic_engine_quality_gate
 
 # Run the server in the foreground (for benchmarks / dev)
 ./target/release/code-intelligence-mcp-server                       # default port 17800
 ./target/release/code-intelligence-mcp-server --port 18000          # custom port
-
-# For faster testing (skip model download)
-EMBEDDINGS_BACKEND=hash cargo test --no-default-features
 
 # Lifecycle subcommands (production install)
 ./target/release/code-intelligence-mcp-server install               # write plist + bootstrap
@@ -97,6 +116,27 @@ EMBEDDINGS_BACKEND=hash cargo test --no-default-features
 ./target/release/code-intelligence-mcp-server uninstall             # bootout + remove plist
 ./target/release/code-intelligence-mcp-server migrate [--dry-run]   # rewrite stdio configs
 ```
+
+`TESTING.md` covers the full gate list and toolchain prerequisites (pinned protoc, CMake for Metal builds).
+
+## Benchmark Harness
+
+`bench/` is a Python LLM-judge harness that gates releases: it runs agent arms (with and without this MCP server) against fixture repos, scores answers mechanically (citation verification against pinned SHAs, forbidden terms) and via a tiered judge panel, then renders a markdown report. Rounds are numbered `R<NNN>`; records live in `bench/results/`. Fixture repos: `workings` (formerly wolfmax) and `django`.
+
+```bash
+make -C bench install                     # PyYAML + pytest
+make -C bench test                        # harness unit tests
+python3 -m bench.run full --arms default,code_intel_shipped --repos workings,django --repeats 3
+python3 -m bench.run full --question-set iteration   # 16-question subset for cheap A/Bs
+python3 -m bench.run report R041
+python3 -m bench.rescore R041             # zero-token re-score after scoring-logic changes
+```
+
+Runs are crash-safe and resumable (`full --round <N>` skips completed runs); index caches key on the daemon binary hash, so rebuild after Rust changes. The full 40-question fixtures are the release gate; the iteration set is for A/Bs only. Details and scoring history in `bench/README.md`.
+
+## Releasing
+
+`./scripts/release.sh <patch|minor|major|x.y.z>` bumps the Cargo and npm versions, generates release notes, commits, and tags. Pushing the tag triggers the GitHub "Release" workflow (gated on the "Rust gates (macOS)" check). After CI finishes, `./scripts/release-post-ci.sh` downloads the tarball, pins its sha256 into the Homebrew formula, pushes the tap, and attaches `RELEASE_NOTES.md` to the GitHub release. npm publish steps are in `PUBLISHING.md`.
 
 ## Daemon architecture
 
@@ -136,11 +176,16 @@ Optional config: `~/.code-intelligence/server.toml`.
 
 ### Key Directories
 
-- `src/indexer/extract/` - Language-specific symbol extractors (Rust, TypeScript, Python, Go, Java, C, C++)
+- `src/indexer/extract/` - Tree-Sitter symbol extractors: Rust, TypeScript/JavaScript, Python, Go, Java, Kotlin, C#, Swift, C, C++, Ruby, plus route/endpoint extractors for web frameworks (Django, FastAPI, Express, Next.js, NestJS, Spring, Axum, Actix, Hono, tRPC, and more)
+- `src/external_index/` - External-index import path: discovers per-language producers, imports their symbol/edge artifacts (`EXTERNAL_INDEX_*` env vars)
+- `producers/` - Out-of-process index producers for 11 languages (`producers/manifest.json`)
 - `src/storage/` - SQLite, Tantivy, and LanceDB storage layers
 - `src/retrieval/ranking/` - Scoring signals and ranking logic
 - `src/handlers/` - MCP tool implementations
 - `src/server/` - MCP protocol handler routing
+- `bench/` - LLM-judge benchmark harness (see Benchmark Harness above)
+
+Deeper design docs: `SYSTEM_ARCHITECTURE.md`, `DESIGN.md`, `docs/MIGRATION-v3-to-v4.md`.
 
 ### Storage Layers
 
@@ -164,7 +209,7 @@ The `<hash>` is the first 16 characters of `SHA256(repo_path)` where `repo_path`
 
 ## Configuration
 
-The server reads configuration from environment variables. Key ones:
+The server reads configuration from environment variables. Key ones below; the full set (including `EXTERNAL_INDEX_*` producer knobs, `HYDE_*`, metrics, and ranking weights) lives in `src/config.rs`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -172,7 +217,7 @@ The server reads configuration from environment variables. Key ones:
 | `EMBEDDINGS_BACKEND` | `llamacpp` | `llamacpp` (default) or `hash` (fast testing) |
 | `EMBEDDINGS_DEVICE` | `metal` | `metal` (Metal GPU) or `cpu` |
 | `WATCH_MODE` | `true` | Auto-reindex on file changes |
-| `INDEX_PATTERNS` | `**/*.ts,**/*.tsx,**/*.rs` | Glob patterns to index |
+| `INDEX_PATTERNS` | 14 globs: ts, tsx, js, jsx, rs, py, go, java, c, h, cpp, cc, cxx, hpp | Comma-separated glob patterns to index (defaults in `src/config.rs`) |
 | `HYBRID_ALPHA` | `0.7` | Vector vs keyword weight (0-1) |
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |
 | `RERANKER_ENABLED` | `false` | Load the bge-reranker-v2-m3 cross-encoder (~600 MB) and apply a query-time reorder on top of RRF results. Off by default (unproven quality benefit, GPU-resident). Loads in the background when enabled. |

@@ -267,7 +267,14 @@ impl SessionManager {
         let to_evict: Vec<String> = self
             .last_accessed
             .iter()
-            .filter(|entry| entry.value().elapsed() > ttl)
+            .filter(|entry| {
+                if entry.value().elapsed() <= ttl {
+                    return false;
+                }
+
+                let repo_id = RepoRegistry::path_hash(entry.key());
+                jobs::most_recent_running_for_repo(&self.job_registry, &repo_id).is_none()
+            })
             .map(|entry| entry.key().clone())
             .collect();
 
@@ -1042,6 +1049,39 @@ mod tests {
         assert!(
             manager.last_accessed.contains_key(&key),
             "last_accessed entry must survive for recent repos"
+        );
+    }
+
+    #[tokio::test]
+    async fn evict_idle_repos_preserves_repo_with_running_initial_index() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_ttl(data_dir, 1).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+        let key = canonical_key(&repo_path);
+        let repo_id = RepoRegistry::path_hash(&key);
+        let job = crate::server::jobs::register_running(
+            &manager.job_registry,
+            "long-first-index".to_string(),
+            crate::server::jobs::JobKind::InitialBind,
+            repo_id,
+            key.clone(),
+        );
+        manager
+            .last_accessed
+            .insert(key.clone(), Instant::now() - Duration::from_secs(10));
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.repos.contains_key(&key),
+            "a repo with an active first index must stay loaded"
+        );
+        assert_eq!(
+            manager.job_registry.get(&job.id).unwrap().status,
+            crate::server::jobs::JobStatus::Running,
+            "cache eviction must not fail an active first-index job"
         );
     }
 

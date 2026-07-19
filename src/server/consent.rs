@@ -4,11 +4,12 @@
 //! field and relays the question to the user.
 
 use crate::path::Utf8Path;
+use crate::server::jobs::Job;
 use crate::server::project_check::classify_repo;
 use serde_json::{json, Value};
 
-/// Payload for a never-indexed repo bound implicitly: ask the user, then call
-/// `approve_indexing`.
+/// Payload for a never-indexed repository: ask the user, then call
+/// `approve_indexing` only after explicit confirmation.
 pub fn consent_required_payload(repo_path: &str, repo_id: &str) -> Value {
     let class = classify_repo(Utf8Path::new(repo_path));
     let mut obj = json!({
@@ -17,17 +18,42 @@ pub fn consent_required_payload(repo_path: &str, repo_id: &str) -> Value {
         "repo_id": repo_id,
         "detected": class.kind(),
         "recommendation": class.recommendation(),
-        "action": format!(
-            "Ask the user whether to index this repo. Then call approve_indexing with {{\"repo\": \"{repo_path}\", \"decision\": \"approve\"}} or {{\"decision\": \"decline\"}}."
-        ),
+        "action": "Tell the user in chat that this repository needs its first full index and that indexing uses local compute, memory, and disk. Ask for permission and wait for explicit approval. Only then call approve_indexing with decision \"approve\". If the user declines, call it with decision \"decline\".",
         "message": format!(
-            "Repo {repo_path} is not indexed yet. Indexing uses GPU and memory. Confirm with the user before proceeding."
+            "Repository {repo_path} needs its first full index before code tools can run."
         ),
     });
     if let Some(detail) = class.detail() {
         obj["detail"] = json!(detail);
     }
     obj
+}
+
+/// Payload returned while the repository's first full index is running.
+pub fn indexing_payload(job: &Job, started: bool) -> Value {
+    let status = if started {
+        "indexing_started"
+    } else {
+        "indexing_in_progress"
+    };
+    let message = if started {
+        format!("The first full index has started for {}.", job.repo_path)
+    } else {
+        format!(
+            "The first full index is still running for {}.",
+            job.repo_path
+        )
+    };
+
+    json!({
+        "ok": true,
+        "status": status,
+        "repo": job.repo_path,
+        "repo_id": job.repo_id,
+        "job_id": job.id,
+        "message": message,
+        "action": "Tell the user that indexing is running. Retry the original code tool after the job completes. Do not request approval again.",
+    })
 }
 
 /// Payload for a repo the user previously declined.
@@ -48,6 +74,41 @@ pub fn declined_payload(repo_path: &str, repo_id: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consent_payload_requires_chat_confirmation_before_approval() {
+        let value = consent_required_payload("/Users/me/project", "deadbeefdeadbeef");
+        let action = value["action"].as_str().unwrap();
+        assert!(action.contains("Tell the user in chat"));
+        assert!(action.contains("wait for explicit approval"));
+        assert!(action.contains("approve_indexing"));
+        assert!(value["message"]
+            .as_str()
+            .unwrap()
+            .contains("first full index"));
+    }
+
+    #[test]
+    fn indexing_payload_distinguishes_started_from_in_progress() {
+        let job = crate::server::jobs::Job {
+            id: "initial-repo-1".to_string(),
+            kind: crate::server::jobs::JobKind::InitialBind,
+            repo_id: "repo".to_string(),
+            repo_path: "/repo".to_string(),
+            status: crate::server::jobs::JobStatus::Running,
+            started_at_unix_s: 1,
+            finished_at_unix_s: None,
+            duration_ms: None,
+            stats: None,
+            error: None,
+            coalesced_count: 0,
+        };
+        assert_eq!(indexing_payload(&job, true)["status"], "indexing_started");
+        assert_eq!(
+            indexing_payload(&job, false)["status"],
+            "indexing_in_progress"
+        );
+    }
 
     #[test]
     fn consent_required_standard_repo_has_expected_fields() {

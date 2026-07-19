@@ -41,6 +41,13 @@ For specialist queries call `investigate` (composite multi-hop), `search_code` \
 (hybrid search), `get_definition`, `find_references`, `get_call_hierarchy`, \
 `find_affected_code`, `trace_data_flow`, or `explore_dependency_graph` directly. \
 \
+When any tool returns `status=consent_required`, tell the user in chat that the \
+repository needs its first full index and that indexing uses local compute, memory, and disk. \
+Ask for permission and wait for explicit user approval. Only after approval call \
+`approve_indexing` with decision `approve`; call it with `decline` if the user declines. \
+While `indexing_started` or `indexing_in_progress` is returned, inform the user and retry \
+the original code tool after indexing completes without asking again. \
+\
 Prefer these tools over Grep/Read for any question they answer directly -- they carry \
 semantic context (definitions, edges, intent classification) that text search cannot. \
 Fall back to Grep/Read only for exact literal strings (error messages, config values), \
@@ -456,6 +463,14 @@ mod tests {
                 "server instructions must mention {required}, got: {instructions}"
             );
         }
+    }
+
+    #[test]
+    fn server_instructions_require_explicit_chat_approval() {
+        let instructions = server_instructions();
+        assert!(instructions.contains("consent_required"));
+        assert!(instructions.contains("wait for explicit user approval"));
+        assert!(instructions.contains("approve_indexing"));
     }
 
     #[test]

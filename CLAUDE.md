@@ -78,7 +78,7 @@ Once connected, Claude Code gains access to 18 advertised MCP tools (the full li
 **Lifecycle / admin**
 - **`get_index_stats`** / **`refresh_index`** - Monitor and trigger re-indexing
 - **`bind_workspace`** - Bind the session to a repo by absolute path (for clients without roots or query-string support)
-- **`approve_indexing`** - Approve or decline indexing for a newly-detected implicitly-bound repo. The server returns a `consent_required` result for never-indexed repos (for example git worktrees / temp copies); relay it to the user and call `approve_indexing` with their decision.
+- **`approve_indexing`** - Approve or decline a repository's first full index. Every never-indexed repository returns `consent_required`, including explicit `?repo=` and `bind_workspace` selections. Tell the user in chat that indexing uses local compute, memory, and disk, wait for explicit approval, then call `approve_indexing`. Approval starts a background `InitialBind` job immediately. Later watcher updates and manual reindexes do not ask again.
 
 ### Dashboard and JSON API
 
@@ -222,7 +222,7 @@ The server reads configuration from environment variables. Key ones below; the f
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |
 | `RERANKER_ENABLED` | `false` | Load the bge-reranker-v2-m3 cross-encoder (~600 MB) and apply a query-time reorder on top of RRF results. Off by default (unproven quality benefit, GPU-resident). Loads in the background when enabled. |
 | `DESCRIPTIONS_ENABLED` | `false` | Spawn the index-time LLM description worker (Qwen2.5-Coder-1.5B) that backfills natural-language descriptions into the Tantivy index. Off by default: a multi-hour index-time backfill with no proven judge benefit (R005/R006). |
-| `INDEX_CONSENT_REQUIRED` | `true` | When on, a never-indexed repo bound implicitly (via `roots/list` or the single-repo fallback) is not auto-indexed. The first tool call returns a `consent_required` result; the agent asks the user, then calls `approve_indexing`. Explicit `?repo=` URL and `bind_workspace` binds are unaffected. Set `false` to restore unconditional auto-indexing (CI/bench). |
+| `INDEX_CONSENT_REQUIRED` | `true` | Ask once before the first full index for every binding source, including `?repo=` and `bind_workspace`. Approval starts a background `InitialBind` job immediately. `false` skips the prompt for CI and benchmarks but still starts the first index immediately. |
 | `LEARNING_ENABLED` | `true` | Enable selection/affinity learning |
 | `LEARNING_SELECTION_BOOST` | `0.1` | Max boost from user selection history |
 | `LEARNING_FILE_AFFINITY_BOOST` | `0.05` | Max boost from file access frequency |

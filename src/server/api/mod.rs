@@ -70,6 +70,40 @@ pub(crate) struct ApiState {
     pub(crate) started_at_unix_s: u64,
 }
 
+#[cfg(test)]
+pub(crate) async fn test_api_state() -> (tempfile::TempDir, Arc<ApiState>) {
+    use crate::config::{EmbeddingsBackend, StandaloneConfig};
+    use crate::embeddings::hash::HashEmbedder;
+    use crate::embeddings::SharedEmbedder;
+    use crate::registry::RepoRegistry;
+    use crate::server::jobs;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = crate::path::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let config = StandaloneConfig {
+        data_dir: data_dir.clone(),
+        embeddings_backend: EmbeddingsBackend::Hash,
+        hash_embedding_dim: 64,
+        ..StandaloneConfig::default()
+    };
+    let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
+    let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
+    let job_registry = jobs::new_job_registry();
+    let session_manager = Arc::new(
+        SessionManager::new(config, registry, embedder, Some(job_registry.clone()), None)
+            .await
+            .unwrap(),
+    );
+    let state = Arc::new(ApiState {
+        session_manager,
+        session_repos: crate::server::standalone::new_session_repos(),
+        log_broadcaster: LogBroadcaster::new(),
+        job_registry,
+        started_at_unix_s: 0,
+    });
+    (temp, state)
+}
+
 /// Spawn the API server on `api_port`, returning once it is bound.
 /// Errors are surfaced only if the bind itself fails.
 pub async fn spawn_api_server(

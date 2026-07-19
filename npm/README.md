@@ -55,7 +55,7 @@ Every session needs a bound workspace. v4 tries four sources in order; first mat
 3. **Single-repo fallback** — when only one repo is registered, sessions auto-bind to it.
 4. **Hard error** — actionable message pointing at the URL form and `bind_workspace`.
 
-When a session binds a **never-indexed** repo through one of the *implicit* paths (`roots/list` or the single-repo fallback), the daemon does not index it silently: the first tool call returns a `consent_required` result so the agent can ask you first. Explicit `?repo=` and `bind_workspace` binds skip this gate. See [Indexing consent](#indexing-consent).
+When a session selects a **never-indexed** repo through any binding source, including `?repo=` and `bind_workspace`, the daemon returns `consent_required` so the agent can ask you first. Approval starts the first full index immediately as a background job. See [Indexing consent](#indexing-consent).
 
 **Claude Code**: nothing extra; roots is auto-negotiated.
 
@@ -147,7 +147,7 @@ Open `http://127.0.0.1:17802/` once the daemon is up. The dashboard is a single-
 - **Repositories**: every registered repo with per-repo stats (symbols, edges, descriptions, coverage %, latest run timings), inline re-index / delete, and an Add Repo flow.
 - **Symbols**: browse the indexed symbols for a repo.
 - **Graph**: interactive call hierarchy, type, and dependency graph visualization.
-- **Consent**: approve or decline indexing for repos bound implicitly (see [Indexing consent](#indexing-consent)).
+- **Consent**: approve or decline the first full index for newly selected repos (see [Indexing consent](#indexing-consent)).
 - **Logs**: live tail over SSE with pause / clear and level filtering.
 - **Jobs · sessions**: background indexing jobs and connected vs bound MCP sessions (dead sessions evict themselves after a five-minute inactivity TTL).
 - **Settings**: read and write the `server.toml` tuning knobs without restarting the editor.
@@ -156,7 +156,7 @@ The dashboard, the JSON API at `/api/*`, and the discovery endpoint all bind 127
 
 ### Indexing consent
 
-Indexing a repo runs a full GPU embedding pass and starts a file watcher, so the daemon will not silently index a directory an editor binds on your behalf (a git worktree, a temp checkout, a stray `roots/list` root). When a session binds a **never-indexed** repo *implicitly*, the first tool call returns a `consent_required` result instead of indexing:
+Indexing a repo uses local compute, memory, and disk. With `INDEX_CONSENT_REQUIRED=true`, every repository that has never completed a full index returns `consent_required`, including repositories selected through `?repo=` or `bind_workspace`:
 
 ```json
 {
@@ -164,11 +164,11 @@ Indexing a repo runs a full GPU embedding pass and starts a file watcher, so the
   "repo": "/Users/me/project/.worktrees/feature",
   "detected": "git_worktree",
   "recommendation": "Looks like a git worktree of /Users/me/project (usually ephemeral). Indexing runs a full GPU embedding pass and starts a file watcher. Most worktrees should be skipped.",
-  "action": "Ask the user whether to index this repo. Then call approve_indexing with {\"repo\": \"...\", \"decision\": \"approve\"} or {\"decision\": \"decline\"}."
+  "action": "Tell the user in chat that this repository needs its first full index and that indexing uses local compute, memory, and disk. Ask for permission and wait for explicit approval. Only then call approve_indexing with decision \"approve\". If the user declines, call it with decision \"decline\"."
 }
 ```
 
-The agent relays the question and calls `approve_indexing` with the answer: `approve` indexes the repo and remembers the choice, `decline` records it and skips indexing (a later `approve` re-enables it). The path is tagged `standard`, `git_worktree`, `temp_dir`, or `ephemeral` so the agent can offer a sensible default. **Explicit binds bypass the gate**: a `?repo=` URL or a `bind_workspace` call is a declaration of intent and indexes immediately. Set `INDEX_CONSENT_REQUIRED=false` to restore unconditional auto-indexing (useful for CI / benchmarks).
+The agent relays the question and waits for explicit approval before calling `approve_indexing`. `approve` persists the one-time authorization and starts a background `InitialBind` job immediately; `decline` records the choice and skips indexing. The watcher starts only after the native full index succeeds. Later watcher updates and manual reindexes do not ask again, including after a daemon restart or a failed first attempt. `INDEX_CONSENT_REQUIRED=false` keeps the CI and benchmark opt-out, but still starts the real first-index job immediately rather than waiting for a file event.
 
 ![Consent](docs/consent.png)
 
@@ -266,7 +266,7 @@ Unlike basic text search (grep/ripgrep), this server builds a **local knowledge 
 | Tool | What It Does |
 |---|---|
 | `bind_workspace` | Bind the session to a workspace root by absolute path (the manual fallback for clients that can't set `?repo=`) |
-| `approve_indexing` | Approve or decline indexing for a repo the daemon flagged with `consent_required` (see [Indexing consent](#indexing-consent)) |
+| `approve_indexing` | Approve or decline a repository's first full index after `consent_required` (see [Indexing consent](#indexing-consent)) |
 
 > A few operational tools remain callable by name but are intentionally not advertised to keep the model's tool list focused: `get_file_symbols`, `get_usage_examples`, `explain_search`, `import_external_index`, `generate_external_index`, `report_selection`, `report_file_access`.
 
@@ -340,7 +340,7 @@ Works out of the box with no configuration. All settings are optional environmen
 | `INDEX_PATTERNS` | `**/*.ts,**/*.rs,...` | Glob patterns to index |
 | `EXCLUDE_PATTERNS` | `**/node_modules/**,...` | Glob patterns to exclude |
 | `REPO_ROOTS` | — | Comma-separated paths for multi-repo |
-| `INDEX_CONSENT_REQUIRED` | `true` | Ask before indexing a never-indexed repo bound implicitly (see [Indexing consent](#indexing-consent)). `false` restores unconditional auto-indexing |
+| `INDEX_CONSENT_REQUIRED` | `true` | Ask once before the first full index for every binding source (see [Indexing consent](#indexing-consent)). `false` skips the prompt but still starts the first index immediately |
 
 **Embeddings:**
 

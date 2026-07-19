@@ -66,7 +66,7 @@ Once connected, Codex gains access to 39 MCP tools including:
 - **`find_affected_code`** — Impact analysis before refactoring
 - **`trace_data_flow`** — Follow variable reads/writes through the code
 - **`get_index_stats`** / **`refresh_index`** — Monitor and trigger re-indexing
-- **`approve_indexing`**: Approve or decline indexing for a newly-detected implicitly-bound repo. The server returns a `consent_required` result for never-indexed repos (for example git worktrees / temp copies); relay it to the user and call `approve_indexing` with their decision.
+- **`approve_indexing`**: Approve or decline a repository's first full index. Every never-indexed repository returns `consent_required`, including explicit `?repo=` and `bind_workspace` selections. Tell the user in chat that indexing uses local compute, memory, and disk, wait for explicit approval, then call `approve_indexing`. Approval starts a background `InitialBind` job immediately. Later watcher updates and manual reindexes do not ask again.
 
 ### Dashboard and JSON API
 
@@ -172,6 +172,7 @@ The server reads configuration from environment variables. Key ones:
 | `EMBEDDINGS_BACKEND` | `llamacpp` | `llamacpp` (default) or `hash` (fast testing) |
 | `EMBEDDINGS_DEVICE` | `metal` | `metal` (Metal GPU) or `cpu` |
 | `WATCH_MODE` | `true` | Auto-reindex on file changes |
+| `INDEX_CONSENT_REQUIRED` | `true` | Ask once before the first full index for every binding source. `false` skips the prompt for CI and benchmarks but still starts the first index immediately. |
 | `INDEX_PATTERNS` | `**/*.ts,**/*.tsx,**/*.rs` | Glob patterns to index |
 | `HYBRID_ALPHA` | `0.7` | Vector vs keyword weight (0-1) |
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |

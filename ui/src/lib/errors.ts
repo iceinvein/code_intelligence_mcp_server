@@ -11,6 +11,14 @@ export function describeError(err: unknown, fallback: string): string {
   const raw = (err instanceof Error ? err.message : String(err ?? "")).trim();
   const low = raw.toLowerCase();
 
+  if (low.includes("consent_required")) {
+    return "this repository needs permission for its first full index. approve it from the consent tab, then try again.";
+  }
+
+  if (low.includes("indexing_in_progress") || low.includes("indexing_started")) {
+    return "repository indexing is still running. wait for the first-index job to finish, then try again.";
+  }
+
   // The daemon couldn't load a repo's on-disk index – common on a repo that is
   // registered but never indexed (or whose index is stale/missing).
   if (low.includes("repository state") || low.includes("not indexed") || low.includes("no index")) {

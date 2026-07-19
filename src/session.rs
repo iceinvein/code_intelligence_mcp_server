@@ -80,7 +80,7 @@ pub struct SessionManager {
     initial_index_locks: DashMap<String, Arc<Mutex<()>>>,
     /// Tracks the last time each repo was accessed, for TTL-based eviction
     last_accessed: DashMap<String, Instant>,
-    /// Repos an agent bound implicitly that are awaiting a user indexing decision.
+    /// Repositories awaiting a user decision about their first full index.
     pending_consent: DashMap<String, PendingConsent>,
     metrics: Arc<MetricsRegistry>,
     /// Shared handle for all background indexing jobs.
@@ -145,6 +145,7 @@ impl SessionManager {
         self.repos.len()
     }
 
+    #[cfg(test)]
     pub async fn get_or_create_repo(&self, repo_path: &Utf8PathBuf) -> Result<Arc<AppState>> {
         Ok(self.get_or_create_runtime(repo_path).await?.state.clone())
     }

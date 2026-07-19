@@ -26,9 +26,10 @@ export type ConsentDecision = "approve" | "decline";
 
 export type ResolveConsentResponse = {
   ok: boolean;
-  status: string;
+  status: "ready" | "indexing_started" | "indexing_in_progress" | "declined";
   repo: string;
   repo_id: string;
+  job_id?: string;
 };
 
 export function fetchConsent(signal?: AbortSignal): Promise<ConsentData> {

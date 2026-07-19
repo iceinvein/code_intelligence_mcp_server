@@ -91,16 +91,18 @@ pub(crate) async fn handle_consent_post(
 
     // Only act on repos the gate already surfaced (pending) or the user already
     // declined. Indexing an arbitrary new path is the Repos -> Add flow, not this.
-    let is_declined = matches!(
-        state
-            .session_manager
-            .registry
-            .consent_status(repo_path.as_str())
-            .ok()
-            .flatten(),
-        Some(crate::registry::IndexConsent::Declined)
-    );
-    if !state.session_manager.is_pending(&repo_id) && !is_declined {
+    let registered = state
+        .session_manager
+        .registry
+        .get(repo_path.as_str())
+        .map_err(|error| ApiError(format!("failed to read repo lifecycle: {error}")))?;
+    let is_declined = registered
+        .as_ref()
+        .is_some_and(|entry| entry.consent == crate::registry::IndexConsent::Declined);
+    let is_approved_incomplete = registered.as_ref().is_some_and(|entry| {
+        entry.initial_index_approved_at.is_some() && entry.initial_index_completed_at.is_none()
+    });
+    if !state.session_manager.is_pending(&repo_id) && !is_declined && !is_approved_incomplete {
         return Ok((
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -112,30 +114,50 @@ pub(crate) async fn handle_consent_post(
 
     match decision {
         ConsentDecision::Approve => {
-            state
+            let access = state
                 .session_manager
-                .get_or_create_repo(&repo_path)
+                .approve_and_start_initial_index(repo_path.as_path())
                 .await
-                .map_err(|e| ApiError(format!("failed to start indexing: {e}")))?;
-            state.session_manager.clear_pending(&repo_id);
-            Ok((
-                StatusCode::OK,
-                Json(json!({
-                    "ok": true,
-                    "status": "indexing_started",
-                    "repo": repo_path.as_str(),
-                    "repo_id": repo_id,
-                })),
-            )
-                .into_response())
+                .map_err(|error| ApiError(format!("failed to start indexing: {error}")))?;
+            match access {
+                crate::session::RepoAccess::Ready(_) => Ok((
+                    StatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "status": "ready",
+                        "repo": repo_path.as_str(),
+                        "repo_id": repo_id,
+                    })),
+                )
+                    .into_response()),
+                crate::session::RepoAccess::Indexing { job, started } => Ok((
+                    StatusCode::ACCEPTED,
+                    Json(crate::server::consent::indexing_payload(&job, started)),
+                )
+                    .into_response()),
+                crate::session::RepoAccess::NeedsApproval => Ok((
+                    StatusCode::CONFLICT,
+                    Json(crate::server::consent::consent_required_payload(
+                        repo_path.as_str(),
+                        &repo_id,
+                    )),
+                )
+                    .into_response()),
+                crate::session::RepoAccess::Declined => Ok((
+                    StatusCode::CONFLICT,
+                    Json(crate::server::consent::declined_payload(
+                        repo_path.as_str(),
+                        &repo_id,
+                    )),
+                )
+                    .into_response()),
+            }
         }
         ConsentDecision::Decline => {
             state
                 .session_manager
-                .registry
-                .set_consent(repo_path.as_str(), crate::registry::IndexConsent::Declined)
-                .map_err(|e| ApiError(format!("failed to record decline: {e}")))?;
-            state.session_manager.clear_pending(&repo_id);
+                .decline_initial_index(repo_path.as_path())
+                .map_err(|error| ApiError(format!("failed to record decline: {error}")))?;
             Ok((
                 StatusCode::OK,
                 Json(json!({
@@ -221,5 +243,32 @@ mod tests {
         let err = parse_consent_decision("maybe").unwrap_err();
         assert!(err.contains("approve"));
         assert!(err.contains("maybe"));
+    }
+
+    #[tokio::test]
+    async fn approval_returns_initial_index_job_id() {
+        let (_data, state) = crate::server::api::test_api_state().await;
+        let repo = tempfile::tempdir().unwrap();
+        let requested = Utf8PathBuf::from_path_buf(repo.path().to_path_buf()).unwrap();
+        let path = crate::path::canonicalize_existing_dir(&requested).unwrap();
+        state.session_manager.record_pending(path.as_path());
+
+        let response = handle_consent_post(
+            State(state),
+            Json(ConsentDecisionRequest {
+                repo: path.to_string(),
+                decision: "approve".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["status"], "indexing_started");
+        assert!(value["job_id"].as_str().unwrap().starts_with("initial-"));
     }
 }

@@ -12,6 +12,21 @@ test("maps the daemon repo-state error to indexing guidance", () => {
   expect(msg.toLowerCase()).not.toContain("failed:");
 });
 
+test("maps first-index lifecycle errors to consent and progress guidance", () => {
+  expect(
+    describeError(
+      new Error("consent_required: workspace needs its first full index"),
+      "search failed",
+    ),
+  ).toContain("consent tab");
+  expect(
+    describeError(
+      new Error("indexing_in_progress: first full index job initial-1 is running"),
+      "search failed",
+    ),
+  ).toContain("indexing is still running");
+});
+
 test("maps a missing-repo error to a selection hint", () => {
   expect(describeError(new Error("no repo bound"), "graph failed")).toContain(
     "no repository is selected",

@@ -112,7 +112,7 @@ pub(crate) fn catalog() -> Vec<FieldSpec> {
             kind: FieldKind::Bool,
             needs_reindex: false,
             editable: true,
-            description: "Require approval before indexing implicitly-bound repos.",
+            description: "Require approval before every repository's first full index.",
         },
         FieldSpec {
             key: "reranker_enabled",

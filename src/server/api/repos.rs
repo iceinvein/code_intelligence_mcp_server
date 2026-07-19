@@ -256,10 +256,41 @@ pub(crate) async fn handle_repo_reindex(
 
     let path = crate::path::Utf8PathBuf::from(entry.path.clone());
     let sm = state.session_manager.clone();
+    let app_state = match sm
+        .resolve_repo(path.as_path())
+        .await
+        .map_err(|error| ApiError(format!("failed to resolve repo lifecycle: {error}")))?
+    {
+        crate::session::RepoAccess::Ready(app_state) => app_state,
+        crate::session::RepoAccess::NeedsApproval => {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(crate::server::consent::consent_required_payload(
+                    path.as_str(),
+                    &id,
+                )),
+            )
+                .into_response());
+        }
+        crate::session::RepoAccess::Declined => {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(crate::server::consent::declined_payload(path.as_str(), &id)),
+            )
+                .into_response());
+        }
+        crate::session::RepoAccess::Indexing { job, started } => {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(crate::server::consent::indexing_payload(&job, started)),
+            )
+                .into_response());
+        }
+    };
 
-    // Resolve (or create) the per-repo AppState, then spawn the indexer in
-    // the background so the HTTP request returns immediately. A full
-    // re-index can take minutes; the caller polls /api/jobs for status.
+    // Spawn the indexer in the background so the HTTP request returns
+    // immediately. A full re-index can take minutes; the caller polls
+    // /api/jobs for status.
     let job_id = format!(
         "reindex-{}-{}",
         id,
@@ -286,14 +317,6 @@ pub(crate) async fn handle_repo_reindex(
     let worker_job_id = job_id_log.clone();
     let worker_path = path.clone();
     let task = tokio::spawn(async move {
-        let app_state = match sm.get_or_create_repo(&worker_path).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, path = %worker_path, "reindex: failed to load repo");
-                jobs::mark_failed(&worker_registry, &worker_job_id, format!("load repo: {e}"));
-                return;
-            }
-        };
         let tool = crate::tools::RefreshIndexTool { files: None };
         match crate::handlers::handle_refresh_index(&app_state, tool).await {
             Ok(stats) => {
@@ -340,7 +363,7 @@ pub(crate) struct AddRepoRequest {
     path: String,
 }
 
-/// `POST /api/repos` -> register a repo explicitly (consent = Approved).
+/// `POST /api/repos` registers a repository and leaves its first index pending.
 pub(crate) async fn handle_repo_add(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<AddRepoRequest>,
@@ -357,9 +380,11 @@ pub(crate) async fn handle_repo_add(
         .register(repo_path.as_str())
         .map_err(|e| ApiError(format!("register failed: {e}")))?;
     let id = crate::registry::RepoRegistry::path_hash(&entry.path);
+    state.session_manager.record_pending(repo_path.as_path());
     Ok((
         StatusCode::CREATED,
         Json(json!({
+            "status": "consent_required",
             "id": id,
             "name": entry.name,
             "path": entry.path,
@@ -405,6 +430,88 @@ mod tests {
     use crate::registry::RepoEntry;
     use crate::storage::sqlite::SqliteStore;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn add_repo_records_pending_first_index_consent() {
+        let (_data, state) = crate::server::api::test_api_state().await;
+        let repo = tempfile::tempdir().unwrap();
+        let requested = Utf8PathBuf::from_path_buf(repo.path().to_path_buf()).unwrap();
+        let path = crate::path::canonicalize_existing_dir(&requested).unwrap();
+
+        let response = handle_repo_add(
+            State(state.clone()),
+            Json(AddRepoRequest {
+                path: path.to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let repo_id = crate::registry::RepoRegistry::path_hash(path.as_str());
+        assert!(state.session_manager.is_pending(&repo_id));
+    }
+
+    #[tokio::test]
+    async fn manual_reindex_cannot_bypass_first_index_consent() {
+        let (_data, state) = crate::server::api::test_api_state().await;
+        let repo = tempfile::tempdir().unwrap();
+        let requested = Utf8PathBuf::from_path_buf(repo.path().to_path_buf()).unwrap();
+        let path = crate::path::canonicalize_existing_dir(&requested).unwrap();
+        state
+            .session_manager
+            .registry
+            .register(path.as_str())
+            .unwrap();
+        let repo_id = crate::registry::RepoRegistry::path_hash(path.as_str());
+
+        let response = handle_repo_reindex(State(state), Path(repo_id))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["status"], "consent_required");
+    }
+
+    #[tokio::test]
+    async fn ready_repo_manual_reindex_remains_permission_free() {
+        let (_data, state) = crate::server::api::test_api_state().await;
+        let repo = tempfile::tempdir().unwrap();
+        let requested = Utf8PathBuf::from_path_buf(repo.path().to_path_buf()).unwrap();
+        let path = crate::path::canonicalize_existing_dir(&requested).unwrap();
+        state
+            .session_manager
+            .approve_and_start_initial_index(path.as_path())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match state
+                    .session_manager
+                    .resolve_repo(path.as_path())
+                    .await
+                    .unwrap()
+                {
+                    crate::session::RepoAccess::Ready(_) => break,
+                    crate::session::RepoAccess::Indexing { .. } => tokio::task::yield_now().await,
+                    _ => panic!("approved repository did not become ready"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let repo_id = crate::registry::RepoRegistry::path_hash(path.as_str());
+
+        let response = handle_repo_reindex(State(state), Path(repo_id))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
 
     #[test]
     fn read_repo_persisted_activity_reads_latest_index_run() {

@@ -459,33 +459,30 @@ async fn resolve_query_repo(
     })?;
     let repo_id = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
 
-    match state
+    let access = state
         .session_manager
-        .registry
-        .consent_status(repo_path.as_str())
-        .map_err(|e| ApiError(format!("failed to check workspace consent: {e}")))?
-    {
-        Some(crate::registry::IndexConsent::Approved) => {}
-        Some(crate::registry::IndexConsent::Declined) => {
-            return Err(ApiError(format!(
-                "workspace indexing was declined: {}",
-                repo_path
-            )));
-        }
-        None => {
-            state.session_manager.record_pending(&repo_path);
-            return Err(ApiError(format!(
-                "workspace is not approved for indexing yet: {}; approve it before querying",
-                repo_path
-            )));
-        }
-    }
-
-    let app_state = state
-        .session_manager
-        .get_or_create_repo(&repo_path)
+        .resolve_repo(repo_path.as_path())
         .await
-        .map_err(|e| ApiError(format!("failed to load repo: {e}")))?;
+        .map_err(|error| ApiError(format!("failed to resolve repo lifecycle: {error}")))?;
+    let app_state = match access {
+        crate::session::RepoAccess::Ready(app_state) => app_state,
+        crate::session::RepoAccess::NeedsApproval => {
+            return Err(ApiError(format!(
+                "consent_required: workspace needs its first full index: {repo_path}"
+            )));
+        }
+        crate::session::RepoAccess::Declined => {
+            return Err(ApiError(format!(
+                "declined: workspace indexing was declined: {repo_path}"
+            )));
+        }
+        crate::session::RepoAccess::Indexing { job, .. } => {
+            return Err(ApiError(format!(
+                "indexing_in_progress: first full index job {} is running for {repo_path}",
+                job.id
+            )));
+        }
+    };
     Ok((repo_path, repo_id, app_state))
 }
 
@@ -524,6 +521,27 @@ fn build_files_result(rows: Vec<(String, i64)>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn resolve_query_repo_blocks_registered_repo_before_first_index() {
+        let (_data, state) = crate::server::api::test_api_state().await;
+        let repo = tempfile::tempdir().unwrap();
+        let requested = crate::path::Utf8PathBuf::from_path_buf(repo.path().to_path_buf()).unwrap();
+        let path = crate::path::canonicalize_existing_dir(&requested).unwrap();
+        state
+            .session_manager
+            .registry
+            .register(path.as_str())
+            .unwrap();
+
+        let error = match resolve_query_repo(&state, path.as_str()).await {
+            Ok(_) => panic!("query must not open an unindexed repository"),
+            Err(error) => error,
+        };
+
+        assert!(error.0.contains("consent_required"));
+        assert_eq!(state.session_manager.loaded_repo_count(), 0);
+    }
 
     #[test]
     fn query_envelope_has_stable_agent_contract_fields() {

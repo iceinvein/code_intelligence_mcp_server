@@ -194,10 +194,10 @@ pub struct StandaloneConfig {
     /// judge benefit (R005/R006). Enable via `DESCRIPTIONS_ENABLED=1` or a
     /// `[descriptions] enabled = true` block in server.toml.
     pub descriptions_enabled: bool,
-    /// Whether implicitly-bound, never-indexed repos must be approved by the
-    /// user (via the `approve_indexing` tool) before the first index runs. On
-    /// by default; set `INDEX_CONSENT_REQUIRED=false` to restore unconditional
-    /// auto-indexing (CI, bench, power users).
+    /// Whether every repository must be approved once before its first full
+    /// index, regardless of which binding source selected it. Set
+    /// `INDEX_CONSENT_REQUIRED=false` to skip the prompt while still starting
+    /// the first index immediately.
     pub index_consent_required: bool,
     // Tier 2 retrieval tuning (formerly hardcoded in repo_config()).
     pub hybrid_alpha: f32,

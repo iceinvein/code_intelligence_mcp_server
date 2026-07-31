@@ -17,6 +17,8 @@ test("fetchRepos parses the /api/repos envelope", async () => {
         data_dir: "/data/demo",
         created_at: "2026-05-31T00:00:00Z",
         last_accessed: "2026-05-31T00:00:00Z",
+        path_exists: true,
+        seeded_from: null,
         activity: {
           running: false,
           current: null,

@@ -87,6 +87,25 @@ pub fn delete_symbol_metrics(conn: &Connection, symbol_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Remove metrics rows whose symbol disappeared while foreign-key checks were
+/// temporarily disabled for the symbol replacement phase.
+///
+/// Reindexing a file deletes its symbols and inserts the new ones, so a renamed
+/// or removed symbol's metrics row (written by an earlier PageRank pass) would
+/// otherwise survive as an orphan and fail `validate_graph_integrity`.
+pub fn delete_orphan_symbol_metrics(conn: &Connection) -> Result<u64> {
+    let deleted = conn
+        .execute(
+            r#"
+DELETE FROM symbol_metrics
+WHERE NOT EXISTS (SELECT 1 FROM symbols s WHERE s.id = symbol_metrics.symbol_id)
+"#,
+            [],
+        )
+        .context("Failed to delete orphan symbol metrics")?;
+    Ok(deleted as u64)
+}
+
 pub fn batch_get_symbol_metrics(
     conn: &Connection,
     symbol_ids: &[String],

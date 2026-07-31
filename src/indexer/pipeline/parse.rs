@@ -26,7 +26,10 @@ use crate::{
             edges::{extract_edges_for_symbol, upsert_name_mapping, PackageLookupFn},
             identity::build_symbol_occurrences,
             usage::extract_usage_examples_for_file,
-            utils::{file_fingerprint, file_key_path, language_string, stable_symbol_id},
+            utils::{
+                content_hash_hex, file_fingerprint, file_key_path, language_string,
+                stable_symbol_id,
+            },
         },
     },
     storage::sqlite::{pool::SqlitePool, queries},
@@ -54,6 +57,7 @@ pub const MAX_SOURCE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub struct ParsedFile {
     pub rel_path: String,
     pub fingerprint: FileFingerprint,
+    pub content_hash: String,
     pub language: String,
     pub symbol_rows: Vec<SymbolRow>,
     pub symbol_identities: Vec<SymbolIdentityRow>,
@@ -76,8 +80,15 @@ pub struct ParsedFile {
 /// Result of parsing a single file
 #[derive(Debug)]
 pub enum ParseResult {
-    /// File unchanged (fingerprint matched), skip
+    /// File unchanged (mtime and size matched), skip
     Unchanged,
+    /// File content is unchanged but its mtime or size moved, so the stored
+    /// fingerprint needs restamping. No reparse, no re-embed.
+    Restamped {
+        file_path: String,
+        fingerprint: FileFingerprint,
+        content_hash: String,
+    },
     /// Fully parsed file with all extracted data
     Parsed(Box<ParsedFile>),
     /// File skipped (unsupported language, read error, etc.)
@@ -112,26 +123,40 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         }
     };
 
-    // 3. Check if unchanged by querying SQLite fingerprints table
-    let is_unchanged = match conn
+    // 3. Load the stored fingerprint once. mtime plus size is the cheap check
+    //    and keeps the steady-state watcher path free of file reads.
+    let stored = conn
         .query_row(
-            "SELECT mtime_ns, size_bytes FROM file_fingerprints WHERE file_path = ?1",
+            "SELECT mtime_ns, size_bytes, content_hash FROM file_fingerprints WHERE file_path = ?1",
             [&rel],
             |row| {
                 let mtime: i64 = row.get(0)?;
                 let size: i64 = row.get(1)?;
-                Ok((mtime, size as u64))
+                let hash: Option<String> = row.get(2)?;
+                Ok((mtime, size as u64, hash))
             },
         )
-        .optional()
-    {
-        Ok(Some((mtime, size))) => mtime == fp.mtime_ns && size == fp.size_bytes,
-        Ok(None) => false,
-        Err(_) => false,
+        .optional();
+    let stored = match stored {
+        Ok(stored) => stored,
+        // A real SQL error reads the same as "no stored row" from here on, which
+        // means a full reparse of the whole tree. Say so, or a database reached
+        // before `init()` added `content_hash` looks like a mysteriously cold
+        // index rather than a schema problem.
+        Err(error) => {
+            tracing::debug!(
+                file = %rel,
+                %error,
+                "could not read the stored fingerprint, treating the file as new"
+            );
+            None
+        }
     };
 
-    if is_unchanged {
-        return ParseResult::Unchanged;
+    if let Some((mtime, size, _)) = &stored {
+        if *mtime == fp.mtime_ns && *size == fp.size_bytes {
+            return ParseResult::Unchanged;
+        }
     }
 
     if fp.size_bytes > MAX_SOURCE_FILE_BYTES {
@@ -144,7 +169,8 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         };
     }
 
-    // 4. Read file
+    // 4. Read the file once. The bytes serve both the content hash and the
+    //    tree-sitter parse below.
     let source = match fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
@@ -154,6 +180,20 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
             };
         }
     };
+
+    let content_hash = content_hash_hex(source.as_bytes());
+
+    // 4b. Second chance: git rewrites mtimes wholesale on checkout, rebase, and
+    //     worktree creation, so a stat mismatch does not imply a content change.
+    if let Some((_, _, Some(stored_hash))) = &stored {
+        if stored_hash == &content_hash {
+            return ParseResult::Restamped {
+                file_path: rel,
+                fingerprint: fp,
+                content_hash,
+            };
+        }
+    }
 
     // 5. Extract symbols via tree-sitter
     let extracted = match language_id {
@@ -417,6 +457,7 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
     ParseResult::Parsed(Box::new(ParsedFile {
         rel_path: rel,
         fingerprint: fp,
+        content_hash,
         language: language_string(language_id).to_string(),
         symbol_rows,
         symbol_identities,
@@ -625,48 +666,14 @@ mod tests {
         std::env::temp_dir().join(format!("parse_test_{}_{}", pid, nanos))
     }
 
-    #[test]
-    fn test_parse_single_file_rust() {
-        let tmp_dir = temp_dir();
-        std::fs::create_dir_all(&tmp_dir).unwrap();
-
-        let base_dir = Utf8PathBuf::from_path_buf(tmp_dir.clone()).unwrap();
-        let db_path = base_dir.join("test.db");
-
-        // Create test database
-        let conn = Connection::open(db_path.as_str()).unwrap();
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS file_fingerprints (
-                file_path TEXT PRIMARY KEY,
-                mtime_ns INTEGER,
-                size_bytes INTEGER,
-                updated_at INTEGER
-            )",
-            [],
-        )
-        .unwrap();
-
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS test_files (
-                file_path TEXT PRIMARY KEY
-            )",
-            [],
-        )
-        .unwrap();
-
-        // Create test file
-        let test_file = tmp_dir.join("test.rs");
-        std::fs::write(
-            &test_file,
-            "use crate::math::Number;\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
-        )
-        .unwrap();
-
-        let config = Config {
-            base_dir: base_dir.clone(),
-            db_path: db_path.clone(),
-            vector_db_path: base_dir.join("vectors"),
-            tantivy_index_path: base_dir.join("tantivy"),
+    /// The full Config literal previously duplicated across three tests.
+    /// Only `repo_roots` (via `root`) varies between call sites.
+    fn test_config(root: &crate::path::Utf8Path) -> Config {
+        Config {
+            base_dir: root.to_path_buf(),
+            db_path: root.join("test.db"),
+            vector_db_path: root.join("vectors"),
+            tantivy_index_path: root.join("tantivy"),
             embeddings_backend: crate::config::EmbeddingsBackend::Hash,
             embeddings_model_dir: None,
             embeddings_device: crate::config::EmbeddingsDevice::Cpu,
@@ -689,7 +696,7 @@ mod tests {
             watch_min_index_interval_ms: 50,
             max_context_bytes: 10_000,
             index_node_modules: false,
-            repo_roots: vec![base_dir.clone()],
+            repo_roots: vec![root.to_path_buf()],
             reranker_enabled: false,
             descriptions_enabled: false,
             reranker_model_path: None,
@@ -734,7 +741,60 @@ mod tests {
             leader_ttl_seconds: 30,
             embedding_truncate_dim: None,
             embedding_dim_override: None,
-        };
+        }
+    }
+
+    /// Return the `TempDir` so the caller keeps it alive; dropping it here
+    /// would delete the directory out from under the test.
+    fn test_setup() -> (Config, Connection, Utf8PathBuf, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::storage::sqlite::schema::SCHEMA_SQL)
+            .unwrap();
+        let config = test_config(root.as_path());
+        (config, conn, root, dir)
+    }
+
+    #[test]
+    fn test_parse_single_file_rust() {
+        let tmp_dir = temp_dir();
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let base_dir = Utf8PathBuf::from_path_buf(tmp_dir.clone()).unwrap();
+        let db_path = base_dir.join("test.db");
+
+        // Create test database
+        let conn = Connection::open(db_path.as_str()).unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_fingerprints (
+                file_path TEXT PRIMARY KEY,
+                mtime_ns INTEGER,
+                size_bytes INTEGER,
+                content_hash TEXT,
+                updated_at INTEGER
+            )",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS test_files (
+                file_path TEXT PRIMARY KEY
+            )",
+            [],
+        )
+        .unwrap();
+
+        // Create test file
+        let test_file = tmp_dir.join("test.rs");
+        std::fs::write(
+            &test_file,
+            "use crate::math::Number;\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+        )
+        .unwrap();
+
+        let config = test_config(base_dir.as_path());
 
         // Parse file
         let result = parse_single_file(&test_file, &config, &conn);
@@ -770,6 +830,9 @@ mod tests {
                 }));
             }
             ParseResult::Unchanged => panic!("File should not be unchanged on first parse"),
+            ParseResult::Restamped { .. } => {
+                panic!("File should not be restamped on first parse")
+            }
             ParseResult::Skipped { reason, .. } => {
                 panic!("File should not be skipped: {}", reason)
             }
@@ -794,6 +857,7 @@ mod tests {
                 file_path TEXT PRIMARY KEY,
                 mtime_ns INTEGER,
                 size_bytes INTEGER,
+                content_hash TEXT,
                 updated_at INTEGER
             )",
             [],
@@ -813,79 +877,7 @@ mod tests {
         )
         .unwrap();
 
-        let config = Config {
-            base_dir: base_dir.clone(),
-            db_path: db_path.clone(),
-            vector_db_path: base_dir.join("vectors"),
-            tantivy_index_path: base_dir.join("tantivy"),
-            embeddings_backend: crate::config::EmbeddingsBackend::Hash,
-            embeddings_model_dir: None,
-            embeddings_device: crate::config::EmbeddingsDevice::Cpu,
-            embedding_batch_size: 32,
-            hash_embedding_dim: 8,
-            vector_search_limit: 10,
-            vector_guaranteed_results: 3,
-            hybrid_alpha: 0.7,
-            rank_vector_weight: 0.7,
-            rank_keyword_weight: 0.3,
-            rank_exported_boost: 1.0,
-            rank_index_file_boost: 0.0,
-            rank_test_penalty: -5.0,
-            rank_popularity_weight: 0.0,
-            rank_popularity_cap: 0,
-            index_patterns: vec![],
-            exclude_patterns: vec![],
-            watch_mode: false,
-            watch_debounce_ms: 100,
-            watch_min_index_interval_ms: 50,
-            max_context_bytes: 10_000,
-            index_node_modules: false,
-            repo_roots: vec![base_dir.clone()],
-            reranker_enabled: false,
-            descriptions_enabled: false,
-            reranker_model_path: None,
-            reranker_top_k: 20,
-            reranker_cache_dir: None,
-            learning_enabled: false,
-            learning_selection_boost: 0.1,
-            learning_file_affinity_boost: 0.05,
-            max_context_tokens: 8192,
-            token_encoding: "o200k_base".to_string(),
-            parallel_workers: 4,
-            embedding_cache_enabled: true,
-            pagerank_damping: 0.85,
-            pagerank_iterations: 20,
-            synonym_expansion_enabled: true,
-            acronym_expansion_enabled: true,
-            rrf_enabled: true,
-            rrf_k: 60.0,
-            rrf_keyword_weight: 1.0,
-            rrf_vector_weight: 1.0,
-            rrf_graph_weight: 0.5,
-            hyde_enabled: false,
-            hyde_llm_backend: "openai".to_string(),
-            hyde_api_key: None,
-            hyde_max_tokens: 512,
-            metrics_enabled: true,
-            metrics_port: 9090,
-            package_detection_enabled: true,
-            external_index_auto: false,
-            external_index_producer: None,
-            external_index_on_refresh: "disabled".to_string(),
-            external_index_min_interval_ms: 60_000,
-            llm_enabled: true,
-            llm_device: crate::config::EmbeddingsDevice::Cpu,
-            llm_model_dir: None,
-            llm_max_tokens: 30,
-            llm_batch_commit: 10,
-            answer_llm_n_ctx: 16384,
-            sampling_descriptions_enabled: true,
-            leader_election_enabled: false,
-            leader_heartbeat_interval_ms: 10_000,
-            leader_ttl_seconds: 30,
-            embedding_truncate_dim: None,
-            embedding_dim_override: None,
-        };
+        let config = test_config(base_dir.as_path());
 
         // Parse file (should be unchanged)
         let result = parse_single_file(&test_file, &config, &conn);
@@ -894,6 +886,7 @@ mod tests {
             ParseResult::Unchanged => {
                 // Success
             }
+            ParseResult::Restamped { .. } => panic!("File should be unchanged, not restamped"),
             ParseResult::Parsed(_) => panic!("File should be unchanged"),
             ParseResult::Skipped { reason, .. } => {
                 panic!("File should not be skipped: {}", reason)
@@ -919,79 +912,7 @@ mod tests {
         let test_file = tmp_dir.join("test.txt");
         std::fs::write(&test_file, "hello world").unwrap();
 
-        let config = Config {
-            base_dir: base_dir.clone(),
-            db_path: db_path.clone(),
-            vector_db_path: base_dir.join("vectors"),
-            tantivy_index_path: base_dir.join("tantivy"),
-            embeddings_backend: crate::config::EmbeddingsBackend::Hash,
-            embeddings_model_dir: None,
-            embeddings_device: crate::config::EmbeddingsDevice::Cpu,
-            embedding_batch_size: 32,
-            hash_embedding_dim: 8,
-            vector_search_limit: 10,
-            vector_guaranteed_results: 3,
-            hybrid_alpha: 0.7,
-            rank_vector_weight: 0.7,
-            rank_keyword_weight: 0.3,
-            rank_exported_boost: 1.0,
-            rank_index_file_boost: 0.0,
-            rank_test_penalty: -5.0,
-            rank_popularity_weight: 0.0,
-            rank_popularity_cap: 0,
-            index_patterns: vec![],
-            exclude_patterns: vec![],
-            watch_mode: false,
-            watch_debounce_ms: 100,
-            watch_min_index_interval_ms: 50,
-            max_context_bytes: 10_000,
-            index_node_modules: false,
-            repo_roots: vec![base_dir.clone()],
-            reranker_enabled: false,
-            descriptions_enabled: false,
-            reranker_model_path: None,
-            reranker_top_k: 20,
-            reranker_cache_dir: None,
-            learning_enabled: false,
-            learning_selection_boost: 0.1,
-            learning_file_affinity_boost: 0.05,
-            max_context_tokens: 8192,
-            token_encoding: "o200k_base".to_string(),
-            parallel_workers: 4,
-            embedding_cache_enabled: true,
-            pagerank_damping: 0.85,
-            pagerank_iterations: 20,
-            synonym_expansion_enabled: true,
-            acronym_expansion_enabled: true,
-            rrf_enabled: true,
-            rrf_k: 60.0,
-            rrf_keyword_weight: 1.0,
-            rrf_vector_weight: 1.0,
-            rrf_graph_weight: 0.5,
-            hyde_enabled: false,
-            hyde_llm_backend: "openai".to_string(),
-            hyde_api_key: None,
-            hyde_max_tokens: 512,
-            metrics_enabled: true,
-            metrics_port: 9090,
-            package_detection_enabled: true,
-            external_index_auto: false,
-            external_index_producer: None,
-            external_index_on_refresh: "disabled".to_string(),
-            external_index_min_interval_ms: 60_000,
-            llm_enabled: true,
-            llm_device: crate::config::EmbeddingsDevice::Cpu,
-            llm_model_dir: None,
-            llm_max_tokens: 30,
-            llm_batch_commit: 10,
-            answer_llm_n_ctx: 16384,
-            sampling_descriptions_enabled: true,
-            leader_election_enabled: false,
-            leader_heartbeat_interval_ms: 10_000,
-            leader_ttl_seconds: 30,
-            embedding_truncate_dim: None,
-            embedding_dim_override: None,
-        };
+        let config = test_config(base_dir.as_path());
 
         // Parse file (should be skipped)
         let result = parse_single_file(&test_file, &config, &conn);
@@ -1001,6 +922,7 @@ mod tests {
                 assert!(reason.contains("Unsupported language"));
             }
             ParseResult::Unchanged => panic!("File should be skipped, not unchanged"),
+            ParseResult::Restamped { .. } => panic!("File should be skipped, not restamped"),
             ParseResult::Parsed(_) => panic!("File should be skipped"),
         }
 
@@ -1046,7 +968,7 @@ mod tests {
         let conn = Connection::open(db_path.as_str()).unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
 
-        let config = test_config(base_dir.clone(), db_path.clone());
+        let config = two_pass_test_config(base_dir.clone(), db_path.clone());
 
         // Phase 1 surrogate: parse each file with the (empty) DB.
         let target_parsed = match parse_single_file(&target_file, &config, &conn) {
@@ -1101,7 +1023,10 @@ mod tests {
         std::fs::remove_dir_all(&tmp_dir).ok();
     }
 
-    fn test_config(base_dir: Utf8PathBuf, db_path: Utf8PathBuf) -> Config {
+    /// Config for the two-pass cross-file edge test, which needs a real
+    /// on-disk DB file (distinct from the in-memory `test_config` above)
+    /// shared between `parse_single_file` and the deferred edge phase.
+    fn two_pass_test_config(base_dir: Utf8PathBuf, db_path: Utf8PathBuf) -> Config {
         Config {
             base_dir: base_dir.clone(),
             db_path,
@@ -1175,5 +1100,127 @@ mod tests {
             embedding_truncate_dim: None,
             embedding_dim_override: None,
         }
+    }
+
+    #[test]
+    fn touched_file_with_identical_content_is_restamped_not_reparsed() {
+        // Arrange: index a file once so a fingerprint row exists.
+        let (config, conn, dir, _tmp) = test_setup();
+        let file = dir.join("lib.rs");
+        std::fs::write(&file, "pub fn probe() -> usize { 1 }\n").unwrap();
+
+        let first = parse_single_file(file.as_std_path(), &config, &conn);
+        let parsed = match first {
+            ParseResult::Parsed(p) => p,
+            other => panic!("first parse must produce Parsed, got {other:?}"),
+        };
+        crate::storage::sqlite::queries::files::upsert_file_fingerprint(
+            &conn,
+            &parsed.rel_path,
+            parsed.fingerprint.mtime_ns,
+            parsed.fingerprint.size_bytes,
+            Some(&parsed.content_hash),
+        )
+        .unwrap();
+
+        // Act: rewrite the same bytes so mtime moves but content does not.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&file, "pub fn probe() -> usize { 1 }\n").unwrap();
+        let second = parse_single_file(file.as_std_path(), &config, &conn);
+
+        // Assert: recognised as unchanged, and the new stat is reported for restamping.
+        match second {
+            ParseResult::Restamped {
+                file_path,
+                fingerprint,
+                content_hash,
+            } => {
+                assert_eq!(file_path, parsed.rel_path);
+                assert_eq!(content_hash, parsed.content_hash);
+                assert_ne!(
+                    fingerprint.mtime_ns, parsed.fingerprint.mtime_ns,
+                    "restamp must carry the new mtime, not the stored one"
+                );
+            }
+            other => panic!("expected Restamped, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unchanged_stat_still_short_circuits_without_hashing() {
+        let (config, conn, dir, _tmp) = test_setup();
+        let file = dir.join("lib.rs");
+        std::fs::write(&file, "pub fn probe() -> usize { 1 }\n").unwrap();
+
+        let parsed = match parse_single_file(file.as_std_path(), &config, &conn) {
+            ParseResult::Parsed(p) => p,
+            other => panic!("expected Parsed, got {other:?}"),
+        };
+        crate::storage::sqlite::queries::files::upsert_file_fingerprint(
+            &conn,
+            &parsed.rel_path,
+            parsed.fingerprint.mtime_ns,
+            parsed.fingerprint.size_bytes,
+            Some(&parsed.content_hash),
+        )
+        .unwrap();
+
+        // Nothing touched the file, so the mtime and size path wins.
+        assert!(matches!(
+            parse_single_file(file.as_std_path(), &config, &conn),
+            ParseResult::Unchanged
+        ));
+    }
+
+    #[test]
+    fn legacy_null_hash_falls_back_to_reparse() {
+        let (config, conn, dir, _tmp) = test_setup();
+        let file = dir.join("lib.rs");
+        std::fs::write(&file, "pub fn probe() -> usize { 1 }\n").unwrap();
+
+        let parsed = match parse_single_file(file.as_std_path(), &config, &conn) {
+            ParseResult::Parsed(p) => p,
+            other => panic!("expected Parsed, got {other:?}"),
+        };
+        // Simulate a pre-migration row: stat differs, hash is NULL.
+        crate::storage::sqlite::queries::files::upsert_file_fingerprint(
+            &conn,
+            &parsed.rel_path,
+            parsed.fingerprint.mtime_ns - 1,
+            parsed.fingerprint.size_bytes,
+            None,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            parse_single_file(file.as_std_path(), &config, &conn),
+            ParseResult::Parsed(_)
+        ));
+    }
+
+    #[test]
+    fn changed_content_still_reparses() {
+        let (config, conn, dir, _tmp) = test_setup();
+        let file = dir.join("lib.rs");
+        std::fs::write(&file, "pub fn probe() -> usize { 1 }\n").unwrap();
+
+        let parsed = match parse_single_file(file.as_std_path(), &config, &conn) {
+            ParseResult::Parsed(p) => p,
+            other => panic!("expected Parsed, got {other:?}"),
+        };
+        crate::storage::sqlite::queries::files::upsert_file_fingerprint(
+            &conn,
+            &parsed.rel_path,
+            parsed.fingerprint.mtime_ns,
+            parsed.fingerprint.size_bytes,
+            Some(&parsed.content_hash),
+        )
+        .unwrap();
+
+        std::fs::write(&file, "pub fn probe() -> usize { 2 }\n").unwrap();
+        assert!(matches!(
+            parse_single_file(file.as_std_path(), &config, &conn),
+            ParseResult::Parsed(_)
+        ));
     }
 }

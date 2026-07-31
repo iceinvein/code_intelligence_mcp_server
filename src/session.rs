@@ -1,6 +1,7 @@
 //! Session management for standalone mode: maps repo paths to per-repo AppState instances.
 
 mod initial_index;
+mod worktree;
 
 pub use initial_index::RepoAccess;
 
@@ -80,6 +81,11 @@ pub struct SessionManager {
     initial_index_locks: DashMap<String, Arc<Mutex<()>>>,
     /// Tracks the last time each repo was accessed, for TTL-based eviction
     last_accessed: DashMap<String, Instant>,
+    /// Seeded worktree indexes whose checkout was missing on the last prune sweep,
+    /// keyed by canonical repo path. Deletion needs two consecutive sightings, so
+    /// a checkout that is briefly unreachable is not destroyed. The `Instant` is
+    /// diagnostic only.
+    seeded_absent_once: DashMap<String, Instant>,
     /// Repositories awaiting a user decision about their first full index.
     pending_consent: DashMap<String, PendingConsent>,
     metrics: Arc<MetricsRegistry>,
@@ -130,6 +136,7 @@ impl SessionManager {
             init_locks: DashMap::new(),
             initial_index_locks: DashMap::new(),
             last_accessed: DashMap::new(),
+            seeded_absent_once: DashMap::new(),
             pending_consent: DashMap::new(),
             metrics,
             job_registry,
@@ -145,7 +152,6 @@ impl SessionManager {
         self.repos.len()
     }
 
-    #[cfg(test)]
     pub async fn get_or_create_repo(&self, repo_path: &Utf8PathBuf) -> Result<Arc<AppState>> {
         Ok(self.get_or_create_runtime(repo_path).await?.state.clone())
     }
@@ -261,6 +267,11 @@ impl SessionManager {
         if ttl_secs == 0 {
             return;
         }
+
+        // Deliberately after the TTL early return: a deployment configured never
+        // to evict a warm repo must never delete one of its indexes either.
+        self.prune_vanished_seeded_indexes().await;
+
         let ttl = Duration::from_secs(ttl_secs);
 
         // Collect keys to evict without holding DashMap shard locks during async work.
@@ -297,6 +308,83 @@ impl SessionManager {
                 ttl_secs,
                 "Evicted idle repo from session cache"
             );
+        }
+    }
+
+    /// Delete seeded worktree indexes whose checkout is gone.
+    ///
+    /// Seeded indexes are cheap to create, so they accumulate; this is what keeps
+    /// `~/.code-intelligence/repos/` from filling up with dead worktrees.
+    /// `delete_repo_by_hash` cancels the watcher, removes the data dir, and drops
+    /// the registry entry, so three guards stand in front of it:
+    ///
+    /// - only entries the daemon seeded are eligible, via `list_seeded_missing`;
+    /// - never one with a running job, whose `SqliteStore` and Tantivy writer are
+    ///   live and would rebuild a partial data dir right after the removal,
+    ///   leaving artifacts that block this worktree from ever being seeded again;
+    /// - and only on the second consecutive sweep that finds the checkout absent,
+    ///   so a repo on a volume that unmounts for a minute survives.
+    ///
+    /// The absence observations live in memory only. A restart forgets them, which
+    /// costs one extra sweep before a dead worktree is collected.
+    async fn prune_vanished_seeded_indexes(&self) {
+        let missing = match self.registry.list_seeded_missing() {
+            Ok(missing) => missing,
+            Err(error) => {
+                tracing::debug!(%error, "list_seeded_missing failed");
+                return;
+            }
+        };
+
+        // Forget observations for checkouts that came back, and for entries that
+        // are no longer registered at all.
+        let still_missing: std::collections::HashSet<&str> =
+            missing.iter().map(|entry| entry.path.as_str()).collect();
+        self.seeded_absent_once
+            .retain(|path, _| still_missing.contains(path.as_str()));
+
+        for entry in &missing {
+            let hash = RepoRegistry::path_hash(&entry.path);
+            if let Some(job) = jobs::most_recent_running_for_repo(&self.job_registry, &hash) {
+                tracing::debug!(
+                    repo = %entry.path,
+                    job = %job.id,
+                    "not pruning a seeded worktree index while a job is running against it"
+                );
+                continue;
+            }
+
+            // First sighting only arms the deletion; the next sweep performs it.
+            if self
+                .seeded_absent_once
+                .insert(entry.path.clone(), Instant::now())
+                .is_none()
+            {
+                tracing::debug!(
+                    repo = %entry.path,
+                    "seeded worktree checkout is missing, pruning it if it is still missing next sweep"
+                );
+                continue;
+            }
+
+            match self.delete_repo_by_hash(&hash).await {
+                Ok(Some(_)) => {
+                    self.seeded_absent_once.remove(&entry.path);
+                    tracing::info!(
+                        repo = %entry.path,
+                        data_dir = %entry.data_dir,
+                        "pruned seeded worktree index whose checkout was removed"
+                    );
+                }
+                Ok(None) => {
+                    self.seeded_absent_once.remove(&entry.path);
+                }
+                Err(error) => tracing::warn!(
+                    repo = %entry.path,
+                    %error,
+                    "failed to prune seeded worktree index"
+                ),
+            }
         }
     }
 
@@ -496,6 +584,19 @@ impl SessionManager {
         // 2. Remove on-disk data directory. Missing dirs are treated as
         //    success; permission errors propagate and leave the registry entry
         //    intact so the user can retry from the API/UI.
+        //
+        //    The prune sweep calls this with nobody watching, so containment is
+        //    structural rather than conventional: a bug in how `data_dir` is
+        //    derived must not be able to rmtree outside the managed tree.
+        //    `starts_with` compares whole components, so a sibling directory
+        //    sharing a name prefix does not pass.
+        let repos_dir = self.registry.repos_dir();
+        if !entry.data_dir.starts_with(repos_dir) {
+            anyhow::bail!(
+                "refusing to delete '{}': it is outside the managed repo directory '{repos_dir}'",
+                entry.data_dir
+            );
+        }
         let data_dir = entry.data_dir.as_std_path();
         match std::fs::remove_dir_all(data_dir) {
             Ok(_) => {}
@@ -1155,6 +1256,44 @@ mod tests {
         assert!(
             manager.registry.get_by_hash(&hash).unwrap().is_some(),
             "registry entry must remain so a failed data-dir deletion can be retried"
+        );
+    }
+
+    /// The prune sweep deletes data directories on its own, so a `data_dir` that
+    /// somehow points outside the managed tree must be refused rather than
+    /// rmtree'd. Simulated by editing the persisted entry, which is the only way
+    /// such a path could arise.
+    #[tokio::test]
+    async fn delete_repo_by_hash_refuses_a_data_dir_outside_the_repos_dir() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+        manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+
+        let outside = data_dir.join("not-a-repo-data-dir");
+        std::fs::create_dir_all(outside.as_std_path()).unwrap();
+        std::fs::write(outside.join("precious").as_std_path(), b"keep me").unwrap();
+
+        let registry_path = data_dir.join("registry.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(registry_path.as_std_path()).unwrap()).unwrap();
+        json["repos"][&hash]["data_dir"] = serde_json::Value::String(outside.to_string());
+        std::fs::write(registry_path.as_std_path(), json.to_string()).unwrap();
+
+        let err = manager.delete_repo_by_hash(&hash).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("outside the managed repo directory"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            outside.join("precious").as_std_path().is_file(),
+            "nothing outside the managed tree may be removed"
+        );
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "the entry must survive so the refusal is visible"
         );
     }
 

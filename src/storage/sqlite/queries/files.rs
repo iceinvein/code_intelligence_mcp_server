@@ -57,7 +57,7 @@ pub fn get_file_fingerprint(
 ) -> Result<Option<FileFingerprintRow>> {
     conn.query_row(
         r#"
-SELECT file_path, mtime_ns, size_bytes
+SELECT file_path, mtime_ns, size_bytes, content_hash
 FROM file_fingerprints
 WHERE file_path = ?1
 "#,
@@ -67,6 +67,7 @@ WHERE file_path = ?1
                 file_path: row.get(0)?,
                 mtime_ns: row.get(1)?,
                 size_bytes: row.get::<_, i64>(2)?.max(0) as u64,
+                content_hash: row.get(3)?,
             })
         },
     )
@@ -79,17 +80,19 @@ pub fn upsert_file_fingerprint(
     file_path: &str,
     mtime_ns: i64,
     size_bytes: u64,
+    content_hash: Option<&str>,
 ) -> Result<()> {
     conn.execute(
         r#"
-INSERT INTO file_fingerprints(file_path, mtime_ns, size_bytes, updated_at)
-VALUES (?1, ?2, ?3, unixepoch())
+INSERT INTO file_fingerprints(file_path, mtime_ns, size_bytes, content_hash, updated_at)
+VALUES (?1, ?2, ?3, ?4, unixepoch())
 ON CONFLICT(file_path) DO UPDATE SET
   mtime_ns=excluded.mtime_ns,
   size_bytes=excluded.size_bytes,
+  content_hash=excluded.content_hash,
   updated_at=unixepoch()
 "#,
-        params![file_path, mtime_ns, size_bytes as i64],
+        params![file_path, mtime_ns, size_bytes as i64, content_hash],
     )
     .context("Failed to upsert file fingerprint")?;
     Ok(())
@@ -118,7 +121,7 @@ pub fn list_all_file_fingerprints(
     let mut stmt = conn
         .prepare(
             r#"
-SELECT file_path, mtime_ns, size_bytes
+SELECT file_path, mtime_ns, size_bytes, content_hash
 FROM file_fingerprints
 ORDER BY file_path ASC
 LIMIT ?1
@@ -133,6 +136,7 @@ LIMIT ?1
             file_path: row.get(0)?,
             mtime_ns: row.get(1)?,
             size_bytes: row.get::<_, i64>(2)?.max(0) as u64,
+            content_hash: row.get(3)?,
         });
     }
     Ok(out)
@@ -181,7 +185,7 @@ VALUES ('source', 'local_value', 'value', 'read', 'src/lib.rs', 1)
             [],
         )
         .unwrap();
-        upsert_file_fingerprint(&conn, "src/lib.rs", 123, 456).unwrap();
+        upsert_file_fingerprint(&conn, "src/lib.rs", 123, 456, None).unwrap();
 
         assert!(!ensure_graph_index_version(&conn, "1").unwrap());
         assert_eq!(
@@ -217,5 +221,35 @@ VALUES ('source', 'local_value', 'value', 'read', 'src/lib.rs', 1)
             2,
             "symbol/search data remains available until the rebuild replaces it"
         );
+    }
+
+    #[test]
+    fn fingerprint_round_trips_content_hash() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+
+        upsert_file_fingerprint(&conn, "src/lib.rs", 123, 456, Some("abc123")).unwrap();
+        let row = get_file_fingerprint(&conn, "src/lib.rs").unwrap().unwrap();
+        assert_eq!(row.mtime_ns, 123);
+        assert_eq!(row.size_bytes, 456);
+        assert_eq!(row.content_hash.as_deref(), Some("abc123"));
+
+        // A later upsert replaces the hash rather than keeping the stale one.
+        upsert_file_fingerprint(&conn, "src/lib.rs", 789, 456, Some("def456")).unwrap();
+        let row = get_file_fingerprint(&conn, "src/lib.rs").unwrap().unwrap();
+        assert_eq!(row.mtime_ns, 789);
+        assert_eq!(row.content_hash.as_deref(), Some("def456"));
+
+        // A NULL hash is representable, which is what legacy rows carry.
+        upsert_file_fingerprint(&conn, "src/other.rs", 1, 2, None).unwrap();
+        let row = get_file_fingerprint(&conn, "src/other.rs")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.content_hash, None);
+
+        let all = list_all_file_fingerprints(&conn, 10).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].file_path, "src/lib.rs");
+        assert_eq!(all[0].content_hash.as_deref(), Some("def456"));
     }
 }

@@ -42,12 +42,14 @@ use tokio::time::sleep;
 
 use self::scan::{scan_files, should_index_file};
 use self::stats::{EmbeddingRunStats, IndexRunStats};
-use self::utils::{cluster_key_from_vector, file_fingerprint, file_key_path, unix_now_s};
+use self::utils::{
+    cluster_key_from_vector, file_fingerprint, file_key_path, unix_now_s, FileFingerprint,
+};
 
 /// Version of persisted extraction semantics. Increment whenever existing
 /// symbols, identities, or edges cannot be trusted and every source file must
 /// be parsed again. The metadata key retains its historical graph name.
-const GRAPH_INDEX_VERSION: &str = "5";
+pub(crate) const GRAPH_INDEX_VERSION: &str = "5";
 
 fn elapsed_ms(elapsed: Duration) -> u64 {
     elapsed.as_millis().min(u64::MAX as u128) as u64
@@ -1044,6 +1046,7 @@ impl IndexPipeline {
         // Tally stats from parse results
         let mut parsed_files = Vec::new();
         let mut skipped_changed_files = Vec::new();
+        let mut restamped: Vec<(String, FileFingerprint, String)> = Vec::new();
         for result in parse_results {
             match result {
                 parse::ParseResult::Parsed(pf) => {
@@ -1054,12 +1057,46 @@ impl IndexPipeline {
                 parse::ParseResult::Unchanged => {
                     stats.files_unchanged += 1;
                 }
+                parse::ParseResult::Restamped {
+                    file_path,
+                    fingerprint,
+                    content_hash,
+                } => {
+                    stats.files_unchanged += 1;
+                    restamped.push((file_path, fingerprint, content_hash));
+                }
                 parse::ParseResult::Skipped { reason, file_path } => {
                     tracing::debug!(reason = %reason, file_path = %file_path, "File skipped during parse");
                     stats.files_skipped += 1;
                     skipped_changed_files.push(file_path);
                 }
             }
+        }
+
+        // Content matched but the stat moved, so refresh the fingerprint only.
+        // Without this every later pass would re-hash these files forever.
+        if !restamped.is_empty() {
+            let write_t = Instant::now();
+            let conn = self.sqlite.write()?;
+            let tx = conn.unchecked_transaction()?;
+            for (file_path, fingerprint, content_hash) in &restamped {
+                crate::storage::sqlite::queries::files::upsert_file_fingerprint(
+                    &tx,
+                    file_path,
+                    fingerprint.mtime_ns,
+                    fingerprint.size_bytes,
+                    Some(content_hash),
+                )?;
+            }
+            tx.commit()?;
+            tracing::debug!(
+                repo = %self.repo_name(),
+                restamped = restamped.len(),
+                "Refreshed fingerprints for content-identical files"
+            );
+            stats.sqlite_write_ms = stats
+                .sqlite_write_ms
+                .saturating_add(elapsed_ms(write_t.elapsed()));
         }
 
         if !skipped_changed_files.is_empty() {

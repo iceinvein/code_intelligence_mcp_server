@@ -34,6 +34,19 @@ pub fn file_fingerprint(path: &Path) -> Result<FileFingerprint> {
     })
 }
 
+/// Content identity for a source file, as 32 lowercase hex chars of SHA-256.
+///
+/// Truncated because this only needs to distinguish revisions of one file
+/// within one repository, not resist collision attacks. 128 bits is far past
+/// the birthday bound for any plausible file count.
+pub fn content_hash_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let full = format!("{:x}", hasher.finalize());
+    full[..32].to_string()
+}
+
 pub fn unix_now_s() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -950,6 +963,22 @@ mod tests {
             None,
             "ambiguous module suffixes must not select a global same-name symbol"
         );
+    }
+
+    #[test]
+    fn content_hash_is_stable_and_32_hex_chars() {
+        let a = content_hash_hex(b"pub fn probe() {}\n");
+        assert_eq!(a.len(), 32);
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(a, content_hash_hex(b"pub fn probe() {}\n"));
+        assert_ne!(a, content_hash_hex(b"pub fn probe() { }\n"));
+    }
+
+    #[test]
+    fn content_hash_handles_empty_input() {
+        assert_eq!(content_hash_hex(b"").len(), 32);
     }
 }
 

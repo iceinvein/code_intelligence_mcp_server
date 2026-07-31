@@ -213,6 +213,7 @@ pub fn write_batch(
                 &file.rel_path,
                 file.fingerprint.mtime_ns,
                 file.fingerprint.size_bytes,
+                Some(&file.content_hash),
             )
             .with_context(|| {
                 format!(
@@ -282,6 +283,26 @@ pub fn write_batch(
         tracing::debug!(
             orphaned_usage_examples,
             "Removed usage examples whose symbol endpoints do not exist"
+        );
+    }
+    // PageRank and clustering keyed these rows on the previous pass's symbol ids,
+    // so a renamed or removed symbol leaves one behind that
+    // `validate_graph_integrity` would reject. Deleting loses nothing: a row whose
+    // symbol is gone describes nothing at all, and the symbols that remain have
+    // their rows rewritten anyway, clusters by the embedding backfill and
+    // `symbol_metrics` by the PageRank pass every run with indexed files reaches.
+    let orphaned_metrics = queries::metrics::delete_orphan_symbol_metrics(conn)?;
+    if orphaned_metrics > 0 {
+        tracing::debug!(
+            orphaned_metrics,
+            "Removed symbol metrics whose symbols do not exist"
+        );
+    }
+    let orphaned_clusters = queries::misc::delete_orphan_similarity_clusters(conn)?;
+    if orphaned_clusters > 0 {
+        tracing::debug!(
+            orphaned_clusters,
+            "Removed similarity clusters whose symbols do not exist"
         );
     }
     stats.sqlite_ms = stats
@@ -452,6 +473,7 @@ mod tests {
                 mtime_ns: 123456789,
                 size_bytes: 100,
             },
+            content_hash: "0".repeat(32),
             language: "rust".to_string(),
             symbol_rows: vec![
                 SymbolRow {
@@ -578,6 +600,7 @@ mod tests {
                     mtime_ns: 123456789 + i as i64,
                     size_bytes: 100,
                 },
+                content_hash: "0".repeat(32),
                 language: "rust".to_string(),
                 symbol_rows: vec![SymbolRow {
                     id: symbol_id.clone(),
@@ -690,6 +713,7 @@ mod tests {
                 mtime_ns: 123456789,
                 size_bytes: 100,
             },
+            content_hash: "0".repeat(32),
             language: "rust".to_string(),
             symbol_rows: vec![SymbolRow {
                 id: "s1".to_string(),
@@ -736,6 +760,7 @@ mod tests {
                 mtime_ns: 987654321,
                 size_bytes: 200,
             },
+            content_hash: "0".repeat(32),
             language: "rust".to_string(),
             symbol_rows: vec![
                 SymbolRow {

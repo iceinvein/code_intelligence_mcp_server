@@ -139,6 +139,9 @@ impl SqliteStore {
             migrate_external_reference_dedupe_columns(&conn).with_context(|| {
                 "Failed to run migration: migrate_external_reference_dedupe_columns"
             })?;
+            migrate_add_file_fingerprints_content_hash(&conn).with_context(|| {
+                "Failed to run migration: migrate_add_file_fingerprints_content_hash"
+            })?;
         }
         Ok(())
     }
@@ -374,6 +377,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_external_references_index_dedupe
     Ok(())
 }
 
+/// Add `file_fingerprints.content_hash` so an unchanged-content check can run
+/// even when a file's mtime changed. Git rewrites mtimes wholesale on checkout,
+/// rebase, and worktree creation, so mtime alone reports false changes.
+fn migrate_add_file_fingerprints_content_hash(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "file_fingerprints", "content_hash")? {
+        conn.execute(
+            "ALTER TABLE file_fingerprints ADD COLUMN content_hash TEXT",
+            [],
+        )
+        .context("Failed to add file_fingerprints.content_hash")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +524,44 @@ CREATE TABLE search_runs (
         ] {
             assert!(column_exists(&conn, "search_runs", column).unwrap());
         }
+    }
+
+    #[test]
+    fn init_adds_content_hash_to_legacy_file_fingerprints() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        {
+            let conn = store.write().unwrap();
+            // Recreate the pre-migration table shape.
+            conn.execute_batch(
+                r#"
+DROP TABLE IF EXISTS file_fingerprints;
+CREATE TABLE file_fingerprints (
+  file_path TEXT PRIMARY KEY NOT NULL,
+  mtime_ns INTEGER NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+INSERT INTO file_fingerprints(file_path, mtime_ns, size_bytes)
+VALUES ('src/legacy.rs', 111, 222);
+"#,
+            )
+            .unwrap();
+            assert!(!column_exists(&conn, "file_fingerprints", "content_hash").unwrap());
+        }
+
+        store.init().unwrap();
+
+        let conn = store.write().unwrap();
+        assert!(column_exists(&conn, "file_fingerprints", "content_hash").unwrap());
+        // The legacy row survives with a NULL hash.
+        let hash: Option<String> = conn
+            .query_row(
+                "SELECT content_hash FROM file_fingerprints WHERE file_path = 'src/legacy.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hash, None);
     }
 }
 

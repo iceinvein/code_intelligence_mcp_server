@@ -162,6 +162,7 @@ pub struct FileFingerprintRow {
     pub file_path: String,
     pub mtime_ns: i64,
     pub size_bytes: u64,
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -657,6 +658,7 @@ CREATE TABLE IF NOT EXISTS file_fingerprints (
   file_path TEXT PRIMARY KEY NOT NULL,
   mtime_ns INTEGER NOT NULL,
   size_bytes INTEGER NOT NULL,
+  content_hash TEXT,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 

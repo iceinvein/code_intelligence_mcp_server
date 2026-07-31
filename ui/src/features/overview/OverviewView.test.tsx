@@ -46,6 +46,8 @@ function jsonFor(url: string): Response {
             data_dir: "/d",
             created_at: "1",
             last_accessed: "1",
+            path_exists: true,
+            seeded_from: null,
             activity: {
               running: false,
               current: null,

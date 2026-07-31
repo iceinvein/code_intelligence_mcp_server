@@ -13,10 +13,15 @@ fn utf8(p: &std::path::Path) -> Utf8PathBuf {
 }
 
 async fn manager_for(data_dir: &Utf8Path) -> Arc<SessionManager> {
+    manager_with_ttl(data_dir, StandaloneConfig::default().warm_ttl_seconds).await
+}
+
+async fn manager_with_ttl(data_dir: &Utf8Path, warm_ttl_seconds: u64) -> Arc<SessionManager> {
     let config = StandaloneConfig {
         data_dir: data_dir.to_path_buf(),
         embeddings_backend: EmbeddingsBackend::Hash,
         hash_embedding_dim: 64,
+        warm_ttl_seconds,
         ..StandaloneConfig::default()
     };
     let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
@@ -469,6 +474,16 @@ async fn deleting_a_seeded_worktree_prunes_its_index() {
 
     // Simulate `git worktree remove`.
     std::fs::remove_dir_all(wt.as_std_path()).unwrap();
+
+    // One sweep only arms the deletion, so a checkout that is briefly
+    // unreachable survives.
+    manager.evict_idle_repos().await;
+    assert!(
+        manager.registry.get(&wt_key).unwrap().is_some(),
+        "a single absent sweep must not delete an index"
+    );
+    assert!(wt_data.as_std_path().exists());
+
     manager.evict_idle_repos().await;
 
     assert!(manager.registry.get(&wt_key).unwrap().is_none());
@@ -503,11 +518,189 @@ async fn hand_registered_missing_repo_survives_the_prune_sweep() {
     let entry = manager.registry.register(vanished.as_str()).unwrap();
     std::fs::remove_dir_all(vanished.as_std_path()).unwrap();
 
-    manager.evict_idle_repos().await;
+    for _ in 0..3 {
+        manager.evict_idle_repos().await;
+    }
 
     assert!(
         manager.registry.get(vanished.as_str()).unwrap().is_some(),
         "an entry with no seed provenance must never be pruned"
+    );
+    assert!(entry.data_dir.as_std_path().exists());
+}
+
+/// Register a repo and stamp it as seeded, without paying for a real seed: the
+/// prune sweep only reads `seeded_from`, the path, and the running jobs.
+fn register_seeded(manager: &Arc<SessionManager>, path: &Utf8Path) -> Utf8PathBuf {
+    std::fs::create_dir_all(path.as_std_path()).unwrap();
+    manager.registry.register(path.as_str()).unwrap();
+    manager
+        .registry
+        .mark_seeded_from(path.as_str(), "basehash00000000")
+        .unwrap()
+        .data_dir
+}
+
+/// A job running against a seeded index holds live SQLite and Tantivy handles,
+/// and would rebuild a partial data dir right after the removal. That leftover
+/// would then block this worktree from ever being seeded again.
+#[tokio::test]
+async fn a_running_job_blocks_the_prune_sweep() {
+    let data_temp = tempfile::tempdir().unwrap();
+    let work_temp = tempfile::tempdir().unwrap();
+    let data_dir = utf8(data_temp.path());
+    let manager = manager_for(&data_dir).await;
+
+    let seeded = utf8(work_temp.path()).join("feature");
+    let seeded_data = register_seeded(&manager, seeded.as_path());
+    std::fs::remove_dir_all(seeded.as_std_path()).unwrap();
+
+    let job_registry = manager.job_registry();
+    jobs::register_running(
+        &job_registry,
+        "delta-pass".to_string(),
+        jobs::JobKind::InitialBind,
+        RepoRegistry::path_hash(seeded.as_str()),
+        seeded.as_str().to_string(),
+    );
+
+    for _ in 0..3 {
+        manager.evict_idle_repos().await;
+    }
+    assert!(
+        manager.registry.get(seeded.as_str()).unwrap().is_some(),
+        "an index with a running job must not be deleted, however absent its checkout"
+    );
+    assert!(seeded_data.as_std_path().exists());
+
+    // Once the job is done the sweep may collect it, two sightings as usual.
+    jobs::mark_succeeded(&job_registry, "delta-pass", serde_json::Value::Null);
+    manager.evict_idle_repos().await;
+    assert!(manager.registry.get(seeded.as_str()).unwrap().is_some());
+    manager.evict_idle_repos().await;
+
+    assert!(manager.registry.get(seeded.as_str()).unwrap().is_none());
+    assert!(!seeded_data.as_std_path().exists());
+}
+
+/// A checkout that comes back disarms the pending deletion, so a volume that
+/// unmounts and remounts repeatedly is never collected.
+#[tokio::test]
+async fn a_reappearing_checkout_clears_the_pending_prune() {
+    let data_temp = tempfile::tempdir().unwrap();
+    let work_temp = tempfile::tempdir().unwrap();
+    let data_dir = utf8(data_temp.path());
+    let manager = manager_for(&data_dir).await;
+
+    let seeded = utf8(work_temp.path()).join("feature");
+    let seeded_data = register_seeded(&manager, seeded.as_path());
+
+    // Absent once: armed.
+    std::fs::remove_dir_all(seeded.as_std_path()).unwrap();
+    manager.evict_idle_repos().await;
+    assert!(manager.registry.get(seeded.as_str()).unwrap().is_some());
+
+    // Back again: disarmed.
+    std::fs::create_dir_all(seeded.as_std_path()).unwrap();
+    manager.evict_idle_repos().await;
+    assert!(manager.registry.get(seeded.as_str()).unwrap().is_some());
+
+    // Absent again: this is a first sighting once more, so it must survive.
+    std::fs::remove_dir_all(seeded.as_std_path()).unwrap();
+    manager.evict_idle_repos().await;
+    assert!(
+        manager.registry.get(seeded.as_str()).unwrap().is_some(),
+        "a checkout that came back must reset the count of absent sweeps"
+    );
+    assert!(seeded_data.as_std_path().exists());
+
+    manager.evict_idle_repos().await;
+    assert!(manager.registry.get(seeded.as_str()).unwrap().is_none());
+    assert!(!seeded_data.as_std_path().exists());
+}
+
+/// `warm_ttl_seconds = 0` means never evict, and a deployment that never evicts
+/// a warm repo must never delete one of its indexes either.
+#[tokio::test]
+async fn zero_ttl_never_prunes_a_seeded_index() {
+    let data_temp = tempfile::tempdir().unwrap();
+    let work_temp = tempfile::tempdir().unwrap();
+    let data_dir = utf8(data_temp.path());
+    let manager = manager_with_ttl(&data_dir, 0).await;
+
+    let seeded = utf8(work_temp.path()).join("feature");
+    let seeded_data = register_seeded(&manager, seeded.as_path());
+    std::fs::remove_dir_all(seeded.as_std_path()).unwrap();
+
+    for _ in 0..3 {
+        manager.evict_idle_repos().await;
+    }
+
+    assert!(
+        manager.registry.get(seeded.as_str()).unwrap().is_some(),
+        "a zero TTL must disable the prune sweep entirely"
+    );
+    assert!(seeded_data.as_std_path().exists());
+}
+
+/// Seeding an entry the user registered by hand must not enroll it for pruning:
+/// `seeded_from` is what makes an index one the daemon may delete on its own.
+#[tokio::test]
+async fn seeding_a_hand_registered_worktree_leaves_it_out_of_the_prune_sweep() {
+    let data_temp = tempfile::tempdir().unwrap();
+    let work_temp = tempfile::tempdir().unwrap();
+    let data_dir = utf8(data_temp.path());
+    let base = utf8(work_temp.path()).join("base");
+    std::fs::create_dir_all(base.as_std_path()).unwrap();
+
+    let manager = manager_for(&data_dir).await;
+    let repo = init_base_repo(&base);
+    index_to_ready(&manager, base.as_path()).await;
+
+    let wt = utf8(work_temp.path()).join("feature");
+    repo.worktree("feature", wt.as_std_path(), None).unwrap();
+    let wt_key = std::fs::canonicalize(wt.as_std_path())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // Stand in for a repo added through the JSON API and never approved.
+    manager.registry.register(&wt_key).unwrap();
+
+    // It still seeds: this is the second hook point, on an unapproved entry.
+    assert!(
+        matches!(
+            manager.resolve_repo(wt.as_path()).await.unwrap(),
+            RepoAccess::Indexing { .. }
+        ),
+        "a registered but unapproved worktree must still be seedable"
+    );
+    let state = wait_for_ready(&manager, wt.as_path()).await;
+    assert_eq!(
+        state
+            .sqlite
+            .latest_index_run()
+            .unwrap()
+            .unwrap()
+            .files_indexed,
+        0,
+        "the seed must still have spared the first pass its work"
+    );
+
+    let entry = manager.registry.get(&wt_key).unwrap().unwrap();
+    assert!(
+        entry.seeded_from.is_none(),
+        "an entry the seed did not create must not be stamped as seeded"
+    );
+
+    std::fs::remove_dir_all(wt.as_std_path()).unwrap();
+    for _ in 0..3 {
+        manager.evict_idle_repos().await;
+    }
+    assert!(
+        manager.registry.get(&wt_key).unwrap().is_some(),
+        "the user's entry must survive the sweep"
     );
     assert!(entry.data_dir.as_std_path().exists());
 }

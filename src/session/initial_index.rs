@@ -143,7 +143,13 @@ impl SessionManager {
     ///
     /// Returns `Ok(None)` when there is nothing to seed from or when seeding
     /// failed, in which case the caller falls through to the consent path.
-    /// Seeding is an optimization and never surfaces an error to the caller.
+    ///
+    /// Seeding is strictly an optimization, so nothing on the seed path may fail a
+    /// bind: a refused precondition, a clone error, a panic inside the clone, and
+    /// a registry write that will not land all log a warning and return
+    /// `Ok(None)`. The only error this propagates comes from
+    /// `start_or_get_initial_index`, which is the ordinary lifecycle the caller
+    /// would have reached anyway.
     async fn try_seed_worktree(
         self: &Arc<Self>,
         canonical: &Utf8PathBuf,
@@ -199,10 +205,17 @@ impl SessionManager {
             // than asking the user about a repo that is already indexing.
             // Anything else is not ours to interpret, so hand it back to the
             // caller's normal consent handling.
-            let owned_by_another_bind = self
-                .registry
-                .get(canonical.as_str())?
-                .is_some_and(|entry| entry.initial_index_approved_at.is_some());
+            let owned_by_another_bind = match self.registry.get(canonical.as_str()) {
+                Ok(entry) => entry.is_some_and(|entry| entry.initial_index_approved_at.is_some()),
+                Err(error) => {
+                    tracing::warn!(
+                        worktree = %canonical,
+                        %error,
+                        "could not read the registry for an already-populated worktree data dir"
+                    );
+                    return Ok(None);
+                }
+            };
             if owned_by_another_bind {
                 return Ok(Some(self.start_or_get_initial_index(canonical).await?));
             }
@@ -210,18 +223,49 @@ impl SessionManager {
         }
 
         // `register` creates the (empty) data directory the clone writes into.
-        // Whether the entry is ours decides whether the failure path may drop it.
-        let entry_is_ours = self.registry.get(canonical.as_str())?.is_none();
-        self.registry
-            .register(canonical.as_str())
-            .context("Failed to register worktree before seeding")?;
+        // Whether the entry is ours decides both whether the failure path may
+        // drop it and whether the seed may stamp its provenance on it.
+        let entry_is_ours = match self.registry.get(canonical.as_str()) {
+            Ok(entry) => entry.is_none(),
+            Err(error) => {
+                tracing::warn!(
+                    worktree = %canonical,
+                    %error,
+                    "could not read the registry before seeding a worktree"
+                );
+                return Ok(None);
+            }
+        };
+        if let Err(error) = self.registry.register(canonical.as_str()) {
+            tracing::warn!(
+                worktree = %canonical,
+                %error,
+                "could not register a worktree for seeding, falling back to a full index"
+            );
+            self.discard_failed_seed(canonical, &plan.worktree_data_dir, entry_is_ours);
+            return Ok(None);
+        }
 
         let blocking_plan = plan.clone();
-        let seeded = tokio::task::spawn_blocking(move || {
+        let seeded = match tokio::task::spawn_blocking(move || {
             crate::session::worktree::seed_index_from_base(&blocking_plan)
         })
         .await
-        .context("Join error in worktree seed task")?;
+        {
+            Ok(seeded) => seeded,
+            // A panic or cancellation inside the seed. The clone writes to raw
+            // paths, so treat it exactly like a returned error.
+            Err(error) => {
+                tracing::warn!(
+                    worktree = %canonical,
+                    base = %plan.base_repo_path,
+                    %error,
+                    "worktree seed task did not finish, falling back to a full index"
+                );
+                self.discard_failed_seed(canonical, &plan.worktree_data_dir, entry_is_ours);
+                return Ok(None);
+            }
+        };
 
         if let Err(error) = seeded {
             tracing::warn!(
@@ -237,12 +281,32 @@ impl SessionManager {
             return Ok(None);
         }
 
-        self.registry
-            .mark_seeded_from(canonical.as_str(), &plan.base_repo_id)
-            .context("Failed to record worktree seed provenance")?;
-        self.registry
-            .approve_initial_index(canonical.as_str())
-            .context("Failed to auto-approve seeded worktree")?;
+        // Provenance goes only on an entry this seed created. It is what enrolls a
+        // repo in the prune sweep, and an entry the user registered by hand must
+        // never become something the daemon deletes on its own.
+        if entry_is_ours {
+            if let Err(error) = self
+                .registry
+                .mark_seeded_from(canonical.as_str(), &plan.base_repo_id)
+            {
+                tracing::warn!(
+                    worktree = %canonical,
+                    %error,
+                    "could not record worktree seed provenance, falling back to a full index"
+                );
+                self.discard_failed_seed(canonical, &plan.worktree_data_dir, entry_is_ours);
+                return Ok(None);
+            }
+        }
+        if let Err(error) = self.registry.approve_initial_index(canonical.as_str()) {
+            tracing::warn!(
+                worktree = %canonical,
+                %error,
+                "could not auto-approve a seeded worktree, falling back to a full index"
+            );
+            self.discard_failed_seed(canonical, &plan.worktree_data_dir, entry_is_ours);
+            return Ok(None);
+        }
         // The worktree may have asked for consent on an earlier bind, before its
         // base was indexed. It is not waiting on the user any more.
         self.clear_pending(&RepoRegistry::path_hash(canonical.as_str()));
@@ -261,9 +325,13 @@ impl SessionManager {
         Ok(Some(self.start_or_get_initial_index(canonical).await?))
     }
 
-    /// Undo a failed seed: remove the partial data directory, and the registry
-    /// entry too when the seed is what created it. Best-effort, since the caller
-    /// is already on its way to a full index either way.
+    /// Undo a seed that will not be used: remove its data directory, and the
+    /// registry entry too when the seed is what created it. Best-effort, since the
+    /// caller is already on its way to a full index either way.
+    ///
+    /// Covers both a clone that failed and a clone that succeeded but could not be
+    /// recorded, because an index the registry does not describe as seeded and
+    /// approved is one nothing will ever finish or prune.
     ///
     /// The directory always goes: whatever the clone managed to write counts as
     /// index artifacts, which would block every later seed of this worktree.

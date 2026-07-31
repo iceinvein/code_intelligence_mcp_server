@@ -84,6 +84,11 @@ pub struct SessionManager {
     initial_index_locks: DashMap<String, Arc<Mutex<()>>>,
     /// Tracks the last time each repo was accessed, for TTL-based eviction
     last_accessed: DashMap<String, Instant>,
+    /// Seeded worktree indexes whose checkout was missing on the last prune sweep,
+    /// keyed by canonical repo path. Deletion needs two consecutive sightings, so
+    /// a checkout that is briefly unreachable is not destroyed. The `Instant` is
+    /// diagnostic only.
+    seeded_absent_once: DashMap<String, Instant>,
     /// Repositories awaiting a user decision about their first full index.
     pending_consent: DashMap<String, PendingConsent>,
     metrics: Arc<MetricsRegistry>,
@@ -134,6 +139,7 @@ impl SessionManager {
             init_locks: DashMap::new(),
             initial_index_locks: DashMap::new(),
             last_accessed: DashMap::new(),
+            seeded_absent_once: DashMap::new(),
             pending_consent: DashMap::new(),
             metrics,
             job_registry,
@@ -260,35 +266,15 @@ impl SessionManager {
             tracing::debug!(error = %e, "prune_declined_missing failed");
         }
 
-        // Seeded worktree indexes are cheap to create, so they accumulate.
-        // Drop the ones whose checkout is gone. delete_repo_by_hash already
-        // cancels the watcher, clears the locks, and removes the data dir.
-        match self.registry.list_seeded_missing() {
-            Ok(doomed) => {
-                for entry in doomed {
-                    let hash = RepoRegistry::path_hash(&entry.path);
-                    match self.delete_repo_by_hash(&hash).await {
-                        Ok(Some(_)) => tracing::info!(
-                            repo = %entry.path,
-                            data_dir = %entry.data_dir,
-                            "pruned seeded worktree index whose checkout was removed"
-                        ),
-                        Ok(None) => {}
-                        Err(error) => tracing::warn!(
-                            repo = %entry.path,
-                            %error,
-                            "failed to prune seeded worktree index"
-                        ),
-                    }
-                }
-            }
-            Err(error) => tracing::debug!(%error, "list_seeded_missing failed"),
-        }
-
         let ttl_secs = self.standalone_config.warm_ttl_seconds;
         if ttl_secs == 0 {
             return;
         }
+
+        // Deliberately after the TTL early return: a deployment configured never
+        // to evict a warm repo must never delete one of its indexes either.
+        self.prune_vanished_seeded_indexes().await;
+
         let ttl = Duration::from_secs(ttl_secs);
 
         // Collect keys to evict without holding DashMap shard locks during async work.
@@ -325,6 +311,83 @@ impl SessionManager {
                 ttl_secs,
                 "Evicted idle repo from session cache"
             );
+        }
+    }
+
+    /// Delete seeded worktree indexes whose checkout is gone.
+    ///
+    /// Seeded indexes are cheap to create, so they accumulate; this is what keeps
+    /// `~/.code-intelligence/repos/` from filling up with dead worktrees.
+    /// `delete_repo_by_hash` cancels the watcher, removes the data dir, and drops
+    /// the registry entry, so three guards stand in front of it:
+    ///
+    /// - only entries the daemon seeded are eligible, via `list_seeded_missing`;
+    /// - never one with a running job, whose `SqliteStore` and Tantivy writer are
+    ///   live and would rebuild a partial data dir right after the removal,
+    ///   leaving artifacts that block this worktree from ever being seeded again;
+    /// - and only on the second consecutive sweep that finds the checkout absent,
+    ///   so a repo on a volume that unmounts for a minute survives.
+    ///
+    /// The absence observations live in memory only. A restart forgets them, which
+    /// costs one extra sweep before a dead worktree is collected.
+    async fn prune_vanished_seeded_indexes(&self) {
+        let missing = match self.registry.list_seeded_missing() {
+            Ok(missing) => missing,
+            Err(error) => {
+                tracing::debug!(%error, "list_seeded_missing failed");
+                return;
+            }
+        };
+
+        // Forget observations for checkouts that came back, and for entries that
+        // are no longer registered at all.
+        let still_missing: std::collections::HashSet<&str> =
+            missing.iter().map(|entry| entry.path.as_str()).collect();
+        self.seeded_absent_once
+            .retain(|path, _| still_missing.contains(path.as_str()));
+
+        for entry in &missing {
+            let hash = RepoRegistry::path_hash(&entry.path);
+            if let Some(job) = jobs::most_recent_running_for_repo(&self.job_registry, &hash) {
+                tracing::debug!(
+                    repo = %entry.path,
+                    job = %job.id,
+                    "not pruning a seeded worktree index while a job is running against it"
+                );
+                continue;
+            }
+
+            // First sighting only arms the deletion; the next sweep performs it.
+            if self
+                .seeded_absent_once
+                .insert(entry.path.clone(), Instant::now())
+                .is_none()
+            {
+                tracing::debug!(
+                    repo = %entry.path,
+                    "seeded worktree checkout is missing, pruning it if it is still missing next sweep"
+                );
+                continue;
+            }
+
+            match self.delete_repo_by_hash(&hash).await {
+                Ok(Some(_)) => {
+                    self.seeded_absent_once.remove(&entry.path);
+                    tracing::info!(
+                        repo = %entry.path,
+                        data_dir = %entry.data_dir,
+                        "pruned seeded worktree index whose checkout was removed"
+                    );
+                }
+                Ok(None) => {
+                    self.seeded_absent_once.remove(&entry.path);
+                }
+                Err(error) => tracing::warn!(
+                    repo = %entry.path,
+                    %error,
+                    "failed to prune seeded worktree index"
+                ),
+            }
         }
     }
 

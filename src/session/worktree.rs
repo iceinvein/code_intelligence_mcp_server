@@ -114,6 +114,11 @@ pub fn seed_index_from_base(plan: &SeedPlan) -> Result<()> {
     }
     let dst_db = plan.worktree_data_dir.join(DB_FILE);
 
+    // The copy is not atomic across stores: SQLite is snapshotted here and the
+    // search directories are cloned below, seconds later for a large index.
+    // Record where the base stands first so that window can be checked.
+    let generation_before = read_base_generation(&src_db)?;
+
     // A separate connection is deliberate: it reads the base through WAL
     // without contending on the live store's write mutex.
     let src_conn = rusqlite::Connection::open(src_db.as_std_path())
@@ -133,8 +138,67 @@ pub fn seed_index_from_base(plan: &SeedPlan) -> Result<()> {
         }
     }
 
+    ensure_base_unchanged(&src_db, &generation_before)?;
+
     rewrite_seeded_db(plan, &dst_db)?;
     validate_seeded_index(&plan.worktree_data_dir)?;
+    Ok(())
+}
+
+/// Where the base index stands, as far as anything the seed copies is concerned.
+///
+/// `index_runs` alone would be too late: an index pass records its run row only
+/// after every store write, so a pass that commits symbols inside the clone
+/// window but finishes after it would leave that row untouched during the
+/// window. `symbols`' highest rowid moves with the writes themselves, because
+/// replacing a file's symbols deletes and re-inserts them, and the fingerprint
+/// counters catch a restamp-only pass.
+#[derive(Debug, PartialEq, Eq)]
+struct BaseGeneration {
+    last_index_run_id: i64,
+    symbols: i64,
+    last_symbol_rowid: i64,
+    fingerprints: i64,
+    fingerprints_updated_at: i64,
+}
+
+/// Read the base's write state on its own short-lived connection, so each read
+/// sees the latest committed data rather than a snapshot the seed is holding.
+fn read_base_generation(db: &Utf8Path) -> Result<BaseGeneration> {
+    let conn = rusqlite::Connection::open(db.as_std_path())
+        .with_context(|| format!("Failed to open base index at {db}"))?;
+    let scalar = |sql: &str| -> Result<i64> {
+        conn.query_row(sql, [], |row| row.get(0))
+            .with_context(|| format!("Failed to read base index generation: {sql}"))
+    };
+    Ok(BaseGeneration {
+        last_index_run_id: scalar("SELECT COALESCE(MAX(id), 0) FROM index_runs")?,
+        symbols: scalar("SELECT COUNT(*) FROM symbols")?,
+        last_symbol_rowid: scalar("SELECT COALESCE(MAX(rowid), 0) FROM symbols")?,
+        fingerprints: scalar("SELECT COUNT(*) FROM file_fingerprints")?,
+        fingerprints_updated_at: scalar(
+            "SELECT COALESCE(MAX(updated_at), 0) FROM file_fingerprints",
+        )?,
+    })
+}
+
+/// Fail the seed when the base index moved while it was being cloned.
+///
+/// The stores are copied at different instants, so an index pass committing in
+/// between would leave the worktree's SQLite describing one revision of a file
+/// and its Tantivy index another. Nothing downstream can repair or even notice
+/// that: the worktree's checkout still matches the copied fingerprint, so the
+/// delta pass skips the file, BM25 keeps returning symbol ids SQLite no longer
+/// has, and hydration silently misses. Failing here costs one full index, which
+/// is the correct outcome.
+fn ensure_base_unchanged(db: &Utf8Path, before: &BaseGeneration) -> Result<()> {
+    let after = read_base_generation(db)?;
+    if after != *before {
+        bail!(
+            "base index was written while it was being cloned, so its stores would \
+             disagree (before {before:?}, after {after:?})"
+        );
+    }
     Ok(())
 }
 
@@ -881,6 +945,88 @@ mod tests {
             vectors_missing.contains(VECTORS_DIR),
             "expected the missing vector store to be named, got: {vectors_missing}"
         );
+    }
+
+    /// The clone window guard: every write the seed cares about must move the
+    /// generation, and a quiescent base must not.
+    ///
+    /// Forcing a real write *between* the snapshot and the directory clones would
+    /// need a hook inside `seed_index_from_base`, so the two halves are tested
+    /// where they are decided: this covers the detector, and the seeding tests
+    /// above cover the happy path running through it.
+    #[test]
+    fn base_generation_detects_every_write_the_clone_window_cares_about() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = utf8(temp.path());
+        let base_root = root.join("base");
+        std::fs::create_dir_all(base_root.as_std_path()).unwrap();
+        let base_data = root.join("data/base");
+        seeded_base_data_dir(&base_data, &base_root);
+        let db = base_data.join(DB_FILE);
+
+        let quiescent = read_base_generation(&db).unwrap();
+        ensure_base_unchanged(&db, &quiescent)
+            .expect("a base nobody wrote to must not fail the seed");
+
+        // A finished index pass.
+        let store = SqliteStore::open(&db).unwrap();
+        {
+            let conn = store.write().unwrap();
+            conn.execute(
+                "INSERT INTO index_runs(started_at, duration_ms, files_scanned, files_indexed, \
+                 files_skipped, files_unchanged, files_deleted, symbols_indexed) \
+                 VALUES (9, 1, 1, 1, 0, 0, 0, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let after_run = read_base_generation(&db).unwrap();
+        assert_ne!(after_run.last_index_run_id, quiescent.last_index_run_id);
+        let error = ensure_base_unchanged(&db, &quiescent)
+            .expect_err("a completed index pass must fail the seed");
+        assert!(
+            format!("{error:#}").contains("written while it was being cloned"),
+            "unexpected error: {error:#}"
+        );
+
+        // Symbols written mid-pass, before any run row exists.
+        {
+            let conn = store.write().unwrap();
+            conn.execute(
+                r#"
+INSERT INTO symbols(
+  id, file_path, language, kind, name, exported,
+  start_byte, end_byte, start_line, end_line, text
+)
+VALUES ('sym-mid-pass', 'lib.rs', 'rust', 'function', 'mid_pass', 0, 0, 1, 1, 2, 'fn f() {}')
+"#,
+                [],
+            )
+            .unwrap();
+        }
+        let after_symbol = read_base_generation(&db).unwrap();
+        assert_ne!(after_symbol.last_symbol_rowid, after_run.last_symbol_rowid);
+        assert_ne!(after_symbol.symbols, after_run.symbols);
+        assert!(ensure_base_unchanged(&db, &after_run).is_err());
+
+        // A restamp-only pass, which writes nothing but fingerprints.
+        {
+            let conn = store.write().unwrap();
+            conn.execute(
+                "UPDATE file_fingerprints SET mtime_ns = mtime_ns + 1, \
+                 updated_at = updated_at + 1 WHERE file_path = 'lib.rs'",
+                [],
+            )
+            .unwrap();
+        }
+        let after_restamp = read_base_generation(&db).unwrap();
+        assert_ne!(
+            after_restamp.fingerprints_updated_at, after_symbol.fingerprints_updated_at,
+            "a restamp must move the generation too"
+        );
+        assert!(ensure_base_unchanged(&db, &after_symbol).is_err());
+        ensure_base_unchanged(&db, &after_restamp)
+            .expect("the generation just read must compare equal");
     }
 
     #[test]

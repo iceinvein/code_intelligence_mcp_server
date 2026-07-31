@@ -15,6 +15,8 @@ const REPO = {
   data_dir: "/data/demo",
   created_at: "x",
   last_accessed: "x",
+  path_exists: true,
+  seeded_from: null,
   activity: {
     running: false,
     current: null,

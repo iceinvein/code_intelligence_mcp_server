@@ -18,6 +18,10 @@ export type Repo = {
   data_dir: string;
   created_at: string;
   last_accessed: string;
+  /** False when the checkout no longer exists on disk. */
+  path_exists: boolean;
+  /** Base repo id when this index was cloned from another repo, else null. */
+  seeded_from: string | null;
   activity: RepoActivity;
 };
 

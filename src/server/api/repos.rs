@@ -38,6 +38,10 @@ pub(crate) async fn handle_repos(
                 "data_dir": e.data_dir,
                 "created_at": e.created_at,
                 "last_accessed": e.last_accessed,
+                // False means the checkout is gone. Seeded indexes get pruned
+                // automatically; anything else is the user's call to remove.
+                "path_exists": std::path::Path::new(&e.path).exists(),
+                "seeded_from": e.seeded_from,
                 "activity": activity,
             })
         })
@@ -596,6 +600,54 @@ mod tests {
 
         assert_eq!(activity["running"], false);
         assert_eq!(activity["latest_index_run"]["started_at_unix_s"], 456);
+    }
+
+    #[tokio::test]
+    async fn repos_response_flags_missing_paths_and_seeded_origin() {
+        let (temp, state) = crate::server::api::test_api_state().await;
+        let data_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+
+        let live = data_dir.join("live");
+        std::fs::create_dir_all(live.as_std_path()).unwrap();
+        state
+            .session_manager
+            .registry
+            .register(live.as_str())
+            .unwrap();
+
+        let gone = data_dir.join("gone");
+        std::fs::create_dir_all(gone.as_std_path()).unwrap();
+        state
+            .session_manager
+            .registry
+            .register(gone.as_str())
+            .unwrap();
+        state
+            .session_manager
+            .registry
+            .mark_seeded_from(gone.as_str(), "basehash")
+            .unwrap();
+        std::fs::remove_dir_all(gone.as_std_path()).unwrap();
+
+        let body = handle_repos(State(state)).await.unwrap().0;
+        let repos = body["repos"].as_array().unwrap();
+        assert_eq!(repos.len(), 2);
+
+        let by_path = |p: &str| {
+            repos
+                .iter()
+                .find(|r| r["path"].as_str() == Some(p))
+                .unwrap()
+                .clone()
+        };
+
+        let live_row = by_path(live.as_str());
+        assert_eq!(live_row["path_exists"], serde_json::json!(true));
+        assert_eq!(live_row["seeded_from"], serde_json::Value::Null);
+
+        let gone_row = by_path(gone.as_str());
+        assert_eq!(gone_row["path_exists"], serde_json::json!(false));
+        assert_eq!(gone_row["seeded_from"], serde_json::json!("basehash"));
     }
 
     #[test]

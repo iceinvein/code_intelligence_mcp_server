@@ -98,7 +98,25 @@ function RepoRow({ repo }: { repo: Repo }) {
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
         >
-          <div className="truncate text-sm text-foreground">{repo.name}</div>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-sm text-foreground">{repo.name}</span>
+            {!repo.path_exists ? (
+              <span
+                className="shrink-0 text-[0.625rem] uppercase tracking-[0.1em] text-fail"
+                title="Checkout no longer exists on disk"
+              >
+                stale
+              </span>
+            ) : null}
+            {repo.seeded_from ? (
+              <span
+                className="shrink-0 text-[0.625rem] uppercase tracking-[0.1em] text-primary"
+                title="Index was cloned from a base repository"
+              >
+                seeded
+              </span>
+            ) : null}
+          </div>
           <div className="truncate font-mono text-[0.6875rem] text-muted-foreground">{repo.path}</div>
         </button>
         <span className="hidden shrink-0 font-mono text-[0.6875rem] text-muted-foreground sm:inline">

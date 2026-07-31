@@ -52,22 +52,27 @@ pub fn resolve_base_repo(path: &Utf8Path) -> Option<Utf8PathBuf> {
     };
 
     // Canonicalize to collapse the `../..` before taking the parent, otherwise
-    // `parent()` would just strip one `..` component.
-    let common = std::fs::canonicalize(common).ok()?;
+    // `parent()` would just strip one `..` component. Through the project's own
+    // helper rather than `std::fs::canonicalize`, because the base this resolves
+    // to is looked up by exact string match against a registry key, and registry
+    // keys are produced by that helper: a future change to it would otherwise
+    // turn seeding off silently.
+    let common =
+        crate::path::canonicalize_existing_dir(&Utf8PathBuf::from_path_buf(common).ok()?).ok()?;
 
     // `common` is `<base>/.git`, so the base root is its parent.
     let base_root = common.parent()?;
-    if !base_root.is_dir() {
+    if !base_root.as_std_path().is_dir() {
         return None;
     }
 
     // Guard against a degenerate layout resolving back to the worktree itself.
-    let canonical_self = std::fs::canonicalize(path.as_std_path()).ok()?;
+    let canonical_self = crate::path::canonicalize_existing_dir(path).ok()?;
     if base_root == canonical_self {
         return None;
     }
 
-    Utf8PathBuf::from_path_buf(base_root.to_path_buf()).ok()
+    Some(base_root.to_path_buf())
 }
 
 /// Everything `seed_index_from_base` needs, resolved up front.
@@ -153,11 +158,20 @@ pub fn seed_index_from_base(plan: &SeedPlan) -> Result<()> {
 /// window. `symbols`' highest rowid moves with the writes themselves, because
 /// replacing a file's symbols deletes and re-inserts them, and the fingerprint
 /// counters catch a restamp-only pass.
+///
+/// The row counters alone are not content-sensitive, though: `symbols` is an
+/// ordinary rowid table and `write_batch` replaces a file with a DELETE plus a
+/// re-INSERT in one transaction, so rowid reuse can leave `COUNT(*)` and
+/// `MAX(rowid)` identical when the replaced file owns the top rowid block and
+/// its symbol count did not change. `SUM(end_byte)` closes that, because a
+/// rewritten file's symbol spans move. It costs a scan of `symbols` on each of
+/// the two reads, which is cheap next to the clone it is guarding.
 #[derive(Debug, PartialEq, Eq)]
 struct BaseGeneration {
     last_index_run_id: i64,
     symbols: i64,
     last_symbol_rowid: i64,
+    symbol_end_byte_sum: i64,
     fingerprints: i64,
     fingerprints_updated_at: i64,
 }
@@ -175,6 +189,7 @@ fn read_base_generation(db: &Utf8Path) -> Result<BaseGeneration> {
         last_index_run_id: scalar("SELECT COALESCE(MAX(id), 0) FROM index_runs")?,
         symbols: scalar("SELECT COUNT(*) FROM symbols")?,
         last_symbol_rowid: scalar("SELECT COALESCE(MAX(rowid), 0) FROM symbols")?,
+        symbol_end_byte_sum: scalar("SELECT COALESCE(SUM(end_byte), 0) FROM symbols")?,
         fingerprints: scalar("SELECT COUNT(*) FROM file_fingerprints")?,
         fingerprints_updated_at: scalar(
             "SELECT COALESCE(MAX(updated_at), 0) FROM file_fingerprints",
@@ -349,6 +364,12 @@ fn rewrite_seeded_db(plan: &SeedPlan, dst_db: &Utf8Path) -> Result<()> {
         let Some(suffix) = trimmed.strip_prefix(base_prefix.as_str()) else {
             continue;
         };
+        // The prefix has to end on a path component, or a base rooted at `/a/b`
+        // would claim a sibling row rooted at `/a/bc`. Unreachable with the roots
+        // discovery produces today, but this rewrites primary keys.
+        if !(suffix.is_empty() || suffix.starts_with('/')) {
+            continue;
+        }
         // Derive the id (and name) through the same helper the indexer uses, so
         // the rewritten row is the one its next `upsert_repository` replaces
         // rather than a duplicate.
@@ -371,11 +392,14 @@ fn rewrite_seeded_db(plan: &SeedPlan, dst_db: &Utf8Path) -> Result<()> {
 
     // Absolute manifest paths are the only other rooted values. An exact prefix
     // comparison rather than LIKE, whose `_` and `%` would be wildcards in a
-    // path.
+    // path, and the prefix must end on a path component so a base rooted at
+    // `/a/b` cannot claim a manifest under `/a/bc`.
     tx.execute(
         "UPDATE packages
          SET manifest_path = ?1 || substr(manifest_path, length(?2) + 1)
-         WHERE substr(manifest_path, 1, length(?2)) = ?2",
+         WHERE substr(manifest_path, 1, length(?2)) = ?2
+           AND (length(manifest_path) = length(?2)
+                OR substr(manifest_path, length(?2) + 1, 1) = '/')",
         rusqlite::params![wt_prefix, base_prefix],
     )?;
 
@@ -432,6 +456,15 @@ fn backfill_content_hashes(tx: &rusqlite::Transaction<'_>, base_root: &Utf8Path)
     }
 
     let pending_count = pending.len();
+    // Said up front because this stats, reads, and hashes every one of those files
+    // while holding the base repo's init lock: on a large legacy base it is tens of
+    // seconds during which a fresh bind of the base waits. One-time and bounded,
+    // but a slow first worktree bind should be explicable while it happens.
+    tracing::info!(
+        base = %base_root,
+        pending = pending_count,
+        "backfilling content hashes from the base working tree"
+    );
     let mut filled = 0usize;
     for (rel, mtime_ns, size_bytes) in pending {
         let abs = base_root.join(&rel);
@@ -462,9 +495,18 @@ fn backfill_content_hashes(tx: &rusqlite::Transaction<'_>, base_root: &Utf8Path)
 /// editor on the base repo, so a write landing between the stat and the read
 /// would otherwise store a hash describing content the fingerprint never
 /// referred to, and the seeded index would call a changed file unchanged.
+///
+/// The stat comparison goes through the indexer's own `file_fingerprint`, which
+/// is what wrote the stored values. A second copy of that derivation here would
+/// have to stay byte-identical to it forever, and if it drifted the backfill
+/// would silently stop matching anything.
 fn verified_content_hash(abs: &Utf8Path, mtime_ns: i64, size_bytes: u64) -> Option<String> {
-    let before = std::fs::metadata(abs.as_std_path()).ok()?;
-    if modified_ns(&before) != mtime_ns || before.len() != size_bytes {
+    let matches_stat = |fp: &crate::indexer::pipeline::utils::FileFingerprint| {
+        fp.mtime_ns == mtime_ns && fp.size_bytes == size_bytes
+    };
+
+    let before = crate::indexer::pipeline::utils::file_fingerprint(abs.as_std_path()).ok()?;
+    if !matches_stat(&before) {
         return None;
     }
 
@@ -475,21 +517,12 @@ fn verified_content_hash(abs: &Utf8Path, mtime_ns: i64, size_bytes: u64) -> Opti
 
     // Re-stat rather than trust the pre-read stat: a same-size write across the
     // read would pass the length check above but move the mtime.
-    let after = std::fs::metadata(abs.as_std_path()).ok()?;
-    if modified_ns(&after) != mtime_ns || after.len() != size_bytes {
+    let after = crate::indexer::pipeline::utils::file_fingerprint(abs.as_std_path()).ok()?;
+    if !matches_stat(&after) {
         return None;
     }
 
     Some(crate::indexer::pipeline::utils::content_hash_hex(&bytes))
-}
-
-/// A file's mtime as nanoseconds since the epoch, saturating at `i64::MAX`.
-fn modified_ns(meta: &std::fs::Metadata) -> i64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1027,6 +1060,38 @@ VALUES ('sym-mid-pass', 'lib.rs', 'rust', 'function', 'mid_pass', 0, 0, 1, 1, 2,
         assert!(ensure_base_unchanged(&db, &after_symbol).is_err());
         ensure_base_unchanged(&db, &after_restamp)
             .expect("the generation just read must compare equal");
+
+        // A file replaced in place, with the same number of symbols. `symbols` is
+        // an ordinary rowid table, so a DELETE plus re-INSERT can hand back the
+        // rowids it just freed: the count and the highest rowid then come back
+        // identical and only the spans move. Simulated here by moving one span,
+        // which is precisely the state those two counters cannot distinguish.
+        {
+            let conn = store.write().unwrap();
+            conn.execute(
+                "UPDATE symbols SET end_byte = end_byte + 7 WHERE id = 'sym-mid-pass'",
+                [],
+            )
+            .unwrap();
+        }
+        let after_rewrite = read_base_generation(&db).unwrap();
+        assert_eq!(after_rewrite.symbols, after_restamp.symbols);
+        assert_eq!(
+            after_rewrite.last_symbol_rowid, after_restamp.last_symbol_rowid,
+            "the counters this case exists for must be unchanged"
+        );
+        assert_eq!(
+            after_rewrite.fingerprints_updated_at, after_restamp.fingerprints_updated_at,
+            "and the fingerprint clock must not be what catches it"
+        );
+        assert_ne!(
+            after_rewrite.symbol_end_byte_sum, after_restamp.symbol_end_byte_sum,
+            "the content-sensitive scalar must move"
+        );
+        assert!(
+            ensure_base_unchanged(&db, &after_restamp).is_err(),
+            "a symbol rewritten in place must still fail the seed"
+        );
     }
 
     #[test]
@@ -1036,9 +1101,9 @@ VALUES ('sym-mid-pass', 'lib.rs', 'rust', 'function', 'mid_pass', 0, 0, 1, 1, 2,
         let path = root.join("lib.rs");
         let body = "pub fn probe() -> usize { 1 }\n";
         std::fs::write(path.as_std_path(), body).unwrap();
-        let meta = std::fs::metadata(path.as_std_path()).unwrap();
-        let mtime_ns = modified_ns(&meta);
-        let size = meta.len();
+        let stat = crate::indexer::pipeline::utils::file_fingerprint(path.as_std_path()).unwrap();
+        let mtime_ns = stat.mtime_ns;
+        let size = stat.size_bytes;
 
         assert_eq!(
             verified_content_hash(&path, mtime_ns, size).as_deref(),

@@ -4,9 +4,6 @@ mod initial_index;
 mod worktree;
 
 pub use initial_index::RepoAccess;
-pub use worktree::{
-    data_dir_has_index_artifacts, resolve_base_repo, seed_index_from_base, SeedPlan,
-};
 
 use crate::{
     config::StandaloneConfig,
@@ -587,6 +584,19 @@ impl SessionManager {
         // 2. Remove on-disk data directory. Missing dirs are treated as
         //    success; permission errors propagate and leave the registry entry
         //    intact so the user can retry from the API/UI.
+        //
+        //    The prune sweep calls this with nobody watching, so containment is
+        //    structural rather than conventional: a bug in how `data_dir` is
+        //    derived must not be able to rmtree outside the managed tree.
+        //    `starts_with` compares whole components, so a sibling directory
+        //    sharing a name prefix does not pass.
+        let repos_dir = self.registry.repos_dir();
+        if !entry.data_dir.starts_with(repos_dir) {
+            anyhow::bail!(
+                "refusing to delete '{}': it is outside the managed repo directory '{repos_dir}'",
+                entry.data_dir
+            );
+        }
         let data_dir = entry.data_dir.as_std_path();
         match std::fs::remove_dir_all(data_dir) {
             Ok(_) => {}
@@ -1246,6 +1256,44 @@ mod tests {
         assert!(
             manager.registry.get_by_hash(&hash).unwrap().is_some(),
             "registry entry must remain so a failed data-dir deletion can be retried"
+        );
+    }
+
+    /// The prune sweep deletes data directories on its own, so a `data_dir` that
+    /// somehow points outside the managed tree must be refused rather than
+    /// rmtree'd. Simulated by editing the persisted entry, which is the only way
+    /// such a path could arise.
+    #[tokio::test]
+    async fn delete_repo_by_hash_refuses_a_data_dir_outside_the_repos_dir() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+        manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+
+        let outside = data_dir.join("not-a-repo-data-dir");
+        std::fs::create_dir_all(outside.as_std_path()).unwrap();
+        std::fs::write(outside.join("precious").as_std_path(), b"keep me").unwrap();
+
+        let registry_path = data_dir.join("registry.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(registry_path.as_std_path()).unwrap()).unwrap();
+        json["repos"][&hash]["data_dir"] = serde_json::Value::String(outside.to_string());
+        std::fs::write(registry_path.as_std_path(), json.to_string()).unwrap();
+
+        let err = manager.delete_repo_by_hash(&hash).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("outside the managed repo directory"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            outside.join("precious").as_std_path().is_file(),
+            "nothing outside the managed tree may be removed"
+        );
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "the entry must survive so the refusal is visible"
         );
     }
 

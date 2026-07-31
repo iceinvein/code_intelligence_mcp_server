@@ -136,9 +136,22 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
                 Ok((mtime, size as u64, hash))
             },
         )
-        .optional()
-        .ok()
-        .flatten();
+        .optional();
+    let stored = match stored {
+        Ok(stored) => stored,
+        // A real SQL error reads the same as "no stored row" from here on, which
+        // means a full reparse of the whole tree. Say so, or a database reached
+        // before `init()` added `content_hash` looks like a mysteriously cold
+        // index rather than a schema problem.
+        Err(error) => {
+            tracing::debug!(
+                file = %rel,
+                %error,
+                "could not read the stored fingerprint, treating the file as new"
+            );
+            None
+        }
+    };
 
     if let Some((mtime, size, _)) = &stored {
         if *mtime == fp.mtime_ns && *size == fp.size_bytes {

@@ -114,6 +114,12 @@ impl RepoRegistry {
         }
     }
 
+    /// The directory every per-repo data directory lives under. Exposed so
+    /// callers that delete a data directory can check containment first.
+    pub(crate) fn repos_dir(&self) -> &crate::path::Utf8Path {
+        self.repos_dir.as_path()
+    }
+
     /// Compute deterministic 16-character hash of a repository path
     pub fn path_hash(path: &str) -> String {
         let mut hasher = Sha256::new();

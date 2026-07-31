@@ -49,7 +49,7 @@ use self::utils::{
 /// Version of persisted extraction semantics. Increment whenever existing
 /// symbols, identities, or edges cannot be trusted and every source file must
 /// be parsed again. The metadata key retains its historical graph name.
-pub const GRAPH_INDEX_VERSION: &str = "5";
+pub(crate) const GRAPH_INDEX_VERSION: &str = "5";
 
 fn elapsed_ms(elapsed: Duration) -> u64 {
     elapsed.as_millis().min(u64::MAX as u128) as u64

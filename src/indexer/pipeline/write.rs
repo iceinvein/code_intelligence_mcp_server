@@ -285,10 +285,12 @@ pub fn write_batch(
             "Removed usage examples whose symbol endpoints do not exist"
         );
     }
-    // PageRank and clustering write these from the previous pass's symbol ids,
-    // so a renamed or removed symbol leaves a row behind that
-    // `validate_graph_integrity` would reject. Both are index-time artifacts and
-    // are recomputed later in this run.
+    // PageRank and clustering keyed these rows on the previous pass's symbol ids,
+    // so a renamed or removed symbol leaves one behind that
+    // `validate_graph_integrity` would reject. Deleting loses nothing: a row whose
+    // symbol is gone describes nothing at all, and the symbols that remain have
+    // their rows rewritten anyway, clusters by the embedding backfill and
+    // `symbol_metrics` by the PageRank pass every run with indexed files reaches.
     let orphaned_metrics = queries::metrics::delete_orphan_symbol_metrics(conn)?;
     if orphaned_metrics > 0 {
         tracing::debug!(

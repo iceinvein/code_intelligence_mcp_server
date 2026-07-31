@@ -260,6 +260,31 @@ impl SessionManager {
             tracing::debug!(error = %e, "prune_declined_missing failed");
         }
 
+        // Seeded worktree indexes are cheap to create, so they accumulate.
+        // Drop the ones whose checkout is gone. delete_repo_by_hash already
+        // cancels the watcher, clears the locks, and removes the data dir.
+        match self.registry.list_seeded_missing() {
+            Ok(doomed) => {
+                for entry in doomed {
+                    let hash = RepoRegistry::path_hash(&entry.path);
+                    match self.delete_repo_by_hash(&hash).await {
+                        Ok(Some(_)) => tracing::info!(
+                            repo = %entry.path,
+                            data_dir = %entry.data_dir,
+                            "pruned seeded worktree index whose checkout was removed"
+                        ),
+                        Ok(None) => {}
+                        Err(error) => tracing::warn!(
+                            repo = %entry.path,
+                            %error,
+                            "failed to prune seeded worktree index"
+                        ),
+                    }
+                }
+            }
+            Err(error) => tracing::debug!(%error, "list_seeded_missing failed"),
+        }
+
         let ttl_secs = self.standalone_config.warm_ttl_seconds;
         if ttl_secs == 0 {
             return;

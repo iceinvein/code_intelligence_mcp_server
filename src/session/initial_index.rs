@@ -7,6 +7,7 @@ use crate::{
     storage::sqlite::SqliteStore,
 };
 use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
 use std::{sync::Arc, time::SystemTime};
 
 pub enum RepoAccess {
@@ -23,11 +24,18 @@ impl SessionManager {
 
         let entry = match self.registry.get(canonical.as_str())? {
             Some(entry) => entry,
-            None if self.standalone_config.index_consent_required => {
-                self.record_pending(canonical.as_path());
-                return Ok(RepoAccess::NeedsApproval);
+            None => {
+                // A worktree of an indexed repo can reuse that index, which is
+                // cheap enough that prompting buys the user nothing.
+                if let Some(access) = self.try_seed_worktree(&canonical).await? {
+                    return Ok(access);
+                }
+                if self.standalone_config.index_consent_required {
+                    self.record_pending(canonical.as_path());
+                    return Ok(RepoAccess::NeedsApproval);
+                }
+                self.registry.approve_initial_index(canonical.as_str())?
             }
-            None => self.registry.approve_initial_index(canonical.as_str())?,
         };
 
         if entry.consent == IndexConsent::Declined {
@@ -45,6 +53,9 @@ impl SessionManager {
         }
 
         if entry.initial_index_approved_at.is_none() {
+            if let Some(access) = self.try_seed_worktree(&canonical).await? {
+                return Ok(access);
+            }
             if self.standalone_config.index_consent_required {
                 self.record_pending(canonical.as_path());
                 return Ok(RepoAccess::NeedsApproval);
@@ -53,6 +64,236 @@ impl SessionManager {
         }
 
         self.start_or_get_initial_index(&canonical).await
+    }
+
+    /// Decide whether `worktree` can be seeded from an already-indexed base.
+    ///
+    /// Every precondition failure returns `None`, which sends the caller down
+    /// the normal consent and full-index path.
+    fn plan_worktree_seed(
+        &self,
+        worktree: &Utf8PathBuf,
+    ) -> Result<Option<crate::session::worktree::SeedPlan>> {
+        let Some(base_path) = crate::session::worktree::resolve_base_repo(worktree.as_path())
+        else {
+            return Ok(None);
+        };
+
+        let Some(base_entry) = self.registry.get(base_path.as_str())? else {
+            tracing::debug!(base = %base_path, "worktree base is not registered, not seeding");
+            return Ok(None);
+        };
+        if base_entry.initial_index_completed_at.is_none() {
+            tracing::debug!(base = %base_path, "worktree base has no completed index, not seeding");
+            return Ok(None);
+        }
+        let base_db = base_entry.data_dir.join("code-intelligence.db");
+        if !base_db.as_std_path().is_file() {
+            return Ok(None);
+        }
+
+        // A base built by a different extraction format would be cleared and
+        // fully rebuilt on first use, so seeding from it saves nothing.
+        let base_version = {
+            let conn = rusqlite::Connection::open(base_db.as_std_path())
+                .with_context(|| format!("Failed to open base index at {base_db}"))?;
+            conn.query_row(
+                "SELECT value FROM index_metadata WHERE key = 'graph_index_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("Failed to read base graph index version")?
+        };
+        if base_version.as_deref() != Some(crate::indexer::pipeline::GRAPH_INDEX_VERSION) {
+            tracing::info!(
+                base = %base_path,
+                base_version = ?base_version,
+                current_version = %crate::indexer::pipeline::GRAPH_INDEX_VERSION,
+                "worktree base index predates the current graph format, not seeding"
+            );
+            return Ok(None);
+        }
+
+        // Derive the per-repo data directory from the base's own, so it always
+        // lands where this registry puts things rather than where the config
+        // says it should.
+        let Some(repos_dir) = base_entry.data_dir.parent() else {
+            tracing::warn!(
+                base_data_dir = %base_entry.data_dir,
+                "base data dir has no parent directory, not seeding"
+            );
+            return Ok(None);
+        };
+        // Whether the target directory is free is deliberately NOT checked here:
+        // it has to be checked under the locks `try_seed_worktree` takes, or two
+        // first binds of the same worktree would both decide to seed it.
+        let worktree_data_dir = repos_dir.join(RepoRegistry::path_hash(worktree.as_str()));
+
+        Ok(Some(crate::session::worktree::SeedPlan {
+            base_repo_path: base_path.clone(),
+            base_repo_id: RepoRegistry::path_hash(base_path.as_str()),
+            base_data_dir: base_entry.data_dir.clone(),
+            worktree_path: worktree.clone(),
+            worktree_data_dir,
+        }))
+    }
+
+    /// Seed a worktree's index from its base, then start the normal first pass.
+    ///
+    /// Returns `Ok(None)` when there is nothing to seed from or when seeding
+    /// failed, in which case the caller falls through to the consent path.
+    /// Seeding is an optimization and never surfaces an error to the caller.
+    async fn try_seed_worktree(
+        self: &Arc<Self>,
+        canonical: &Utf8PathBuf,
+    ) -> Result<Option<RepoAccess>> {
+        let plan = match self.plan_worktree_seed(canonical) {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                tracing::warn!(worktree = %canonical, %error, "worktree seed planning failed");
+                return Ok(None);
+            }
+        };
+
+        // Hold the BASE repo's init lock so no other session can initialize its
+        // stores while we snapshot its Tantivy and LanceDB directories. It does
+        // not gate an already-running watcher pass on the base; a clone torn by
+        // one fails `seed_index_from_base`'s validation, and the error path below
+        // turns that into a normal full index.
+        let base_key = plan.base_repo_path.as_str().to_string();
+        let base_lock = self
+            .init_locks
+            .entry(base_key)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let base_guard = base_lock.lock().await;
+
+        // And the worktree's own, so only one bind at a time can decide to write
+        // into its data directory. This is the lock `get_or_create_runtime` uses,
+        // so holding it also keeps a concurrent bind from opening the half-cloned
+        // stores. Both guards go before the first index pass starts, because that
+        // path takes this same lock.
+        let worktree_lock = self
+            .init_locks
+            .entry(canonical.as_str().to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let worktree_guard = worktree_lock.lock().await;
+
+        // Now that nothing else can be seeding this worktree, check the target
+        // directory. Artifacts here mean another bind seeded it while we waited,
+        // or an earlier attempt left something behind. Either way it is not ours
+        // to overwrite, and it must not be treated as a seed failure: that path
+        // deletes the directory, which would destroy an index already in use.
+        if crate::session::worktree::data_dir_has_index_artifacts(&plan.worktree_data_dir) {
+            drop(worktree_guard);
+            drop(base_guard);
+            tracing::debug!(
+                worktree = %canonical,
+                "worktree data dir already holds index artifacts, not seeding"
+            );
+            // An approved entry means another bind owns this index: it seeded and
+            // approved the worktree while we waited, so join its lifecycle rather
+            // than asking the user about a repo that is already indexing.
+            // Anything else is not ours to interpret, so hand it back to the
+            // caller's normal consent handling.
+            let owned_by_another_bind = self
+                .registry
+                .get(canonical.as_str())?
+                .is_some_and(|entry| entry.initial_index_approved_at.is_some());
+            if owned_by_another_bind {
+                return Ok(Some(self.start_or_get_initial_index(canonical).await?));
+            }
+            return Ok(None);
+        }
+
+        // `register` creates the (empty) data directory the clone writes into.
+        // Whether the entry is ours decides whether the failure path may drop it.
+        let entry_is_ours = self.registry.get(canonical.as_str())?.is_none();
+        self.registry
+            .register(canonical.as_str())
+            .context("Failed to register worktree before seeding")?;
+
+        let blocking_plan = plan.clone();
+        let seeded = tokio::task::spawn_blocking(move || {
+            crate::session::worktree::seed_index_from_base(&blocking_plan)
+        })
+        .await
+        .context("Join error in worktree seed task")?;
+
+        if let Err(error) = seeded {
+            tracing::warn!(
+                worktree = %canonical,
+                base = %plan.base_repo_path,
+                %error,
+                "worktree index seeding failed, falling back to a full index"
+            );
+            // Leave nothing half-built for the fallback path to trip over: a
+            // surviving data dir would hold index artifacts and so block every
+            // later seed attempt for this worktree.
+            self.discard_failed_seed(canonical, &plan.worktree_data_dir, entry_is_ours);
+            return Ok(None);
+        }
+
+        self.registry
+            .mark_seeded_from(canonical.as_str(), &plan.base_repo_id)
+            .context("Failed to record worktree seed provenance")?;
+        self.registry
+            .approve_initial_index(canonical.as_str())
+            .context("Failed to auto-approve seeded worktree")?;
+        // The worktree may have asked for consent on an earlier bind, before its
+        // base was indexed. It is not waiting on the user any more.
+        self.clear_pending(&RepoRegistry::path_hash(canonical.as_str()));
+
+        tracing::info!(
+            worktree = %canonical,
+            base = %plan.base_repo_path,
+            "seeded worktree index from base repo, indexing the delta only"
+        );
+
+        // Release both before the first pass below, which takes the worktree's
+        // own locks.
+        drop(worktree_guard);
+        drop(base_guard);
+
+        Ok(Some(self.start_or_get_initial_index(canonical).await?))
+    }
+
+    /// Undo a failed seed: remove the partial data directory, and the registry
+    /// entry too when the seed is what created it. Best-effort, since the caller
+    /// is already on its way to a full index either way.
+    ///
+    /// The directory always goes: whatever the clone managed to write counts as
+    /// index artifacts, which would block every later seed of this worktree.
+    /// `init_repo_state` recreates the directory it needs.
+    fn discard_failed_seed(
+        &self,
+        canonical: &Utf8PathBuf,
+        data_dir: &Utf8Path,
+        entry_is_ours: bool,
+    ) {
+        match std::fs::remove_dir_all(data_dir.as_std_path()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                data_dir = %data_dir,
+                %error,
+                "could not remove the data dir left by a failed seed; \
+                 this worktree will not be seedable until it is deleted"
+            ),
+        }
+        if !entry_is_ours {
+            return;
+        }
+        if let Err(error) = self.registry.remove(canonical.as_str()) {
+            tracing::warn!(
+                worktree = %canonical,
+                %error,
+                "could not drop the registry entry created for a failed seed"
+            );
+        }
     }
 
     pub async fn approve_and_start_initial_index(

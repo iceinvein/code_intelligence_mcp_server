@@ -4,7 +4,9 @@ mod initial_index;
 mod worktree;
 
 pub use initial_index::RepoAccess;
-pub use worktree::resolve_base_repo;
+pub use worktree::{
+    data_dir_has_index_artifacts, resolve_base_repo, seed_index_from_base, SeedPlan,
+};
 
 use crate::{
     config::StandaloneConfig,

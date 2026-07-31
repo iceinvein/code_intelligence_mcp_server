@@ -213,7 +213,7 @@ pub fn write_batch(
                 &file.rel_path,
                 file.fingerprint.mtime_ns,
                 file.fingerprint.size_bytes,
-                None,
+                Some(&file.content_hash),
             )
             .with_context(|| {
                 format!(
@@ -453,6 +453,7 @@ mod tests {
                 mtime_ns: 123456789,
                 size_bytes: 100,
             },
+            content_hash: "0".repeat(32),
             language: "rust".to_string(),
             symbol_rows: vec![
                 SymbolRow {
@@ -579,6 +580,7 @@ mod tests {
                     mtime_ns: 123456789 + i as i64,
                     size_bytes: 100,
                 },
+                content_hash: "0".repeat(32),
                 language: "rust".to_string(),
                 symbol_rows: vec![SymbolRow {
                     id: symbol_id.clone(),
@@ -691,6 +693,7 @@ mod tests {
                 mtime_ns: 123456789,
                 size_bytes: 100,
             },
+            content_hash: "0".repeat(32),
             language: "rust".to_string(),
             symbol_rows: vec![SymbolRow {
                 id: "s1".to_string(),
@@ -737,6 +740,7 @@ mod tests {
                 mtime_ns: 987654321,
                 size_bytes: 200,
             },
+            content_hash: "0".repeat(32),
             language: "rust".to_string(),
             symbol_rows: vec![
                 SymbolRow {

@@ -145,7 +145,6 @@ impl SessionManager {
         self.repos.len()
     }
 
-    #[cfg(test)]
     pub async fn get_or_create_repo(&self, repo_path: &Utf8PathBuf) -> Result<Arc<AppState>> {
         Ok(self.get_or_create_runtime(repo_path).await?.state.clone())
     }

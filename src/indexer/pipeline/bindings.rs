@@ -441,6 +441,7 @@ mod tests {
                 mtime_ns: 0,
                 size_bytes: 0,
             },
+            content_hash: "0".repeat(32),
             language: "typescript".into(),
             symbol_rows: vec![symbol(
                 "barrel-root",

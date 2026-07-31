@@ -1,8 +1,10 @@
 //! Session management for standalone mode: maps repo paths to per-repo AppState instances.
 
 mod initial_index;
+mod worktree;
 
 pub use initial_index::RepoAccess;
+pub use worktree::resolve_base_repo;
 
 use crate::{
     config::StandaloneConfig,

@@ -110,3 +110,83 @@ async fn touching_files_without_editing_them_reindexes_nothing() {
         "pass 3 must not touch the fingerprint again: nothing changed on disk"
     );
 }
+
+/// A pass that replaces a file's symbols must not leave their index rows behind.
+///
+/// `write_batch` disables foreign keys while it swaps a file's rows, so
+/// `ON DELETE CASCADE` does not fire; the rows an earlier pass's PageRank and
+/// clustering wrote for a renamed symbol would survive as orphans and
+/// `validate_graph_integrity` would fail the whole run.
+#[tokio::test]
+async fn renaming_a_symbol_does_not_orphan_its_index_rows() {
+    let data_temp = tempfile::tempdir().unwrap();
+    let repo_temp = tempfile::tempdir().unwrap();
+    let data_dir = Utf8PathBuf::from_path_buf(data_temp.path().to_path_buf()).unwrap();
+    let repo = Utf8PathBuf::from_path_buf(repo_temp.path().to_path_buf()).unwrap();
+    std::fs::write(
+        repo.join("alpha.rs").as_std_path(),
+        "pub fn alpha_probe() -> usize { alpha_helper() }\npub fn alpha_helper() -> usize { 1 }\n",
+    )
+    .unwrap();
+
+    let config = StandaloneConfig {
+        data_dir: data_dir.clone(),
+        embeddings_backend: EmbeddingsBackend::Hash,
+        hash_embedding_dim: 64,
+        ..StandaloneConfig::default()
+    };
+    let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
+    let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
+    let manager = Arc::new(
+        SessionManager::new(
+            config,
+            registry,
+            embedder,
+            Some(jobs::new_job_registry()),
+            None,
+        )
+        .await
+        .unwrap(),
+    );
+
+    let canonical = code_intelligence_mcp_server::path::canonicalize_existing_dir(&repo).unwrap();
+    manager.registry.register(canonical.as_str()).unwrap();
+    let state = manager.get_or_create_repo(&canonical).await.unwrap();
+
+    let first = state.indexer.index_all().await.unwrap();
+    assert_eq!(first.files_indexed, 1);
+
+    // Rename both symbols so every id from pass 1 disappears.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(
+        repo.join("alpha.rs").as_std_path(),
+        "pub fn renamed_probe() -> usize { renamed_helper() }\npub fn renamed_helper() -> usize { 1 }\n",
+    )
+    .unwrap();
+
+    let second = state
+        .indexer
+        .index_all()
+        .await
+        .expect("replacing a file's symbols must not fail graph validation");
+    assert_eq!(second.files_indexed, 1);
+
+    let db = data_dir
+        .join("repos")
+        .join(RepoRegistry::path_hash(canonical.as_str()))
+        .join("code-intelligence.db");
+    let conn = rusqlite::Connection::open(db.as_std_path()).unwrap();
+    for table in ["symbol_metrics", "similarity_clusters"] {
+        let orphans: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM {table} t \
+                     LEFT JOIN symbols s ON s.id = t.symbol_id WHERE s.id IS NULL"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 0, "no {table} row may outlive its symbol");
+    }
+}

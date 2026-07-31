@@ -285,6 +285,24 @@ pub fn write_batch(
             "Removed usage examples whose symbol endpoints do not exist"
         );
     }
+    // PageRank and clustering write these from the previous pass's symbol ids,
+    // so a renamed or removed symbol leaves a row behind that
+    // `validate_graph_integrity` would reject. Both are index-time artifacts and
+    // are recomputed later in this run.
+    let orphaned_metrics = queries::metrics::delete_orphan_symbol_metrics(conn)?;
+    if orphaned_metrics > 0 {
+        tracing::debug!(
+            orphaned_metrics,
+            "Removed symbol metrics whose symbols do not exist"
+        );
+    }
+    let orphaned_clusters = queries::misc::delete_orphan_similarity_clusters(conn)?;
+    if orphaned_clusters > 0 {
+        tracing::debug!(
+            orphaned_clusters,
+            "Removed similarity clusters whose symbols do not exist"
+        );
+    }
     stats.sqlite_ms = stats
         .sqlite_ms
         .saturating_add(elapsed_ms(sqlite_t.elapsed()));

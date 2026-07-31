@@ -68,6 +68,27 @@ pub fn delete_usage_examples_by_file(conn: &Connection, file_path: &str) -> Resu
     Ok(())
 }
 
+/// Remove cluster rows whose symbol disappeared while foreign-key checks were
+/// temporarily disabled for the symbol replacement phase.
+///
+/// Same reason as [`delete_orphan_usage_examples`]: reindexing a file replaces
+/// its symbols, so a renamed or removed symbol's cluster row would survive as an
+/// orphan and fail `validate_graph_integrity`.
+pub fn delete_orphan_similarity_clusters(conn: &Connection) -> Result<u64> {
+    let deleted = conn
+        .execute(
+            r#"
+DELETE FROM similarity_clusters
+WHERE NOT EXISTS (
+        SELECT 1 FROM symbols WHERE symbols.id = similarity_clusters.symbol_id
+      )
+"#,
+            [],
+        )
+        .context("Failed to delete orphan similarity clusters")?;
+    Ok(deleted as u64)
+}
+
 pub fn delete_orphan_usage_examples(conn: &Connection) -> Result<u64> {
     let deleted = conn
         .execute(

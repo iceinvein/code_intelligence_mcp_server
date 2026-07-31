@@ -144,12 +144,21 @@ impl SessionManager {
     /// Returns `Ok(None)` when there is nothing to seed from or when seeding
     /// failed, in which case the caller falls through to the consent path.
     ///
-    /// Seeding is strictly an optimization, so nothing on the seed path may fail a
-    /// bind: a refused precondition, a clone error, a panic inside the clone, and
-    /// a registry write that will not land all log a warning and return
-    /// `Ok(None)`. The only error this propagates comes from
-    /// `start_or_get_initial_index`, which is the ordinary lifecycle the caller
-    /// would have reached anyway.
+    /// Seeding is strictly an optimization, so nothing this function does may fail
+    /// a bind: a refused precondition, a clone error, a panic inside the clone, a
+    /// registry write that will not land, and a cloned store that will not open
+    /// all log a warning, undo the seed, and return `Ok(None)`. The last of those
+    /// matters because the seed is what makes those stores exist and get opened:
+    /// with consent required the caller would have returned `NeedsApproval`
+    /// without opening anything, so propagating that error would strand the
+    /// worktree on a data dir nothing re-runs (`index_runs` was cleared, so
+    /// `has_persisted_index_run` stays false) and nothing repairs.
+    ///
+    /// The one error that does propagate comes from the already-populated data
+    /// dir branch below, where the index belongs to another bind that has already
+    /// registered and approved it. Joining its lifecycle is then exactly what the
+    /// caller does for any approved repo, and the failure is not this seed's to
+    /// undo.
     async fn try_seed_worktree(
         self: &Arc<Self>,
         canonical: &Utf8PathBuf,
@@ -216,6 +225,10 @@ impl SessionManager {
                     return Ok(None);
                 }
             };
+            // This `?` is the one error the seed path may propagate: nothing here
+            // was created by us, so there is nothing to undo, and the entry is
+            // already approved, which is the state the caller's own lifecycle
+            // handling would have acted on.
             if owned_by_another_bind {
                 return Ok(Some(self.start_or_get_initial_index(canonical).await?));
             }
@@ -322,7 +335,26 @@ impl SessionManager {
         drop(worktree_guard);
         drop(base_guard);
 
-        Ok(Some(self.start_or_get_initial_index(canonical).await?))
+        // Opening the cloned stores is the last thing that can go wrong, and it is
+        // the seed's failure rather than the caller's: `validate_seeded_index` does
+        // not open the cloned `vectors/`, so a Lance dataset copied mid-write first
+        // surfaces here, inside the very stores this seed created. Undo the seed so
+        // the caller reaches the consent path with a clean slate; propagating would
+        // leave an approved entry whose index nothing re-runs and nothing repairs.
+        match self.start_or_get_initial_index(canonical).await {
+            Ok(access) => Ok(Some(access)),
+            Err(error) => {
+                tracing::warn!(
+                    worktree = %canonical,
+                    base = %plan.base_repo_path,
+                    %error,
+                    "seeded worktree index will not open, discarding the seed and \
+                     falling back to a full index"
+                );
+                self.discard_failed_seed(canonical, &plan.worktree_data_dir, entry_is_ours);
+                Ok(None)
+            }
+        }
     }
 
     /// Undo a seed that will not be used: remove its data directory, and the

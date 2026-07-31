@@ -704,3 +704,86 @@ async fn seeding_a_hand_registered_worktree_leaves_it_out_of_the_prune_sweep() {
     );
     assert!(entry.data_dir.as_std_path().exists());
 }
+
+/// A cloned store that will not open must not fail the bind either.
+///
+/// `validate_seeded_index` deliberately does not open the cloned `vectors/`
+/// (LanceDB's open is async and that validation is synchronous), and the
+/// clone-window guard's generation tuple does not cover the base's vector stage.
+/// So a Lance dataset copied mid-write first surfaces where `init_repo_state`
+/// opens it, by which point the seed has registered the entry, stamped its
+/// provenance and approved it. Propagating that error would strand the worktree
+/// for good: `index_runs` was cleared, so `has_persisted_index_run` stays false
+/// while `initial_index_approved_at` is set, and every later bind would walk back
+/// into the same failing open with nothing left to re-run it.
+#[tokio::test]
+async fn a_seeded_index_that_will_not_open_falls_back_instead_of_failing_the_bind() {
+    let data_temp = tempfile::tempdir().unwrap();
+    let work_temp = tempfile::tempdir().unwrap();
+    let data_dir = utf8(data_temp.path());
+    let base = utf8(work_temp.path()).join("base");
+    std::fs::create_dir_all(base.as_std_path()).unwrap();
+
+    let manager = manager_for(&data_dir).await;
+    let repo = init_base_repo(&base);
+    index_to_ready(&manager, base.as_path()).await;
+
+    // Corrupt the base's Lance manifests, standing in for a dataset cloned
+    // mid-write. The seed itself still succeeds: it validates SQLite and Tantivy,
+    // and only checks that `vectors/` came across at all.
+    let base_canonical = std::fs::canonicalize(base.as_std_path()).unwrap();
+    let base_entry = manager
+        .registry
+        .get(base_canonical.to_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let versions = base_entry.data_dir.join("vectors/symbols.lance/_versions");
+    assert!(versions.as_std_path().is_dir());
+    std::fs::remove_dir_all(versions.as_std_path()).unwrap();
+
+    let wt = utf8(work_temp.path()).join("feature");
+    repo.worktree("feature", wt.as_std_path(), None).unwrap();
+
+    assert!(
+        matches!(
+            manager
+                .resolve_repo(wt.as_path())
+                .await
+                .expect("a seed whose stores will not open must not fail the bind"),
+            RepoAccess::NeedsApproval
+        ),
+        "the bind must fall through to the consent path"
+    );
+
+    let wt_key = std::fs::canonicalize(wt.as_std_path())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let wt_data = data_dir
+        .join("repos")
+        .join(RepoRegistry::path_hash(&wt_key));
+    assert!(
+        !wt_data.as_std_path().exists(),
+        "the unusable seed must be removed: {wt_data}"
+    );
+    assert!(
+        manager.registry.get(&wt_key).unwrap().is_none(),
+        "the unusable seed must not leave an approved registry entry behind"
+    );
+
+    // And the clean slate is real: approving the worktree indexes it from
+    // scratch, which is the recovery the propagated error used to make impossible.
+    index_to_ready(&manager, wt.as_path()).await;
+    let state = wait_for_ready(&manager, wt.as_path()).await;
+    assert_eq!(
+        state
+            .sqlite
+            .latest_index_run()
+            .unwrap()
+            .unwrap()
+            .files_indexed,
+        2,
+        "the fallback must index every file itself"
+    );
+}

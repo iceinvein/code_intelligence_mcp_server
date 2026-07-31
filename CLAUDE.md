@@ -78,7 +78,7 @@ Once connected, Claude Code gains access to 18 advertised MCP tools (the full li
 **Lifecycle / admin**
 - **`get_index_stats`** / **`refresh_index`** - Monitor and trigger re-indexing
 - **`bind_workspace`** - Bind the session to a repo by absolute path (for clients without roots or query-string support)
-- **`approve_indexing`** - Approve or decline a repository's first full index. Every never-indexed repository returns `consent_required`, including explicit `?repo=` and `bind_workspace` selections. Tell the user in chat that indexing uses local compute, memory, and disk, wait for explicit approval, then call `approve_indexing`. Approval starts a background `InitialBind` job immediately. Later watcher updates and manual reindexes do not ask again.
+- **`approve_indexing`** - Approve or decline a repository's first full index. Every never-indexed repository returns `consent_required`, including explicit `?repo=` and `bind_workspace` selections. Tell the user in chat that indexing uses local compute, memory, and disk, wait for explicit approval, then call `approve_indexing`. Approval starts a background `InitialBind` job immediately. Later watcher updates and manual reindexes do not ask again. A worktree of an already-indexed repository is the exception: it seeds its index from the base repo (an APFS copy-on-write clone plus a delta pass) and starts indexing without a prompt, because the cost is seconds rather than a full GPU pass.
 
 ### Dashboard and JSON API
 
@@ -148,6 +148,8 @@ The server runs as a single HTTP daemon. Three ports:
 - **`mcp_port + 100`** — internal-only rust-mcp-sdk Streamable HTTP transport, bound to 127.0.0.1.
 
 All public ports bind 127.0.0.1 and reject non-localhost `Origin` headers (DNS-rebinding defence). The embedding model (~1.5 GB) loads once and stays resident for queries, shared across sessions. Two optional models are off by default: the description LLM (~1.0 GB), which runs an index-time backfill worker only when `DESCRIPTIONS_ENABLED=1` and is freed afterwards; and the cross-encoder reranker (~600 MB), which when `RERANKER_ENABLED=1` loads in the background (shared across repos) and stays resident, applying a query-time reorder on top of the RRF-fused results. Both default off: neither moved the benchmark judge score and each adds setup cost (descriptions a multi-hour index backfill, the reranker GPU residency). Per-repo indexes live under `~/.code-intelligence/repos/<hash>/`.
+
+Binding a git worktree of an indexed repo clones that repo's index into the worktree's own directory rather than reindexing from scratch, then runs one pass that reparses only files whose content actually differs. The two indexes are independent from that point on. Seeded worktree indexes are pruned once their checkout has been absent for two consecutive idle sweeps (roughly two minutes), as long as no index job is running against them; a repo registered by hand is never auto-pruned this way.
 
 Configure MCP clients to connect:
 ```json

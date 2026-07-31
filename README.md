@@ -168,6 +168,8 @@ Indexing a repo uses local compute, memory, and disk. With `INDEX_CONSENT_REQUIR
 }
 ```
 
+The one exception is a worktree of a repo that already has a completed index: it seeds from that index and starts indexing immediately, without this prompt.
+
 The agent relays the question and waits for explicit approval before calling `approve_indexing`. `approve` persists the one-time authorization and starts a background `InitialBind` job immediately; `decline` records the choice and skips indexing. The watcher starts only after the native full index succeeds. Later watcher updates and manual reindexes do not ask again, including after a daemon restart or a failed first attempt. `INDEX_CONSENT_REQUIRED=false` keeps the CI and benchmark opt-out, but still starts the real first-index job immediately rather than waiting for a file event.
 
 ![Consent](docs/consent.png)

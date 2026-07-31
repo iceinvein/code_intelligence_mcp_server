@@ -553,6 +553,7 @@ mod tests {
             consent: crate::registry::IndexConsent::Approved,
             initial_index_approved_at: None,
             initial_index_completed_at: None,
+            seeded_from: None,
         };
 
         let activity = read_repo_persisted_activity(&entry);

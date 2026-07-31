@@ -86,6 +86,11 @@ pub struct RepoEntry {
     pub initial_index_approved_at: Option<String>,
     #[serde(default)]
     pub initial_index_completed_at: Option<String>,
+    /// Repo id of the base repository this index was seeded from, when it was
+    /// created by cloning a base index rather than by a full index pass. Only
+    /// entries carrying this are eligible for automatic pruning.
+    #[serde(default)]
+    pub seeded_from: Option<String>,
 }
 
 /// Internal structure for JSON serialization
@@ -161,6 +166,7 @@ impl RepoRegistry {
             consent: IndexConsent::Approved,
             initial_index_approved_at: None,
             initial_index_completed_at: None,
+            seeded_from: None,
         };
 
         registry.repos.insert(hash, entry.clone());
@@ -290,6 +296,7 @@ impl RepoRegistry {
             consent,
             initial_index_approved_at: None,
             initial_index_completed_at: None,
+            seeded_from: None,
         };
         registry.repos.insert(hash, entry.clone());
         self.save(&registry)?;
@@ -317,6 +324,38 @@ impl RepoRegistry {
             self.save(&registry)?;
         }
         Ok(pruned)
+    }
+
+    /// Record that this repo's index was seeded from `base_repo_id`.
+    ///
+    /// The sole writer of `RepoEntry::seeded_from`, and therefore the only way
+    /// an entry becomes eligible for `list_seeded_missing`.
+    pub fn mark_seeded_from(&self, repo_path: &str, base_repo_id: &str) -> Result<RepoEntry> {
+        let hash = Self::path_hash(repo_path);
+        let mut registry = self.load()?;
+        let entry = registry.repos.get_mut(&hash).with_context(|| {
+            format!("Cannot mark unregistered repository as seeded: {repo_path}")
+        })?;
+        entry.seeded_from = Some(base_repo_id.to_string());
+        let updated = entry.clone();
+        self.save(&registry)?;
+        Ok(updated)
+    }
+
+    /// Seeded worktree indexes whose checkout no longer exists on disk.
+    ///
+    /// Read-only; the caller deletes them via
+    /// `SessionManager::delete_repo_by_hash`, which also cancels watchers and
+    /// removes the data directory. Scoped to seeded entries on purpose: the
+    /// server should not delete indexes a user registered by hand, however
+    /// stale the path.
+    pub fn list_seeded_missing(&self) -> Result<Vec<RepoEntry>> {
+        let registry = self.load()?;
+        Ok(registry
+            .repos
+            .into_values()
+            .filter(|e| e.seeded_from.is_some() && !std::path::Path::new(&e.path).exists())
+            .collect())
     }
 
     /// Load registry from disk, or return empty registry if file doesn't exist
@@ -674,5 +713,85 @@ mod tests {
             reg.consent_status("/no/such/approved").unwrap(),
             Some(IndexConsent::Approved)
         );
+    }
+
+    #[test]
+    fn mark_seeded_from_records_the_base_repo_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let registry = RepoRegistry::new(root.join("registry.json"), root.join("repos"));
+        let repo = root.join("feature");
+        std::fs::create_dir_all(repo.as_std_path()).unwrap();
+
+        registry.register(repo.as_str()).unwrap();
+        assert_eq!(
+            registry.get(repo.as_str()).unwrap().unwrap().seeded_from,
+            None
+        );
+
+        registry
+            .mark_seeded_from(repo.as_str(), "basehash1234567")
+            .unwrap();
+        assert_eq!(
+            registry
+                .get(repo.as_str())
+                .unwrap()
+                .unwrap()
+                .seeded_from
+                .as_deref(),
+            Some("basehash1234567")
+        );
+    }
+
+    #[test]
+    fn list_seeded_missing_reports_only_vanished_seeded_repos() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let registry = RepoRegistry::new(root.join("registry.json"), root.join("repos"));
+
+        // A seeded worktree whose checkout still exists: keep.
+        let live = root.join("live-worktree");
+        std::fs::create_dir_all(live.as_std_path()).unwrap();
+        registry.register(live.as_str()).unwrap();
+        registry.mark_seeded_from(live.as_str(), "base1").unwrap();
+
+        // A seeded worktree whose checkout was deleted: prune.
+        let gone = root.join("gone-worktree");
+        std::fs::create_dir_all(gone.as_std_path()).unwrap();
+        registry.register(gone.as_str()).unwrap();
+        registry.mark_seeded_from(gone.as_str(), "base1").unwrap();
+        std::fs::remove_dir_all(gone.as_std_path()).unwrap();
+
+        // A hand-registered repo whose path was deleted: keep. The server does
+        // not delete indexes it did not create.
+        let manual = root.join("manual-repo");
+        std::fs::create_dir_all(manual.as_std_path()).unwrap();
+        registry.register(manual.as_str()).unwrap();
+        std::fs::remove_dir_all(manual.as_std_path()).unwrap();
+
+        let doomed = registry.list_seeded_missing().unwrap();
+        assert_eq!(doomed.len(), 1);
+        assert_eq!(doomed[0].path, gone.as_str());
+
+        // Read-only: the caller performs the deletion.
+        assert!(registry.get(live.as_str()).unwrap().is_some());
+        assert!(registry.get(manual.as_str()).unwrap().is_some());
+        assert!(registry.get(gone.as_str()).unwrap().is_some());
+    }
+
+    #[test]
+    fn legacy_registry_json_without_seeded_from_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let registry_path = root.join("registry.json");
+        std::fs::write(
+            registry_path.as_std_path(),
+            r#"{"repos":{"abc123":{"path":"/tmp/x","name":"x","data_dir":"/tmp/d","created_at":"2026-01-01T00:00:00Z","last_accessed":"2026-01-01T00:00:00Z"}}}"#,
+        )
+        .unwrap();
+        let registry = RepoRegistry::new(registry_path, root.join("repos"));
+        let all = registry.list_all().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].seeded_from, None);
     }
 }

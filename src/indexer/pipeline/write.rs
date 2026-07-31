@@ -213,6 +213,7 @@ pub fn write_batch(
                 &file.rel_path,
                 file.fingerprint.mtime_ns,
                 file.fingerprint.size_bytes,
+                None,
             )
             .with_context(|| {
                 format!(

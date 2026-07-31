@@ -398,9 +398,16 @@ impl SqliteStore {
         file_path: &str,
         mtime_ns: i64,
         size_bytes: u64,
+        content_hash: Option<&str>,
     ) -> Result<()> {
         let conn = self.write()?;
-        queries::files::upsert_file_fingerprint(&conn, file_path, mtime_ns, size_bytes)
+        queries::files::upsert_file_fingerprint(
+            &conn,
+            file_path,
+            mtime_ns,
+            size_bytes,
+            content_hash,
+        )
     }
 
     pub fn delete_file_fingerprint(&self, file_path: &str) -> Result<()> {

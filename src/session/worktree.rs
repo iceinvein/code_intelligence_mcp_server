@@ -153,11 +153,41 @@ fn validate_seeded_index(data_dir: &Utf8Path) -> Result<()> {
     store
         .init()
         .context("Seeded index schema will not initialize")?;
-    store
+    let symbols = store
         .count_symbols()
         .context("Seeded index symbols table is unreadable")?;
+    let fingerprints: i64 = {
+        let conn = store
+            .read()
+            .context("Seeded index will not hand out a read connection")?;
+        conn.query_row("SELECT COUNT(*) FROM file_fingerprints", [], |row| {
+            row.get(0)
+        })
+        .context("Seeded index file_fingerprints table is unreadable")?
+    };
 
     let tantivy_dir = data_dir.join(TANTIVY_DIR);
+    let vectors_dir = data_dir.join(VECTORS_DIR);
+
+    // A seeded database that already claims files are indexed is only usable if
+    // the search indexes came with it, and nothing downstream repairs the gap:
+    // `TantivyIndex::open_or_create` reads a missing directory as a fresh index
+    // rather than a wiped one, so `was_recreated` stays false, the seeded
+    // fingerprints are never cleared, and the worktree's first pass skips every
+    // file as unchanged. That would leave SQLite populated and search
+    // permanently empty. Failing the seed instead lets the caller fall back to a
+    // full index.
+    if symbols > 0 || fingerprints > 0 {
+        for dir in [&tantivy_dir, &vectors_dir] {
+            if !dir.as_std_path().exists() {
+                bail!(
+                    "seeded index claims {fingerprints} indexed files and {symbols} symbols \
+                     but has no {dir}, so its search index could never be built"
+                );
+            }
+        }
+    }
+
     if tantivy_dir.as_std_path().exists() {
         crate::storage::tantivy::TantivyIndex::open_readonly(&tantivy_dir)
             .context("Seeded Tantivy index will not open")?;
@@ -341,22 +371,9 @@ fn backfill_content_hashes(tx: &rusqlite::Transaction<'_>, base_root: &Utf8Path)
     let mut filled = 0usize;
     for (rel, mtime_ns, size_bytes) in pending {
         let abs = base_root.join(&rel);
-        let Ok(meta) = std::fs::metadata(abs.as_std_path()) else {
+        let Some(hash) = verified_content_hash(&abs, mtime_ns, size_bytes) else {
             continue;
         };
-        let disk_mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
-            .unwrap_or(0);
-        if disk_mtime != mtime_ns || meta.len() != size_bytes {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(abs.as_std_path()) else {
-            continue;
-        };
-        let hash = crate::indexer::pipeline::utils::content_hash_hex(&bytes);
         tx.execute(
             "UPDATE file_fingerprints SET content_hash = ?1 WHERE file_path = ?2",
             rusqlite::params![hash, rel],
@@ -371,6 +388,44 @@ fn backfill_content_hashes(tx: &rusqlite::Transaction<'_>, base_root: &Utf8Path)
         "backfilled content hashes for a pre-upgrade base index"
     );
     Ok(filled)
+}
+
+/// Hash a file only when it provably still holds the content the fingerprint's
+/// stat referred to, else `None`.
+///
+/// The stat must match before the read, the byte count must match after it, and
+/// the mtime must not have moved across it. Nothing gates a watcher pass or an
+/// editor on the base repo, so a write landing between the stat and the read
+/// would otherwise store a hash describing content the fingerprint never
+/// referred to, and the seeded index would call a changed file unchanged.
+fn verified_content_hash(abs: &Utf8Path, mtime_ns: i64, size_bytes: u64) -> Option<String> {
+    let before = std::fs::metadata(abs.as_std_path()).ok()?;
+    if modified_ns(&before) != mtime_ns || before.len() != size_bytes {
+        return None;
+    }
+
+    let bytes = std::fs::read(abs.as_std_path()).ok()?;
+    if bytes.len() as u64 != size_bytes {
+        return None;
+    }
+
+    // Re-stat rather than trust the pre-read stat: a same-size write across the
+    // read would pass the length check above but move the mtime.
+    let after = std::fs::metadata(abs.as_std_path()).ok()?;
+    if modified_ns(&after) != mtime_ns || after.len() != size_bytes {
+        return None;
+    }
+
+    Some(crate::indexer::pipeline::utils::content_hash_hex(&bytes))
+}
+
+/// A file's mtime as nanoseconds since the epoch, saturating at `i64::MAX`.
+fn modified_ns(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -440,6 +495,28 @@ mod tests {
         );
     }
 
+    /// A real (empty) Tantivy index, built through the project's own constructor
+    /// so seed validation sees what the daemon would have written.
+    fn write_tantivy_index(data_dir: &Utf8Path) {
+        drop(
+            crate::storage::tantivy::TantivyIndex::open_or_create(&data_dir.join(TANTIVY_DIR))
+                .unwrap(),
+        );
+    }
+
+    /// Stand-in for the LanceDB directory: seeding only copies it, so its
+    /// contents are opaque here.
+    fn write_vectors_dir(data_dir: &Utf8Path) {
+        std::fs::create_dir_all(data_dir.join("vectors/symbols.lance").as_std_path()).unwrap();
+        std::fs::write(
+            data_dir
+                .join("vectors/symbols.lance/data.bin")
+                .as_std_path(),
+            b"vectors",
+        )
+        .unwrap();
+    }
+
     /// Build a base data dir that looks like a completed index.
     fn seeded_base_data_dir(data_dir: &Utf8Path, base_root: &Utf8Path) -> String {
         std::fs::create_dir_all(data_dir.as_std_path()).unwrap();
@@ -479,23 +556,8 @@ mod tests {
         };
         drop(store);
 
-        // A real (empty) Tantivy index, built through the project's own
-        // constructor so the seed validation sees what the daemon would write.
-        drop(
-            crate::storage::tantivy::TantivyIndex::open_or_create(&data_dir.join("tantivy-index"))
-                .unwrap(),
-        );
-
-        // Stand-in for the LanceDB directory: seeding only copies it, so its
-        // contents are opaque here.
-        std::fs::create_dir_all(data_dir.join("vectors/symbols.lance").as_std_path()).unwrap();
-        std::fs::write(
-            data_dir
-                .join("vectors/symbols.lance/data.bin")
-                .as_std_path(),
-            b"vectors",
-        )
-        .unwrap();
+        write_tantivy_index(data_dir);
+        write_vectors_dir(data_dir);
 
         repo_id
     }
@@ -656,6 +718,9 @@ mod tests {
             )
             .unwrap();
         }
+        // A populated database is only seedable alongside its search indexes.
+        write_tantivy_index(&base_data);
+        write_vectors_dir(&base_data);
         std::fs::create_dir_all(wt_data.as_std_path()).unwrap();
 
         let plan = SeedPlan {
@@ -743,6 +808,111 @@ mod tests {
         assert!(
             chain.contains("Seeded Tantivy index will not open"),
             "expected the Tantivy validation to be the failure, got: {chain}"
+        );
+    }
+
+    /// Seed from a base whose database is populated but which only has the
+    /// named search artifacts, and return the error chain the seed produced.
+    fn seed_error_with_artifacts(tantivy: bool, vectors: bool) -> String {
+        let temp = tempfile::tempdir().unwrap();
+        let root = utf8(temp.path());
+        let base_root = root.join("base");
+        let wt_root = root.join("feature");
+        std::fs::create_dir_all(base_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(wt_root.as_std_path()).unwrap();
+        let base_data = root.join("data/base");
+        let wt_data = root.join("data/feature");
+
+        std::fs::create_dir_all(base_data.as_std_path()).unwrap();
+        {
+            let store = SqliteStore::open(&base_data.join(DB_FILE)).unwrap();
+            store.init().unwrap();
+            let conn = store.write().unwrap();
+            crate::storage::sqlite::queries::files::upsert_file_fingerprint(
+                &conn,
+                "lib.rs",
+                4242,
+                17,
+                Some("aaaabbbbccccddddeeeeffff00001111"),
+            )
+            .unwrap();
+        }
+        if tantivy {
+            write_tantivy_index(&base_data);
+        }
+        if vectors {
+            write_vectors_dir(&base_data);
+        }
+        std::fs::create_dir_all(wt_data.as_std_path()).unwrap();
+
+        let plan = SeedPlan {
+            base_repo_path: base_root,
+            base_repo_id: "base".to_string(),
+            base_data_dir: base_data,
+            worktree_path: wt_root,
+            worktree_data_dir: wt_data,
+        };
+        let err = seed_index_from_base(&plan)
+            .expect_err("a base whose search index is missing must not seed");
+        format!("{err:#}")
+    }
+
+    #[test]
+    fn seeding_rejects_a_base_whose_search_index_did_not_come_across() {
+        // Seeded fingerprints claim every file is already indexed, and nothing
+        // downstream repairs a missing search index: `open_or_create` treats an
+        // absent directory as a fresh index, so `was_recreated` is false and the
+        // fingerprints are never cleared. Every file would then be skipped as
+        // unchanged, leaving SQLite populated and search permanently empty.
+        let both_missing = seed_error_with_artifacts(false, false);
+        assert!(
+            both_missing.contains(TANTIVY_DIR),
+            "expected the missing Tantivy index to be named, got: {both_missing}"
+        );
+
+        let tantivy_missing = seed_error_with_artifacts(false, true);
+        assert!(
+            tantivy_missing.contains(TANTIVY_DIR),
+            "expected the missing Tantivy index to be named, got: {tantivy_missing}"
+        );
+
+        let vectors_missing = seed_error_with_artifacts(true, false);
+        assert!(
+            vectors_missing.contains(VECTORS_DIR),
+            "expected the missing vector store to be named, got: {vectors_missing}"
+        );
+    }
+
+    #[test]
+    fn verified_content_hash_only_trusts_a_file_that_still_matches_its_stat() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = utf8(temp.path());
+        let path = root.join("lib.rs");
+        let body = "pub fn probe() -> usize { 1 }\n";
+        std::fs::write(path.as_std_path(), body).unwrap();
+        let meta = std::fs::metadata(path.as_std_path()).unwrap();
+        let mtime_ns = modified_ns(&meta);
+        let size = meta.len();
+
+        assert_eq!(
+            verified_content_hash(&path, mtime_ns, size).as_deref(),
+            Some(crate::indexer::pipeline::utils::content_hash_hex(body.as_bytes()).as_str()),
+            "a quiescent file matching its stat must be hashed"
+        );
+        assert_eq!(
+            verified_content_hash(&path, mtime_ns + 1, size),
+            None,
+            "a moved mtime must not be trusted"
+        );
+        assert_eq!(
+            verified_content_hash(&path, mtime_ns, size + 1),
+            None,
+            "a changed size must not be trusted"
+        );
+        assert_eq!(
+            verified_content_hash(&root.join("absent.rs"), mtime_ns, size),
+            None,
+            "a file that is not there must not be trusted"
         );
     }
 

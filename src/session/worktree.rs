@@ -136,6 +136,12 @@ pub fn seed_index_from_base(plan: &SeedPlan) -> Result<()> {
         .with_context(|| format!("Failed to snapshot base index into {dst_db}"))?;
     drop(src_conn);
 
+    // `VACUUM INTO` copies the base's schema verbatim, and migrations only run
+    // through `SqliteStore::init`, which nothing has called on this copy yet. A
+    // base last opened by an older release therefore arrives without columns the
+    // queries below name, so bring the copy up to this binary's schema first.
+    migrate_seeded_db(&dst_db)?;
+
     for dir in [TANTIVY_DIR, VECTORS_DIR] {
         let src = plan.base_data_dir.join(dir);
         if src.as_std_path().exists() {
@@ -313,6 +319,20 @@ fn copy_tree_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io:
             std::fs::copy(entry.path(), target)?;
         }
     }
+    Ok(())
+}
+
+/// Bring a freshly snapshotted index up to this binary's schema.
+///
+/// Runs the same `SqliteStore::init` migrations the daemon runs when it opens a
+/// repo for real, so the rewrite and backfill below can rely on current columns
+/// regardless of which release last touched the base.
+fn migrate_seeded_db(dst_db: &Utf8Path) -> Result<()> {
+    let store = crate::storage::sqlite::SqliteStore::open(dst_db)
+        .with_context(|| format!("Failed to open seeded index for migration at {dst_db}"))?;
+    store
+        .init()
+        .with_context(|| format!("Failed to migrate seeded index schema at {dst_db}"))?;
     Ok(())
 }
 
@@ -849,6 +869,91 @@ mod tests {
         assert_eq!(
             untouched.content_hash, None,
             "a row we cannot verify must stay NULL and be reparsed"
+        );
+    }
+
+    /// The real pre-upgrade state of a base is not "content_hash is NULL", it is
+    /// "content_hash does not exist". `VACUUM INTO` copies the base's schema
+    /// verbatim, and migrations only run through `SqliteStore::init`, so the
+    /// snapshot arrives on the old schema and every query naming the column
+    /// fails until the copy is migrated.
+    #[test]
+    fn seeding_migrates_a_base_snapshot_that_predates_content_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = utf8(temp.path());
+        let base_root = root.join("base");
+        let wt_root = root.join("feature");
+        std::fs::create_dir_all(base_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(wt_root.as_std_path()).unwrap();
+
+        let body = "pub fn probe() -> usize { 1 }\n";
+        std::fs::write(base_root.join("lib.rs").as_std_path(), body).unwrap();
+        std::fs::write(wt_root.join("lib.rs").as_std_path(), body).unwrap();
+        let meta = std::fs::metadata(base_root.join("lib.rs").as_std_path()).unwrap();
+        let mtime_ns = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64;
+
+        let base_data = root.join("data/base");
+        let wt_data = root.join("data/feature");
+        let base_repo_id = seeded_base_data_dir(&base_data, &base_root);
+
+        // Reduce `file_fingerprints` to its pre-content_hash shape, which is what
+        // a base last opened by an older release actually has on disk.
+        {
+            let conn = rusqlite::Connection::open(base_data.join(DB_FILE).as_std_path()).unwrap();
+            conn.execute_batch(
+                r#"
+DROP TABLE file_fingerprints;
+CREATE TABLE file_fingerprints (
+  file_path TEXT PRIMARY KEY NOT NULL,
+  mtime_ns INTEGER NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+"#,
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO file_fingerprints(file_path, mtime_ns, size_bytes) VALUES ('lib.rs', ?1, ?2)",
+                rusqlite::params![mtime_ns, meta.len() as i64],
+            )
+            .unwrap();
+            let has_column: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('file_fingerprints') \
+                     WHERE name = 'content_hash'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(has_column, 0, "fixture must start without the column");
+        }
+        std::fs::create_dir_all(wt_data.as_std_path()).unwrap();
+
+        let plan = SeedPlan {
+            base_repo_path: base_root.clone(),
+            base_repo_id,
+            base_data_dir: base_data,
+            worktree_path: wt_root,
+            worktree_data_dir: wt_data.clone(),
+        };
+        seed_index_from_base(&plan).expect("a base on an older schema must still seed");
+
+        // The copy was migrated and the backfill then ran against the real tree.
+        let store = SqliteStore::open(&wt_data.join(DB_FILE)).unwrap();
+        store.init().unwrap();
+        let conn = store.write().unwrap();
+        let row = crate::storage::sqlite::queries::files::get_file_fingerprint(&conn, "lib.rs")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.content_hash.as_deref(),
+            Some(crate::indexer::pipeline::utils::content_hash_hex(body.as_bytes()).as_str()),
+            "the migrated snapshot must carry the backfilled hash"
         );
     }
 

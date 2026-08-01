@@ -55,7 +55,7 @@ Every session needs a bound workspace. v4 tries four sources in order; first mat
 3. **Single-repo fallback** — when only one repo is registered, sessions auto-bind to it.
 4. **Hard error** — actionable message pointing at the URL form and `bind_workspace`.
 
-When a session selects a **never-indexed** repo through any binding source, including `?repo=` and `bind_workspace`, the daemon returns `consent_required` so the agent can ask you first. Approval starts the first full index immediately as a background job. See [Indexing consent](#indexing-consent).
+When a session selects a **never-indexed** repo through any binding source, including `?repo=` and `bind_workspace`, the daemon returns `consent_required` so the agent can ask you first. Approval starts the first full index immediately as a background job. A worktree whose base repo already has a completed index is the exception: it seeds from that index and starts indexing without a prompt. See [Indexing consent](#indexing-consent).
 
 **Claude Code**: nothing extra; roots is auto-negotiated.
 
@@ -168,7 +168,7 @@ Indexing a repo uses local compute, memory, and disk. With `INDEX_CONSENT_REQUIR
 }
 ```
 
-The one exception is a worktree of a repo that already has a completed index: it seeds from that index and starts indexing immediately, without this prompt.
+The one exception is a worktree whose base repo already has a completed index, unlike the worktree in the example above: it seeds from that index and starts indexing immediately, without this prompt.
 
 The agent relays the question and waits for explicit approval before calling `approve_indexing`. `approve` persists the one-time authorization and starts a background `InitialBind` job immediately; `decline` records the choice and skips indexing. The watcher starts only after the native full index succeeds. Later watcher updates and manual reindexes do not ask again, including after a daemon restart or a failed first attempt. `INDEX_CONSENT_REQUIRED=false` keeps the CI and benchmark opt-out, but still starts the real first-index job immediately rather than waiting for a file event.
 
@@ -342,7 +342,7 @@ Works out of the box with no configuration. All settings are optional environmen
 | `INDEX_PATTERNS` | `**/*.ts,**/*.rs,...` | Glob patterns to index |
 | `EXCLUDE_PATTERNS` | `**/node_modules/**,...` | Glob patterns to exclude |
 | `REPO_ROOTS` | — | Comma-separated paths for multi-repo |
-| `INDEX_CONSENT_REQUIRED` | `true` | Ask once before the first full index for every binding source (see [Indexing consent](#indexing-consent)). `false` skips the prompt but still starts the first index immediately |
+| `INDEX_CONSENT_REQUIRED` | `true` | Ask once before the first full index for every binding source (see [Indexing consent](#indexing-consent)). A worktree of an already-indexed repo seeds instead and is never prompted. `false` skips the prompt but still starts the first index immediately |
 
 **Embeddings:**
 

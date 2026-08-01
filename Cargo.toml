@@ -1,6 +1,6 @@
 [package]
 name = "code-intelligence-mcp-server"
-version = "4.8.1"
+version = "4.9.0"
 edition = "2021"
 
 [features]

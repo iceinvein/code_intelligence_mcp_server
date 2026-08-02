@@ -2612,4 +2612,42 @@ mod tests {
              next sweep, not stranded back at square one"
         );
     }
+
+    // ─── I4: seeded two-sighting rule under a returning checkout ──────────────
+
+    /// Deferred item from an earlier review: the `retain` logic that resets a
+    /// seeded entry's armed sighting once its checkout is no longer missing
+    /// is correct by inspection but was untested, despite gating a
+    /// `remove_dir_all`.
+    #[tokio::test]
+    async fn seeded_entry_survives_when_the_checkout_returns_between_its_two_sightings() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        manager.registry.register(repo_path.as_str()).unwrap();
+        manager
+            .registry
+            .mark_seeded_from(repo_path.as_str(), "basehash12345678")
+            .unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+
+        drop(repo); // deletes the checkout
+
+        // First sweep: absent, first sighting only arms it.
+        manager.evict_idle_repos().await;
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_some());
+
+        // The checkout returns before the second sweep (e.g. an interrupted
+        // worktree operation, or a flaky mount coming back).
+        std::fs::create_dir_all(repo_path.as_std_path()).unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "a seeded entry whose checkout returns between sightings must \
+             survive, not be deleted on a stale first-sighting arm"
+        );
+    }
 }

@@ -370,7 +370,9 @@ impl RepoRegistry {
     /// Record that this repo's index was seeded from `base_repo_id`.
     ///
     /// The sole writer of `RepoEntry::seeded_from`, and therefore the only way
-    /// an entry becomes eligible for `list_seeded_missing`.
+    /// an entry takes the two-sweep in-memory path in
+    /// `SessionManager::prune_vanished_indexes` instead of the persisted
+    /// grace-period path that every other entry `list_missing` returns takes.
     pub fn mark_seeded_from(&self, repo_path: &str, base_repo_id: &str) -> Result<RepoEntry> {
         let hash = Self::path_hash(repo_path);
         let mut registry = self.load()?;

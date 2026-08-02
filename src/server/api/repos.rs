@@ -63,15 +63,19 @@ pub(crate) async fn handle_repos(
 /// RFC3339 moment after which the idle sweep deletes this index, or `None` when
 /// there is no countdown to show.
 ///
-/// `None` covers three distinct cases the dashboard renders the same way: the
-/// path is present (so nothing is stamped), grace is disabled, or the entry is a
-/// seeded worktree index, which uses a two-sweep rule with no meaningful date.
+/// `None` covers four distinct cases the dashboard renders the same way: the
+/// path is present (so nothing is stamped), grace is disabled, the entry is a
+/// seeded worktree index (which uses a two-sweep rule with no meaningful date),
+/// or `grace_days` is so large the deadline falls outside the range a date can
+/// represent.
 fn auto_delete_at(entry: &crate::registry::RepoEntry, grace_days: u32) -> Option<String> {
     if grace_days == 0 || entry.seeded_from.is_some() {
         return None;
     }
     let stamped = chrono::DateTime::parse_from_rfc3339(entry.missing_since.as_deref()?).ok()?;
-    Some((stamped + chrono::Duration::days(i64::from(grace_days))).to_rfc3339())
+    stamped
+        .checked_add_signed(chrono::Duration::days(i64::from(grace_days)))
+        .map(|deadline| deadline.to_rfc3339())
 }
 
 /// Build the per-repo `activity` block surfaced by `/api/repos`.
@@ -626,6 +630,48 @@ mod tests {
 
         assert_eq!(activity["running"], false);
         assert_eq!(activity["latest_index_run"]["started_at_unix_s"], 456);
+    }
+
+    #[test]
+    fn auto_delete_at_covers_every_null_case_and_the_normal_deadline() {
+        let entry = |seeded_from: Option<&str>, missing_since: Option<&str>| RepoEntry {
+            path: "/repo".to_string(),
+            name: "repo".to_string(),
+            data_dir: Utf8PathBuf::from("/dummy"),
+            created_at: "2026-05-25T00:00:00Z".to_string(),
+            last_accessed: "2026-05-25T00:00:00Z".to_string(),
+            consent: crate::registry::IndexConsent::Approved,
+            initial_index_approved_at: None,
+            initial_index_completed_at: None,
+            seeded_from: seeded_from.map(str::to_string),
+            missing_since: missing_since.map(str::to_string),
+        };
+        let stamped = Some("2026-08-01T00:00:00+00:00");
+
+        // Grace disabled.
+        assert_eq!(auto_delete_at(&entry(None, stamped), 0), None);
+
+        // Seeded entry, even when stamped: the two-sweep rule has no meaningful date.
+        assert_eq!(auto_delete_at(&entry(Some("basehash"), stamped), 7), None);
+
+        // Not stamped at all (path present, nothing to count down from).
+        assert_eq!(auto_delete_at(&entry(None, None), 7), None);
+
+        // missing_since present but not a parseable RFC3339 timestamp.
+        assert_eq!(
+            auto_delete_at(&entry(None, Some("not-a-timestamp")), 7),
+            None
+        );
+
+        // grace_days so large the deadline falls outside the representable date
+        // range; chrono's checked_add_signed returns None rather than panicking.
+        assert_eq!(auto_delete_at(&entry(None, stamped), u32::MAX), None);
+
+        // Normal case: default 7-day grace from a stamped deadline.
+        assert_eq!(
+            auto_delete_at(&entry(None, stamped), 7),
+            Some("2026-08-08T00:00:00+00:00".to_string())
+        );
     }
 
     #[tokio::test]

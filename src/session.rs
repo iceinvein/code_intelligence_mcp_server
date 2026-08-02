@@ -153,6 +153,22 @@ fn is_repo_hash_dir_name(name: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// The data-directory name a registry entry's index actually lives under:
+/// `data_dir`'s own file name, falling back to `path_hash(path)` only when
+/// `data_dir` has no file name component at all (a hand-edited or
+/// pre-hash-scheme entry; see the legacy-load fixture in `src/registry.rs`).
+/// `delete_repo_by_hash` deletes `entry.data_dir`, and the file format does
+/// not guarantee that agrees with `path_hash(path)`, so this is the one place
+/// that derivation happens; every comparison against a directory name under
+/// `repos/` goes through this rather than recomputing the hash itself.
+fn expected_data_dir_name(entry: &RepoEntry) -> String {
+    entry
+        .data_dir
+        .file_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| RepoRegistry::path_hash(&entry.path))
+}
+
 /// Whether `repos_dir` holds at least one directory this daemon actually
 /// generated (`is_repo_hash_dir_name`). `run_standalone` creates `repos/`
 /// unconditionally at startup, before `registry.json` exists, so a plain
@@ -689,28 +705,39 @@ impl SessionManager {
         self.orphan_sweep_registry_missing_warned
             .store(false, Ordering::Release);
 
-        // I5: derived from `data_dir`'s own file name rather than
-        // recomputing `path_hash(path)`, since `delete_repo_by_hash` deletes
-        // `entry.data_dir` and the file format does not guarantee the two
-        // agree (a hand-edited or pre-hash-scheme registry entry can have a
-        // `data_dir` whose name is not `path_hash(path)`; see the legacy-load
-        // fixture in `src/registry.rs`). Falls back to `path_hash` only when
-        // `data_dir` has no file name component at all.
-        let claimed: std::collections::HashSet<String> = match self.registry.list_all() {
-            Ok(entries) => entries
-                .iter()
-                .map(|e| {
-                    e.data_dir
-                        .file_name()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| RepoRegistry::path_hash(&e.path))
-                })
-                .collect(),
+        // I5: `claimed` is derived via `expected_data_dir_name` rather than
+        // recomputing `path_hash(path)` inline, since `delete_repo_by_hash`
+        // deletes `entry.data_dir` and the file format does not guarantee the
+        // two agree.
+        let entries = match self.registry.list_all() {
+            Ok(entries) => entries,
             Err(error) => {
                 tracing::debug!(%error, "listing repos for the orphan sweep failed");
                 return;
             }
         };
+        let claimed: std::collections::HashSet<String> =
+            entries.iter().map(expected_data_dir_name).collect();
+
+        // R5: looked up from the same `entries` rather than recomputing
+        // `path_hash(r.key())` on each warm repo, so the warm-runtime guard
+        // below agrees with `claimed` by construction instead of by two
+        // derivations that happen to match. A warm repo with no registry
+        // entry at all (removed elsewhere while still loaded) falls back to
+        // `path_hash`, the same last resort `expected_data_dir_name` itself
+        // uses, erring toward not collecting a live runtime's directory.
+        let by_path: std::collections::HashMap<&str, &RepoEntry> =
+            entries.iter().map(|e| (e.path.as_str(), e)).collect();
+        let warm_repo_data_dirs: std::collections::HashSet<String> = self
+            .repos
+            .iter()
+            .map(|r| {
+                by_path
+                    .get(r.key().as_str())
+                    .map(|entry| expected_data_dir_name(entry))
+                    .unwrap_or_else(|| RepoRegistry::path_hash(r.key()))
+            })
+            .collect();
 
         let dirents: Vec<std::fs::DirEntry> = match std::fs::read_dir(repos_dir.as_std_path()) {
             Ok(entries) => entries.flatten().collect(),
@@ -797,11 +824,7 @@ impl SessionManager {
             // before this sweep runs. Deleting the directory under a live
             // runtime corrupts it immediately, and a repo can go warm without
             // ever starting a job (e.g. plain reads).
-            if self
-                .repos
-                .iter()
-                .any(|r| RepoRegistry::path_hash(r.key()) == name)
-            {
+            if warm_repo_data_dirs.contains(&name) {
                 tracing::debug!(
                     dir = %name,
                     "not collecting an unclaimed data dir while its repo is loaded in memory"
@@ -2814,6 +2837,53 @@ mod tests {
             real_dir.as_std_path().exists(),
             "a directory claimed by data_dir must survive even when \
              path_hash(path) disagrees with its own name"
+        );
+    }
+
+    // ─── R5: one derivation of a data dir's expected name, not two ────────────
+
+    /// `claimed` and the warm-runtime guard used to derive a repo's expected
+    /// data-directory name two different ways (recompute `path_hash(path)` vs.
+    /// prefer `data_dir`'s own file name) that happened to agree in every
+    /// reachable case, since a warm repo is always registered and therefore
+    /// already covered by `claimed` before the warm-runtime guard is ever
+    /// consulted. There is deliberately no end-to-end regression test here:
+    /// any scenario that could make the two derivations disagree is, by that
+    /// same reasoning, already caught by `claimed`, so no sequence of sweeps
+    /// can distinguish the old two-derivation behaviour from the new
+    /// one-derivation behaviour. These tests instead pin the single shared
+    /// function both call sites now use.
+    fn test_repo_entry(path: &str, data_dir: Utf8PathBuf) -> RepoEntry {
+        RepoEntry {
+            path: path.to_string(),
+            name: "legacy".to_string(),
+            data_dir,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            last_accessed: "2026-01-01T00:00:00Z".to_string(),
+            consent: crate::registry::IndexConsent::Approved,
+            initial_index_approved_at: None,
+            initial_index_completed_at: None,
+            seeded_from: None,
+            missing_since: None,
+        }
+    }
+
+    #[test]
+    fn expected_data_dir_name_prefers_data_dirs_own_file_name() {
+        let entry = test_repo_entry(
+            "/somewhere/legacy",
+            Utf8PathBuf::from("/data/aaaaaaaaaaaaaaaa"),
+        );
+        assert_eq!(expected_data_dir_name(&entry), "aaaaaaaaaaaaaaaa");
+    }
+
+    #[test]
+    fn expected_data_dir_name_falls_back_to_path_hash_without_a_file_name() {
+        // `Utf8PathBuf::from("/")` has no file name component at all.
+        let entry = test_repo_entry("/somewhere/legacy", Utf8PathBuf::from("/"));
+        assert_eq!(
+            expected_data_dir_name(&entry),
+            RepoRegistry::path_hash("/somewhere/legacy")
         );
     }
 

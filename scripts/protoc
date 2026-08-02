@@ -52,30 +52,50 @@ cache_is_valid() {
   [ "$reported_version" = "libprotoc ${VERSION}" ]
 }
 
+read_lock_owner() {
+  cat "${LOCK_DIR}/pid" 2>/dev/null || true
+}
+
 acquire_lock() {
   local started_at now owner_pid
   started_at="$(date +%s)"
 
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    owner_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
-    now="$(date +%s)"
-
-    if [ -n "$owner_pid" ]; then
-      if ! kill -0 "$owner_pid" 2>/dev/null; then
-        rm -rf "$LOCK_DIR"
-        continue
+  while true; do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      # Publish ownership immediately. The write can still fail if a waiter
+      # reclaimed this directory in the instant between the mkdir and here,
+      # believing it stale. That means we do not hold the lock, so start over
+      # instead of proceeding unlocked. Grouped so the redirection failure is
+      # suppressed too, since `set -e` would otherwise abort the script: that
+      # is the failure this loop exists to absorb.
+      if { printf '%s\n' "$$" > "${LOCK_DIR}/pid"; } 2>/dev/null; then
+        LOCK_HELD=1
+        return 0
       fi
+      continue
     fi
+
+    owner_pid="$(read_lock_owner)"
+    now="$(date +%s)"
 
     if [ $((now - started_at)) -ge "$LOCK_TIMEOUT_SECONDS" ]; then
       echo "timed out waiting ${LOCK_TIMEOUT_SECONDS}s for protoc cache lock: ${LOCK_DIR}" 1>&2
       exit 1
     fi
+
+    # Reclaim a lock only while its recorded owner is both gone and still the
+    # owner we inspected. Re-reading is what makes concurrent reclamation safe:
+    # a directory created since our first read either records a different pid or
+    # has not recorded one yet, and neither matches, so several waiters racing on
+    # the same stale lock cannot delete a successor's live lock.
+    if [ -n "$owner_pid" ] && ! kill -0 "$owner_pid" 2>/dev/null &&
+      [ "$(read_lock_owner)" = "$owner_pid" ]; then
+      rm -rf "$LOCK_DIR"
+      continue
+    fi
+
     sleep 0.1
   done
-
-  LOCK_HELD=1
-  printf '%s\n' "$$" > "${LOCK_DIR}/pid"
 }
 
 sha256_file() {

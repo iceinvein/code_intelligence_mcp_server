@@ -2615,10 +2615,14 @@ mod tests {
 
     // ─── I4: seeded two-sighting rule under a returning checkout ──────────────
 
-    /// Deferred item from an earlier review: the `retain` logic that resets a
-    /// seeded entry's armed sighting once its checkout is no longer missing
-    /// is correct by inspection but was untested, despite gating a
-    /// `remove_dir_all`.
+    /// Deferred item from an earlier review, revised after a re-review found
+    /// the original two-sweep version vacuous: `list_missing` never returns a
+    /// present checkout, so a test that stops after the checkout returns
+    /// passes whether or not the `retain` in `prune_vanished_indexes` exists.
+    /// The `retain` only matters once the checkout goes absent *again*: three
+    /// sweeps are needed to exercise absent (arms it), present (the `retain`
+    /// must clear the arming), absent (must count as a first sighting of the
+    /// new absence, not a second).
     #[tokio::test]
     async fn seeded_entry_survives_when_the_checkout_returns_between_its_two_sightings() {
         let (_data, data_dir) = temp_data_dir();
@@ -2648,6 +2652,25 @@ mod tests {
             manager.registry.get_by_hash(&hash).unwrap().is_some(),
             "a seeded entry whose checkout returns between sightings must \
              survive, not be deleted on a stale first-sighting arm"
+        );
+
+        // Third sweep: the checkout goes absent again. This is a fresh
+        // absence and must need its own two sightings, not ride on the
+        // sighting from before the checkout returned. Without the `retain`
+        // at the end of `prune_vanished_indexes`, the first sweep's stale
+        // arming survives the checkout's return, so this sweep's `insert`
+        // finds an existing entry, `armed` is true, and the index is
+        // deleted on what is really only the first sighting of the new
+        // absence.
+        std::fs::remove_dir_all(repo_path.as_std_path()).unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "a fresh absence after the checkout came back must be treated as \
+             a first sighting, not a second, so the entry must survive a \
+             third sweep"
         );
     }
 }

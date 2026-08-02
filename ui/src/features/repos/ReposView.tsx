@@ -90,7 +90,7 @@ function staleLabel(repo: Repo): string {
 }
 
 function staleTitle(repo: Repo): string {
-  if (repo.auto_delete_at) {
+  if (repo.auto_delete_at && daysUntil(repo.auto_delete_at) !== null) {
     return `Checkout is gone. This index is deleted on ${new Date(repo.auto_delete_at).toLocaleString()}.`;
   }
   if (repo.missing_since) {

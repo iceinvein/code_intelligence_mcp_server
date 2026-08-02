@@ -75,8 +75,6 @@ fn now_unix_s() -> i64 {
 /// vanished, which is a deletion.
 ///
 /// Only called for paths already known to be absent.
-#[allow(dead_code)]
-// Called by the idle sweep in the next task.
 fn absence_is_inconclusive(path: &str) -> bool {
     let mut cursor = std::path::Path::new(path);
     while let Some(parent) = cursor.parent() {
@@ -88,6 +86,44 @@ fn absence_is_inconclusive(path: &str) -> bool {
     }
     // Relative or empty path: not something the sweep should act on.
     true
+}
+
+/// What the sweep should do with a non-seeded entry whose path is absent.
+#[derive(Debug, PartialEq, Eq)]
+enum GraceVerdict {
+    /// No usable stamp: record the current time and wait for a later sweep.
+    Stamp,
+    /// Stamped and still inside the grace window, or grace is disabled.
+    Wait,
+    /// Absent for at least the grace period. Delete the index.
+    Delete,
+}
+
+/// Decide the fate of a non-seeded entry from its stamp alone.
+///
+/// Pure so the grace arithmetic is testable without touching disk or sleeping.
+/// An unparseable stamp yields `Stamp`, which rewrites it: a corrupt value must
+/// not be able to trigger a deletion, nor pin an entry forever.
+fn grace_verdict(
+    missing_since: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    grace_days: u32,
+) -> GraceVerdict {
+    let Some(stamp) = missing_since else {
+        return GraceVerdict::Stamp;
+    };
+    let Ok(stamped) = chrono::DateTime::parse_from_rfc3339(stamp) else {
+        return GraceVerdict::Stamp;
+    };
+    if grace_days == 0 {
+        return GraceVerdict::Wait;
+    }
+    let elapsed = now.signed_duration_since(stamped.with_timezone(&chrono::Utc));
+    if elapsed >= chrono::Duration::days(i64::from(grace_days)) {
+        GraceVerdict::Delete
+    } else {
+        GraceVerdict::Wait
+    }
 }
 
 pub struct SessionManager {
@@ -109,7 +145,8 @@ pub struct SessionManager {
     /// Seeded worktree indexes whose checkout was missing on the last prune sweep,
     /// keyed by canonical repo path. Deletion needs two consecutive sightings, so
     /// a checkout that is briefly unreachable is not destroyed. The `Instant` is
-    /// diagnostic only.
+    /// diagnostic only. Non-seeded entries use the persisted `missing_since`
+    /// stamp instead; nothing writes both for the same repo.
     seeded_absent_once: DashMap<String, Instant>,
     /// Repositories awaiting a user decision about their first full index.
     pending_consent: DashMap<String, PendingConsent>,
@@ -295,7 +332,7 @@ impl SessionManager {
 
         // Deliberately after the TTL early return: a deployment configured never
         // to evict a warm repo must never delete one of its indexes either.
-        self.prune_vanished_seeded_indexes().await;
+        self.prune_vanished_indexes().await;
 
         let ttl = Duration::from_secs(ttl_secs);
 
@@ -336,63 +373,103 @@ impl SessionManager {
         }
     }
 
-    /// Delete seeded worktree indexes whose checkout is gone.
+    /// Delete indexes whose repository folder is gone.
     ///
-    /// Seeded indexes are cheap to create, so they accumulate; this is what keeps
-    /// `~/.code-intelligence/repos/` from filling up with dead worktrees.
-    /// `delete_repo_by_hash` cancels the watcher, removes the data dir, and drops
-    /// the registry entry, so three guards stand in front of it:
+    /// Two policies, split by what a mistake costs. A seeded worktree index is
+    /// seconds to rebuild, so it goes after two consecutive sweeps find the
+    /// checkout absent. A full index is a complete GPU pass, so it waits out
+    /// `missing_repo_grace_days` measured from a stamp persisted in
+    /// `registry.json`, which survives daemon restarts.
     ///
-    /// - only entries the daemon seeded are eligible, via `list_seeded_missing`;
-    /// - never one with a running job, whose `SqliteStore` and Tantivy writer are
-    ///   live and would rebuild a partial data dir right after the removal,
-    ///   leaving artifacts that block this worktree from ever being seeded again;
-    /// - and only on the second consecutive sweep that finds the checkout absent,
-    ///   so a repo on a volume that unmounts for a minute survives.
+    /// Guards shared by both paths:
     ///
-    /// The absence observations live in memory only. A restart forgets them, which
-    /// costs one extra sweep before a dead worktree is collected.
-    async fn prune_vanished_seeded_indexes(&self) {
+    /// - `absence_is_inconclusive` skips paths whose volume is simply not
+    ///   mounted, so an ejected drive costs nothing;
+    /// - an entry with a running job is skipped, because its `SqliteStore` and
+    ///   Tantivy writer are live and would rebuild a partial data dir right after
+    ///   the removal, leaving artifacts that block this repo from being seeded
+    ///   again;
+    /// - `delete_repo_by_hash` refuses any data dir outside the managed tree.
+    ///
+    /// The seeded path's absence observations live in memory only. A restart
+    /// forgets them, which costs one extra sweep before a dead worktree is
+    /// collected.
+    async fn prune_vanished_indexes(&self) {
+        if let Err(error) = self.registry.clear_missing_since_for_present_paths() {
+            tracing::debug!(%error, "clearing missing_since stamps failed");
+        }
+
         let missing = match self.registry.list_missing() {
             Ok(missing) => missing,
             Err(error) => {
-                tracing::debug!(%error, "list_seeded_missing failed");
+                tracing::debug!(%error, "list_missing failed");
                 return;
             }
         };
-        let missing: Vec<RepoEntry> = missing
+
+        let actionable: Vec<RepoEntry> = missing
             .into_iter()
-            .filter(|e| e.seeded_from.is_some())
+            .filter(|entry| !absence_is_inconclusive(&entry.path))
             .collect();
 
-        // Forget observations for checkouts that came back, and for entries that
-        // are no longer registered at all.
+        // Forget observations for checkouts that came back, for entries that are
+        // no longer registered at all, and for volumes that went away.
         let still_missing: std::collections::HashSet<&str> =
-            missing.iter().map(|entry| entry.path.as_str()).collect();
+            actionable.iter().map(|entry| entry.path.as_str()).collect();
         self.seeded_absent_once
             .retain(|path, _| still_missing.contains(path.as_str()));
 
-        for entry in &missing {
+        let now = chrono::Utc::now();
+        let grace_days = self.standalone_config.missing_repo_grace_days;
+
+        for entry in &actionable {
             let hash = RepoRegistry::path_hash(&entry.path);
             if let Some(job) = jobs::most_recent_running_for_repo(&self.job_registry, &hash) {
                 tracing::debug!(
                     repo = %entry.path,
                     job = %job.id,
-                    "not pruning a seeded worktree index while a job is running against it"
+                    "not pruning an index while a job is running against it"
                 );
                 continue;
             }
 
-            // First sighting only arms the deletion; the next sweep performs it.
-            if self
-                .seeded_absent_once
-                .insert(entry.path.clone(), Instant::now())
-                .is_none()
-            {
-                tracing::debug!(
-                    repo = %entry.path,
-                    "seeded worktree checkout is missing, pruning it if it is still missing next sweep"
-                );
+            let doomed = if entry.seeded_from.is_some() {
+                // First sighting only arms the deletion; the next sweep performs it.
+                let armed = self
+                    .seeded_absent_once
+                    .insert(entry.path.clone(), Instant::now())
+                    .is_some();
+                if !armed {
+                    tracing::debug!(
+                        repo = %entry.path,
+                        "seeded worktree checkout is missing, pruning it if it is still missing next sweep"
+                    );
+                }
+                armed
+            } else {
+                match grace_verdict(entry.missing_since.as_deref(), now, grace_days) {
+                    GraceVerdict::Stamp => {
+                        let stamp = now.to_rfc3339();
+                        match self.registry.stamp_missing_since(&entry.path, &stamp) {
+                            Ok(_) => tracing::info!(
+                                repo = %entry.path,
+                                grace_days,
+                                "repository folder is gone; its index is deleted if it stays gone"
+                            ),
+                            Err(error) => tracing::warn!(
+                                repo = %entry.path,
+                                %error,
+                                "could not record when a repository folder went missing"
+                            ),
+                        }
+                        false
+                    }
+                    GraceVerdict::Wait => false,
+                    GraceVerdict::Delete => true,
+                }
+            };
+
+            if !doomed {
                 continue;
             }
 
@@ -402,7 +479,8 @@ impl SessionManager {
                     tracing::info!(
                         repo = %entry.path,
                         data_dir = %entry.data_dir,
-                        "pruned seeded worktree index whose checkout was removed"
+                        seeded = entry.seeded_from.is_some(),
+                        "deleted the index of a repository whose folder was removed"
                     );
                 }
                 Ok(None) => {
@@ -411,7 +489,7 @@ impl SessionManager {
                 Err(error) => tracing::warn!(
                     repo = %entry.path,
                     %error,
-                    "failed to prune seeded worktree index"
+                    "failed to delete the index of a removed repository"
                 ),
             }
         }
@@ -726,6 +804,31 @@ impl SessionManager {
             embeddings_backend: EmbeddingsBackend::Hash,
             hash_embedding_dim: 64,
             warm_ttl_seconds,
+            ..StandaloneConfig::default()
+        };
+
+        let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
+
+        let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
+
+        Self::new(standalone_config, registry, embedder, None, None)
+            .await
+            .expect("Failed to create test SessionManager")
+    }
+
+    /// Build a test SessionManager with a custom missing-repo grace period.
+    #[cfg(test)]
+    pub async fn new_for_test_with_grace_days(
+        data_dir: Utf8PathBuf,
+        missing_repo_grace_days: u32,
+    ) -> Self {
+        use crate::config::EmbeddingsBackend;
+        use crate::embeddings::hash::HashEmbedder;
+
+        let standalone_config = StandaloneConfig {
+            embeddings_backend: EmbeddingsBackend::Hash,
+            hash_embedding_dim: 64,
+            missing_repo_grace_days,
             ..StandaloneConfig::default()
         };
 
@@ -1415,6 +1518,192 @@ mod tests {
         // Deepest existing ancestor is "/". Nothing about this path was ever
         // reachable, so it is not evidence of a deletion either.
         assert!(absence_is_inconclusive("/no-such-top-level-9f3a/project"));
+    }
+
+    #[test]
+    fn grace_verdict_covers_every_state() {
+        use chrono::{Duration as ChronoDuration, Utc};
+        let now = Utc::now();
+        let long_ago = (now - ChronoDuration::days(10)).to_rfc3339();
+        let recent = (now - ChronoDuration::days(2)).to_rfc3339();
+
+        // No stamp yet: record one and wait.
+        assert_eq!(grace_verdict(None, now, 7), GraceVerdict::Stamp);
+        // Inside the window.
+        assert_eq!(grace_verdict(Some(&recent), now, 7), GraceVerdict::Wait);
+        // Past the window.
+        assert_eq!(grace_verdict(Some(&long_ago), now, 7), GraceVerdict::Delete);
+        // Exactly at the boundary counts as expired.
+        let exactly = (now - ChronoDuration::days(7)).to_rfc3339();
+        assert_eq!(grace_verdict(Some(&exactly), now, 7), GraceVerdict::Delete);
+        // Grace disabled: stamp for the dashboard, never delete.
+        assert_eq!(grace_verdict(None, now, 0), GraceVerdict::Stamp);
+        assert_eq!(grace_verdict(Some(&long_ago), now, 0), GraceVerdict::Wait);
+        // Corrupt stamp heals by being rewritten.
+        assert_eq!(
+            grace_verdict(Some("not a date"), now, 7),
+            GraceVerdict::Stamp
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_stamps_a_vanished_repo_before_deleting_it() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo); // deletes the checkout
+
+        manager.evict_idle_repos().await;
+
+        let stamped = manager.registry.get_by_hash(&hash).unwrap().unwrap();
+        assert!(
+            stamped.missing_since.is_some(),
+            "the first sweep records when the path went missing"
+        );
+        assert!(
+            entry.data_dir.as_std_path().exists(),
+            "and deletes nothing yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_deletes_a_vanished_repo_once_the_grace_period_expires() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        // Backdate the stamp past the 7-day default instead of waiting.
+        let old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
+        assert!(!entry.data_dir.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn sweep_clears_the_stamp_when_the_checkout_returns() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        let old = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        // The path exists throughout; the stamp is stale state from an earlier
+        // absence.
+        manager.evict_idle_repos().await;
+
+        assert_eq!(
+            manager
+                .registry
+                .get_by_hash(&hash)
+                .unwrap()
+                .unwrap()
+                .missing_since,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_never_deletes_when_grace_is_disabled() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_grace_days(data_dir, 0).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        let old = (chrono::Utc::now() - chrono::Duration::days(400)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "grace_days=0 must never delete"
+        );
+        assert!(entry.data_dir.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn sweep_spares_a_vanished_repo_while_a_job_runs_against_it() {
+        use crate::server::jobs::{register_running, JobKind};
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        let old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        // A live job holds the SQLite and Tantivy writers open; deleting the data
+        // dir under it leaves artifacts that block this repo from being seeded.
+        register_running(
+            &manager.job_registry,
+            "job-1".to_string(),
+            JobKind::ManualReindex,
+            hash.clone(),
+            repo_path.to_string(),
+        );
+
+        manager.evict_idle_repos().await;
+
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_some());
+        assert!(entry.data_dir.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn sweep_leaves_seeded_entries_on_the_two_sweep_rule() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        manager.registry.register(repo_path.as_str()).unwrap();
+        manager
+            .registry
+            .mark_seeded_from(repo_path.as_str(), "basehash12345678")
+            .unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        // First sweep arms, second sweep deletes. No stamp is ever written.
+        manager.evict_idle_repos().await;
+        let armed = manager.registry.get_by_hash(&hash).unwrap().unwrap();
+        assert!(
+            armed.missing_since.is_none(),
+            "seeded entries are not stamped"
+        );
+
+        manager.evict_idle_repos().await;
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
     }
 
     #[tokio::test]

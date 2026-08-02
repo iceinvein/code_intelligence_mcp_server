@@ -115,3 +115,45 @@ def test_bad_checksum_never_publishes_partial_cache(tmp_path):
     assert "checksum mismatch" in result.stderr
     installed = cache / "code-intel-protoc" / "29.3" / _platform_arch()
     assert not installed.exists()
+
+
+def _lock_dir(cache: Path) -> Path:
+    return cache / "code-intel-protoc" / "29.3" / f"{_platform_arch()}.lock"
+
+
+def test_lock_left_by_a_dead_owner_is_reclaimed(tmp_path):
+    """A lock whose recorded owner no longer exists must not block forever."""
+    archive = tmp_path / "protoc.zip"
+    checksum = _fake_archive(archive)
+    cache = tmp_path / "cache"
+    lock = _lock_dir(cache)
+    lock.mkdir(parents=True)
+    # PID 2^22 is above every configured pid_max, so it cannot be live.
+    (lock / "pid").write_text("4194304\n")
+
+    result = _run(_env(cache, archive, checksum))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "libprotoc 29.3"
+    assert not lock.exists()
+
+
+def test_lock_without_a_recorded_owner_is_never_stolen(tmp_path):
+    """An owner that has not published its pid yet still holds the lock.
+
+    This is the window a reclaiming waiter must not treat as stale, otherwise it
+    deletes a live lock and the holder's own pid write fails.
+    """
+    archive = tmp_path / "protoc.zip"
+    checksum = _fake_archive(archive)
+    cache = tmp_path / "cache"
+    lock = _lock_dir(cache)
+    lock.mkdir(parents=True)
+
+    env = _env(cache, archive, checksum)
+    env["PROTOC_LOCK_TIMEOUT_SECONDS"] = "1"
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "timed out waiting" in result.stderr
+    assert lock.exists(), "a lock with no recorded owner must be left alone"

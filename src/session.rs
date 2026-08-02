@@ -65,6 +65,31 @@ fn now_unix_s() -> i64 {
         .unwrap_or(0)
 }
 
+/// Whether an absent path's absence is explained by something other than a
+/// deletion, in which case no deletion countdown may start.
+///
+/// Walks up to the deepest ancestor that exists. Two answers mean "no evidence":
+/// `/Volumes`, which is the macOS mount table root and therefore says the volume
+/// is not mounted rather than that the repo is gone; and `/`, which says nothing
+/// on the path was ever reachable. Anything else is a live directory whose child
+/// vanished, which is a deletion.
+///
+/// Only called for paths already known to be absent.
+#[allow(dead_code)]
+// Called by the idle sweep in the next task.
+fn absence_is_inconclusive(path: &str) -> bool {
+    let mut cursor = std::path::Path::new(path);
+    while let Some(parent) = cursor.parent() {
+        if parent.exists() {
+            return parent == std::path::Path::new("/")
+                || parent == std::path::Path::new("/Volumes");
+        }
+        cursor = parent;
+    }
+    // Relative or empty path: not something the sweep should act on.
+    true
+}
+
 pub struct SessionManager {
     pub standalone_config: Arc<StandaloneConfig>,
     pub registry: Arc<RepoRegistry>,
@@ -1358,6 +1383,38 @@ mod tests {
         assert!(!should_spawn_description_worker(true, true, true));
         // No LLM backend → nothing to spawn.
         assert!(!should_spawn_description_worker(true, false, false));
+    }
+
+    #[test]
+    fn absence_under_a_live_directory_is_conclusive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let gone = root.join("deleted-repo");
+
+        // The parent exists and the child does not: a real deletion.
+        assert!(!absence_is_inconclusive(gone.as_str()));
+
+        // A whole parent folder of worktrees being deleted still counts, because
+        // its own parent (the tempdir) is alive.
+        let nested = root.join("worktrees").join("feature");
+        assert!(!absence_is_inconclusive(nested.as_str()));
+    }
+
+    #[test]
+    fn absence_under_an_unmounted_volume_is_inconclusive() {
+        // /Volumes exists on every macOS system; this volume does not. The
+        // deepest existing ancestor is the mount table root, so the daemon has
+        // no evidence that anything was deleted.
+        assert!(absence_is_inconclusive(
+            "/Volumes/definitely-not-mounted-9f3a/project"
+        ));
+    }
+
+    #[test]
+    fn absence_below_a_missing_top_level_directory_is_inconclusive() {
+        // Deepest existing ancestor is "/". Nothing about this path was ever
+        // reachable, so it is not evidence of a deletion either.
+        assert!(absence_is_inconclusive("/no-such-top-level-9f3a/project"));
     }
 
     #[tokio::test]

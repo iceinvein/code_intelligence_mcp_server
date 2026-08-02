@@ -48,6 +48,8 @@ function jsonFor(url: string): Response {
             last_accessed: "1",
             path_exists: true,
             seeded_from: null,
+            missing_since: null,
+            auto_delete_at: null,
             activity: {
               running: false,
               current: null,

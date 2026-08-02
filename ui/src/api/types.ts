@@ -22,6 +22,10 @@ export type Repo = {
   path_exists: boolean;
   /** Base repo id when this index was cloned from another repo, else null. */
   seeded_from: string | null;
+  /** RFC3339 time the daemon first found the path absent, else null. */
+  missing_since: string | null;
+  /** RFC3339 deadline after which the daemon deletes this index, else null. */
+  auto_delete_at: string | null;
   activity: RepoActivity;
 };
 

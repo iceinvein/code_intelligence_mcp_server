@@ -691,6 +691,23 @@ impl SessionManager {
                 );
                 continue;
             }
+            // I2: the job guard above covers an active indexing pass. It does
+            // not cover a warm runtime sitting idle with open SQLite, Tantivy,
+            // and LanceDB handles and a file watcher: nothing else checks that
+            // before this sweep runs. Deleting the directory under a live
+            // runtime corrupts it immediately, and a repo can go warm without
+            // ever starting a job (e.g. plain reads).
+            if self
+                .repos
+                .iter()
+                .any(|r| RepoRegistry::path_hash(r.key()) == name)
+            {
+                tracing::debug!(
+                    dir = %name,
+                    "not collecting an unclaimed data dir while its repo is loaded in memory"
+                );
+                continue;
+            }
 
             seen_now.insert(name.clone());
 
@@ -2416,5 +2433,52 @@ mod tests {
              other, not stay pinned by the earlier corruption"
         );
         assert!(!entry.data_dir.as_std_path().exists());
+    }
+
+    // ─── I2: a warm runtime must not be collected out from under itself ───────
+
+    /// The running-job guard covers an active indexing pass. It does not
+    /// cover a warm runtime sitting idle with open SQLite, Tantivy, and
+    /// LanceDB handles and a file watcher. Simulates the amplification
+    /// scenario directly: the registry's claim on a loaded repo disappears
+    /// (as in C1, or any other bug) while the runtime stays warm in
+    /// `self.repos`.
+    #[tokio::test]
+    async fn orphan_sweep_spares_a_dir_whose_repo_is_still_warm_in_memory() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+
+        // An unrelated, normally-registered repo so `claimed` stays non-empty
+        // and the C1 guards do not also explain the result.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+
+        let (_repo, repo_path) = temp_repo_dir();
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+        let key = canonical_key(&repo_path);
+        let hash = crate::registry::RepoRegistry::path_hash(&key);
+        let data_dir_path = manager
+            .registry
+            .get_by_hash(&hash)
+            .unwrap()
+            .unwrap()
+            .data_dir;
+
+        // The registry entry disappears while the runtime stays warm.
+        manager.registry.remove_by_hash(&hash).unwrap();
+        assert_eq!(
+            manager.loaded_repo_count(),
+            1,
+            "the warm runtime must still be held, independent of the registry"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            data_dir_path.as_std_path().exists(),
+            "a directory whose repo is warm in memory must never be \
+             collected, even if the registry no longer claims it"
+        );
     }
 }

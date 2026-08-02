@@ -142,6 +142,22 @@ fn is_repo_hash_dir_name(name: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// The purely-decidable half of whether a `repos/` entry may be collected by
+/// the orphan sweep: a hash-shaped name, not claimed by any registry entry, an
+/// actual directory, and old enough to be past `register`'s create-then-save
+/// window. Pure so every guard combination is testable without touching disk.
+/// The remaining guards, a running job and the two-sighting count, need
+/// `&self` and stay in `sweep_orphan_data_dirs_with_min_age`.
+fn is_collectable_orphan_dir(
+    name: &str,
+    is_dir: bool,
+    claimed: bool,
+    age: Duration,
+    min_age: Duration,
+) -> bool {
+    is_repo_hash_dir_name(name) && !claimed && is_dir && age >= min_age
+}
+
 /// Refuse to delete anything that is not strictly inside the managed repos
 /// directory.
 ///
@@ -386,6 +402,13 @@ impl SessionManager {
             tracing::debug!(error = %e, "prune_declined_missing failed");
         }
 
+        // Deliberately before the TTL early return below: that gate exists so a
+        // deployment configured never to evict a warm repo also never deletes
+        // that repo's live index. An unclaimed data dir belongs to no registered
+        // repo, so that rationale does not apply to it, and `warm_ttl_seconds =
+        // 0` must not silently disable orphan collection forever.
+        self.sweep_orphan_data_dirs();
+
         let ttl_secs = self.standalone_config.warm_ttl_seconds;
         if ttl_secs == 0 {
             return;
@@ -394,7 +417,6 @@ impl SessionManager {
         // Deliberately after the TTL early return: a deployment configured never
         // to evict a warm repo must never delete one of its indexes either.
         self.prune_vanished_indexes().await;
-        self.sweep_orphan_data_dirs();
 
         let ttl = Duration::from_secs(ttl_secs);
 
@@ -596,22 +618,21 @@ impl SessionManager {
 
         for dirent in entries.flatten() {
             let name = dirent.file_name().to_string_lossy().to_string();
-            if !is_repo_hash_dir_name(&name) || claimed.contains(&name) {
-                continue;
-            }
             let Ok(meta) = dirent.metadata() else {
                 continue;
             };
-            if !meta.is_dir() {
+            // Unreadable mtime is treated the same as "too young": there is no
+            // evidence the create-then-save window has closed.
+            let Some(age) = meta.modified().ok().and_then(|m| m.elapsed().ok()) else {
                 continue;
-            }
-            let old_enough = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.elapsed().ok())
-                .map(|age| age >= min_age)
-                .unwrap_or(false);
-            if !old_enough {
+            };
+            if !is_collectable_orphan_dir(
+                &name,
+                meta.is_dir(),
+                claimed.contains(&name),
+                age,
+                min_age,
+            ) {
                 continue;
             }
             if jobs::most_recent_running_for_repo(&self.job_registry, &name).is_some() {
@@ -1881,6 +1902,39 @@ mod tests {
     }
 
     #[test]
+    fn is_collectable_orphan_dir_covers_every_purely_decidable_guard() {
+        let old = Duration::from_secs(7200);
+        let young = Duration::from_secs(1);
+        let min_age = Duration::from_secs(3600);
+        let hash_name = "0123456789abcdef";
+
+        assert!(
+            !is_collectable_orphan_dir(hash_name, true, true, old, min_age),
+            "a claimed name is never collectable"
+        );
+        assert!(
+            !is_collectable_orphan_dir(hash_name, false, false, old, min_age),
+            "a non-directory is never collectable"
+        );
+        assert!(
+            !is_collectable_orphan_dir("my-notes", true, false, old, min_age),
+            "not 16 lowercase hex characters"
+        );
+        assert!(
+            !is_collectable_orphan_dir("0123456789ABCDEF", true, false, old, min_age),
+            "uppercase hex is not ours"
+        );
+        assert!(
+            !is_collectable_orphan_dir(hash_name, true, false, young, min_age),
+            "younger than the minimum age"
+        );
+        assert!(
+            is_collectable_orphan_dir(hash_name, true, false, old, min_age),
+            "a hash-shaped, unclaimed, old-enough directory is collectable"
+        );
+    }
+
+    #[test]
     fn ensure_within_repos_dir_rejects_the_root_itself_and_outsiders() {
         let repos = Utf8PathBuf::from("/data/repos");
         assert!(ensure_within_repos_dir(&repos.join("abc"), &repos).is_ok());
@@ -1991,6 +2045,41 @@ mod tests {
         manager.sweep_orphan_data_dirs();
 
         assert!(fresh.as_std_path().exists());
+    }
+
+    /// `warm_ttl_seconds = 0` means "never evict a warm repo"; it must not also
+    /// mean "never collect an orphan data dir", since an unclaimed dir belongs
+    /// to no registered repo and the TTL's rationale does not cover it. Pins
+    /// the call to `sweep_orphan_data_dirs` above the TTL early return in
+    /// `evict_idle_repos`. Goes through the real entry point rather than
+    /// calling the sweep directly, since the placement is what is under test,
+    /// so the directory's age is backdated on disk instead of injected.
+    #[tokio::test]
+    async fn evict_idle_repos_collects_orphan_dirs_even_when_ttl_is_zero() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_ttl(data_dir.clone(), 0).await;
+        let repos_dir = data_dir.join("repos");
+        let orphan = repos_dir.join("1122334455667788");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        filetime::set_file_mtime(
+            orphan.as_std_path(),
+            filetime::FileTime::from_system_time(two_hours_ago),
+        )
+        .unwrap();
+
+        manager.evict_idle_repos().await;
+        assert!(
+            orphan.as_std_path().exists(),
+            "the first sighting only arms the deletion"
+        );
+
+        manager.evict_idle_repos().await;
+        assert!(
+            !orphan.as_std_path().exists(),
+            "a TTL of zero must not disable orphan collection"
+        );
     }
 
     #[tokio::test]

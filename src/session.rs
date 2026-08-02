@@ -328,13 +328,17 @@ impl SessionManager {
     /// The absence observations live in memory only. A restart forgets them, which
     /// costs one extra sweep before a dead worktree is collected.
     async fn prune_vanished_seeded_indexes(&self) {
-        let missing = match self.registry.list_seeded_missing() {
+        let missing = match self.registry.list_missing() {
             Ok(missing) => missing,
             Err(error) => {
                 tracing::debug!(%error, "list_seeded_missing failed");
                 return;
             }
         };
+        let missing: Vec<RepoEntry> = missing
+            .into_iter()
+            .filter(|e| e.seeded_from.is_some())
+            .collect();
 
         // Forget observations for checkouts that came back, and for entries that
         // are no longer registered at all.

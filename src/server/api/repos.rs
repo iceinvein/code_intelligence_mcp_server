@@ -558,6 +558,7 @@ mod tests {
             initial_index_approved_at: None,
             initial_index_completed_at: None,
             seeded_from: None,
+            missing_since: None,
         };
 
         let activity = read_repo_persisted_activity(&entry);

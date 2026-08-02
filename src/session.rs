@@ -2293,4 +2293,68 @@ mod tests {
              be trusted to mean \"nothing is registered\""
         );
     }
+
+    // ─── C2: declining an already-indexed repo must not skip its grace period ──
+
+    /// `prune_declined_missing` used to drop any `Declined` entry whose path
+    /// was gone, including one with a real, populated data directory, because
+    /// `set_consent`'s update branch (reachable via `decline_initial_index` on
+    /// an already-indexed repo) preserves `data_dir` rather than clearing it.
+    /// That dropped the registry's only claim on the directory one tick
+    /// before the orphan sweep's own two-sighting rule finished arming it, so
+    /// a declined, already-indexed repo whose folder was then deleted was
+    /// fully collected in about two ticks (roughly two minutes) instead of
+    /// waiting out `missing_repo_grace_days` (7 days by default).
+    #[tokio::test]
+    async fn declining_an_indexed_repo_then_deleting_its_folder_respects_the_grace_period() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        // An unrelated, normally-registered repo so `claimed` stays non-empty
+        // even after the declined entry below is (wrongly, pre-fix) dropped;
+        // isolates this test to the C2 mechanism rather than the C1 guards.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+        let (repo, repo_path) = temp_repo_dir();
+        // `decline_initial_index` canonicalizes internally; registering with
+        // the same canonical form up front keeps this test on one registry
+        // entry rather than creating a second one under a different hash.
+        let canonical = crate::path::canonicalize_existing_dir(&repo_path).unwrap();
+
+        let entry = manager.registry.register(canonical.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(canonical.as_str());
+        std::fs::write(
+            entry.data_dir.join("code-intelligence.db").as_std_path(),
+            b"real index",
+        )
+        .unwrap();
+
+        // Decline an already-indexed repo (the update branch of set_consent,
+        // reachable via decline_initial_index / approve_indexing / POST
+        // /api/consent), then delete its checkout.
+        manager.decline_initial_index(canonical.as_path()).unwrap();
+        drop(repo);
+
+        // Backdate the data dir so it is old enough for the orphan sweep to
+        // even consider it, isolating this test to the C2 mechanism rather
+        // than the create-then-save age guard.
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        filetime::set_file_mtime(
+            entry.data_dir.as_std_path(),
+            filetime::FileTime::from_system_time(two_hours_ago),
+        )
+        .unwrap();
+
+        manager.evict_idle_repos().await; // tick N
+        manager.evict_idle_repos().await; // tick N+1: two sightings would have collected an orphan
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "a declined repo that was actually indexed must stay registered so \
+             it can be graced, not dropped as a dead decline record"
+        );
+        assert!(
+            entry.data_dir.as_std_path().exists(),
+            "its data directory must survive well inside the 7-day grace period"
+        );
+    }
 }

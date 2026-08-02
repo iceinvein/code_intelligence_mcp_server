@@ -334,15 +334,31 @@ impl RepoRegistry {
         Ok(self.get(repo_path)?.map(|e| e.consent))
     }
 
-    /// Drop `Declined` entries whose path no longer exists on disk. Ephemeral
-    /// folders (git worktrees, temp copies) get unique paths and are deleted
-    /// after use; this keeps `registry.json` from accumulating dead declines.
+    /// Drop `Declined` entries whose path no longer exists on disk and which
+    /// never had a data directory created for them.
+    ///
+    /// `set_consent`'s insert branch (a repo declined before it was ever
+    /// indexed, e.g. an ephemeral worktree or temp copy) computes `data_dir`
+    /// but never creates it, so those entries are dead decline records with
+    /// nothing on disk to lose. This only reclaims those, keeping
+    /// `registry.json` from accumulating them.
+    ///
+    /// An entry whose `data_dir` exists on disk is kept even when its path is
+    /// gone and its consent is `Declined`, because `set_consent`'s update
+    /// branch (an already-indexed repo declined later, reachable via
+    /// `decline_initial_index`) preserves `data_dir` in place rather than
+    /// clearing it. Such an entry carries a real index, so it is left for
+    /// `SessionManager::prune_vanished_indexes` to stamp and grace like any
+    /// other non-seeded index, instead of being dropped here with its data
+    /// directory orphaned underneath it.
     /// Returns the number of entries pruned.
     pub fn prune_declined_missing(&self) -> Result<usize> {
         let mut registry = self.load()?;
         let before = registry.repos.len();
         registry.repos.retain(|_hash, e| {
-            e.consent != IndexConsent::Declined || std::path::Path::new(&e.path).exists()
+            e.consent != IndexConsent::Declined
+                || std::path::Path::new(&e.path).exists()
+                || e.data_dir.as_std_path().exists()
         });
         let pruned = before - registry.repos.len();
         if pruned > 0 {
@@ -778,6 +794,49 @@ mod tests {
         assert_eq!(
             reg.consent_status("/no/such/approved").unwrap(),
             Some(IndexConsent::Approved)
+        );
+    }
+
+    /// C2: `set_consent`'s update branch (an already-indexed repo declined
+    /// later, e.g. via `decline_initial_index`) preserves `data_dir` on an
+    /// existing entry. If the checkout is then deleted, that entry must not
+    /// be dropped by `prune_declined_missing`: it carries a real index, and
+    /// dropping it here would orphan the data directory and skip the grace
+    /// period entirely.
+    #[test]
+    fn prune_declined_missing_retains_an_entry_whose_data_dir_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = crate::path::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let reg = RepoRegistry::new(dir_path.join("registry.json"), dir_path.join("repos"));
+
+        // Register first: this creates a real data directory, simulating an
+        // indexed repo.
+        let repo = dir_path.join("indexed-then-declined");
+        std::fs::create_dir_all(repo.as_std_path()).unwrap();
+        let entry = reg.register(repo.as_str()).unwrap();
+        assert!(entry.data_dir.as_std_path().exists());
+
+        // Decline it via the update branch of set_consent, which preserves
+        // data_dir rather than clearing it.
+        reg.set_consent(repo.as_str(), IndexConsent::Declined)
+            .unwrap();
+
+        // The checkout is deleted.
+        std::fs::remove_dir_all(repo.as_std_path()).unwrap();
+
+        let pruned = reg.prune_declined_missing().unwrap();
+        assert_eq!(
+            pruned, 0,
+            "an entry whose data dir still holds a real index must not be pruned here"
+        );
+        assert_eq!(
+            reg.consent_status(repo.as_str()).unwrap(),
+            Some(IndexConsent::Declined),
+            "the entry must survive so prune_vanished_indexes can grace it"
+        );
+        assert!(
+            entry.data_dir.as_std_path().exists(),
+            "the data directory itself must be untouched by this method"
         );
     }
 

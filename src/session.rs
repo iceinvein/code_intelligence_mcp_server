@@ -258,6 +258,20 @@ pub struct SessionManager {
     metrics: Arc<MetricsRegistry>,
     /// Shared handle for all background indexing jobs.
     job_registry: JobRegistry,
+    /// Whether the orphan sweep is currently refusing to run because
+    /// `registry.json` itself is missing while `repos/` holds real data.
+    /// Both C1 refusal conditions are persistent by nature, so each is
+    /// warned once on the transition into refusing and logged at `debug`
+    /// thereafter; this flag resets the moment the condition clears, so a
+    /// later recurrence warns again. Independent of
+    /// `orphan_sweep_registry_empty_warned` because the two conditions are
+    /// distinct (and, since this one requires `registry.json` to be absent,
+    /// mutually exclusive with the other at any single instant).
+    orphan_sweep_registry_missing_warned: AtomicBool,
+    /// Same as `orphan_sweep_registry_missing_warned`, for the belt-and-braces
+    /// refusal: `registry.json` exists but claims nothing while `repos/`
+    /// still holds hash-shaped directories.
+    orphan_sweep_registry_empty_warned: AtomicBool,
 }
 
 struct RepoRuntime {
@@ -308,6 +322,8 @@ impl SessionManager {
             pending_consent: DashMap::new(),
             metrics,
             job_registry,
+            orphan_sweep_registry_missing_warned: AtomicBool::new(false),
+            orphan_sweep_registry_empty_warned: AtomicBool::new(false),
         })
     }
 
@@ -630,6 +646,8 @@ impl SessionManager {
     /// The body of [`sweep_orphan_data_dirs`], with the age guard injected so
     /// tests do not have to backdate directory timestamps.
     fn sweep_orphan_data_dirs_with_min_age(&self, min_age: Duration) {
+        use std::sync::atomic::Ordering;
+
         let repos_dir = self.registry.repos_dir().to_owned();
 
         // `RepoRegistry::load` returns an empty registry, not an error, when
@@ -641,14 +659,35 @@ impl SessionManager {
         // unclaimed however old and populated it is.
         if !self.registry.registry_path_exists() {
             if repos_dir_holds_hash_shaped_data(&repos_dir) {
-                tracing::warn!(
-                    dir = %repos_dir,
-                    "registry.json is missing but the repos dir holds indexed repo data; \
-                     refusing to run the orphan sweep rather than treat everything in it as unclaimed"
-                );
+                // This condition is persistent, not transient: it holds for
+                // as long as nobody restores or recreates `registry.json`.
+                // Warn once on the transition into refusing and drop to
+                // `debug` for as long as it continues to hold, so a stuck
+                // daemon does not warn 1,440 times a day about the same
+                // unresolved state.
+                if !self
+                    .orphan_sweep_registry_missing_warned
+                    .swap(true, Ordering::AcqRel)
+                {
+                    tracing::warn!(
+                        dir = %repos_dir,
+                        "registry.json is missing but the repos dir holds indexed repo data; \
+                         refusing to run the orphan sweep rather than treat everything in it as unclaimed"
+                    );
+                } else {
+                    tracing::debug!(
+                        dir = %repos_dir,
+                        "registry.json is still missing; still refusing to run the orphan sweep"
+                    );
+                }
+            } else {
+                self.orphan_sweep_registry_missing_warned
+                    .store(false, Ordering::Release);
             }
             return;
         }
+        self.orphan_sweep_registry_missing_warned
+            .store(false, Ordering::Release);
 
         // I5: derived from `data_dir`'s own file name rather than
         // recomputing `path_hash(path)`, since `delete_repo_by_hash` deletes
@@ -698,13 +737,30 @@ impl SessionManager {
                     && d.metadata().map(|m| m.is_dir()).unwrap_or(false)
             })
         {
-            tracing::warn!(
-                dir = %repos_dir,
-                "no registered repo claims anything, but hash-shaped data directories \
-                 exist under it; refusing to run the orphan sweep"
-            );
+            // Persistent in the same way as the missing-registry guard above:
+            // warn once on the transition, then drop to `debug` while the
+            // state (zero registered repos plus a leftover hash-shaped
+            // directory) continues to hold.
+            if !self
+                .orphan_sweep_registry_empty_warned
+                .swap(true, Ordering::AcqRel)
+            {
+                tracing::warn!(
+                    dir = %repos_dir,
+                    "no registered repo claims anything, but hash-shaped data directories \
+                     exist under it; refusing to run the orphan sweep"
+                );
+            } else {
+                tracing::debug!(
+                    dir = %repos_dir,
+                    "still no registered repo claims anything while hash-shaped data \
+                     directories exist under it; still refusing to run the orphan sweep"
+                );
+            }
             return;
         }
+        self.orphan_sweep_registry_empty_warned
+            .store(false, Ordering::Release);
 
         let mut seen_now: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut collected_this_sweep: usize = 0;
@@ -2405,6 +2461,153 @@ mod tests {
             orphan.as_std_path().exists(),
             "an empty registry sitting next to real data directories must not \
              be trusted to mean \"nothing is registered\""
+        );
+    }
+
+    // ─── R3: both C1 refusals must warn once, not on every tick forever ───────
+
+    /// Both C1 refusal conditions are persistent by nature: nothing here
+    /// self-heals, so a naive `tracing::warn!` on every tick would fire
+    /// forever. Each refusal instead flips its own `AtomicBool` on the first
+    /// sweep that observes it and leaves it flipped for as long as the
+    /// condition holds; that flag is what keeps the second and later sweeps
+    /// off the `warn` path (verified indirectly here, since there is no log
+    /// capture in this test suite). The flag must also reset the moment the
+    /// condition clears, so a later recurrence is treated as a fresh
+    /// transition rather than staying silently suppressed forever.
+    #[tokio::test]
+    async fn missing_registry_refusal_warns_once_then_resets_once_registry_json_returns() {
+        use std::sync::atomic::Ordering;
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        std::fs::write(
+            entry.data_dir.join("code-intelligence.db").as_std_path(),
+            b"real index",
+        )
+        .unwrap();
+
+        let registry_path = data_dir.join("repos").join("registry.json");
+        std::fs::remove_file(registry_path.as_std_path()).unwrap();
+
+        assert!(
+            !manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "sanity: nothing has swept yet"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "the first sweep to see the refusing state must record the transition"
+        );
+
+        // The condition still holds: the flag must stay set rather than
+        // un-arm itself, which is what keeps this sweep off the warn path.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(manager
+            .orphan_sweep_registry_missing_warned
+            .load(Ordering::Relaxed));
+
+        // registry.json comes back: the refusing condition clears.
+        std::fs::write(registry_path.as_std_path(), br#"{"repos":{}}"#).unwrap();
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            !manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "once registry.json exists again, a later disappearance must warn \
+             again rather than staying silently suppressed"
+        );
+    }
+
+    /// Same contract as the test above, for the belt-and-braces refusal
+    /// (registry present but claims nothing while hash-shaped directories
+    /// exist), which holds its own independent flag.
+    #[tokio::test]
+    async fn empty_registry_refusal_warns_once_then_resets_once_the_condition_clears() {
+        use std::sync::atomic::Ordering;
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+        std::fs::write(
+            repos_dir.join("registry.json").as_std_path(),
+            br#"{"repos":{}}"#,
+        )
+        .unwrap();
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        assert!(
+            !manager
+                .orphan_sweep_registry_empty_warned
+                .load(Ordering::Relaxed),
+            "sanity: nothing has swept yet"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            manager
+                .orphan_sweep_registry_empty_warned
+                .load(Ordering::Relaxed),
+            "the first sweep to see the refusing state must record the transition"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(manager
+            .orphan_sweep_registry_empty_warned
+            .load(Ordering::Relaxed));
+
+        // The hash-shaped directory goes away (a hand fix), clearing the
+        // refusing condition.
+        std::fs::remove_dir_all(orphan.as_std_path()).unwrap();
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            !manager
+                .orphan_sweep_registry_empty_warned
+                .load(Ordering::Relaxed),
+            "once the refusing condition clears, a later recurrence must be \
+             able to warn again"
+        );
+    }
+
+    /// The two C1 refusals are independent: warning about one must not arm or
+    /// clear the other's flag, since the human asked that they be
+    /// distinguishable rather than sharing state.
+    #[tokio::test]
+    async fn the_two_c1_refusal_flags_are_independent() {
+        use std::sync::atomic::Ordering;
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+        std::fs::write(
+            repos_dir.join("registry.json").as_std_path(),
+            br#"{"repos":{}}"#,
+        )
+        .unwrap();
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        // Triggers only the empty-registry refusal.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(manager
+            .orphan_sweep_registry_empty_warned
+            .load(Ordering::Relaxed));
+        assert!(
+            !manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "the missing-registry flag must not be set by the empty-registry refusal"
         );
     }
 

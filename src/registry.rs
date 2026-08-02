@@ -128,6 +128,15 @@ impl RepoRegistry {
         self.repos_dir.as_path()
     }
 
+    /// Whether `registry.json` exists on disk, as distinct from "loaded and
+    /// empty". `load` treats a missing file as an empty registry so a
+    /// brand-new daemon starts cleanly; a caller that must not confuse
+    /// "nothing is registered" with "the registry file is gone" (the orphan
+    /// sweep) checks this first.
+    pub(crate) fn registry_path_exists(&self) -> bool {
+        self.registry_path.as_std_path().exists()
+    }
+
     /// Compute deterministic 16-character hash of a repository path
     pub fn path_hash(path: &str) -> String {
         let mut hasher = Sha256::new();

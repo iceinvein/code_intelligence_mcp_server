@@ -585,6 +585,13 @@ impl SessionManager {
     /// nothing else will ever collect them. They come from a crash between
     /// `register`'s `create_dir_all` and its save, from discarded seeds, and from
     /// hand-edited registries.
+    ///
+    /// Ownership here is inferred from the *absence* of a claim, so anything
+    /// that makes claims disappear (a deleted `registry.json`, an emptied one)
+    /// is amplified into deletion. Two guards exist for exactly that: the
+    /// sweep refuses to run at all when `registry.json` itself is missing,
+    /// and refuses again when the registry claims nothing but `repos/` holds
+    /// hash-shaped directories anyway.
     fn sweep_orphan_data_dirs(&self) {
         self.sweep_orphan_data_dirs_with_min_age(ORPHAN_DIR_MIN_AGE);
     }
@@ -593,6 +600,24 @@ impl SessionManager {
     /// tests do not have to backdate directory timestamps.
     fn sweep_orphan_data_dirs_with_min_age(&self, min_age: Duration) {
         let repos_dir = self.registry.repos_dir().to_owned();
+
+        // `RepoRegistry::load` returns an empty registry, not an error, when
+        // `registry.json` does not exist (deliberate: a brand-new daemon has no
+        // file yet). That is indistinguishable from "nothing is registered"
+        // unless this sweep checks the file itself: without this guard,
+        // `rm registry.json` (or a partial backup restore) makes every claim
+        // vanish at once, and every real data directory on the machine looks
+        // unclaimed however old and populated it is.
+        if !self.registry.registry_path_exists() {
+            if repos_dir.as_std_path().is_dir() {
+                tracing::warn!(
+                    dir = %repos_dir,
+                    "registry.json is missing but the repos dir holds data; refusing \
+                     to run the orphan sweep rather than treat everything in it as unclaimed"
+                );
+            }
+            return;
+        }
 
         let claimed: std::collections::HashSet<String> = match self.registry.list_all() {
             Ok(entries) => entries
@@ -605,8 +630,8 @@ impl SessionManager {
             }
         };
 
-        let entries = match std::fs::read_dir(repos_dir.as_std_path()) {
-            Ok(entries) => entries,
+        let dirents: Vec<std::fs::DirEntry> = match std::fs::read_dir(repos_dir.as_std_path()) {
+            Ok(entries) => entries.flatten().collect(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
             Err(error) => {
                 tracing::debug!(%error, dir = %repos_dir, "reading the repos dir failed");
@@ -614,9 +639,33 @@ impl SessionManager {
             }
         };
 
+        // Belt-and-braces: an empty `claimed` set should mean "nothing is
+        // registered", not "the registry lost track of what it owns". If the
+        // registry says nobody owns anything but `repos/` still holds
+        // hash-shaped directories, something is wrong with the registry
+        // rather than with the directories, so refuse rather than collect
+        // real data on a guess. The missing-file guard above already covers
+        // the exact production repro; this covers the same failure mode by a
+        // different, independent signal (e.g. a registry emptied rather than
+        // deleted). A corrupt registry file already errors out of `load` and
+        // is handled by the `Err` branch above.
+        if claimed.is_empty()
+            && dirents.iter().any(|d| {
+                is_repo_hash_dir_name(&d.file_name().to_string_lossy())
+                    && d.metadata().map(|m| m.is_dir()).unwrap_or(false)
+            })
+        {
+            tracing::warn!(
+                dir = %repos_dir,
+                "no registered repo claims anything, but hash-shaped data directories \
+                 exist under it; refusing to run the orphan sweep"
+            );
+            return;
+        }
+
         let mut seen_now: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        for dirent in entries.flatten() {
+        for dirent in dirents {
             let name = dirent.file_name().to_string_lossy().to_string();
             let Ok(meta) = dirent.metadata() else {
                 continue;
@@ -1015,6 +1064,31 @@ impl SessionManager {
         };
 
         let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
+
+        let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
+
+        Self::new(standalone_config, registry, embedder, None, None)
+            .await
+            .expect("Failed to create test SessionManager")
+    }
+
+    /// Build a test SessionManager whose `registry.json` lives *inside*
+    /// `repos/`, matching production (`src/main.rs`): every other
+    /// `new_for_test*` helper puts it as a sibling of `repos/`, which cannot
+    /// reproduce `rm ~/.code-intelligence/repos/registry.json` faithfully.
+    #[cfg(test)]
+    pub async fn new_for_test_with_production_layout(data_dir: Utf8PathBuf) -> Self {
+        use crate::config::EmbeddingsBackend;
+        use crate::embeddings::hash::HashEmbedder;
+
+        let standalone_config = StandaloneConfig {
+            embeddings_backend: EmbeddingsBackend::Hash,
+            hash_embedding_dim: 64,
+            ..StandaloneConfig::default()
+        };
+
+        let repos_dir = data_dir.join("repos");
+        let registry = RepoRegistry::new(repos_dir.join("registry.json"), repos_dir);
 
         let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
 
@@ -1953,6 +2027,11 @@ mod tests {
     async fn orphan_sweep_deletes_an_unclaimed_data_dir_on_the_second_sighting() {
         let (_data, data_dir) = temp_data_dir();
         let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
         let repos_dir = data_dir.join("repos");
         let orphan = repos_dir.join("0123456789abcdef");
         std::fs::create_dir_all(orphan.as_std_path()).unwrap();
@@ -2011,6 +2090,11 @@ mod tests {
 
         let (_data, data_dir) = temp_data_dir();
         let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
         let repos_dir = data_dir.join("repos");
         let busy_hash = "00112233445566aa";
         let busy = repos_dir.join(busy_hash);
@@ -2034,6 +2118,11 @@ mod tests {
     async fn orphan_sweep_spares_directories_younger_than_the_minimum_age() {
         let (_data, data_dir) = temp_data_dir();
         let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
         let repos_dir = data_dir.join("repos");
         std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
         let fresh = repos_dir.join("fedcba9876543210");
@@ -2058,6 +2147,11 @@ mod tests {
     async fn evict_idle_repos_collects_orphan_dirs_even_when_ttl_is_zero() {
         let (_data, data_dir) = temp_data_dir();
         let manager = SessionManager::new_for_test_with_ttl(data_dir.clone(), 0).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
         let repos_dir = data_dir.join("repos");
         let orphan = repos_dir.join("1122334455667788");
         std::fs::create_dir_all(orphan.as_std_path()).unwrap();
@@ -2125,6 +2219,78 @@ mod tests {
         assert!(
             manager.repos.contains_key(&key),
             "TTL=0 must never evict any repo"
+        );
+    }
+
+    // ─── C1: losing registry.json must not be read as "nothing is registered" ──
+
+    /// `RepoRegistry::load` returns an empty registry, not an error, when
+    /// `registry.json` is missing. Before the fix this made the orphan sweep
+    /// treat every existing data directory as unclaimed, so losing the
+    /// registry file (`rm registry.json`, or a partial backup restore)
+    /// deleted every index on the machine within two sweeps, even though the
+    /// repo checkout itself was untouched. Reproduces that exact scenario,
+    /// using the production layout (`registry.json` inside `repos/`).
+    #[tokio::test]
+    async fn orphan_sweep_refuses_to_run_when_registry_json_is_missing() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        // A live, registered repo with a real, populated data directory.
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        std::fs::write(
+            entry.data_dir.join("code-intelligence.db").as_std_path(),
+            b"real index",
+        )
+        .unwrap();
+
+        let registry_path = data_dir.join("repos").join("registry.json");
+        assert!(
+            registry_path.as_std_path().exists(),
+            "sanity: register() must have created registry.json"
+        );
+        std::fs::remove_file(registry_path.as_std_path()).unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            entry.data_dir.as_std_path().exists(),
+            "losing registry.json must never be read as \"nothing is \
+             registered\"; a live, populated index must survive"
+        );
+    }
+
+    /// Belt-and-braces: even when `registry.json` exists, an empty registry
+    /// (no entries at all) is indistinguishable from "everything was just
+    /// unregistered" by the guard above. If `repos/` still holds hash-shaped
+    /// directories, that is independent evidence something is wrong, so the
+    /// sweep refuses rather than trusting an empty registry that might itself
+    /// be the bug (e.g. a backup restore that wrote a syntactically valid but
+    /// empty file).
+    #[tokio::test]
+    async fn orphan_sweep_refuses_when_registry_is_present_but_claims_nothing() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+
+        std::fs::write(
+            repos_dir.join("registry.json").as_std_path(),
+            br#"{"repos":{}}"#,
+        )
+        .unwrap();
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            orphan.as_std_path().exists(),
+            "an empty registry sitting next to real data directories must not \
+             be trusted to mean \"nothing is registered\""
         );
     }
 }

@@ -153,6 +153,24 @@ fn is_repo_hash_dir_name(name: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Whether `repos_dir` holds at least one directory this daemon actually
+/// generated (`is_repo_hash_dir_name`). `run_standalone` creates `repos/`
+/// unconditionally at startup, before `registry.json` exists, so a plain
+/// `is_dir()` check is true on every tick of a fresh install even though the
+/// directory holds nothing yet. Missing or unreadable counts as "holds
+/// nothing" rather than an error, since the caller only uses this to decide
+/// whether a warning is true.
+fn repos_dir_holds_hash_shaped_data(repos_dir: &Utf8Path) -> bool {
+    std::fs::read_dir(repos_dir.as_std_path())
+        .map(|entries| {
+            entries.flatten().any(|d| {
+                is_repo_hash_dir_name(&d.file_name().to_string_lossy())
+                    && d.metadata().map(|m| m.is_dir()).unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// The purely-decidable half of whether a `repos/` entry may be collected by
 /// the orphan sweep: a hash-shaped name, not claimed by any registry entry, an
 /// actual directory, and old enough to be past `register`'s create-then-save
@@ -622,11 +640,11 @@ impl SessionManager {
         // vanish at once, and every real data directory on the machine looks
         // unclaimed however old and populated it is.
         if !self.registry.registry_path_exists() {
-            if repos_dir.as_std_path().is_dir() {
+            if repos_dir_holds_hash_shaped_data(&repos_dir) {
                 tracing::warn!(
                     dir = %repos_dir,
-                    "registry.json is missing but the repos dir holds data; refusing \
-                     to run the orphan sweep rather than treat everything in it as unclaimed"
+                    "registry.json is missing but the repos dir holds indexed repo data; \
+                     refusing to run the orphan sweep rather than treat everything in it as unclaimed"
                 );
             }
             return;
@@ -2031,6 +2049,44 @@ mod tests {
         assert!(!is_repo_hash_dir_name("083f007c6f2d63c"), "15 chars");
         assert!(!is_repo_hash_dir_name("083f007c6f2d63ccx"), "17 chars");
         assert!(!is_repo_hash_dir_name("083f007c6f2d63cg"), "g is not hex");
+    }
+
+    // ─── R2: a fresh install must not warn about a directory that holds nothing ─
+
+    /// `run_standalone` creates `repos/` unconditionally at startup, before
+    /// `registry.json` is written, so `repos/` existing and being a directory
+    /// is true from the very first tick of a fresh install. The missing-
+    /// registry warning must not fire on that state: an empty `repos/` holds
+    /// no indexed repo data for the warning to be about.
+    #[test]
+    fn repos_dir_holds_hash_shaped_data_is_false_for_a_fresh_install() {
+        let (_data, data_dir) = temp_data_dir();
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+
+        assert!(!repos_dir_holds_hash_shaped_data(&repos_dir));
+    }
+
+    /// Also quiet when `repos/` itself does not exist yet at all, which is
+    /// true for an instant before `run_standalone`'s `create_dir_all` runs.
+    #[test]
+    fn repos_dir_holds_hash_shaped_data_is_false_when_the_dir_does_not_exist() {
+        let (_data, data_dir) = temp_data_dir();
+        let repos_dir = data_dir.join("repos");
+
+        assert!(!repos_dir_holds_hash_shaped_data(&repos_dir));
+    }
+
+    /// The warning must still be true whenever it does fire: a leftover
+    /// hash-shaped directory (a real index orphaned by a lost `registry.json`)
+    /// is exactly the case the warning exists to report.
+    #[test]
+    fn repos_dir_holds_hash_shaped_data_is_true_when_a_real_index_is_left_behind() {
+        let (_data, data_dir) = temp_data_dir();
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.join("0123456789abcdef").as_std_path()).unwrap();
+
+        assert!(repos_dir_holds_hash_shaped_data(&repos_dir));
     }
 
     #[test]

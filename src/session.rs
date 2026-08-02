@@ -619,10 +619,22 @@ impl SessionManager {
             return;
         }
 
+        // I5: derived from `data_dir`'s own file name rather than
+        // recomputing `path_hash(path)`, since `delete_repo_by_hash` deletes
+        // `entry.data_dir` and the file format does not guarantee the two
+        // agree (a hand-edited or pre-hash-scheme registry entry can have a
+        // `data_dir` whose name is not `path_hash(path)`; see the legacy-load
+        // fixture in `src/registry.rs`). Falls back to `path_hash` only when
+        // `data_dir` has no file name component at all.
         let claimed: std::collections::HashSet<String> = match self.registry.list_all() {
             Ok(entries) => entries
                 .iter()
-                .map(|e| RepoRegistry::path_hash(&e.path))
+                .map(|e| {
+                    e.data_dir
+                        .file_name()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| RepoRegistry::path_hash(&e.path))
+                })
                 .collect(),
             Err(error) => {
                 tracing::debug!(%error, "listing repos for the orphan sweep failed");
@@ -2479,6 +2491,41 @@ mod tests {
             data_dir_path.as_std_path().exists(),
             "a directory whose repo is warm in memory must never be \
              collected, even if the registry no longer claims it"
+        );
+    }
+
+    // ─── I5: claimed must follow data_dir, not a recomputed hash ───────────────
+
+    /// `claimed` used to be derived by recomputing `path_hash(e.path)`, while
+    /// `delete_repo_by_hash` deletes `entry.data_dir`. Those are two sources
+    /// of truth for one fact, and the on-disk format permits them to
+    /// disagree (see the legacy-load fixture in `src/registry.rs`, which uses
+    /// a hash key, a path, and a `data_dir` that all differ). Such an entry
+    /// left its real directory unclaimed and therefore collectable.
+    #[tokio::test]
+    async fn orphan_sweep_claims_a_directory_by_its_data_dir_even_when_the_hash_disagrees() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+
+        // A directory whose name is NOT path_hash("/somewhere/legacy").
+        let real_dir = repos_dir.join("aaaaaaaaaaaaaaaa");
+        std::fs::create_dir_all(real_dir.as_std_path()).unwrap();
+
+        let registry_path = data_dir.join("registry.json");
+        let json = format!(
+            r#"{{"repos":{{"legacyhash0000ab":{{"path":"/somewhere/legacy","name":"legacy","data_dir":"{real_dir}","created_at":"2026-01-01T00:00:00Z","last_accessed":"2026-01-01T00:00:00Z"}}}}}}"#,
+        );
+        std::fs::write(registry_path.as_std_path(), json).unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            real_dir.as_std_path().exists(),
+            "a directory claimed by data_dir must survive even when \
+             path_hash(path) disagrees with its own name"
         );
     }
 }

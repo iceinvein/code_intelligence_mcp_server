@@ -76,6 +76,29 @@ function repoState(repo: Repo): { state: StatusState; label: string } {
   return { state: "idle", label: "never indexed" };
 }
 
+/** Whole days from now until `iso`, floored at 0. Null when there is no deadline. */
+function daysUntil(iso: string | null): number | null {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - Date.now();
+  if (Number.isNaN(ms)) return null;
+  return Math.max(0, Math.ceil(ms / 86_400_000));
+}
+
+function staleLabel(repo: Repo): string {
+  const days = daysUntil(repo.auto_delete_at);
+  return days === null ? "stale" : `stale · deletes in ${days}d`;
+}
+
+function staleTitle(repo: Repo): string {
+  if (repo.auto_delete_at && daysUntil(repo.auto_delete_at) !== null) {
+    return `Checkout is gone. This index is deleted on ${new Date(repo.auto_delete_at).toLocaleString()}.`;
+  }
+  if (repo.missing_since) {
+    return "Checkout is gone. Automatic deletion is off, so remove this index yourself when you are done with it.";
+  }
+  return "Checkout no longer exists on disk";
+}
+
 function formatProducerCount(producers: RepoStats["external_producers"]): string {
   const available = producers ?? [];
   return `${available.filter((producer) => producer.availability !== "missing").length}/${available.length}`;
@@ -103,9 +126,9 @@ function RepoRow({ repo }: { repo: Repo }) {
             {!repo.path_exists ? (
               <span
                 className="shrink-0 text-[0.625rem] uppercase tracking-[0.1em] text-fail"
-                title="Checkout no longer exists on disk"
+                title={staleTitle(repo)}
               >
-                stale
+                {staleLabel(repo)}
               </span>
             ) : null}
             {repo.seeded_from ? (

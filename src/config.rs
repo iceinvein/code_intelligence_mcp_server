@@ -163,6 +163,7 @@ struct ServerTomlRepoDefaults {
 #[derive(Debug, Deserialize)]
 struct ServerTomlLifecycle {
     warm_ttl_seconds: Option<u64>,
+    missing_repo_grace_days: Option<u32>,
 }
 
 /// Configuration for standalone HTTP server mode
@@ -172,6 +173,13 @@ pub struct StandaloneConfig {
     pub port: u16,
     pub data_dir: Utf8PathBuf,
     pub warm_ttl_seconds: u64,
+    /// Days a non-seeded repository's index survives after its folder stops
+    /// existing, before the idle sweep deletes it. `0` disables that deletion
+    /// while leaving detection and the dashboard countdown in place.
+    ///
+    /// Seeded worktree indexes ignore this: they are cheap to rebuild and use a
+    /// two-sweep rule instead.
+    pub missing_repo_grace_days: u32,
     pub embeddings_backend: EmbeddingsBackend,
     pub embeddings_device: EmbeddingsDevice,
     pub embeddings_model_dir: Option<Utf8PathBuf>,
@@ -230,6 +238,7 @@ impl Default for StandaloneConfig {
             port: 17800,
             data_dir: data_dir.clone(),
             warm_ttl_seconds: 300,
+            missing_repo_grace_days: 7,
             embeddings_backend: EmbeddingsBackend::LlamaCpp,
             embeddings_device: EmbeddingsDevice::Metal,
             embeddings_model_dir: Some(data_dir.join("models/jina-code-embeddings-1.5b-gguf")),
@@ -349,6 +358,9 @@ impl StandaloneConfig {
         if let Some(lifecycle) = parsed.lifecycle {
             if let Some(warm_ttl) = lifecycle.warm_ttl_seconds {
                 config.warm_ttl_seconds = warm_ttl;
+            }
+            if let Some(days) = lifecycle.missing_repo_grace_days {
+                config.missing_repo_grace_days = days;
             }
         }
 
@@ -2192,6 +2204,30 @@ consent_required = false
     fn index_consent_required_defaults_true() {
         let config = StandaloneConfig::default();
         assert!(config.index_consent_required);
+    }
+
+    #[test]
+    fn missing_repo_grace_days_defaults_to_seven() {
+        let config = StandaloneConfig::default();
+        assert_eq!(config.missing_repo_grace_days, 7);
+    }
+
+    #[test]
+    fn missing_repo_grace_days_loads_from_lifecycle_toml() {
+        let toml_str = r#"
+[lifecycle]
+warm_ttl_seconds = 600
+missing_repo_grace_days = 30
+"#;
+        let cfg = StandaloneConfig::from_toml_str(toml_str).unwrap();
+        assert_eq!(cfg.warm_ttl_seconds, 600);
+        assert_eq!(cfg.missing_repo_grace_days, 30);
+    }
+
+    #[test]
+    fn missing_repo_grace_days_survives_a_lifecycle_block_that_omits_it() {
+        let cfg = StandaloneConfig::from_toml_str("[lifecycle]\nwarm_ttl_seconds = 600\n").unwrap();
+        assert_eq!(cfg.missing_repo_grace_days, 7);
     }
 
     #[test]

@@ -17,6 +17,8 @@ const REPO = {
   last_accessed: "x",
   path_exists: true,
   seeded_from: null,
+  missing_since: null,
+  auto_delete_at: null,
   activity: {
     running: false,
     current: null,

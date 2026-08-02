@@ -11,7 +11,7 @@ use crate::{
     handlers::AppState,
     indexer::pipeline::IndexPipeline,
     metrics::MetricsRegistry,
-    path::Utf8PathBuf,
+    path::{Utf8Path, Utf8PathBuf},
     registry::{RepoEntry, RepoRegistry},
     reranker::Reranker,
     retrieval::Retriever,
@@ -65,6 +65,184 @@ fn now_unix_s() -> i64 {
         .unwrap_or(0)
 }
 
+/// Whether an absent path's absence is explained by something other than a
+/// deletion, in which case no deletion countdown may start.
+///
+/// Walks up to the deepest ancestor that exists. Two answers mean "no evidence":
+/// `/Volumes`, which is the macOS mount table root and therefore says the volume
+/// is not mounted rather than that the repo is gone; and `/`, which says nothing
+/// on the path was ever reachable. Anything else is a live directory whose child
+/// vanished, which is a deletion.
+///
+/// Only called for paths already known to be absent.
+fn absence_is_inconclusive(path: &str) -> bool {
+    let mut cursor = std::path::Path::new(path);
+    while let Some(parent) = cursor.parent() {
+        if parent.exists() {
+            return parent == std::path::Path::new("/")
+                || parent == std::path::Path::new("/Volumes");
+        }
+        cursor = parent;
+    }
+    // Relative or empty path: not something the sweep should act on.
+    true
+}
+
+/// What the sweep should do with a non-seeded entry whose path is absent.
+#[derive(Debug, PartialEq, Eq)]
+enum GraceVerdict {
+    /// No usable stamp: record the current time and wait for a later sweep.
+    Stamp,
+    /// Stamped and still inside the grace window, or grace is disabled.
+    Wait,
+    /// Absent for at least the grace period. Delete the index.
+    Delete,
+}
+
+/// Decide the fate of a non-seeded entry from its stamp alone.
+///
+/// Pure so the grace arithmetic is testable without touching disk or sleeping.
+/// An unparseable stamp yields `Stamp`, which rewrites it: a corrupt value must
+/// not be able to trigger a deletion, nor pin an entry forever.
+fn grace_verdict(
+    missing_since: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    grace_days: u32,
+) -> GraceVerdict {
+    let Some(stamp) = missing_since else {
+        return GraceVerdict::Stamp;
+    };
+    let Ok(stamped) = chrono::DateTime::parse_from_rfc3339(stamp) else {
+        return GraceVerdict::Stamp;
+    };
+    if grace_days == 0 {
+        return GraceVerdict::Wait;
+    }
+    let elapsed = now.signed_duration_since(stamped.with_timezone(&chrono::Utc));
+    if elapsed >= chrono::Duration::days(i64::from(grace_days)) {
+        GraceVerdict::Delete
+    } else {
+        GraceVerdict::Wait
+    }
+}
+
+/// How long a data directory must have existed before the orphan sweep may
+/// delete it. `register` creates the directory and then saves `registry.json`;
+/// a sweep landing between the two would delete a live directory. Seeding has
+/// the same window.
+const ORPHAN_DIR_MIN_AGE: Duration = Duration::from_secs(3600);
+
+/// How many unclaimed data directories a single orphan sweep may delete.
+///
+/// Both Critical findings that this cap answers were mass-deletion events: the
+/// orphan sweep infers ownership from the *absence* of a claim, so anything
+/// that makes claims disappear (a deleted `registry.json`, an emptied one) is
+/// amplified into deleting every unclaimed directory on the machine within two
+/// sightings. A cap turns whatever ownership bug shows up next into a bounded,
+/// visible loss instead of a silent wipe. Normal operation never collects
+/// three directories in one tick.
+const MAX_ORPHAN_DIRS_PER_SWEEP: usize = 3;
+
+/// Whether a directory name is one this daemon generates, i.e. the 16-character
+/// lowercase hex prefix that `RepoRegistry::path_hash` produces. Anything else
+/// under `repos/` was put there by something other than us and is left alone.
+fn is_repo_hash_dir_name(name: &str) -> bool {
+    name.len() == 16
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The data-directory name a registry entry's index actually lives under:
+/// `data_dir`'s own file name, falling back to `path_hash(path)` only when
+/// `data_dir` has no file name component at all (a hand-edited or
+/// pre-hash-scheme entry; see the legacy-load fixture in `src/registry.rs`).
+/// `delete_repo_by_hash` deletes `entry.data_dir`, and the file format does
+/// not guarantee that agrees with `path_hash(path)`, so this is the one place
+/// that derivation happens; every comparison against a directory name under
+/// `repos/` goes through this rather than recomputing the hash itself.
+fn expected_data_dir_name(entry: &RepoEntry) -> String {
+    entry
+        .data_dir
+        .file_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| RepoRegistry::path_hash(&entry.path))
+}
+
+/// Whether `repos_dir` holds at least one directory this daemon actually
+/// generated (`is_repo_hash_dir_name`). `run_standalone` creates `repos/`
+/// unconditionally at startup, before `registry.json` exists, so a plain
+/// `is_dir()` check is true on every tick of a fresh install even though the
+/// directory holds nothing yet. Missing or unreadable counts as "holds
+/// nothing" rather than an error, since the caller only uses this to decide
+/// whether a warning is true.
+fn repos_dir_holds_hash_shaped_data(repos_dir: &Utf8Path) -> bool {
+    std::fs::read_dir(repos_dir.as_std_path())
+        .map(|entries| {
+            entries.flatten().any(|d| {
+                is_repo_hash_dir_name(&d.file_name().to_string_lossy())
+                    && d.metadata().map(|m| m.is_dir()).unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The purely-decidable half of whether a `repos/` entry may be collected by
+/// the orphan sweep: a hash-shaped name, not claimed by any registry entry, an
+/// actual directory, and old enough to be past `register`'s create-then-save
+/// window. Pure so every guard combination is testable without touching disk.
+/// The remaining guards, a running job and the two-sighting count, need
+/// `&self` and stay in `sweep_orphan_data_dirs_with_min_age`.
+fn is_collectable_orphan_dir(
+    name: &str,
+    is_dir: bool,
+    claimed: bool,
+    age: Duration,
+    min_age: Duration,
+) -> bool {
+    is_repo_hash_dir_name(name) && !claimed && is_dir && age >= min_age
+}
+
+/// Refuse to delete anything that is not strictly inside the managed repos
+/// directory.
+///
+/// Containment is structural rather than conventional: the sweeps call
+/// `remove_dir_all` with nobody watching, so a bug in how a path was derived must
+/// not be able to reach outside the tree. `starts_with` compares whole
+/// components, so a sibling sharing a name prefix does not pass; the equality
+/// check stops `repos/` itself from being taken as its own child.
+fn ensure_within_repos_dir(candidate: &Utf8Path, repos_dir: &Utf8Path) -> Result<()> {
+    if candidate == repos_dir || !candidate.starts_with(repos_dir) {
+        anyhow::bail!(
+            "refusing to delete '{candidate}': it is outside the managed repo directory '{repos_dir}'"
+        );
+    }
+    Ok(())
+}
+
+/// Total size of a directory tree, for reporting how much a deletion reclaimed.
+/// Best-effort: unreadable entries are skipped rather than failing the sweep.
+fn dir_size_bytes(dir: &Utf8Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(current.as_std_path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                if let Ok(child) = Utf8PathBuf::from_path_buf(entry.path()) {
+                    stack.push(child);
+                }
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 pub struct SessionManager {
     pub standalone_config: Arc<StandaloneConfig>,
     pub registry: Arc<RepoRegistry>,
@@ -84,13 +262,32 @@ pub struct SessionManager {
     /// Seeded worktree indexes whose checkout was missing on the last prune sweep,
     /// keyed by canonical repo path. Deletion needs two consecutive sightings, so
     /// a checkout that is briefly unreachable is not destroyed. The `Instant` is
-    /// diagnostic only.
+    /// diagnostic only. Non-seeded entries use the persisted `missing_since`
+    /// stamp instead; nothing writes both for the same repo.
     seeded_absent_once: DashMap<String, Instant>,
+    /// Data directories under `repos/` that no registry entry claimed on the last
+    /// sweep, keyed by directory name. Like `seeded_absent_once`, deletion needs
+    /// two consecutive sightings.
+    orphan_dir_seen_once: DashMap<String, Instant>,
     /// Repositories awaiting a user decision about their first full index.
     pending_consent: DashMap<String, PendingConsent>,
     metrics: Arc<MetricsRegistry>,
     /// Shared handle for all background indexing jobs.
     job_registry: JobRegistry,
+    /// Whether the orphan sweep is currently refusing to run because
+    /// `registry.json` itself is missing while `repos/` holds real data.
+    /// Both C1 refusal conditions are persistent by nature, so each is
+    /// warned once on the transition into refusing and logged at `debug`
+    /// thereafter; this flag resets the moment the condition clears, so a
+    /// later recurrence warns again. Independent of
+    /// `orphan_sweep_registry_empty_warned` because the two conditions are
+    /// distinct (and, since this one requires `registry.json` to be absent,
+    /// mutually exclusive with the other at any single instant).
+    orphan_sweep_registry_missing_warned: AtomicBool,
+    /// Same as `orphan_sweep_registry_missing_warned`, for the belt-and-braces
+    /// refusal: `registry.json` exists but claims nothing while `repos/`
+    /// still holds hash-shaped directories.
+    orphan_sweep_registry_empty_warned: AtomicBool,
 }
 
 struct RepoRuntime {
@@ -137,9 +334,12 @@ impl SessionManager {
             initial_index_locks: DashMap::new(),
             last_accessed: DashMap::new(),
             seeded_absent_once: DashMap::new(),
+            orphan_dir_seen_once: DashMap::new(),
             pending_consent: DashMap::new(),
             metrics,
             job_registry,
+            orphan_sweep_registry_missing_warned: AtomicBool::new(false),
+            orphan_sweep_registry_empty_warned: AtomicBool::new(false),
         })
     }
 
@@ -263,6 +463,13 @@ impl SessionManager {
             tracing::debug!(error = %e, "prune_declined_missing failed");
         }
 
+        // Deliberately before the TTL early return below: that gate exists so a
+        // deployment configured never to evict a warm repo also never deletes
+        // that repo's live index. An unclaimed data dir belongs to no registered
+        // repo, so that rationale does not apply to it, and `warm_ttl_seconds =
+        // 0` must not silently disable orphan collection forever.
+        self.sweep_orphan_data_dirs();
+
         let ttl_secs = self.standalone_config.warm_ttl_seconds;
         if ttl_secs == 0 {
             return;
@@ -270,7 +477,7 @@ impl SessionManager {
 
         // Deliberately after the TTL early return: a deployment configured never
         // to evict a warm repo must never delete one of its indexes either.
-        self.prune_vanished_seeded_indexes().await;
+        self.prune_vanished_indexes().await;
 
         let ttl = Duration::from_secs(ttl_secs);
 
@@ -311,59 +518,103 @@ impl SessionManager {
         }
     }
 
-    /// Delete seeded worktree indexes whose checkout is gone.
+    /// Delete indexes whose repository folder is gone.
     ///
-    /// Seeded indexes are cheap to create, so they accumulate; this is what keeps
-    /// `~/.code-intelligence/repos/` from filling up with dead worktrees.
-    /// `delete_repo_by_hash` cancels the watcher, removes the data dir, and drops
-    /// the registry entry, so three guards stand in front of it:
+    /// Two policies, split by what a mistake costs. A seeded worktree index is
+    /// seconds to rebuild, so it goes after two consecutive sweeps find the
+    /// checkout absent. A full index is a complete GPU pass, so it waits out
+    /// `missing_repo_grace_days` measured from a stamp persisted in
+    /// `registry.json`, which survives daemon restarts.
     ///
-    /// - only entries the daemon seeded are eligible, via `list_seeded_missing`;
-    /// - never one with a running job, whose `SqliteStore` and Tantivy writer are
-    ///   live and would rebuild a partial data dir right after the removal,
-    ///   leaving artifacts that block this worktree from ever being seeded again;
-    /// - and only on the second consecutive sweep that finds the checkout absent,
-    ///   so a repo on a volume that unmounts for a minute survives.
+    /// Guards shared by both paths:
     ///
-    /// The absence observations live in memory only. A restart forgets them, which
-    /// costs one extra sweep before a dead worktree is collected.
-    async fn prune_vanished_seeded_indexes(&self) {
-        let missing = match self.registry.list_seeded_missing() {
+    /// - `absence_is_inconclusive` skips paths whose volume is simply not
+    ///   mounted, so an ejected drive costs nothing;
+    /// - an entry with a running job is skipped, because its `SqliteStore` and
+    ///   Tantivy writer are live and would rebuild a partial data dir right after
+    ///   the removal, leaving artifacts that block this repo from being seeded
+    ///   again;
+    /// - `delete_repo_by_hash` refuses any data dir outside the managed tree.
+    ///
+    /// The seeded path's absence observations live in memory only. A restart
+    /// forgets them, which costs one extra sweep before a dead worktree is
+    /// collected.
+    async fn prune_vanished_indexes(&self) {
+        if let Err(error) = self.registry.clear_missing_since_for_present_paths() {
+            tracing::debug!(%error, "clearing missing_since stamps failed");
+        }
+
+        let missing = match self.registry.list_missing() {
             Ok(missing) => missing,
             Err(error) => {
-                tracing::debug!(%error, "list_seeded_missing failed");
+                tracing::debug!(%error, "list_missing failed");
                 return;
             }
         };
 
-        // Forget observations for checkouts that came back, and for entries that
-        // are no longer registered at all.
+        let actionable: Vec<RepoEntry> = missing
+            .into_iter()
+            .filter(|entry| !absence_is_inconclusive(&entry.path))
+            .collect();
+
+        // Forget observations for checkouts that came back, for entries that are
+        // no longer registered at all, and for volumes that went away.
         let still_missing: std::collections::HashSet<&str> =
-            missing.iter().map(|entry| entry.path.as_str()).collect();
+            actionable.iter().map(|entry| entry.path.as_str()).collect();
         self.seeded_absent_once
             .retain(|path, _| still_missing.contains(path.as_str()));
 
-        for entry in &missing {
+        let now = chrono::Utc::now();
+        let grace_days = self.standalone_config.missing_repo_grace_days;
+
+        for entry in &actionable {
             let hash = RepoRegistry::path_hash(&entry.path);
             if let Some(job) = jobs::most_recent_running_for_repo(&self.job_registry, &hash) {
                 tracing::debug!(
                     repo = %entry.path,
                     job = %job.id,
-                    "not pruning a seeded worktree index while a job is running against it"
+                    "not pruning an index while a job is running against it"
                 );
                 continue;
             }
 
-            // First sighting only arms the deletion; the next sweep performs it.
-            if self
-                .seeded_absent_once
-                .insert(entry.path.clone(), Instant::now())
-                .is_none()
-            {
-                tracing::debug!(
-                    repo = %entry.path,
-                    "seeded worktree checkout is missing, pruning it if it is still missing next sweep"
-                );
+            let doomed = if entry.seeded_from.is_some() {
+                // First sighting only arms the deletion; the next sweep performs it.
+                let armed = self
+                    .seeded_absent_once
+                    .insert(entry.path.clone(), Instant::now())
+                    .is_some();
+                if !armed {
+                    tracing::debug!(
+                        repo = %entry.path,
+                        "seeded worktree checkout is missing, pruning it if it is still missing next sweep"
+                    );
+                }
+                armed
+            } else {
+                match grace_verdict(entry.missing_since.as_deref(), now, grace_days) {
+                    GraceVerdict::Stamp => {
+                        let stamp = now.to_rfc3339();
+                        match self.registry.stamp_missing_since(&entry.path, &stamp) {
+                            Ok(_) => tracing::info!(
+                                repo = %entry.path,
+                                grace_days,
+                                "repository folder is gone; its index is deleted if it stays gone"
+                            ),
+                            Err(error) => tracing::warn!(
+                                repo = %entry.path,
+                                %error,
+                                "could not record when a repository folder went missing"
+                            ),
+                        }
+                        false
+                    }
+                    GraceVerdict::Wait => false,
+                    GraceVerdict::Delete => true,
+                }
+            };
+
+            if !doomed {
                 continue;
             }
 
@@ -373,7 +624,8 @@ impl SessionManager {
                     tracing::info!(
                         repo = %entry.path,
                         data_dir = %entry.data_dir,
-                        "pruned seeded worktree index whose checkout was removed"
+                        seeded = entry.seeded_from.is_some(),
+                        "deleted the index of a repository whose folder was removed"
                     );
                 }
                 Ok(None) => {
@@ -382,10 +634,262 @@ impl SessionManager {
                 Err(error) => tracing::warn!(
                     repo = %entry.path,
                     %error,
-                    "failed to prune seeded worktree index"
+                    "failed to delete the index of a removed repository"
                 ),
             }
         }
+    }
+
+    /// Delete data directories under `repos/` that no registry entry claims.
+    ///
+    /// These are invisible to the dashboard, which lists from `registry.json`, so
+    /// nothing else will ever collect them. They come from a crash between
+    /// `register`'s `create_dir_all` and its save, from discarded seeds, and from
+    /// hand-edited registries.
+    ///
+    /// Ownership here is inferred from the *absence* of a claim, so anything
+    /// that makes claims disappear (a deleted `registry.json`, an emptied one)
+    /// is amplified into deletion. Three guards exist for exactly that: the
+    /// sweep refuses to run at all when `registry.json` itself is missing;
+    /// refuses again when the registry claims nothing but `repos/` holds
+    /// hash-shaped directories anyway; and caps how much a single tick can
+    /// destroy, so a bug that defeats the first two still costs a bounded,
+    /// visible loss instead of a silent wipe.
+    fn sweep_orphan_data_dirs(&self) {
+        self.sweep_orphan_data_dirs_with_min_age(ORPHAN_DIR_MIN_AGE);
+    }
+
+    /// The body of [`sweep_orphan_data_dirs`], with the age guard injected so
+    /// tests do not have to backdate directory timestamps.
+    fn sweep_orphan_data_dirs_with_min_age(&self, min_age: Duration) {
+        use std::sync::atomic::Ordering;
+
+        let repos_dir = self.registry.repos_dir().to_owned();
+
+        // `RepoRegistry::load` returns an empty registry, not an error, when
+        // `registry.json` does not exist (deliberate: a brand-new daemon has no
+        // file yet). That is indistinguishable from "nothing is registered"
+        // unless this sweep checks the file itself: without this guard,
+        // `rm registry.json` (or a partial backup restore) makes every claim
+        // vanish at once, and every real data directory on the machine looks
+        // unclaimed however old and populated it is.
+        if !self.registry.registry_path_exists() {
+            if repos_dir_holds_hash_shaped_data(&repos_dir) {
+                // This condition is persistent, not transient: it holds for
+                // as long as nobody restores or recreates `registry.json`.
+                // Warn once on the transition into refusing and drop to
+                // `debug` for as long as it continues to hold, so a stuck
+                // daemon does not warn 1,440 times a day about the same
+                // unresolved state.
+                if !self
+                    .orphan_sweep_registry_missing_warned
+                    .swap(true, Ordering::AcqRel)
+                {
+                    tracing::warn!(
+                        dir = %repos_dir,
+                        "registry.json is missing but the repos dir holds indexed repo data; \
+                         refusing to run the orphan sweep rather than treat everything in it as unclaimed"
+                    );
+                } else {
+                    tracing::debug!(
+                        dir = %repos_dir,
+                        "registry.json is still missing; still refusing to run the orphan sweep"
+                    );
+                }
+            } else {
+                self.orphan_sweep_registry_missing_warned
+                    .store(false, Ordering::Release);
+            }
+            return;
+        }
+        self.orphan_sweep_registry_missing_warned
+            .store(false, Ordering::Release);
+
+        // I5: `claimed` is derived via `expected_data_dir_name` rather than
+        // recomputing `path_hash(path)` inline, since `delete_repo_by_hash`
+        // deletes `entry.data_dir` and the file format does not guarantee the
+        // two agree.
+        let entries = match self.registry.list_all() {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::debug!(%error, "listing repos for the orphan sweep failed");
+                return;
+            }
+        };
+        let claimed: std::collections::HashSet<String> =
+            entries.iter().map(expected_data_dir_name).collect();
+
+        // R5: looked up from the same `entries` rather than recomputing
+        // `path_hash(r.key())` on each warm repo, so the warm-runtime guard
+        // below agrees with `claimed` by construction instead of by two
+        // derivations that happen to match. A warm repo with no registry
+        // entry at all (removed elsewhere while still loaded) falls back to
+        // `path_hash`, the same last resort `expected_data_dir_name` itself
+        // uses, erring toward not collecting a live runtime's directory.
+        let by_path: std::collections::HashMap<&str, &RepoEntry> =
+            entries.iter().map(|e| (e.path.as_str(), e)).collect();
+        let warm_repo_data_dirs: std::collections::HashSet<String> = self
+            .repos
+            .iter()
+            .map(|r| {
+                by_path
+                    .get(r.key().as_str())
+                    .map(|entry| expected_data_dir_name(entry))
+                    .unwrap_or_else(|| RepoRegistry::path_hash(r.key()))
+            })
+            .collect();
+
+        let dirents: Vec<std::fs::DirEntry> = match std::fs::read_dir(repos_dir.as_std_path()) {
+            Ok(entries) => entries.flatten().collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                tracing::debug!(%error, dir = %repos_dir, "reading the repos dir failed");
+                return;
+            }
+        };
+
+        // Belt-and-braces: an empty `claimed` set should mean "nothing is
+        // registered", not "the registry lost track of what it owns". If the
+        // registry says nobody owns anything but `repos/` still holds
+        // hash-shaped directories, something is wrong with the registry
+        // rather than with the directories, so refuse rather than collect
+        // real data on a guess. The missing-file guard above already covers
+        // the exact production repro; this covers the same failure mode by a
+        // different, independent signal (e.g. a registry emptied rather than
+        // deleted). A corrupt registry file already errors out of `load` and
+        // is handled by the `Err` branch above.
+        if claimed.is_empty()
+            && dirents.iter().any(|d| {
+                is_repo_hash_dir_name(&d.file_name().to_string_lossy())
+                    && d.metadata().map(|m| m.is_dir()).unwrap_or(false)
+            })
+        {
+            // Persistent in the same way as the missing-registry guard above:
+            // warn once on the transition, then drop to `debug` while the
+            // state (zero registered repos plus a leftover hash-shaped
+            // directory) continues to hold.
+            if !self
+                .orphan_sweep_registry_empty_warned
+                .swap(true, Ordering::AcqRel)
+            {
+                tracing::warn!(
+                    dir = %repos_dir,
+                    "no registered repo claims anything, but hash-shaped data directories \
+                     exist under it; refusing to run the orphan sweep"
+                );
+            } else {
+                tracing::debug!(
+                    dir = %repos_dir,
+                    "still no registered repo claims anything while hash-shaped data \
+                     directories exist under it; still refusing to run the orphan sweep"
+                );
+            }
+            return;
+        }
+        self.orphan_sweep_registry_empty_warned
+            .store(false, Ordering::Release);
+
+        let mut seen_now: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut collected_this_sweep: usize = 0;
+
+        for dirent in dirents {
+            let name = dirent.file_name().to_string_lossy().to_string();
+            let Ok(meta) = dirent.metadata() else {
+                continue;
+            };
+            // Unreadable mtime is treated the same as "too young": there is no
+            // evidence the create-then-save window has closed.
+            let Some(age) = meta.modified().ok().and_then(|m| m.elapsed().ok()) else {
+                continue;
+            };
+            if !is_collectable_orphan_dir(
+                &name,
+                meta.is_dir(),
+                claimed.contains(&name),
+                age,
+                min_age,
+            ) {
+                continue;
+            }
+            if jobs::most_recent_running_for_repo(&self.job_registry, &name).is_some() {
+                tracing::debug!(
+                    dir = %name,
+                    "not collecting an unclaimed data dir while a job is running against it"
+                );
+                continue;
+            }
+            // I2: the job guard above covers an active indexing pass. It does
+            // not cover a warm runtime sitting idle with open SQLite, Tantivy,
+            // and LanceDB handles and a file watcher: nothing else checks that
+            // before this sweep runs. Deleting the directory under a live
+            // runtime corrupts it immediately, and a repo can go warm without
+            // ever starting a job (e.g. plain reads).
+            if warm_repo_data_dirs.contains(&name) {
+                tracing::debug!(
+                    dir = %name,
+                    "not collecting an unclaimed data dir while its repo is loaded in memory"
+                );
+                continue;
+            }
+
+            seen_now.insert(name.clone());
+
+            // First sighting only arms the deletion; the next sweep performs it.
+            if self
+                .orphan_dir_seen_once
+                .insert(name.clone(), Instant::now())
+                .is_none()
+            {
+                tracing::debug!(
+                    dir = %name,
+                    "no registry entry claims this data dir, collecting it if that holds next sweep"
+                );
+                continue;
+            }
+
+            if collected_this_sweep >= MAX_ORPHAN_DIRS_PER_SWEEP {
+                // The sighting stays armed: it was already (re)inserted above
+                // with a fresh `Instant` and `name` is already in `seen_now`,
+                // so the `retain` at the end of this sweep leaves it in place.
+                // Without that, a directory deferred here would lose its
+                // two-sighting progress and never be collected.
+                tracing::warn!(
+                    dir = %name,
+                    cap = MAX_ORPHAN_DIRS_PER_SWEEP,
+                    "orphan sweep cap reached for this tick; deferring collection to a later sweep"
+                );
+                continue;
+            }
+
+            let path = repos_dir.join(&name);
+            if let Err(error) = ensure_within_repos_dir(&path, &repos_dir) {
+                tracing::warn!(%error, "refusing to collect an unclaimed data dir");
+                continue;
+            }
+            let reclaimed = dir_size_bytes(&path);
+            match std::fs::remove_dir_all(path.as_std_path()) {
+                Ok(()) => {
+                    self.orphan_dir_seen_once.remove(&name);
+                    seen_now.remove(&name);
+                    collected_this_sweep += 1;
+                    tracing::info!(
+                        dir = %path,
+                        reclaimed_bytes = reclaimed,
+                        "collected a data dir no registry entry claimed"
+                    );
+                }
+                Err(error) => tracing::warn!(
+                    dir = %path,
+                    %error,
+                    "could not collect an unclaimed data dir"
+                ),
+            }
+        }
+
+        // A directory that stopped qualifying (claimed again, job started) has to
+        // restart its two-sighting count.
+        self.orphan_dir_seen_once
+            .retain(|name, _| seen_now.contains(name.as_str()));
     }
 
     /// Spawn a background task that calls [`evict_idle_repos`] every 60 seconds.
@@ -584,19 +1088,8 @@ impl SessionManager {
         // 2. Remove on-disk data directory. Missing dirs are treated as
         //    success; permission errors propagate and leave the registry entry
         //    intact so the user can retry from the API/UI.
-        //
-        //    The prune sweep calls this with nobody watching, so containment is
-        //    structural rather than conventional: a bug in how `data_dir` is
-        //    derived must not be able to rmtree outside the managed tree.
-        //    `starts_with` compares whole components, so a sibling directory
-        //    sharing a name prefix does not pass.
         let repos_dir = self.registry.repos_dir();
-        if !entry.data_dir.starts_with(repos_dir) {
-            anyhow::bail!(
-                "refusing to delete '{}': it is outside the managed repo directory '{repos_dir}'",
-                entry.data_dir
-            );
-        }
+        ensure_within_repos_dir(&entry.data_dir, repos_dir)?;
         let data_dir = entry.data_dir.as_std_path();
         match std::fs::remove_dir_all(data_dir) {
             Ok(_) => {}
@@ -701,6 +1194,56 @@ impl SessionManager {
         };
 
         let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
+
+        let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
+
+        Self::new(standalone_config, registry, embedder, None, None)
+            .await
+            .expect("Failed to create test SessionManager")
+    }
+
+    /// Build a test SessionManager with a custom missing-repo grace period.
+    #[cfg(test)]
+    pub async fn new_for_test_with_grace_days(
+        data_dir: Utf8PathBuf,
+        missing_repo_grace_days: u32,
+    ) -> Self {
+        use crate::config::EmbeddingsBackend;
+        use crate::embeddings::hash::HashEmbedder;
+
+        let standalone_config = StandaloneConfig {
+            embeddings_backend: EmbeddingsBackend::Hash,
+            hash_embedding_dim: 64,
+            missing_repo_grace_days,
+            ..StandaloneConfig::default()
+        };
+
+        let registry = RepoRegistry::new(data_dir.join("registry.json"), data_dir.join("repos"));
+
+        let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
+
+        Self::new(standalone_config, registry, embedder, None, None)
+            .await
+            .expect("Failed to create test SessionManager")
+    }
+
+    /// Build a test SessionManager whose `registry.json` lives *inside*
+    /// `repos/`, matching production (`src/main.rs`): every other
+    /// `new_for_test*` helper puts it as a sibling of `repos/`, which cannot
+    /// reproduce `rm ~/.code-intelligence/repos/registry.json` faithfully.
+    #[cfg(test)]
+    pub async fn new_for_test_with_production_layout(data_dir: Utf8PathBuf) -> Self {
+        use crate::config::EmbeddingsBackend;
+        use crate::embeddings::hash::HashEmbedder;
+
+        let standalone_config = StandaloneConfig {
+            embeddings_backend: EmbeddingsBackend::Hash,
+            hash_embedding_dim: 64,
+            ..StandaloneConfig::default()
+        };
+
+        let repos_dir = data_dir.join("repos");
+        let registry = RepoRegistry::new(repos_dir.join("registry.json"), repos_dir);
 
         let embedder = Arc::new(SharedEmbedder::new(Box::new(HashEmbedder::new(64))));
 
@@ -1356,6 +1899,476 @@ mod tests {
         assert!(!should_spawn_description_worker(true, false, false));
     }
 
+    #[test]
+    fn absence_under_a_live_directory_is_conclusive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let gone = root.join("deleted-repo");
+
+        // The parent exists and the child does not: a real deletion.
+        assert!(!absence_is_inconclusive(gone.as_str()));
+
+        // A whole parent folder of worktrees being deleted still counts, because
+        // its own parent (the tempdir) is alive.
+        let nested = root.join("worktrees").join("feature");
+        assert!(!absence_is_inconclusive(nested.as_str()));
+    }
+
+    #[test]
+    fn absence_under_an_unmounted_volume_is_inconclusive() {
+        // /Volumes exists on every macOS system; this volume does not. The
+        // deepest existing ancestor is the mount table root, so the daemon has
+        // no evidence that anything was deleted.
+        assert!(absence_is_inconclusive(
+            "/Volumes/definitely-not-mounted-9f3a/project"
+        ));
+    }
+
+    #[test]
+    fn absence_below_a_missing_top_level_directory_is_inconclusive() {
+        // Deepest existing ancestor is "/". Nothing about this path was ever
+        // reachable, so it is not evidence of a deletion either.
+        assert!(absence_is_inconclusive("/no-such-top-level-9f3a/project"));
+    }
+
+    #[test]
+    fn grace_verdict_covers_every_state() {
+        use chrono::{Duration as ChronoDuration, Utc};
+        let now = Utc::now();
+        let long_ago = (now - ChronoDuration::days(10)).to_rfc3339();
+        let recent = (now - ChronoDuration::days(2)).to_rfc3339();
+
+        // No stamp yet: record one and wait.
+        assert_eq!(grace_verdict(None, now, 7), GraceVerdict::Stamp);
+        // Inside the window.
+        assert_eq!(grace_verdict(Some(&recent), now, 7), GraceVerdict::Wait);
+        // Past the window.
+        assert_eq!(grace_verdict(Some(&long_ago), now, 7), GraceVerdict::Delete);
+        // Exactly at the boundary counts as expired.
+        let exactly = (now - ChronoDuration::days(7)).to_rfc3339();
+        assert_eq!(grace_verdict(Some(&exactly), now, 7), GraceVerdict::Delete);
+        // Grace disabled: stamp for the dashboard, never delete.
+        assert_eq!(grace_verdict(None, now, 0), GraceVerdict::Stamp);
+        assert_eq!(grace_verdict(Some(&long_ago), now, 0), GraceVerdict::Wait);
+        // Corrupt stamp heals by being rewritten.
+        assert_eq!(
+            grace_verdict(Some("not a date"), now, 7),
+            GraceVerdict::Stamp
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_stamps_a_vanished_repo_before_deleting_it() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo); // deletes the checkout
+
+        manager.evict_idle_repos().await;
+
+        let stamped = manager.registry.get_by_hash(&hash).unwrap().unwrap();
+        assert!(
+            stamped.missing_since.is_some(),
+            "the first sweep records when the path went missing"
+        );
+        assert!(
+            entry.data_dir.as_std_path().exists(),
+            "and deletes nothing yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_deletes_a_vanished_repo_once_the_grace_period_expires() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        // Backdate the stamp past the 7-day default instead of waiting.
+        let old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
+        assert!(!entry.data_dir.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn sweep_clears_the_stamp_when_the_checkout_returns() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        let old = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        // The path exists throughout; the stamp is stale state from an earlier
+        // absence.
+        manager.evict_idle_repos().await;
+
+        assert_eq!(
+            manager
+                .registry
+                .get_by_hash(&hash)
+                .unwrap()
+                .unwrap()
+                .missing_since,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_never_deletes_when_grace_is_disabled() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_grace_days(data_dir, 0).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        let old = (chrono::Utc::now() - chrono::Duration::days(400)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "grace_days=0 must never delete"
+        );
+        assert!(entry.data_dir.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn sweep_spares_a_vanished_repo_while_a_job_runs_against_it() {
+        use crate::server::jobs::{register_running, JobKind};
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        let old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), &old)
+            .unwrap();
+
+        // A live job holds the SQLite and Tantivy writers open; deleting the data
+        // dir under it leaves artifacts that block this repo from being seeded.
+        register_running(
+            &manager.job_registry,
+            "job-1".to_string(),
+            JobKind::ManualReindex,
+            hash.clone(),
+            repo_path.to_string(),
+        );
+
+        manager.evict_idle_repos().await;
+
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_some());
+        assert!(entry.data_dir.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn sweep_leaves_seeded_entries_on_the_two_sweep_rule() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        manager.registry.register(repo_path.as_str()).unwrap();
+        manager
+            .registry
+            .mark_seeded_from(repo_path.as_str(), "basehash12345678")
+            .unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        // First sweep arms, second sweep deletes. No stamp is ever written.
+        manager.evict_idle_repos().await;
+        let armed = manager.registry.get_by_hash(&hash).unwrap().unwrap();
+        assert!(
+            armed.missing_since.is_none(),
+            "seeded entries are not stamped"
+        );
+
+        manager.evict_idle_repos().await;
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn repo_hash_dir_names_are_sixteen_lowercase_hex_characters() {
+        assert!(is_repo_hash_dir_name("083f007c6f2d63cc"));
+        assert!(!is_repo_hash_dir_name("registry.json"));
+        assert!(
+            !is_repo_hash_dir_name("083F007C6F2D63CC"),
+            "uppercase is not ours"
+        );
+        assert!(!is_repo_hash_dir_name("083f007c6f2d63c"), "15 chars");
+        assert!(!is_repo_hash_dir_name("083f007c6f2d63ccx"), "17 chars");
+        assert!(!is_repo_hash_dir_name("083f007c6f2d63cg"), "g is not hex");
+    }
+
+    // ─── R2: a fresh install must not warn about a directory that holds nothing ─
+
+    /// `run_standalone` creates `repos/` unconditionally at startup, before
+    /// `registry.json` is written, so `repos/` existing and being a directory
+    /// is true from the very first tick of a fresh install. The missing-
+    /// registry warning must not fire on that state: an empty `repos/` holds
+    /// no indexed repo data for the warning to be about.
+    #[test]
+    fn repos_dir_holds_hash_shaped_data_is_false_for_a_fresh_install() {
+        let (_data, data_dir) = temp_data_dir();
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+
+        assert!(!repos_dir_holds_hash_shaped_data(&repos_dir));
+    }
+
+    /// Also quiet when `repos/` itself does not exist yet at all, which is
+    /// true for an instant before `run_standalone`'s `create_dir_all` runs.
+    #[test]
+    fn repos_dir_holds_hash_shaped_data_is_false_when_the_dir_does_not_exist() {
+        let (_data, data_dir) = temp_data_dir();
+        let repos_dir = data_dir.join("repos");
+
+        assert!(!repos_dir_holds_hash_shaped_data(&repos_dir));
+    }
+
+    /// The warning must still be true whenever it does fire: a leftover
+    /// hash-shaped directory (a real index orphaned by a lost `registry.json`)
+    /// is exactly the case the warning exists to report.
+    #[test]
+    fn repos_dir_holds_hash_shaped_data_is_true_when_a_real_index_is_left_behind() {
+        let (_data, data_dir) = temp_data_dir();
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.join("0123456789abcdef").as_std_path()).unwrap();
+
+        assert!(repos_dir_holds_hash_shaped_data(&repos_dir));
+    }
+
+    #[test]
+    fn is_collectable_orphan_dir_covers_every_purely_decidable_guard() {
+        let old = Duration::from_secs(7200);
+        let young = Duration::from_secs(1);
+        let min_age = Duration::from_secs(3600);
+        let hash_name = "0123456789abcdef";
+
+        assert!(
+            !is_collectable_orphan_dir(hash_name, true, true, old, min_age),
+            "a claimed name is never collectable"
+        );
+        assert!(
+            !is_collectable_orphan_dir(hash_name, false, false, old, min_age),
+            "a non-directory is never collectable"
+        );
+        assert!(
+            !is_collectable_orphan_dir("my-notes", true, false, old, min_age),
+            "not 16 lowercase hex characters"
+        );
+        assert!(
+            !is_collectable_orphan_dir("0123456789ABCDEF", true, false, old, min_age),
+            "uppercase hex is not ours"
+        );
+        assert!(
+            !is_collectable_orphan_dir(hash_name, true, false, young, min_age),
+            "younger than the minimum age"
+        );
+        assert!(
+            is_collectable_orphan_dir(hash_name, true, false, old, min_age),
+            "a hash-shaped, unclaimed, old-enough directory is collectable"
+        );
+    }
+
+    #[test]
+    fn ensure_within_repos_dir_rejects_the_root_itself_and_outsiders() {
+        let repos = Utf8PathBuf::from("/data/repos");
+        assert!(ensure_within_repos_dir(&repos.join("abc"), &repos).is_ok());
+        assert!(
+            ensure_within_repos_dir(&repos, &repos).is_err(),
+            "the repos dir itself must never be deleted"
+        );
+        assert!(ensure_within_repos_dir(&Utf8PathBuf::from("/data/other"), &repos).is_err());
+        assert!(
+            ensure_within_repos_dir(&Utf8PathBuf::from("/data/repos-backup"), &repos).is_err(),
+            "a sibling sharing a name prefix is not inside"
+        );
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_deletes_an_unclaimed_data_dir_on_the_second_sighting() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+        let repos_dir = data_dir.join("repos");
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+        std::fs::write(orphan.join("code-intelligence.db").as_std_path(), b"stale").unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            orphan.as_std_path().exists(),
+            "the first sighting only arms the deletion"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(!orphan.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_keeps_dirs_that_are_claimed_or_not_ours() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        // A live registry entry's data dir.
+        let claimed = manager
+            .registry
+            .register(repo_path.as_str())
+            .unwrap()
+            .data_dir;
+
+        let repos_dir = data_dir.join("repos");
+        // Not a 16-hex name.
+        let foreign = repos_dir.join("my-notes");
+        std::fs::create_dir_all(foreign.as_std_path()).unwrap();
+        // A hex-named *file* rather than a directory, which the is_dir guard
+        // must skip. In production `registry.json` lives here too and is skipped
+        // by the name check.
+        let stray_file = repos_dir.join("aaaaaaaaaaaaaaaa");
+        std::fs::write(stray_file.as_std_path(), b"not a data dir").unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            claimed.as_std_path().exists(),
+            "a registered repo's dir stays"
+        );
+        assert!(foreign.as_std_path().exists(), "an unrecognised name stays");
+        assert!(
+            stray_file.as_std_path().is_file(),
+            "a file is never removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_spares_a_dir_while_a_job_runs_under_its_id() {
+        use crate::server::jobs::{register_running, JobKind};
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+        let repos_dir = data_dir.join("repos");
+        let busy_hash = "00112233445566aa";
+        let busy = repos_dir.join(busy_hash);
+        std::fs::create_dir_all(busy.as_std_path()).unwrap();
+
+        register_running(
+            &manager.job_registry,
+            "job-2".to_string(),
+            JobKind::ManualReindex,
+            busy_hash.to_string(),
+            "/some/repo".to_string(),
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(busy.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_spares_directories_younger_than_the_minimum_age() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+        let fresh = repos_dir.join("fedcba9876543210");
+        std::fs::create_dir_all(fresh.as_std_path()).unwrap();
+
+        // The real entry point uses ORPHAN_DIR_MIN_AGE. A directory created
+        // moments ago is inside register()'s create-then-save window.
+        manager.sweep_orphan_data_dirs();
+        manager.sweep_orphan_data_dirs();
+
+        assert!(fresh.as_std_path().exists());
+    }
+
+    /// `warm_ttl_seconds = 0` means "never evict a warm repo"; it must not also
+    /// mean "never collect an orphan data dir", since an unclaimed dir belongs
+    /// to no registered repo and the TTL's rationale does not cover it. Pins
+    /// the call to `sweep_orphan_data_dirs` above the TTL early return in
+    /// `evict_idle_repos`. Goes through the real entry point rather than
+    /// calling the sweep directly, since the placement is what is under test,
+    /// so the directory's age is backdated on disk instead of injected.
+    #[tokio::test]
+    async fn evict_idle_repos_collects_orphan_dirs_even_when_ttl_is_zero() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_ttl(data_dir.clone(), 0).await;
+        // An unrelated, normally-registered repo: creates `registry.json` and
+        // keeps `claimed` non-empty, so the C1 guards (missing/empty registry)
+        // do not also explain the result this test is checking.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+        let repos_dir = data_dir.join("repos");
+        let orphan = repos_dir.join("1122334455667788");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        filetime::set_file_mtime(
+            orphan.as_std_path(),
+            filetime::FileTime::from_system_time(two_hours_ago),
+        )
+        .unwrap();
+
+        manager.evict_idle_repos().await;
+        assert!(
+            orphan.as_std_path().exists(),
+            "the first sighting only arms the deletion"
+        );
+
+        manager.evict_idle_repos().await;
+        assert!(
+            !orphan.as_std_path().exists(),
+            "a TTL of zero must not disable orphan collection"
+        );
+    }
+
     #[tokio::test]
     async fn evict_idle_repos_prunes_declined_missing_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -1399,6 +2412,594 @@ mod tests {
         assert!(
             manager.repos.contains_key(&key),
             "TTL=0 must never evict any repo"
+        );
+    }
+
+    // ─── C1: losing registry.json must not be read as "nothing is registered" ──
+
+    /// `RepoRegistry::load` returns an empty registry, not an error, when
+    /// `registry.json` is missing. Before the fix this made the orphan sweep
+    /// treat every existing data directory as unclaimed, so losing the
+    /// registry file (`rm registry.json`, or a partial backup restore)
+    /// deleted every index on the machine within two sweeps, even though the
+    /// repo checkout itself was untouched. Reproduces that exact scenario,
+    /// using the production layout (`registry.json` inside `repos/`).
+    #[tokio::test]
+    async fn orphan_sweep_refuses_to_run_when_registry_json_is_missing() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        // A live, registered repo with a real, populated data directory.
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        std::fs::write(
+            entry.data_dir.join("code-intelligence.db").as_std_path(),
+            b"real index",
+        )
+        .unwrap();
+
+        let registry_path = data_dir.join("repos").join("registry.json");
+        assert!(
+            registry_path.as_std_path().exists(),
+            "sanity: register() must have created registry.json"
+        );
+        std::fs::remove_file(registry_path.as_std_path()).unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            entry.data_dir.as_std_path().exists(),
+            "losing registry.json must never be read as \"nothing is \
+             registered\"; a live, populated index must survive"
+        );
+    }
+
+    /// Belt-and-braces: even when `registry.json` exists, an empty registry
+    /// (no entries at all) is indistinguishable from "everything was just
+    /// unregistered" by the guard above. If `repos/` still holds hash-shaped
+    /// directories, that is independent evidence something is wrong, so the
+    /// sweep refuses rather than trusting an empty registry that might itself
+    /// be the bug (e.g. a backup restore that wrote a syntactically valid but
+    /// empty file).
+    #[tokio::test]
+    async fn orphan_sweep_refuses_when_registry_is_present_but_claims_nothing() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+
+        std::fs::write(
+            repos_dir.join("registry.json").as_std_path(),
+            br#"{"repos":{}}"#,
+        )
+        .unwrap();
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            orphan.as_std_path().exists(),
+            "an empty registry sitting next to real data directories must not \
+             be trusted to mean \"nothing is registered\""
+        );
+    }
+
+    // ─── R3: both C1 refusals must warn once, not on every tick forever ───────
+
+    /// Both C1 refusal conditions are persistent by nature: nothing here
+    /// self-heals, so a naive `tracing::warn!` on every tick would fire
+    /// forever. Each refusal instead flips its own `AtomicBool` on the first
+    /// sweep that observes it and leaves it flipped for as long as the
+    /// condition holds; that flag is what keeps the second and later sweeps
+    /// off the `warn` path (verified indirectly here, since there is no log
+    /// capture in this test suite). The flag must also reset the moment the
+    /// condition clears, so a later recurrence is treated as a fresh
+    /// transition rather than staying silently suppressed forever.
+    #[tokio::test]
+    async fn missing_registry_refusal_warns_once_then_resets_once_registry_json_returns() {
+        use std::sync::atomic::Ordering;
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        std::fs::write(
+            entry.data_dir.join("code-intelligence.db").as_std_path(),
+            b"real index",
+        )
+        .unwrap();
+
+        let registry_path = data_dir.join("repos").join("registry.json");
+        std::fs::remove_file(registry_path.as_std_path()).unwrap();
+
+        assert!(
+            !manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "sanity: nothing has swept yet"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "the first sweep to see the refusing state must record the transition"
+        );
+
+        // The condition still holds: the flag must stay set rather than
+        // un-arm itself, which is what keeps this sweep off the warn path.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(manager
+            .orphan_sweep_registry_missing_warned
+            .load(Ordering::Relaxed));
+
+        // registry.json comes back: the refusing condition clears.
+        std::fs::write(registry_path.as_std_path(), br#"{"repos":{}}"#).unwrap();
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            !manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "once registry.json exists again, a later disappearance must warn \
+             again rather than staying silently suppressed"
+        );
+    }
+
+    /// Same contract as the test above, for the belt-and-braces refusal
+    /// (registry present but claims nothing while hash-shaped directories
+    /// exist), which holds its own independent flag.
+    #[tokio::test]
+    async fn empty_registry_refusal_warns_once_then_resets_once_the_condition_clears() {
+        use std::sync::atomic::Ordering;
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+        std::fs::write(
+            repos_dir.join("registry.json").as_std_path(),
+            br#"{"repos":{}}"#,
+        )
+        .unwrap();
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        assert!(
+            !manager
+                .orphan_sweep_registry_empty_warned
+                .load(Ordering::Relaxed),
+            "sanity: nothing has swept yet"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            manager
+                .orphan_sweep_registry_empty_warned
+                .load(Ordering::Relaxed),
+            "the first sweep to see the refusing state must record the transition"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(manager
+            .orphan_sweep_registry_empty_warned
+            .load(Ordering::Relaxed));
+
+        // The hash-shaped directory goes away (a hand fix), clearing the
+        // refusing condition.
+        std::fs::remove_dir_all(orphan.as_std_path()).unwrap();
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            !manager
+                .orphan_sweep_registry_empty_warned
+                .load(Ordering::Relaxed),
+            "once the refusing condition clears, a later recurrence must be \
+             able to warn again"
+        );
+    }
+
+    /// The two C1 refusals are independent: warning about one must not arm or
+    /// clear the other's flag, since the human asked that they be
+    /// distinguishable rather than sharing state.
+    #[tokio::test]
+    async fn the_two_c1_refusal_flags_are_independent() {
+        use std::sync::atomic::Ordering;
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test_with_production_layout(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+        std::fs::write(
+            repos_dir.join("registry.json").as_std_path(),
+            br#"{"repos":{}}"#,
+        )
+        .unwrap();
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+
+        // Triggers only the empty-registry refusal.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(manager
+            .orphan_sweep_registry_empty_warned
+            .load(Ordering::Relaxed));
+        assert!(
+            !manager
+                .orphan_sweep_registry_missing_warned
+                .load(Ordering::Relaxed),
+            "the missing-registry flag must not be set by the empty-registry refusal"
+        );
+    }
+
+    // ─── C2: declining an already-indexed repo must not skip its grace period ──
+
+    /// `prune_declined_missing` used to drop any `Declined` entry whose path
+    /// was gone, including one with a real, populated data directory, because
+    /// `set_consent`'s update branch (reachable via `decline_initial_index` on
+    /// an already-indexed repo) preserves `data_dir` rather than clearing it.
+    /// That dropped the registry's only claim on the directory one tick
+    /// before the orphan sweep's own two-sighting rule finished arming it, so
+    /// a declined, already-indexed repo whose folder was then deleted was
+    /// fully collected in about two ticks (roughly two minutes) instead of
+    /// waiting out `missing_repo_grace_days` (7 days by default).
+    #[tokio::test]
+    async fn declining_an_indexed_repo_then_deleting_its_folder_respects_the_grace_period() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        // An unrelated, normally-registered repo so `claimed` stays non-empty
+        // even after the declined entry below is (wrongly, pre-fix) dropped;
+        // isolates this test to the C2 mechanism rather than the C1 guards.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+        let (repo, repo_path) = temp_repo_dir();
+        // `decline_initial_index` canonicalizes internally; registering with
+        // the same canonical form up front keeps this test on one registry
+        // entry rather than creating a second one under a different hash.
+        let canonical = crate::path::canonicalize_existing_dir(&repo_path).unwrap();
+
+        let entry = manager.registry.register(canonical.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(canonical.as_str());
+        std::fs::write(
+            entry.data_dir.join("code-intelligence.db").as_std_path(),
+            b"real index",
+        )
+        .unwrap();
+
+        // Decline an already-indexed repo (the update branch of set_consent,
+        // reachable via decline_initial_index / approve_indexing / POST
+        // /api/consent), then delete its checkout.
+        manager.decline_initial_index(canonical.as_path()).unwrap();
+        drop(repo);
+
+        // Backdate the data dir so it is old enough for the orphan sweep to
+        // even consider it, isolating this test to the C2 mechanism rather
+        // than the create-then-save age guard.
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        filetime::set_file_mtime(
+            entry.data_dir.as_std_path(),
+            filetime::FileTime::from_system_time(two_hours_ago),
+        )
+        .unwrap();
+
+        manager.evict_idle_repos().await; // tick N
+        manager.evict_idle_repos().await; // tick N+1: two sightings would have collected an orphan
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "a declined repo that was actually indexed must stay registered so \
+             it can be graced, not dropped as a dead decline record"
+        );
+        assert!(
+            entry.data_dir.as_std_path().exists(),
+            "its data directory must survive well inside the 7-day grace period"
+        );
+    }
+
+    // ─── I1: a corrupt missing_since stamp must heal, not pin forever ──────────
+
+    /// `grace_verdict`'s doc comment promises a corrupt `missing_since` is
+    /// healed by being rewritten rather than pinning the entry forever or
+    /// triggering an immediate deletion. Drives that through the real sweep
+    /// entry point across several ticks.
+    #[tokio::test]
+    async fn evict_idle_repos_heals_a_corrupt_missing_since_stamp_across_sweeps() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        // A corrupt stamp, however it got there (a hand edit, a future format
+        // change, disk corruption).
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), "not a date")
+            .unwrap();
+
+        // First sweep after the corruption: grace_verdict sees an unparseable
+        // stamp as "no usable stamp", and the registry now overwrites it
+        // instead of leaving "not a date" in place forever.
+        manager.evict_idle_repos().await;
+        let healed = manager
+            .registry
+            .get_by_hash(&hash)
+            .unwrap()
+            .unwrap()
+            .missing_since
+            .expect("a stamp must exist after the sweep");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&healed).is_ok(),
+            "the corrupt stamp must be healed to a valid RFC3339 value, got {healed}"
+        );
+
+        // Directly backdate the now-healed stamp past the grace period (the
+        // same way other tests in this module simulate an old stamp), and
+        // confirm the entry is not pinned forever: it still reaches deletion
+        // normally.
+        let registry_path = data_dir.join("registry.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(registry_path.as_std_path()).unwrap()).unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+        json["repos"][&hash]["missing_since"] = serde_json::Value::String(old);
+        std::fs::write(registry_path.as_std_path(), json.to_string()).unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_none(),
+            "once healed, the entry must reach its grace deadline like any \
+             other, not stay pinned by the earlier corruption"
+        );
+        assert!(!entry.data_dir.as_std_path().exists());
+    }
+
+    // ─── I2: a warm runtime must not be collected out from under itself ───────
+
+    /// The running-job guard covers an active indexing pass. It does not
+    /// cover a warm runtime sitting idle with open SQLite, Tantivy, and
+    /// LanceDB handles and a file watcher. Simulates the amplification
+    /// scenario directly: the registry's claim on a loaded repo disappears
+    /// (as in C1, or any other bug) while the runtime stays warm in
+    /// `self.repos`.
+    #[tokio::test]
+    async fn orphan_sweep_spares_a_dir_whose_repo_is_still_warm_in_memory() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+
+        // An unrelated, normally-registered repo so `claimed` stays non-empty
+        // and the C1 guards do not also explain the result.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+
+        let (_repo, repo_path) = temp_repo_dir();
+        manager.get_or_create_repo(&repo_path).await.unwrap();
+        let key = canonical_key(&repo_path);
+        let hash = crate::registry::RepoRegistry::path_hash(&key);
+        let data_dir_path = manager
+            .registry
+            .get_by_hash(&hash)
+            .unwrap()
+            .unwrap()
+            .data_dir;
+
+        // The registry entry disappears while the runtime stays warm.
+        manager.registry.remove_by_hash(&hash).unwrap();
+        assert_eq!(
+            manager.loaded_repo_count(),
+            1,
+            "the warm runtime must still be held, independent of the registry"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            data_dir_path.as_std_path().exists(),
+            "a directory whose repo is warm in memory must never be \
+             collected, even if the registry no longer claims it"
+        );
+    }
+
+    // ─── I5: claimed must follow data_dir, not a recomputed hash ───────────────
+
+    /// `claimed` used to be derived by recomputing `path_hash(e.path)`, while
+    /// `delete_repo_by_hash` deletes `entry.data_dir`. Those are two sources
+    /// of truth for one fact, and the on-disk format permits them to
+    /// disagree (see the legacy-load fixture in `src/registry.rs`, which uses
+    /// a hash key, a path, and a `data_dir` that all differ). Such an entry
+    /// left its real directory unclaimed and therefore collectable.
+    #[tokio::test]
+    async fn orphan_sweep_claims_a_directory_by_its_data_dir_even_when_the_hash_disagrees() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+
+        // A directory whose name is NOT path_hash("/somewhere/legacy").
+        let real_dir = repos_dir.join("aaaaaaaaaaaaaaaa");
+        std::fs::create_dir_all(real_dir.as_std_path()).unwrap();
+
+        let registry_path = data_dir.join("registry.json");
+        let json = format!(
+            r#"{{"repos":{{"legacyhash0000ab":{{"path":"/somewhere/legacy","name":"legacy","data_dir":"{real_dir}","created_at":"2026-01-01T00:00:00Z","last_accessed":"2026-01-01T00:00:00Z"}}}}}}"#,
+        );
+        std::fs::write(registry_path.as_std_path(), json).unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            real_dir.as_std_path().exists(),
+            "a directory claimed by data_dir must survive even when \
+             path_hash(path) disagrees with its own name"
+        );
+    }
+
+    // ─── R5: one derivation of a data dir's expected name, not two ────────────
+
+    /// `claimed` and the warm-runtime guard used to derive a repo's expected
+    /// data-directory name two different ways (recompute `path_hash(path)` vs.
+    /// prefer `data_dir`'s own file name) that happened to agree in every
+    /// reachable case, since a warm repo is always registered and therefore
+    /// already covered by `claimed` before the warm-runtime guard is ever
+    /// consulted. There is deliberately no end-to-end regression test here:
+    /// any scenario that could make the two derivations disagree is, by that
+    /// same reasoning, already caught by `claimed`, so no sequence of sweeps
+    /// can distinguish the old two-derivation behaviour from the new
+    /// one-derivation behaviour. These tests instead pin the single shared
+    /// function both call sites now use.
+    fn test_repo_entry(path: &str, data_dir: Utf8PathBuf) -> RepoEntry {
+        RepoEntry {
+            path: path.to_string(),
+            name: "legacy".to_string(),
+            data_dir,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            last_accessed: "2026-01-01T00:00:00Z".to_string(),
+            consent: crate::registry::IndexConsent::Approved,
+            initial_index_approved_at: None,
+            initial_index_completed_at: None,
+            seeded_from: None,
+            missing_since: None,
+        }
+    }
+
+    #[test]
+    fn expected_data_dir_name_prefers_data_dirs_own_file_name() {
+        let entry = test_repo_entry(
+            "/somewhere/legacy",
+            Utf8PathBuf::from("/data/aaaaaaaaaaaaaaaa"),
+        );
+        assert_eq!(expected_data_dir_name(&entry), "aaaaaaaaaaaaaaaa");
+    }
+
+    #[test]
+    fn expected_data_dir_name_falls_back_to_path_hash_without_a_file_name() {
+        // `Utf8PathBuf::from("/")` has no file name component at all.
+        let entry = test_repo_entry("/somewhere/legacy", Utf8PathBuf::from("/"));
+        assert_eq!(
+            expected_data_dir_name(&entry),
+            RepoRegistry::path_hash("/somewhere/legacy")
+        );
+    }
+
+    // ─── Circuit breaker: cap how much one sweep may destroy ──────────────────
+
+    /// The human-approved circuit breaker: no single sweep may collect more
+    /// than `MAX_ORPHAN_DIRS_PER_SWEEP` directories, and a directory deferred
+    /// by the cap keeps its two-sighting progress rather than being un-armed
+    /// by the `retain` at the end of the sweep.
+    #[tokio::test]
+    async fn orphan_sweep_caps_collection_per_sweep_and_catches_up_on_a_later_sweep() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo so `claimed` stays non-empty
+        // and the C1 guards do not also explain the result.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+
+        let repos_dir = data_dir.join("repos");
+        let names = [
+            "0000000000000001",
+            "0000000000000002",
+            "0000000000000003",
+            "0000000000000004",
+        ];
+        for name in names {
+            std::fs::create_dir_all(repos_dir.join(name).as_std_path()).unwrap();
+        }
+
+        // First sweep: first sighting only arms all four.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        for name in names {
+            assert!(repos_dir.join(name).as_std_path().exists());
+        }
+
+        // Second sweep: all four are armed, but the cap collects only three.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        let remaining: Vec<&str> = names
+            .into_iter()
+            .filter(|n| repos_dir.join(n).as_std_path().exists())
+            .collect();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "the cap must defer everything past three collections in one sweep"
+        );
+
+        // Third sweep: the deferred directory's sighting must have survived
+        // the cap, so it is collected now instead of needing two more
+        // sightings from scratch.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            !repos_dir.join(remaining[0]).as_std_path().exists(),
+            "a directory deferred by the cap must be collected on the very \
+             next sweep, not stranded back at square one"
+        );
+    }
+
+    // ─── I4: seeded two-sighting rule under a returning checkout ──────────────
+
+    /// Deferred item from an earlier review, revised after a re-review found
+    /// the original two-sweep version vacuous: `list_missing` never returns a
+    /// present checkout, so a test that stops after the checkout returns
+    /// passes whether or not the `retain` in `prune_vanished_indexes` exists.
+    /// The `retain` only matters once the checkout goes absent *again*: three
+    /// sweeps are needed to exercise absent (arms it), present (the `retain`
+    /// must clear the arming), absent (must count as a first sighting of the
+    /// new absence, not a second).
+    #[tokio::test]
+    async fn seeded_entry_survives_when_the_checkout_returns_between_its_two_sightings() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        manager.registry.register(repo_path.as_str()).unwrap();
+        manager
+            .registry
+            .mark_seeded_from(repo_path.as_str(), "basehash12345678")
+            .unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+
+        drop(repo); // deletes the checkout
+
+        // First sweep: absent, first sighting only arms it.
+        manager.evict_idle_repos().await;
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_some());
+
+        // The checkout returns before the second sweep (e.g. an interrupted
+        // worktree operation, or a flaky mount coming back).
+        std::fs::create_dir_all(repo_path.as_std_path()).unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "a seeded entry whose checkout returns between sightings must \
+             survive, not be deleted on a stale first-sighting arm"
+        );
+
+        // Third sweep: the checkout goes absent again. This is a fresh
+        // absence and must need its own two sightings, not ride on the
+        // sighting from before the checkout returned. Without the `retain`
+        // at the end of `prune_vanished_indexes`, the first sweep's stale
+        // arming survives the checkout's return, so this sweep's `insert`
+        // finds an existing entry, `armed` is true, and the index is
+        // deleted on what is really only the first sighting of the new
+        // absence.
+        std::fs::remove_dir_all(repo_path.as_std_path()).unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_some(),
+            "a fresh absence after the checkout came back must be treated as \
+             a first sighting, not a second, so the entry must survive a \
+             third sweep"
         );
     }
 }

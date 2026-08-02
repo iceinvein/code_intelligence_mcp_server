@@ -146,6 +146,19 @@ pub(crate) fn catalog() -> Vec<FieldSpec> {
             description: "Idle seconds before a repo's in-memory state is evicted.",
         },
         FieldSpec {
+            key: "missing_repo_grace_days",
+            group: "Lifecycle",
+            toml_path: &["lifecycle", "missing_repo_grace_days"],
+            kind: FieldKind::Number {
+                min: 0.0,
+                max: 365.0,
+                integer: true,
+            },
+            needs_reindex: false,
+            editable: true,
+            description: "Days a repo's index survives after its folder is deleted. 0 never deletes a registered repo's index this way; it does not govern the separate sweep for unclaimed data directories.",
+        },
+        FieldSpec {
             key: "host",
             group: "Daemon",
             toml_path: &["server", "host"],
@@ -393,6 +406,7 @@ pub(crate) fn field_value(cfg: &StandaloneConfig, key: &str) -> Value {
         "reranker_enabled" => json!(cfg.reranker_enabled),
         "descriptions_enabled" => json!(cfg.descriptions_enabled),
         "warm_ttl_seconds" => json!(cfg.warm_ttl_seconds),
+        "missing_repo_grace_days" => json!(cfg.missing_repo_grace_days),
         "host" => json!(cfg.host),
         "port" => json!(cfg.port),
         "hybrid_alpha" => json!(cfg.hybrid_alpha),
@@ -608,6 +622,21 @@ mod tests {
         assert_eq!(backend["needs_reindex"], true);
         let host = fields.iter().find(|f| f["key"] == "host").unwrap();
         assert_eq!(host["editable"], false);
+    }
+
+    #[test]
+    fn catalog_exposes_the_missing_repo_grace_knob() {
+        let cfg = StandaloneConfig::default();
+        let fields = catalog();
+        let spec = fields
+            .iter()
+            .find(|f| f.key == "missing_repo_grace_days")
+            .expect("missing_repo_grace_days must be in the catalog");
+        assert_eq!(spec.group, "Lifecycle");
+        assert_eq!(spec.toml_path, &["lifecycle", "missing_repo_grace_days"]);
+        assert!(spec.editable);
+        assert!(!spec.needs_reindex);
+        assert_eq!(field_value(&cfg, "missing_repo_grace_days"), json!(7));
     }
 
     #[test]

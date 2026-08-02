@@ -26,6 +26,8 @@ test("ReposView renders repo names from the API", async () => {
         last_accessed: "x",
         path_exists: true,
         seeded_from: null,
+        missing_since: null,
+        auto_delete_at: null,
         activity: {
           running: false,
           current: null,
@@ -57,6 +59,8 @@ test("ReposView flags a repo whose checkout no longer exists on disk", async () 
         last_accessed: "x",
         path_exists: false,
         seeded_from: null,
+        missing_since: null,
+        auto_delete_at: null,
         activity: {
           running: false,
           current: null,
@@ -73,4 +77,141 @@ test("ReposView flags a repo whose checkout no longer exists on disk", async () 
   const { findByText } = renderWithClient(<ReposView />);
   expect(await findByText("gone-repo")).toBeDefined();
   expect(await findByText("stale")).toBeDefined();
+});
+
+test("ReposView counts down to automatic deletion when a deadline is set", async () => {
+  const inFiveDays = new Date(Date.now() + 5 * 86_400_000).toISOString();
+  const payload = {
+    count: 1,
+    repos: [
+      {
+        id: "abc",
+        name: "doomed-repo",
+        path: "/repo/doomed",
+        data_dir: "/data/doomed",
+        created_at: "x",
+        last_accessed: "x",
+        path_exists: false,
+        seeded_from: null,
+        missing_since: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+        auto_delete_at: inFiveDays,
+        activity: {
+          running: false,
+          current: null,
+          last_finished: null,
+          latest_index_run: null,
+          latest_search_run: null,
+          last_updated_unix_s: null,
+        },
+      },
+    ],
+  };
+  globalThis.fetch = mock(async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+
+  const { findByText } = renderWithClient(<ReposView />);
+  expect(await findByText("stale · deletes in 5d")).toBeDefined();
+});
+
+test("ReposView explains itself when automatic deletion is off", async () => {
+  const payload = {
+    count: 1,
+    repos: [
+      {
+        id: "abc",
+        name: "no-grace-repo",
+        path: "/repo/no-grace",
+        data_dir: "/data/no-grace",
+        created_at: "x",
+        last_accessed: "x",
+        path_exists: false,
+        seeded_from: null,
+        missing_since: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+        auto_delete_at: null,
+        activity: {
+          running: false,
+          current: null,
+          last_finished: null,
+          latest_index_run: null,
+          latest_search_run: null,
+          last_updated_unix_s: null,
+        },
+      },
+    ],
+  };
+  globalThis.fetch = mock(async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+
+  const { findByText } = renderWithClient(<ReposView />);
+  const badge = await findByText("stale");
+  expect(badge.getAttribute("title")).toBe(
+    "Checkout is gone. Automatic deletion is off, so remove this index yourself when you are done with it.",
+  );
+});
+
+test("ReposView treats an unparseable deadline as no deadline in both label and tooltip", async () => {
+  const payload = {
+    count: 1,
+    repos: [
+      {
+        id: "abc",
+        name: "bad-date-repo",
+        path: "/repo/bad-date",
+        data_dir: "/data/bad-date",
+        created_at: "x",
+        last_accessed: "x",
+        path_exists: false,
+        seeded_from: null,
+        missing_since: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+        auto_delete_at: "not-a-date",
+        activity: {
+          running: false,
+          current: null,
+          last_finished: null,
+          latest_index_run: null,
+          latest_search_run: null,
+          last_updated_unix_s: null,
+        },
+      },
+    ],
+  };
+  globalThis.fetch = mock(async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+
+  const { findByText } = renderWithClient(<ReposView />);
+  const badge = await findByText("stale");
+  const title = badge.getAttribute("title");
+  expect(title).not.toContain("Invalid Date");
+  expect(title).toBe(
+    "Checkout is gone. Automatic deletion is off, so remove this index yourself when you are done with it.",
+  );
+});
+
+test("ReposView floors an already-past deadline at 0d", async () => {
+  const payload = {
+    count: 1,
+    repos: [
+      {
+        id: "abc",
+        name: "overdue-repo",
+        path: "/repo/overdue",
+        data_dir: "/data/overdue",
+        created_at: "x",
+        last_accessed: "x",
+        path_exists: false,
+        seeded_from: null,
+        missing_since: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+        auto_delete_at: new Date(Date.now() - 1 * 86_400_000).toISOString(),
+        activity: {
+          running: false,
+          current: null,
+          last_finished: null,
+          latest_index_run: null,
+          latest_search_run: null,
+          last_updated_unix_s: null,
+        },
+      },
+    ],
+  };
+  globalThis.fetch = mock(async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+
+  const { findByText } = renderWithClient(<ReposView />);
+  expect(await findByText("stale · deletes in 0d")).toBeDefined();
 });

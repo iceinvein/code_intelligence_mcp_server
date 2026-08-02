@@ -11,7 +11,7 @@ use crate::{
     handlers::AppState,
     indexer::pipeline::IndexPipeline,
     metrics::MetricsRegistry,
-    path::Utf8PathBuf,
+    path::{Utf8Path, Utf8PathBuf},
     registry::{RepoEntry, RepoRegistry},
     reranker::Reranker,
     retrieval::Retriever,
@@ -126,6 +126,62 @@ fn grace_verdict(
     }
 }
 
+/// How long a data directory must have existed before the orphan sweep may
+/// delete it. `register` creates the directory and then saves `registry.json`;
+/// a sweep landing between the two would delete a live directory. Seeding has
+/// the same window.
+const ORPHAN_DIR_MIN_AGE: Duration = Duration::from_secs(3600);
+
+/// Whether a directory name is one this daemon generates, i.e. the 16-character
+/// lowercase hex prefix that `RepoRegistry::path_hash` produces. Anything else
+/// under `repos/` was put there by something other than us and is left alone.
+fn is_repo_hash_dir_name(name: &str) -> bool {
+    name.len() == 16
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Refuse to delete anything that is not strictly inside the managed repos
+/// directory.
+///
+/// Containment is structural rather than conventional: the sweeps call
+/// `remove_dir_all` with nobody watching, so a bug in how a path was derived must
+/// not be able to reach outside the tree. `starts_with` compares whole
+/// components, so a sibling sharing a name prefix does not pass; the equality
+/// check stops `repos/` itself from being taken as its own child.
+fn ensure_within_repos_dir(candidate: &Utf8Path, repos_dir: &Utf8Path) -> Result<()> {
+    if candidate == repos_dir || !candidate.starts_with(repos_dir) {
+        anyhow::bail!(
+            "refusing to delete '{candidate}': it is outside the managed repo directory '{repos_dir}'"
+        );
+    }
+    Ok(())
+}
+
+/// Total size of a directory tree, for reporting how much a deletion reclaimed.
+/// Best-effort: unreadable entries are skipped rather than failing the sweep.
+fn dir_size_bytes(dir: &Utf8Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(current.as_std_path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                if let Ok(child) = Utf8PathBuf::from_path_buf(entry.path()) {
+                    stack.push(child);
+                }
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 pub struct SessionManager {
     pub standalone_config: Arc<StandaloneConfig>,
     pub registry: Arc<RepoRegistry>,
@@ -148,6 +204,10 @@ pub struct SessionManager {
     /// diagnostic only. Non-seeded entries use the persisted `missing_since`
     /// stamp instead; nothing writes both for the same repo.
     seeded_absent_once: DashMap<String, Instant>,
+    /// Data directories under `repos/` that no registry entry claimed on the last
+    /// sweep, keyed by directory name. Like `seeded_absent_once`, deletion needs
+    /// two consecutive sightings.
+    orphan_dir_seen_once: DashMap<String, Instant>,
     /// Repositories awaiting a user decision about their first full index.
     pending_consent: DashMap<String, PendingConsent>,
     metrics: Arc<MetricsRegistry>,
@@ -199,6 +259,7 @@ impl SessionManager {
             initial_index_locks: DashMap::new(),
             last_accessed: DashMap::new(),
             seeded_absent_once: DashMap::new(),
+            orphan_dir_seen_once: DashMap::new(),
             pending_consent: DashMap::new(),
             metrics,
             job_registry,
@@ -333,6 +394,7 @@ impl SessionManager {
         // Deliberately after the TTL early return: a deployment configured never
         // to evict a warm repo must never delete one of its indexes either.
         self.prune_vanished_indexes().await;
+        self.sweep_orphan_data_dirs();
 
         let ttl = Duration::from_secs(ttl_secs);
 
@@ -493,6 +555,116 @@ impl SessionManager {
                 ),
             }
         }
+    }
+
+    /// Delete data directories under `repos/` that no registry entry claims.
+    ///
+    /// These are invisible to the dashboard, which lists from `registry.json`, so
+    /// nothing else will ever collect them. They come from a crash between
+    /// `register`'s `create_dir_all` and its save, from discarded seeds, and from
+    /// hand-edited registries.
+    fn sweep_orphan_data_dirs(&self) {
+        self.sweep_orphan_data_dirs_with_min_age(ORPHAN_DIR_MIN_AGE);
+    }
+
+    /// The body of [`sweep_orphan_data_dirs`], with the age guard injected so
+    /// tests do not have to backdate directory timestamps.
+    fn sweep_orphan_data_dirs_with_min_age(&self, min_age: Duration) {
+        let repos_dir = self.registry.repos_dir().to_owned();
+
+        let claimed: std::collections::HashSet<String> = match self.registry.list_all() {
+            Ok(entries) => entries
+                .iter()
+                .map(|e| RepoRegistry::path_hash(&e.path))
+                .collect(),
+            Err(error) => {
+                tracing::debug!(%error, "listing repos for the orphan sweep failed");
+                return;
+            }
+        };
+
+        let entries = match std::fs::read_dir(repos_dir.as_std_path()) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                tracing::debug!(%error, dir = %repos_dir, "reading the repos dir failed");
+                return;
+            }
+        };
+
+        let mut seen_now: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for dirent in entries.flatten() {
+            let name = dirent.file_name().to_string_lossy().to_string();
+            if !is_repo_hash_dir_name(&name) || claimed.contains(&name) {
+                continue;
+            }
+            let Ok(meta) = dirent.metadata() else {
+                continue;
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            let old_enough = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .map(|age| age >= min_age)
+                .unwrap_or(false);
+            if !old_enough {
+                continue;
+            }
+            if jobs::most_recent_running_for_repo(&self.job_registry, &name).is_some() {
+                tracing::debug!(
+                    dir = %name,
+                    "not collecting an unclaimed data dir while a job is running against it"
+                );
+                continue;
+            }
+
+            seen_now.insert(name.clone());
+
+            // First sighting only arms the deletion; the next sweep performs it.
+            if self
+                .orphan_dir_seen_once
+                .insert(name.clone(), Instant::now())
+                .is_none()
+            {
+                tracing::debug!(
+                    dir = %name,
+                    "no registry entry claims this data dir, collecting it if that holds next sweep"
+                );
+                continue;
+            }
+
+            let path = repos_dir.join(&name);
+            if let Err(error) = ensure_within_repos_dir(&path, &repos_dir) {
+                tracing::warn!(%error, "refusing to collect an unclaimed data dir");
+                continue;
+            }
+            let reclaimed = dir_size_bytes(&path);
+            match std::fs::remove_dir_all(path.as_std_path()) {
+                Ok(()) => {
+                    self.orphan_dir_seen_once.remove(&name);
+                    seen_now.remove(&name);
+                    tracing::info!(
+                        dir = %path,
+                        reclaimed_bytes = reclaimed,
+                        "collected a data dir no registry entry claimed"
+                    );
+                }
+                Err(error) => tracing::warn!(
+                    dir = %path,
+                    %error,
+                    "could not collect an unclaimed data dir"
+                ),
+            }
+        }
+
+        // A directory that stopped qualifying (claimed again, job started) has to
+        // restart its two-sighting count.
+        self.orphan_dir_seen_once
+            .retain(|name, _| seen_now.contains(name.as_str()));
     }
 
     /// Spawn a background task that calls [`evict_idle_repos`] every 60 seconds.
@@ -691,19 +863,8 @@ impl SessionManager {
         // 2. Remove on-disk data directory. Missing dirs are treated as
         //    success; permission errors propagate and leave the registry entry
         //    intact so the user can retry from the API/UI.
-        //
-        //    The prune sweep calls this with nobody watching, so containment is
-        //    structural rather than conventional: a bug in how `data_dir` is
-        //    derived must not be able to rmtree outside the managed tree.
-        //    `starts_with` compares whole components, so a sibling directory
-        //    sharing a name prefix does not pass.
         let repos_dir = self.registry.repos_dir();
-        if !entry.data_dir.starts_with(repos_dir) {
-            anyhow::bail!(
-                "refusing to delete '{}': it is outside the managed repo directory '{repos_dir}'",
-                entry.data_dir
-            );
-        }
+        ensure_within_repos_dir(&entry.data_dir, repos_dir)?;
         let data_dir = entry.data_dir.as_std_path();
         match std::fs::remove_dir_all(data_dir) {
             Ok(_) => {}
@@ -1704,6 +1865,132 @@ mod tests {
 
         manager.evict_idle_repos().await;
         assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn repo_hash_dir_names_are_sixteen_lowercase_hex_characters() {
+        assert!(is_repo_hash_dir_name("083f007c6f2d63cc"));
+        assert!(!is_repo_hash_dir_name("registry.json"));
+        assert!(
+            !is_repo_hash_dir_name("083F007C6F2D63CC"),
+            "uppercase is not ours"
+        );
+        assert!(!is_repo_hash_dir_name("083f007c6f2d63c"), "15 chars");
+        assert!(!is_repo_hash_dir_name("083f007c6f2d63ccx"), "17 chars");
+        assert!(!is_repo_hash_dir_name("083f007c6f2d63cg"), "g is not hex");
+    }
+
+    #[test]
+    fn ensure_within_repos_dir_rejects_the_root_itself_and_outsiders() {
+        let repos = Utf8PathBuf::from("/data/repos");
+        assert!(ensure_within_repos_dir(&repos.join("abc"), &repos).is_ok());
+        assert!(
+            ensure_within_repos_dir(&repos, &repos).is_err(),
+            "the repos dir itself must never be deleted"
+        );
+        assert!(ensure_within_repos_dir(&Utf8PathBuf::from("/data/other"), &repos).is_err());
+        assert!(
+            ensure_within_repos_dir(&Utf8PathBuf::from("/data/repos-backup"), &repos).is_err(),
+            "a sibling sharing a name prefix is not inside"
+        );
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_deletes_an_unclaimed_data_dir_on_the_second_sighting() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        let orphan = repos_dir.join("0123456789abcdef");
+        std::fs::create_dir_all(orphan.as_std_path()).unwrap();
+        std::fs::write(orphan.join("code-intelligence.db").as_std_path(), b"stale").unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            orphan.as_std_path().exists(),
+            "the first sighting only arms the deletion"
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(!orphan.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_keeps_dirs_that_are_claimed_or_not_ours() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let (_repo, repo_path) = temp_repo_dir();
+
+        // A live registry entry's data dir.
+        let claimed = manager
+            .registry
+            .register(repo_path.as_str())
+            .unwrap()
+            .data_dir;
+
+        let repos_dir = data_dir.join("repos");
+        // Not a 16-hex name.
+        let foreign = repos_dir.join("my-notes");
+        std::fs::create_dir_all(foreign.as_std_path()).unwrap();
+        // A hex-named *file* rather than a directory, which the is_dir guard
+        // must skip. In production `registry.json` lives here too and is skipped
+        // by the name check.
+        let stray_file = repos_dir.join("aaaaaaaaaaaaaaaa");
+        std::fs::write(stray_file.as_std_path(), b"not a data dir").unwrap();
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(
+            claimed.as_std_path().exists(),
+            "a registered repo's dir stays"
+        );
+        assert!(foreign.as_std_path().exists(), "an unrecognised name stays");
+        assert!(
+            stray_file.as_std_path().is_file(),
+            "a file is never removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_spares_a_dir_while_a_job_runs_under_its_id() {
+        use crate::server::jobs::{register_running, JobKind};
+
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        let busy_hash = "00112233445566aa";
+        let busy = repos_dir.join(busy_hash);
+        std::fs::create_dir_all(busy.as_std_path()).unwrap();
+
+        register_running(
+            &manager.job_registry,
+            "job-2".to_string(),
+            JobKind::ManualReindex,
+            busy_hash.to_string(),
+            "/some/repo".to_string(),
+        );
+
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+
+        assert!(busy.as_std_path().exists());
+    }
+
+    #[tokio::test]
+    async fn orphan_sweep_spares_directories_younger_than_the_minimum_age() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let repos_dir = data_dir.join("repos");
+        std::fs::create_dir_all(repos_dir.as_std_path()).unwrap();
+        let fresh = repos_dir.join("fedcba9876543210");
+        std::fs::create_dir_all(fresh.as_std_path()).unwrap();
+
+        // The real entry point uses ORPHAN_DIR_MIN_AGE. A directory created
+        // moments ago is inside register()'s create-then-save window.
+        manager.sweep_orphan_data_dirs();
+        manager.sweep_orphan_data_dirs();
+
+        assert!(fresh.as_std_path().exists());
     }
 
     #[tokio::test]

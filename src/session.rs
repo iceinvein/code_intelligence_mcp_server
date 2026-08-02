@@ -132,6 +132,17 @@ fn grace_verdict(
 /// the same window.
 const ORPHAN_DIR_MIN_AGE: Duration = Duration::from_secs(3600);
 
+/// How many unclaimed data directories a single orphan sweep may delete.
+///
+/// Both Critical findings that this cap answers were mass-deletion events: the
+/// orphan sweep infers ownership from the *absence* of a claim, so anything
+/// that makes claims disappear (a deleted `registry.json`, an emptied one) is
+/// amplified into deleting every unclaimed directory on the machine within two
+/// sightings. A cap turns whatever ownership bug shows up next into a bounded,
+/// visible loss instead of a silent wipe. Normal operation never collects
+/// three directories in one tick.
+const MAX_ORPHAN_DIRS_PER_SWEEP: usize = 3;
+
 /// Whether a directory name is one this daemon generates, i.e. the 16-character
 /// lowercase hex prefix that `RepoRegistry::path_hash` produces. Anything else
 /// under `repos/` was put there by something other than us and is left alone.
@@ -588,10 +599,12 @@ impl SessionManager {
     ///
     /// Ownership here is inferred from the *absence* of a claim, so anything
     /// that makes claims disappear (a deleted `registry.json`, an emptied one)
-    /// is amplified into deletion. Two guards exist for exactly that: the
-    /// sweep refuses to run at all when `registry.json` itself is missing,
-    /// and refuses again when the registry claims nothing but `repos/` holds
-    /// hash-shaped directories anyway.
+    /// is amplified into deletion. Three guards exist for exactly that: the
+    /// sweep refuses to run at all when `registry.json` itself is missing;
+    /// refuses again when the registry claims nothing but `repos/` holds
+    /// hash-shaped directories anyway; and caps how much a single tick can
+    /// destroy, so a bug that defeats the first two still costs a bounded,
+    /// visible loss instead of a silent wipe.
     fn sweep_orphan_data_dirs(&self) {
         self.sweep_orphan_data_dirs_with_min_age(ORPHAN_DIR_MIN_AGE);
     }
@@ -676,6 +689,7 @@ impl SessionManager {
         }
 
         let mut seen_now: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut collected_this_sweep: usize = 0;
 
         for dirent in dirents {
             let name = dirent.file_name().to_string_lossy().to_string();
@@ -736,6 +750,20 @@ impl SessionManager {
                 continue;
             }
 
+            if collected_this_sweep >= MAX_ORPHAN_DIRS_PER_SWEEP {
+                // The sighting stays armed: it was already (re)inserted above
+                // with a fresh `Instant` and `name` is already in `seen_now`,
+                // so the `retain` at the end of this sweep leaves it in place.
+                // Without that, a directory deferred here would lose its
+                // two-sighting progress and never be collected.
+                tracing::warn!(
+                    dir = %name,
+                    cap = MAX_ORPHAN_DIRS_PER_SWEEP,
+                    "orphan sweep cap reached for this tick; deferring collection to a later sweep"
+                );
+                continue;
+            }
+
             let path = repos_dir.join(&name);
             if let Err(error) = ensure_within_repos_dir(&path, &repos_dir) {
                 tracing::warn!(%error, "refusing to collect an unclaimed data dir");
@@ -746,6 +774,7 @@ impl SessionManager {
                 Ok(()) => {
                     self.orphan_dir_seen_once.remove(&name);
                     seen_now.remove(&name);
+                    collected_this_sweep += 1;
                     tracing::info!(
                         dir = %path,
                         reclaimed_bytes = reclaimed,
@@ -2526,6 +2555,61 @@ mod tests {
             real_dir.as_std_path().exists(),
             "a directory claimed by data_dir must survive even when \
              path_hash(path) disagrees with its own name"
+        );
+    }
+
+    // ─── Circuit breaker: cap how much one sweep may destroy ──────────────────
+
+    /// The human-approved circuit breaker: no single sweep may collect more
+    /// than `MAX_ORPHAN_DIRS_PER_SWEEP` directories, and a directory deferred
+    /// by the cap keeps its two-sighting progress rather than being un-armed
+    /// by the `retain` at the end of the sweep.
+    #[tokio::test]
+    async fn orphan_sweep_caps_collection_per_sweep_and_catches_up_on_a_later_sweep() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        // An unrelated, normally-registered repo so `claimed` stays non-empty
+        // and the C1 guards do not also explain the result.
+        let (_anchor_repo, anchor_path) = temp_repo_dir();
+        manager.registry.register(anchor_path.as_str()).unwrap();
+
+        let repos_dir = data_dir.join("repos");
+        let names = [
+            "0000000000000001",
+            "0000000000000002",
+            "0000000000000003",
+            "0000000000000004",
+        ];
+        for name in names {
+            std::fs::create_dir_all(repos_dir.join(name).as_std_path()).unwrap();
+        }
+
+        // First sweep: first sighting only arms all four.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        for name in names {
+            assert!(repos_dir.join(name).as_std_path().exists());
+        }
+
+        // Second sweep: all four are armed, but the cap collects only three.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        let remaining: Vec<&str> = names
+            .into_iter()
+            .filter(|n| repos_dir.join(n).as_std_path().exists())
+            .collect();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "the cap must defer everything past three collections in one sweep"
+        );
+
+        // Third sweep: the deferred directory's sighting must have survived
+        // the cap, so it is collected now instead of needing two more
+        // sightings from scratch.
+        manager.sweep_orphan_data_dirs_with_min_age(Duration::ZERO);
+        assert!(
+            !repos_dir.join(remaining[0]).as_std_path().exists(),
+            "a directory deferred by the cap must be collected on the very \
+             next sweep, not stranded back at square one"
         );
     }
 }

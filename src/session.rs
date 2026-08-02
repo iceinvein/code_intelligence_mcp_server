@@ -2357,4 +2357,64 @@ mod tests {
             "its data directory must survive well inside the 7-day grace period"
         );
     }
+
+    // ─── I1: a corrupt missing_since stamp must heal, not pin forever ──────────
+
+    /// `grace_verdict`'s doc comment promises a corrupt `missing_since` is
+    /// healed by being rewritten rather than pinning the entry forever or
+    /// triggering an immediate deletion. Drives that through the real sweep
+    /// entry point across several ticks.
+    #[tokio::test]
+    async fn evict_idle_repos_heals_a_corrupt_missing_since_stamp_across_sweeps() {
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir.clone()).await;
+        let (repo, repo_path) = temp_repo_dir();
+
+        let entry = manager.registry.register(repo_path.as_str()).unwrap();
+        let hash = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+        drop(repo);
+
+        // A corrupt stamp, however it got there (a hand edit, a future format
+        // change, disk corruption).
+        manager
+            .registry
+            .stamp_missing_since(repo_path.as_str(), "not a date")
+            .unwrap();
+
+        // First sweep after the corruption: grace_verdict sees an unparseable
+        // stamp as "no usable stamp", and the registry now overwrites it
+        // instead of leaving "not a date" in place forever.
+        manager.evict_idle_repos().await;
+        let healed = manager
+            .registry
+            .get_by_hash(&hash)
+            .unwrap()
+            .unwrap()
+            .missing_since
+            .expect("a stamp must exist after the sweep");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&healed).is_ok(),
+            "the corrupt stamp must be healed to a valid RFC3339 value, got {healed}"
+        );
+
+        // Directly backdate the now-healed stamp past the grace period (the
+        // same way other tests in this module simulate an old stamp), and
+        // confirm the entry is not pinned forever: it still reaches deletion
+        // normally.
+        let registry_path = data_dir.join("registry.json");
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(registry_path.as_std_path()).unwrap()).unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::days(8)).to_rfc3339();
+        json["repos"][&hash]["missing_since"] = serde_json::Value::String(old);
+        std::fs::write(registry_path.as_std_path(), json.to_string()).unwrap();
+
+        manager.evict_idle_repos().await;
+
+        assert!(
+            manager.registry.get_by_hash(&hash).unwrap().is_none(),
+            "once healed, the entry must reach its grace deadline like any \
+             other, not stay pinned by the earlier corruption"
+        );
+        assert!(!entry.data_dir.as_std_path().exists());
+    }
 }

@@ -398,14 +398,16 @@ impl RepoRegistry {
             .collect())
     }
 
-    /// Record `now` as the moment this repo's path was first seen absent, unless
-    /// a stamp is already present.
+    /// Record `now` as the moment this repo's path was first seen absent,
+    /// unless a valid stamp is already present.
     ///
     /// Returns the effective stamp, newly written or pre-existing, so a sweep can
     /// compute the deadline without a second load. Returns `Ok(None)` when the
-    /// repo is not registered. Idempotent by design: a repeat call must never
-    /// push the deletion deadline out, or a repo absent across many sweeps would
-    /// never reach it.
+    /// repo is not registered. Idempotent for a stamp that parses as RFC3339: a
+    /// repeat call must never push the deletion deadline out, or a repo absent
+    /// across many sweeps would never reach it. A stamp that fails to parse is
+    /// treated as though none were present and is overwritten, so a corrupt
+    /// value heals on the next sweep instead of pinning the entry forever.
     pub fn stamp_missing_since(&self, repo_path: &str, now: &str) -> Result<Option<String>> {
         let hash = Self::path_hash(repo_path);
         let mut registry = self.load()?;
@@ -413,7 +415,9 @@ impl RepoRegistry {
             return Ok(None);
         };
         if let Some(existing) = entry.missing_since.clone() {
-            return Ok(Some(existing));
+            if chrono::DateTime::parse_from_rfc3339(&existing).is_ok() {
+                return Ok(Some(existing));
+            }
         }
         entry.missing_since = Some(now.to_string());
         self.save(&registry)?;
@@ -943,6 +947,47 @@ mod tests {
                 .as_deref(),
             Some("2026-08-01T00:00:00Z")
         );
+    }
+
+    /// I1: an unparseable stamp (a hand edit, a future format change, disk
+    /// corruption) must heal rather than pin the entry forever. The doc
+    /// comment on `grace_verdict` in `src/session.rs` has always claimed this;
+    /// this is the test that actually holds it to that claim.
+    #[test]
+    fn stamp_missing_since_heals_a_corrupt_stamp_instead_of_pinning_it_forever() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let registry = RepoRegistry::new(root.join("registry.json"), root.join("repos"));
+        let repo = root.join("project");
+        std::fs::create_dir_all(repo.as_std_path()).unwrap();
+        registry.register(repo.as_str()).unwrap();
+
+        // A corrupt stamp, however it got there.
+        registry
+            .stamp_missing_since(repo.as_str(), "not a date")
+            .unwrap();
+        assert_eq!(
+            registry.get(repo.as_str()).unwrap().unwrap().missing_since,
+            Some("not a date".to_string())
+        );
+
+        // The next sweep must overwrite it rather than treat it as a stamp to
+        // preserve.
+        let healed = registry
+            .stamp_missing_since(repo.as_str(), "2026-08-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(healed.as_deref(), Some("2026-08-01T00:00:00Z"));
+        assert_eq!(
+            registry.get(repo.as_str()).unwrap().unwrap().missing_since,
+            Some("2026-08-01T00:00:00Z".to_string())
+        );
+
+        // Once healed with a valid stamp, idempotence resumes: a later sweep
+        // must not push the deadline out again.
+        let unchanged = registry
+            .stamp_missing_since(repo.as_str(), "2026-09-01T00:00:00Z")
+            .unwrap();
+        assert_eq!(unchanged.as_deref(), Some("2026-08-01T00:00:00Z"));
     }
 
     #[test]

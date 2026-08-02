@@ -402,7 +402,8 @@ exclude_patterns = "**/node_modules/**,**/dist/**,**/.git/**"
 watch_mode = true
 
 [lifecycle]
-warm_ttl_seconds = 300      # How long idle repos stay in memory
+warm_ttl_seconds = 300           # How long idle repos stay in memory
+missing_repo_grace_days = 7      # Days an index survives after its folder is deleted (0 = never delete)
 ```
 
 Priority: CLI flags > Environment variables > `server.toml` > Defaults

@@ -156,7 +156,7 @@ pub(crate) fn catalog() -> Vec<FieldSpec> {
             },
             needs_reindex: false,
             editable: true,
-            description: "Days a repo's index survives after its folder is deleted. 0 never deletes automatically.",
+            description: "Days a repo's index survives after its folder is deleted. 0 never deletes a registered repo's index this way; unclaimed data directories are still collected.",
         },
         FieldSpec {
             key: "host",

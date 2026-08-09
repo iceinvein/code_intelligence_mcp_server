@@ -9,7 +9,7 @@
 
 A local code indexing engine and CLI that gives coding agents semantic search, call graphs, type hierarchies, and impact analysis across your codebase. Written in Rust with Metal GPU acceleration.
 
-The `code-intel` CLI is the primary programmable interface. It uses stable JSON contracts over the resident local daemon. MCP remains available as an optional compatibility adapter for clients that benefit from native tool discovery.
+The `code-intel` CLI is the primary programmable interface. It uses stable JSON contracts over the resident local daemon. MCP remains available as an optional compatibility adapter for clients that benefit from native tool discovery; see [Interface Direction](docs/architecture/interface-direction.md).
 
 **Zero config. Runs via `npx`. Indexes in the background.**
 
@@ -90,7 +90,7 @@ code-intel migrate      # rewrite v3 stdio configs
 
 ### Code intelligence CLI
 
-The binary also exposes the first agent-query commands over the shared daemon API:
+The CLI exposes search, grounded investigation, exact navigation, and index lifecycle commands over the shared daemon API:
 
 ```bash
 code-intel ask --repo . --json "how does auth work?"
@@ -98,11 +98,12 @@ code-intel search --repo . --context snippets --json "auth handler"
 code-intel investigate --repo . --mode impact --target authenticate_request --json "what breaks if this changes?"
 code-intel definition --repo . --json authenticate_request
 code-intel references --repo . --reference-type call --json authenticate_request
+code-intel call-hierarchy --repo . --direction callers --depth 3 --json authenticate_request
 code-intel index status --repo . --json
 code-intel capabilities --json
 ```
 
-The CLI calls the loopback dashboard/API port (`mcp_port + 2`, default `17802`) and returns the same structured evidence contracts used by MCP handlers. Query commands start a registered launchd daemon automatically when needed. Use `--no-start` when scripts require it to be running already.
+The CLI calls the loopback dashboard/API port (`mcp_port + 2`, default `17802`) and returns the same structured evidence contracts used by MCP handlers. Query commands start a registered launchd daemon automatically when needed. Use `--no-start` when scripts require it to be running already, and `--port` when targeting a daemon on a non-default port.
 
 Agent-query commands support `--timeout`, `--no-start`, stable JSON failure envelopes, and distinct exit codes for invalid arguments, daemon unavailable, workspace unavailable, no results, timeout, and internal errors. See [Agent Query CLI](docs/agent-query-cli.md).
 
@@ -119,7 +120,7 @@ code-intel install-agent --target all --print-config --mcp
 code-intel uninstall-agent --repo . --target all
 ```
 
-Project-scope targets write only a marked block that can be safely replaced or removed later: `AGENTS.md` for Codex/generic/OpenCode, `CLAUDE.md` for Claude, and `.cursor/rules/code-intelligence.mdc` for Cursor. User-scope config is intentionally conservative; `--scope user --target claude --no-instructions --mcp` patches `~/.claude.json` through the same HTTP MCP entry used by the daemon installer.
+Project-scope targets write only a marked block that can be safely replaced or removed later: `AGENTS.md` for Codex/generic/OpenCode, `CLAUDE.md` for Claude, and `.cursor/rules/code-intelligence.mdc` for Cursor. User-scope config is intentionally conservative; `--scope user --target claude --no-instructions --mcp` patches `~/.claude.json` through the same HTTP MCP entry used by the daemon installer. See [Agent Installer](docs/agent-installer.md).
 
 > First-time `install` downloads one model by default: the embedding model (Jina Code 1.5b, ~1.5 GB). Two more are off by default and download only when opted into: the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB) when `DESCRIPTIONS_ENABLED=1`, and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB) when `RERANKER_ENABLED=1`. Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
 
@@ -176,7 +177,7 @@ The agent relays the question and waits for explicit approval before calling `ap
 
 ![Consent](docs/consent.png)
 
-The dashboard's **Consent** tab lists repos awaiting a decision (and any you previously declined) with inline approve / decline buttons, mirroring the `GET` / `POST /api/consent` endpoint.
+The dashboard's **Consent** tab lists repos awaiting a decision (and any you previously declined) with inline approve / decline buttons, mirroring the `GET` / `POST /api/consent` endpoint. The CLI exposes the same lifecycle through `code-intel index status`, `approve`, and `decline`.
 
 ### JSON API
 
@@ -194,12 +195,18 @@ For scripting outside the dashboard, every UI surface has a structured endpoint 
 | `GET` | `/api/jobs` | running + recent (≤15 min) jobs |
 | `GET` | `/api/consent` | repos awaiting an indexing decision (+ previously declined) |
 | `POST` | `/api/consent` | approve or decline indexing for a repo |
+| `POST` | `/api/index/status` | resolve a repo and report ready, consent, declined, or indexing state |
 | `GET` | `/api/logs/stream` | SSE stream of log lines |
 | `POST` | `/api/query/ask` | CLI-facing `ask_code` wrapper with structured envelope |
 | `POST` | `/api/query/search` | CLI-facing `search_code` wrapper with structured envelope |
 | `POST` | `/api/query/investigate` | CLI-facing `investigate` wrapper with structured envelope |
 | `POST` | `/api/query/hydrate` | CLI-facing `hydrate_symbols` wrapper with structured envelope |
 | `POST` | `/api/query/repo-map` | CLI-facing compact project map with structured envelope |
+| `POST` | `/api/query/definition` | symbol definition lookup |
+| `POST` | `/api/query/references` | symbol reference lookup |
+| `POST` | `/api/query/call-hierarchy` | callers or callees graph |
+| `POST` | `/api/query/type-graph` | type relationship graph |
+| `POST` | `/api/query/dependency-graph` | dependency graph |
 
 ---
 

@@ -38,6 +38,8 @@ Use `--port` when the daemon is running on a non-default port. Use `--timeout 2s
 
 ## JSON Envelopes
 
+Query commands (`ask`, `search`, `investigate`, `hydrate`, `repo-map`, and the navigation commands) use the envelope below. The `index` subcommands return a slimmer `{"ok":…, "repo":"/abs/path", "repo_id":"…", "result":{…}}`.
+
 Success:
 
 ```json

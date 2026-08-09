@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Code Intelligence MCP Server is a Rust-based local code indexing and semantic search engine that provides structure-aware code navigation for LLM agents. It implements the Model Context Protocol (MCP) and integrates with tools like OpenCode, Trae, and Cursor.
+Code Intelligence is a Rust-based local code indexing and semantic search engine that provides structure-aware code navigation for LLM agents. Since v4.11 the `code-intel` CLI is the primary programmable interface (stable JSON contracts over the resident daemon); MCP remains an optional compatibility adapter for clients like Claude Code, OpenCode, Trae, and Cursor. Rationale and target surface: `docs/architecture/interface-direction.md`.
 
 **Platform:** macOS only (Apple Silicon with Metal GPU acceleration).
 
@@ -23,62 +23,94 @@ Key acronyms and concepts used throughout the codebase:
 | **GGUF** | GGML Unified Format | Binary format for quantized LLM model weights. Used by llama.cpp for the embedding model (jina-code-embeddings-1.5b, Q8_0), the description LLM (Qwen2.5-Coder-1.5B-Instruct, Q4_K_M), and the cross-encoder reranker (bge-reranker-v2-m3, Q8_0). |
 | **LLM** | Large Language Model | Used on-device (Qwen2.5-Coder-1.5B via llama.cpp) to generate natural-language descriptions for each indexed symbol, enriching BM25 search with human-readable terms. |
 
-## Usage in Claude Code
+## Usage: CLI first, MCP optional
 
-Since v4.0 the server runs as a single HTTP daemon managed by launchd. Embedded stdio mode and leader election are gone.
+Since v4.0 the engine runs as a single HTTP daemon managed by launchd (embedded stdio mode and leader election are gone). Since v4.11 the `code-intel` CLI is the primary way to talk to it; MCP is a compatibility adapter for clients that prefer native tool discovery. Both surfaces share the handler layer in `src/handlers/`, so they return the same evidence contracts.
 
 ### One-time install
 
 ```bash
-npx -y @iceinvein/code-intelligence-mcp install   # writes plist + bootstraps daemon
-npx -y @iceinvein/code-intelligence-mcp migrate   # rewrites v3 stdio entries in ~/.claude.json
+brew install code-intelligence-mcp                # daemon binary plus the `code-intel` symlink
+code-intel install                                # writes plist + bootstraps daemon
+code-intel migrate                                # rewrites v3 stdio entries in ~/.claude.json (MCP users only)
 ```
 
-The `install` subcommand:
+`npx -y @iceinvein/code-intelligence-mcp install` is the npm equivalent. The `install` subcommand:
 - Writes the launchd plist to `~/Library/LaunchAgents/com.iceinvein.code-intelligence.plist`.
 - Bootstraps the service via `launchctl bootstrap gui/<uid>` (macOS 13+).
-- Prompts before patching `~/.claude.json`; pass `--patch-claude-json` or `--no-patch-claude-json` to skip the prompt.
+- Prompts before patching `~/.claude.json` with an MCP entry; pass `--patch-claude-json` or `--no-patch-claude-json` to skip the prompt. Declining is fine now that the CLI is the primary surface.
 - Default port: 17800 (configurable via `--port`).
 
-After install, MCP clients connect to `http://127.0.0.1:17800/mcp`. The first launch downloads one GGUF model by default (~1.5 GB embedding model). The other two are off by default and download only when opted into: the description LLM (~1.0 GB) when `DESCRIPTIONS_ENABLED=1` (or `ASK_CODE_LLM_SYNTHESIS`), and the cross-encoder reranker (~600 MB) when `RERANKER_ENABLED=1`.
+The first launch downloads one GGUF model by default (~1.5 GB embedding model). The other two are off by default and download only when opted into: the description LLM (~1.0 GB) when `DESCRIPTIONS_ENABLED=1` (or `ASK_CODE_LLM_SYNTHESIS`), and the cross-encoder reranker (~600 MB) when `RERANKER_ENABLED=1`.
 
-### Session binding
+### CLI surface (primary)
 
-v4 tries four binding sources in order; first match wins.
+```bash
+code-intel repo-map --repo . --budget 4000 --json                 # orientation on an unfamiliar repo
+code-intel search --repo . --context snippets --json "auth handler"
+code-intel hydrate --repo . --ids sym_1,sym_2 --json              # exact bodies for ids from any command
+code-intel ask --repo . --json "how does auth work?"              # grounded evidence, agent writes the prose
+code-intel investigate --repo . --mode impact --target authenticate_request --json "what breaks?"
+
+code-intel definition --repo . --json authenticate_request
+code-intel references --repo . --reference-type call --json authenticate_request
+code-intel call-hierarchy --repo . --direction callers --depth 3 --json authenticate_request
+code-intel type-graph --repo . --direction both --json UserService
+code-intel dependency-graph --repo . --direction upstream --json auth
+
+code-intel index status|approve|decline|refresh|jobs --repo . --json
+code-intel capabilities --json                                    # machine-readable command + tool schema
+```
+
+Query commands call the JSON API on `mcp_port + 2` (default 17802) and auto-start a registered launchd daemon; `--no-start` fails instead, `--port` targets a non-default daemon, `--timeout 2s` bounds the call. `--json` is the compatibility contract. Query commands return `{ok, command, repo{id,path}, index, warnings, result}` on success; the `index` subcommands return a slimmer `{ok, repo, repo_id, result}`. Any command fails with `{ok:false, command, error{code, message, hint}}`. Exit codes (`CliErrorCode::exit_code` in `src/main.rs`): `0` success, `1` internal, `2` invalid arguments, `3` daemon unavailable, `4` workspace unavailable, `5` no results, `124` timeout. Full reference: `docs/agent-query-cli.md`.
+
+`investigate --mode` selects the composite shape: `discover`, `trace`, `data` (data flow), `impact` (affected code), `dependency`, `module` (module API surface). There is no separate CLI command for those.
+
+### First-index consent
+
+A never-indexed repository answers `consent_required` on both surfaces (`code-intel index status --repo .`, or any MCP tool call). Tell the user in chat that indexing uses local compute, memory, and disk, wait for explicit approval, then run `code-intel index approve --repo .` (or call `approve_indexing`). Approval starts a background `InitialBind` job immediately; later watcher updates and manual reindexes do not ask again. A worktree of an already-indexed repository is the exception: it seeds its index from the base repo (a SQLite `VACUUM INTO` snapshot plus APFS copy-on-write clones of `tantivy-index/` and `vectors/`, then a delta pass) and starts without a prompt, because the cost is seconds rather than a full GPU pass.
+
+### Installing agent guidance
+
+`code-intel install-agent --repo . --target claude,codex,cursor` writes a managed CLI-first instruction block into `CLAUDE.md`, `AGENTS.md`, or `.cursor/rules/code-intelligence.mdc`, bounded by `<!-- code-intelligence-agent:start -->` / `:end` markers. `uninstall-agent` removes only that block. Add `--mcp` to also emit MCP config; it is skipped by default. See `docs/agent-installer.md`.
+
+### MCP adapter (optional)
+
+Clients that want typed tools connect to `http://127.0.0.1:17800/mcp`. Session binding tries four sources in order; first match wins.
 
 1. **`?repo=/abs/path` URL query** — primary, works on every MCP client. The proxy in front of the SDK captures the query, pairs it with the `mcp-session-id` assigned by the upstream response, and stashes the pair in `PendingRepos` so `StandaloneHandler::resolve_state` can promote it on the first tool call.
 2. **MCP `roots/list`** — Claude Code negotiates this automatically. Opportunistic if no URL was provided.
 3. **`bind_workspace(repo="/abs/path")` tool** — manual escape hatch for clients that can't set query strings.
 4. **Single-repo registry fallback** — auto-binds when the registry has exactly one repo. Disables itself the moment a second repo is added.
 
-Unbound tool calls return an actionable JSON-RPC error pointing at all four options.
+Unbound tool calls return an actionable JSON-RPC error pointing at all four options. The CLI does not use any of this: it binds per invocation from `--repo` (default: current directory).
 
-### What Claude Code Gets
-
-Once connected, Claude Code gains access to 18 advertised MCP tools (the full list is `all_tools()` in `src/server/mod.rs`; a further 7 operational tools remain dispatchable but unadvertised):
+18 tools are advertised (`all_tools()` in `src/server/mod.rs`; a further 7 operational tools remain dispatchable but unadvertised). `code-intel capabilities --json` lists the 11 core ones alongside their CLI equivalents.
 
 **Core retrieval**
-- **`ask_code`** - Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
-- **`investigate`** - Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
-- **`search_code`** - Primary semantic + keyword hybrid search (e.g., "how does auth work?" or "class User"). Returns ranked hits with symbol IDs only, no bodies.
-- **`hydrate_symbols`** - Fetch source bodies for symbol IDs returned by any other tool, instead of falling back to Read/grep.
+- **`ask_code`** (CLI `ask`) - Single-call entry point for any code question. Runs `investigate` server-side and returns verified `evidence[]` (symbol name, file path, line range, code body) plus a shape classification. The agent synthesises the user-facing answer from that evidence; the server does NOT generate prose by default (see `ASK_CODE_LLM_SYNTHESIS` below).
+- **`investigate`** (CLI `investigate`) - Composite multi-hop retrieval. Use directly when you want raw evidence without going through `ask_code`'s caching layer.
+- **`search_code`** (CLI `search`) - Primary semantic + keyword hybrid search (e.g., "how does auth work?" or "class User"). Returns ranked hits with symbol IDs only, no bodies.
+- **`hydrate_symbols`** (CLI `hydrate`) - Fetch source bodies for symbol IDs returned by any other tool, instead of falling back to Read/grep.
 
 **Navigation**
-- **`get_definition`** / **`find_references`** - Jump to definitions and find all usages
-- **`get_call_hierarchy`** / **`get_type_graph`** - Navigate call chains and type hierarchies
-- **`explore_dependency_graph`** - Trace module-level imports/exports
-- **`trace_data_flow`** - Follow variable reads/writes through the code
-- **`find_affected_code`** - Impact analysis before refactoring
+- **`get_definition`** / **`find_references`** (CLI `definition` / `references`) - Jump to definitions and find all usages
+- **`get_call_hierarchy`** / **`get_type_graph`** (CLI `call-hierarchy` / `type-graph`) - Navigate call chains and type hierarchies
+- **`explore_dependency_graph`** (CLI `dependency-graph`) - Trace module-level imports/exports
+- **`trace_data_flow`** (CLI `investigate --mode data`) - Follow variable reads/writes through the code
+- **`find_affected_code`** (CLI `investigate --mode impact`) - Impact analysis before refactoring
 
 **Overview and tests**
 - **`summarize_file`** - Symbol-level summary of one file: defined symbols, kinds, brief descriptions
-- **`get_module_summary`** - Public API surface of a module or directory
+- **`get_module_summary`** (CLI `investigate --mode module`) - Public API surface of a module or directory
 - **`find_tests_for_symbol`** - Tests linked to a symbol or file (path-pattern test-file links plus call-graph test callers)
 
 **Lifecycle / admin**
-- **`get_index_stats`** / **`refresh_index`** - Monitor and trigger re-indexing
-- **`bind_workspace`** - Bind the session to a repo by absolute path (for clients without roots or query-string support)
-- **`approve_indexing`** - Approve or decline a repository's first full index. Every never-indexed repository returns `consent_required`, including explicit `?repo=` and `bind_workspace` selections. Tell the user in chat that indexing uses local compute, memory, and disk, wait for explicit approval, then call `approve_indexing`. Approval starts a background `InitialBind` job immediately. Later watcher updates and manual reindexes do not ask again. A worktree of an already-indexed repository is the exception: it seeds its index from the base repo (a SQLite `VACUUM INTO` snapshot plus APFS copy-on-write clones of `tantivy-index/` and `vectors/`, then a delta pass) and starts indexing without a prompt, because the cost is seconds rather than a full GPU pass.
+- **`get_index_stats`** / **`refresh_index`** (CLI `index status` / `index refresh`) - Monitor and trigger re-indexing
+- **`bind_workspace`** - Bind the session to a repo by absolute path (MCP only; the CLI uses `--repo`)
+- **`approve_indexing`** (CLI `index approve` / `index decline`) - Approve or decline a repository's first full index; see First-index consent above
+
+`repo-map` is CLI-only; there is no advertised MCP equivalent yet.
 
 ### Dashboard and JSON API
 
@@ -115,6 +147,10 @@ EMBEDDINGS_BACKEND=hash cargo test --no-default-features \
 ./target/release/code-intelligence-mcp-server stop
 ./target/release/code-intelligence-mcp-server uninstall             # bootout + remove plist
 ./target/release/code-intelligence-mcp-server migrate [--dry-run]   # rewrite stdio configs
+
+# CLI queries against a running daemon (installed as `code-intel`, the same executable)
+./target/release/code-intelligence-mcp-server search --repo . --json "query"
+code-intel capabilities --json
 ```
 
 `TESTING.md` covers the full gate list and toolchain prerequisites (pinned protoc, CMake for Metal builds).
@@ -151,7 +187,7 @@ All public ports bind 127.0.0.1 and reject non-localhost `Origin` headers (DNS-r
 
 Binding a git worktree of an indexed repo clones that repo's index into the worktree's own directory rather than reindexing from scratch, then runs one pass that reparses only files whose content actually differs. The two indexes are independent from that point on. Indexes whose repository folder has been deleted are reclaimed by the idle sweep, under two policies split by what a mistake costs. A seeded worktree index goes once its checkout has been absent for two consecutive sweeps (roughly two minutes), because rebuilding it takes seconds. Any other index waits out `missing_repo_grace_days` (default 7) measured from a `missing_since` stamp in `registry.json` that survives daemon restarts, because rebuilding it is a full GPU pass. Neither fires while an index job is running against the repo, and a path whose volume is simply not mounted (deepest existing ancestor is `/Volumes` or `/`) starts no countdown at all. Orphan data directories under `repos/` that no registry entry claims are collected on the same 60-second tick.
 
-Configure MCP clients to connect:
+The CLI needs no client configuration: it discovers the daemon on the loopback API port and starts it if a launchd registration exists. MCP clients, when used, connect like this:
 ```json
 {
   "mcpServers": {
@@ -183,7 +219,8 @@ Optional config: `~/.code-intelligence/server.toml`.
 - `producers/` - Out-of-process index producers for 11 languages (`producers/manifest.json`)
 - `src/storage/` - SQLite, Tantivy, and LanceDB storage layers
 - `src/retrieval/ranking/` - Scoring signals and ranking logic
-- `src/handlers/` - MCP tool implementations
+- `src/handlers/` - Shared operation implementations behind both the CLI and MCP
+- `src/cli.rs` + `src/main.rs` - CLI argument parsing, subcommand dispatch, JSON envelopes, exit codes
 - `src/server/` - MCP protocol handler routing
 - `bench/` - LLM-judge benchmark harness (see Benchmark Harness above)
 
@@ -315,11 +352,18 @@ The `src/path/mod.rs` module includes comprehensive parameterized tests using th
 3. Register in `src/indexer/extract/mod.rs` dispatcher
 4. Update `src/indexer/parser.rs` language detection
 
-## Adding a New MCP Tool
+## Adding a New Operation (CLI command and/or MCP tool)
 
-1. Define tool with `#[macros::mcp_tool]` in `src/tools/mod.rs`
-2. Implement handler in `src/handlers/mod.rs`
-3. Add routing in `src/server/mod.rs`
+Implement the operation once in `src/handlers/mod.rs` so both surfaces share it, then expose it:
+
+**CLI (primary surface)**
+1. Add the `Command` variant and its options struct in `src/cli.rs`, parse it in `parse_args`, and document the flags in `print_help`
+2. Dispatch it in `src/main.rs` (`dispatch_subcommand`), returning the standard JSON envelope and the right exit code
+3. List it in the `capabilities` output so agents can discover it
+
+**MCP (adapter)**
+4. Define the tool with `#[macros::mcp_tool]` in `src/tools/mod.rs`
+5. Add routing in `src/server/mod.rs`, and add it to `all_tools()` only if it should be advertised
 
 ## Ranking Signals
 

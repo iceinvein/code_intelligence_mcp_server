@@ -123,6 +123,7 @@ test("release archive step includes root wrappers and manifest support files", (
 
 		const bundleDir = path.join(dir, "bundle");
 		assert.deepEqual(validateBundle(bundleDir).missing, []);
+		assert.equal(fs.readlinkSync(path.join(bundleDir, "code-intel")), "code-intelligence-mcp-server");
 
 		const fixtureDir = path.join(dir, "fixture");
 		fs.mkdirSync(fixtureDir);

@@ -48,7 +48,7 @@ mod repos;
 mod settings;
 
 use activity::{handle_jobs, handle_logs_stream, handle_sessions};
-use consent::{handle_consent_get, handle_consent_post};
+use consent::{handle_consent_get, handle_consent_post, handle_index_status};
 use filesystem::handle_fs_list;
 use query::{
     handle_query_ask, handle_query_call_hierarchy, handle_query_definition,
@@ -163,6 +163,7 @@ pub async fn spawn_api_server(
             "/api/consent",
             get(handle_consent_get).post(handle_consent_post),
         )
+        .route("/api/index/status", post(handle_index_status))
         .route(
             "/api/settings",
             get(handle_settings_get).put(handle_settings_put),

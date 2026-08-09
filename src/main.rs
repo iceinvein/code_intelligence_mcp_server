@@ -181,6 +181,24 @@ async fn dispatch_subcommand(
         Command::Ask(opts) => handle_cli_ask(opts, port_override).await,
         Command::Hydrate(opts) => handle_cli_hydrate(opts, port_override).await,
         Command::RepoMap(opts) => handle_cli_repo_map(opts, port_override).await,
+        Command::Definition(opts) => {
+            handle_cli_symbol_query("definition", "definition", opts, port_override).await
+        }
+        Command::References(opts) => {
+            handle_cli_symbol_query("references", "references", opts, port_override).await
+        }
+        Command::CallHierarchy(opts) => {
+            handle_cli_symbol_query("call-hierarchy", "call-hierarchy", opts, port_override).await
+        }
+        Command::TypeGraph(opts) => {
+            handle_cli_symbol_query("type-graph", "type-graph", opts, port_override).await
+        }
+        Command::DependencyGraph(opts) => {
+            handle_cli_symbol_query("dependency-graph", "dependency-graph", opts, port_override)
+                .await
+        }
+        Command::Index(opts) => handle_cli_index(opts, port_override).await,
+        Command::Capabilities(opts) => handle_cli_capabilities(opts),
     }
 }
 
@@ -210,6 +228,7 @@ async fn handle_cli_search(
         "query": opts.query,
         "limit": opts.limit,
         "context": opts.context,
+        "exported_only": opts.exported_only,
     });
     let value = post_cli_query("search", body, port_override, &runtime).await?;
     fail_on_empty_results("search", &value, &runtime)?;
@@ -336,6 +355,177 @@ async fn handle_cli_repo_map(
     print_cli_query_response(&value, opts.json, opts.pretty)
 }
 
+async fn handle_cli_symbol_query(
+    command: &'static str,
+    endpoint: &str,
+    opts: code_intelligence_mcp_server::cli::SymbolQueryOpts,
+    port_override: Option<u16>,
+) -> anyhow::Result<()> {
+    if opts.symbol_name.trim().is_empty() {
+        return Err(CliFailure::new(
+            command,
+            CliErrorCode::InvalidArguments,
+            format!("{command} requires a symbol name"),
+            opts.json,
+            opts.pretty,
+        )
+        .into());
+    }
+    let runtime = CliQueryRuntime::new(
+        command,
+        opts.timeout.clone(),
+        opts.no_start,
+        opts.json,
+        opts.pretty,
+    )?;
+    let body = serde_json::json!({
+        "repo": cli_repo(opts.repo)?,
+        "symbol_name": opts.symbol_name,
+        "file": opts.file,
+        "reference_type": opts.reference_type,
+        "direction": opts.direction,
+        "depth": opts.depth,
+        "limit": opts.limit,
+    });
+    let value = post_cli_query(endpoint, body, port_override, &runtime).await?;
+    print_cli_query_response(&value, opts.json, opts.pretty)
+}
+
+async fn handle_cli_index(
+    opts: code_intelligence_mcp_server::cli::IndexOpts,
+    port_override: Option<u16>,
+) -> anyhow::Result<()> {
+    let runtime = CliQueryRuntime::new(
+        "index",
+        opts.timeout.clone(),
+        opts.no_start,
+        opts.json,
+        opts.pretty,
+    )?;
+    let action = opts.action.trim().to_ascii_lowercase();
+    let value = match action.as_str() {
+        "jobs" => get_cli_api("index", "/api/jobs", port_override, &runtime).await?,
+        "status" | "approve" | "decline" | "refresh" => {
+            let repo = cli_repo(opts.repo)?;
+            let status_body = serde_json::json!({ "repo": repo.clone() });
+            let status = post_cli_api(
+                "index",
+                "/api/index/status",
+                status_body,
+                port_override,
+                &runtime,
+            )
+            .await?;
+            match action.as_str() {
+                "status" => status,
+                "approve" | "decline" => {
+                    post_cli_api(
+                        "index",
+                        "/api/consent",
+                        serde_json::json!({ "repo": repo, "decision": action }),
+                        port_override,
+                        &runtime,
+                    )
+                    .await?
+                }
+                "refresh" => {
+                    let repo_id = status
+                        .get("repo_id")
+                        .and_then(|value| value.as_str())
+                        .ok_or_else(|| {
+                            CliFailure::new(
+                                "index",
+                                CliErrorCode::Internal,
+                                "index status response did not include repo_id",
+                                opts.json,
+                                opts.pretty,
+                            )
+                        })?;
+                    post_cli_api(
+                        "index",
+                        &format!("/api/repos/{repo_id}/reindex"),
+                        serde_json::json!({}),
+                        port_override,
+                        &runtime,
+                    )
+                    .await?
+                }
+                _ => unreachable!(),
+            }
+        }
+        _ => {
+            return Err(CliFailure::new(
+                "index",
+                CliErrorCode::InvalidArguments,
+                format!(
+                "unknown index action '{}'; expected status, approve, decline, refresh, or jobs",
+                opts.action
+            ),
+                opts.json,
+                opts.pretty,
+            )
+            .into())
+        }
+    };
+    print_cli_query_response(&value, opts.json, opts.pretty)
+}
+
+fn handle_cli_capabilities(
+    opts: code_intelligence_mcp_server::cli::OutputOpts,
+) -> anyhow::Result<()> {
+    print_cli_query_response(&cli_capabilities_value(), opts.json, opts.pretty)
+}
+
+fn cli_capabilities_value() -> serde_json::Value {
+    let tools = code_intelligence_mcp_server::server::all_tools()
+        .into_iter()
+        .filter_map(|tool| serde_json::to_value(tool).ok())
+        .filter_map(|mut tool| {
+            let cli_command = match tool.get("name").and_then(serde_json::Value::as_str)? {
+                "ask_code" => "ask",
+                "investigate" => "investigate",
+                "search_code" => "search",
+                "hydrate_symbols" => "hydrate",
+                "get_definition" => "definition",
+                "find_references" => "references",
+                "get_call_hierarchy" => "call-hierarchy",
+                "get_type_graph" => "type-graph",
+                "explore_dependency_graph" => "dependency-graph",
+                "refresh_index" => "index refresh",
+                "get_index_stats" => "index status",
+                _ => return None,
+            };
+            tool.as_object_mut()?
+                .insert("cli_command".to_string(), serde_json::json!(cli_command));
+            Some(tool)
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "ok": true,
+        "interface": "cli",
+        "version": env!("CARGO_PKG_VERSION"),
+        "commands": [
+            "ask",
+            "search",
+            "investigate",
+            "hydrate",
+            "repo-map",
+            "definition",
+            "references",
+            "call-hierarchy",
+            "type-graph",
+            "dependency-graph",
+            "index",
+            "capabilities"
+        ],
+        "tools": tools,
+        "mcp": {
+            "supported": true,
+            "role": "optional compatibility adapter"
+        }
+    })
+}
+
 fn cli_repo(repo: Option<String>) -> anyhow::Result<String> {
     match repo {
         Some(repo) => Ok(repo),
@@ -346,6 +536,59 @@ fn cli_repo(repo: Option<String>) -> anyhow::Result<String> {
 async fn post_cli_query(
     command: &str,
     body: serde_json::Value,
+    port_override: Option<u16>,
+    runtime: &CliQueryRuntime,
+) -> Result<serde_json::Value, CliFailure> {
+    post_cli_api(
+        command,
+        &format!("/api/query/{command}"),
+        body,
+        port_override,
+        runtime,
+    )
+    .await
+}
+
+async fn post_cli_api(
+    command: &str,
+    path: &str,
+    body: serde_json::Value,
+    port_override: Option<u16>,
+    runtime: &CliQueryRuntime,
+) -> Result<serde_json::Value, CliFailure> {
+    cli_api_request(
+        command,
+        reqwest::Method::POST,
+        path,
+        Some(body),
+        port_override,
+        runtime,
+    )
+    .await
+}
+
+async fn get_cli_api(
+    command: &str,
+    path: &str,
+    port_override: Option<u16>,
+    runtime: &CliQueryRuntime,
+) -> Result<serde_json::Value, CliFailure> {
+    cli_api_request(
+        command,
+        reqwest::Method::GET,
+        path,
+        None,
+        port_override,
+        runtime,
+    )
+    .await
+}
+
+async fn cli_api_request(
+    command: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
     port_override: Option<u16>,
     runtime: &CliQueryRuntime,
 ) -> Result<serde_json::Value, CliFailure> {
@@ -365,9 +608,11 @@ async fn post_cli_query(
         "0.0.0.0" | "::" => "127.0.0.1",
         other => other,
     };
-    let url = format!("http://{host}:{api_port}/api/query/{command}");
+    let api_base = format!("http://{host}:{api_port}");
+    let url = format!("{api_base}{path}");
     let client = reqwest::Client::builder()
         .timeout(runtime.timeout)
+        .connect_timeout(std::time::Duration::from_secs(2))
         .build()
         .map_err(|e| {
             CliFailure::new(
@@ -378,31 +623,28 @@ async fn post_cli_query(
                 runtime.pretty,
             )
         })?;
-    let response = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            let code = if e.is_timeout() {
-                CliErrorCode::Timeout
-            } else {
-                CliErrorCode::DaemonUnavailable
-            };
-            let hint = if runtime.no_start {
-                "Start the daemon manually or retry without --no-start"
-            } else {
-                "Run `code-intelligence-mcp-server start` or `code-intelligence-mcp-server install` first"
-            };
+    let mut response = send_cli_api_request(&client, method.clone(), &url, body.as_ref()).await;
+    if response
+        .as_ref()
+        .is_err_and(|error| !error.is_timeout() && !runtime.no_start)
+    {
+        code_intelligence_mcp_server::install::start_daemon(false).map_err(|error| {
             CliFailure::new(
                 command,
-                code,
-                format!("failed to reach Code Intelligence daemon at {url}: {e}"),
+                CliErrorCode::DaemonUnavailable,
+                format!("automatic daemon start failed: {error}"),
                 runtime.json,
                 runtime.pretty,
             )
-            .with_hint(hint)
+            .with_hint(
+                "Run `code-intel install`, or start the Homebrew service with `brew services start code-intelligence-mcp`",
+            )
         })?;
+        wait_for_cli_api(command, &client, &api_base, runtime).await?;
+        response = send_cli_api_request(&client, method, &url, body.as_ref()).await;
+    }
+    let response =
+        response.map_err(|error| cli_transport_failure(command, &url, error, runtime))?;
     let status = response.status();
     let value = response
         .json::<serde_json::Value>()
@@ -412,7 +654,14 @@ async fn post_cli_query(
         let message = value
             .get("error")
             .and_then(|v| v.as_str())
+            .or_else(|| value.get("message").and_then(|v| v.as_str()))
             .map(ToString::to_string)
+            .or_else(|| {
+                value
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|status_name| format!("{status_name}: {value}"))
+            })
             .unwrap_or_else(|| format!("daemon query failed with HTTP {status}"));
         let code = classify_daemon_error(status, &message);
         return Err(
@@ -421,6 +670,83 @@ async fn post_cli_query(
         );
     }
     Ok(value)
+}
+
+async fn send_cli_api_request(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let request = client.request(method, url);
+    let request = match body {
+        Some(body) => request.json(body),
+        None => request,
+    };
+    request.send().await
+}
+
+async fn wait_for_cli_api(
+    command: &str,
+    client: &reqwest::Client,
+    api_base: &str,
+    runtime: &CliQueryRuntime,
+) -> Result<(), CliFailure> {
+    let wait_budget = runtime.timeout.min(std::time::Duration::from_secs(10));
+    let deadline = tokio::time::Instant::now() + wait_budget;
+    let status_url = format!("{api_base}/api/status");
+    loop {
+        if client
+            .get(&status_url)
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
+        {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(CliFailure::new(
+                command,
+                CliErrorCode::DaemonUnavailable,
+                format!(
+                    "daemon did not become ready within {}ms",
+                    wait_budget.as_millis()
+                ),
+                runtime.json,
+                runtime.pretty,
+            )
+            .with_hint(
+                "Run `code-intel status` and inspect ~/.code-intelligence/logs/server.log",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+fn cli_transport_failure(
+    command: &str,
+    url: &str,
+    error: reqwest::Error,
+    runtime: &CliQueryRuntime,
+) -> CliFailure {
+    let code = if error.is_timeout() {
+        CliErrorCode::Timeout
+    } else {
+        CliErrorCode::DaemonUnavailable
+    };
+    let hint = if runtime.no_start {
+        "Start the daemon manually or retry without --no-start"
+    } else {
+        "Run `code-intel start` or `code-intel install` first"
+    };
+    CliFailure::new(
+        command,
+        code,
+        format!("failed to reach Code Intelligence daemon at {url}: {error}"),
+        runtime.json,
+        runtime.pretty,
+    )
+    .with_hint(hint)
 }
 
 #[derive(Debug, Clone)]
@@ -1018,5 +1344,25 @@ mod cli_query_contract_tests {
         assert_eq!(CliErrorCode::WorkspaceUnavailable.exit_code(), 4);
         assert_eq!(CliErrorCode::NoResults.exit_code(), 5);
         assert_eq!(CliErrorCode::Timeout.exit_code(), 124);
+    }
+
+    #[test]
+    fn cli_capabilities_advertise_cli_tools_without_mcp_binding_commands() {
+        let value = cli_capabilities_value();
+        assert_eq!(value["interface"], "cli");
+        assert!(value["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "definition"));
+        let tool_names = value["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(tool_names.contains(&"ask_code"));
+        assert!(!tool_names.contains(&"bind_workspace"));
+        assert!(!tool_names.contains(&"approve_indexing"));
     }
 }

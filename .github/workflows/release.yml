@@ -110,6 +110,7 @@ jobs:
         run: |
           mkdir -p bundle/producers
           cp target/aarch64-apple-darwin/release/code-intelligence-mcp-server bundle/
+          ln -s code-intelligence-mcp-server bundle/code-intel
           cp producers/manifest.json bundle/producers/manifest.json
           cp producers/bin/code-intelligence-external-* bundle/
           node <<'NODE'

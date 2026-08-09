@@ -23,6 +23,13 @@ pub enum Command {
     Ask(AskOpts),
     Hydrate(HydrateOpts),
     RepoMap(RepoMapOpts),
+    Definition(SymbolQueryOpts),
+    References(SymbolQueryOpts),
+    CallHierarchy(SymbolQueryOpts),
+    TypeGraph(SymbolQueryOpts),
+    DependencyGraph(SymbolQueryOpts),
+    Index(IndexOpts),
+    Capabilities(OutputOpts),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -65,7 +72,7 @@ impl Default for AgentInstallOpts {
             dry_run: false,
             yes: false,
             no_instructions: false,
-            no_mcp: false,
+            no_mcp: true,
         }
     }
 }
@@ -90,7 +97,7 @@ impl Default for AgentUninstallOpts {
             dry_run: false,
             yes: false,
             no_instructions: false,
-            no_mcp: false,
+            no_mcp: true,
         }
     }
 }
@@ -101,6 +108,7 @@ pub struct SearchOpts {
     pub query: String,
     pub limit: Option<u32>,
     pub context: Option<String>,
+    pub exported_only: bool,
     pub json: bool,
     pub pretty: bool,
     pub timeout: Option<String>,
@@ -160,6 +168,50 @@ pub struct RepoMapOpts {
     pub no_start: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SymbolQueryOpts {
+    pub repo: Option<String>,
+    pub symbol_name: String,
+    pub file: Option<String>,
+    pub reference_type: Option<String>,
+    pub direction: Option<String>,
+    pub depth: Option<u32>,
+    pub limit: Option<u32>,
+    pub json: bool,
+    pub pretty: bool,
+    pub timeout: Option<String>,
+    pub no_start: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexOpts {
+    pub action: String,
+    pub repo: Option<String>,
+    pub json: bool,
+    pub pretty: bool,
+    pub timeout: Option<String>,
+    pub no_start: bool,
+}
+
+impl Default for IndexOpts {
+    fn default() -> Self {
+        Self {
+            action: "status".to_string(),
+            repo: None,
+            json: false,
+            pretty: false,
+            timeout: None,
+            no_start: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OutputOpts {
+    pub json: bool,
+    pub pretty: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliArgs {
     pub help: bool,
@@ -194,6 +246,9 @@ pub fn parse_args(args: &[String]) -> CliArgs {
     let mut ask_opts = AskOpts::default();
     let mut hydrate_opts = HydrateOpts::default();
     let mut repo_map_opts = RepoMapOpts::default();
+    let mut symbol_query_opts = SymbolQueryOpts::default();
+    let mut index_opts = IndexOpts::default();
+    let mut capabilities_opts = OutputOpts::default();
     let mut subcommand: Option<&str> = None;
     let mut query_words: Vec<String> = Vec::new();
 
@@ -206,6 +261,8 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             // Subcommands. The first one wins; later positionals are flag values.
             "install" | "uninstall" | "start" | "stop" | "status" | "migrate" | "install-agent"
             | "uninstall-agent" | "search" | "investigate" | "ask" | "hydrate" | "repo-map"
+            | "definition" | "references" | "call-hierarchy" | "type-graph"
+            | "dependency-graph" | "index" | "capabilities"
                 if subcommand.is_none() =>
             {
                 subcommand = Some(match arg {
@@ -222,6 +279,13 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     "ask" => "ask",
                     "hydrate" => "hydrate",
                     "repo-map" => "repo-map",
+                    "definition" => "definition",
+                    "references" => "references",
+                    "call-hierarchy" => "call-hierarchy",
+                    "type-graph" => "type-graph",
+                    "dependency-graph" => "dependency-graph",
+                    "index" => "index",
+                    "capabilities" => "capabilities",
                     _ => unreachable!(),
                 });
             }
@@ -270,6 +334,12 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                             | "ask"
                             | "hydrate"
                             | "repo-map"
+                            | "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                            | "index"
                     )
                 ) =>
             {
@@ -286,6 +356,11 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         Some("ask") => ask_opts.repo = Some(args[i + 1].clone()),
                         Some("hydrate") => hydrate_opts.repo = Some(args[i + 1].clone()),
                         Some("repo-map") => repo_map_opts.repo = Some(args[i + 1].clone()),
+                        Some(
+                            "definition" | "references" | "call-hierarchy" | "type-graph"
+                            | "dependency-graph",
+                        ) => symbol_query_opts.repo = Some(args[i + 1].clone()),
+                        Some("index") => index_opts.repo = Some(args[i + 1].clone()),
                         _ => {}
                     }
                     i += 1;
@@ -341,10 +416,33 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     _ => {}
                 }
             }
-            "--limit" if matches!(subcommand, Some("search")) => {
+            "--mcp" if matches!(subcommand, Some("install-agent" | "uninstall-agent")) => {
+                match subcommand {
+                    Some("install-agent") => agent_install_opts.no_mcp = false,
+                    Some("uninstall-agent") => agent_uninstall_opts.no_mcp = false,
+                    _ => {}
+                }
+            }
+            "--limit"
+                if matches!(
+                    subcommand,
+                    Some(
+                        "search"
+                            | "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                    )
+                ) =>
+            {
                 if i + 1 < args.len() {
                     if let Ok(limit) = args[i + 1].parse::<u32>() {
-                        search_opts.limit = Some(limit);
+                        if matches!(subcommand, Some("search")) {
+                            search_opts.limit = Some(limit);
+                        } else {
+                            symbol_query_opts.limit = Some(limit);
+                        }
                     }
                     i += 1;
                 }
@@ -354,6 +452,9 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     search_opts.context = Some(args[i + 1].clone());
                     i += 1;
                 }
+            }
+            "--exported-only" if matches!(subcommand, Some("search")) => {
+                search_opts.exported_only = true;
             }
             "--mode" if matches!(subcommand, Some("investigate" | "ask" | "hydrate")) => {
                 if i + 1 < args.len() {
@@ -384,6 +485,53 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         }
                         Some("ask") => ask_opts.file_path = Some(args[i + 1].clone()),
                         _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            "--file"
+                if matches!(
+                    subcommand,
+                    Some(
+                        "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                    )
+                ) =>
+            {
+                if i + 1 < args.len() {
+                    symbol_query_opts.file = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--reference-type" if matches!(subcommand, Some("references")) => {
+                if i + 1 < args.len() {
+                    symbol_query_opts.reference_type = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--direction"
+                if matches!(
+                    subcommand,
+                    Some("call-hierarchy" | "type-graph" | "dependency-graph")
+                ) =>
+            {
+                if i + 1 < args.len() {
+                    symbol_query_opts.direction = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--depth"
+                if matches!(
+                    subcommand,
+                    Some("call-hierarchy" | "type-graph" | "dependency-graph")
+                ) =>
+            {
+                if i + 1 < args.len() {
+                    if let Ok(depth) = args[i + 1].parse::<u32>() {
+                        symbol_query_opts.depth = Some(depth);
                     }
                     i += 1;
                 }
@@ -422,7 +570,19 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--timeout"
                 if matches!(
                     subcommand,
-                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                    Some(
+                        "search"
+                            | "investigate"
+                            | "ask"
+                            | "hydrate"
+                            | "repo-map"
+                            | "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                            | "index"
+                    )
                 ) =>
             {
                 if i + 1 < args.len() {
@@ -432,6 +592,11 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                         Some("ask") => ask_opts.timeout = Some(args[i + 1].clone()),
                         Some("hydrate") => hydrate_opts.timeout = Some(args[i + 1].clone()),
                         Some("repo-map") => repo_map_opts.timeout = Some(args[i + 1].clone()),
+                        Some(
+                            "definition" | "references" | "call-hierarchy" | "type-graph"
+                            | "dependency-graph",
+                        ) => symbol_query_opts.timeout = Some(args[i + 1].clone()),
+                        Some("index") => index_opts.timeout = Some(args[i + 1].clone()),
                         _ => {}
                     }
                     i += 1;
@@ -440,7 +605,19 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--no-start"
                 if matches!(
                     subcommand,
-                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                    Some(
+                        "search"
+                            | "investigate"
+                            | "ask"
+                            | "hydrate"
+                            | "repo-map"
+                            | "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                            | "index"
+                    )
                 ) =>
             {
                 match subcommand {
@@ -449,6 +626,11 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     Some("ask") => ask_opts.no_start = true,
                     Some("hydrate") => hydrate_opts.no_start = true,
                     Some("repo-map") => repo_map_opts.no_start = true,
+                    Some(
+                        "definition" | "references" | "call-hierarchy" | "type-graph"
+                        | "dependency-graph",
+                    ) => symbol_query_opts.no_start = true,
+                    Some("index") => index_opts.no_start = true,
                     _ => {}
                 }
             }
@@ -479,7 +661,20 @@ pub fn parse_args(args: &[String]) -> CliArgs {
             "--json"
                 if matches!(
                     subcommand,
-                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                    Some(
+                        "search"
+                            | "investigate"
+                            | "ask"
+                            | "hydrate"
+                            | "repo-map"
+                            | "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                            | "index"
+                            | "capabilities"
+                    )
                 ) =>
             {
                 match subcommand {
@@ -488,13 +683,32 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     Some("ask") => ask_opts.json = true,
                     Some("hydrate") => hydrate_opts.json = true,
                     Some("repo-map") => repo_map_opts.json = true,
+                    Some(
+                        "definition" | "references" | "call-hierarchy" | "type-graph"
+                        | "dependency-graph",
+                    ) => symbol_query_opts.json = true,
+                    Some("index") => index_opts.json = true,
+                    Some("capabilities") => capabilities_opts.json = true,
                     _ => {}
                 }
             }
             "--pretty"
                 if matches!(
                     subcommand,
-                    Some("search" | "investigate" | "ask" | "hydrate" | "repo-map")
+                    Some(
+                        "search"
+                            | "investigate"
+                            | "ask"
+                            | "hydrate"
+                            | "repo-map"
+                            | "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                            | "index"
+                            | "capabilities"
+                    )
                 ) =>
             {
                 match subcommand {
@@ -503,10 +717,30 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     Some("ask") => ask_opts.pretty = true,
                     Some("hydrate") => hydrate_opts.pretty = true,
                     Some("repo-map") => repo_map_opts.pretty = true,
+                    Some(
+                        "definition" | "references" | "call-hierarchy" | "type-graph"
+                        | "dependency-graph",
+                    ) => symbol_query_opts.pretty = true,
+                    Some("index") => index_opts.pretty = true,
+                    Some("capabilities") => capabilities_opts.pretty = true,
                     _ => {}
                 }
             }
-            _ if matches!(subcommand, Some("search" | "investigate" | "ask")) => {
+            _ if matches!(
+                subcommand,
+                Some(
+                    "search"
+                        | "investigate"
+                        | "ask"
+                        | "definition"
+                        | "references"
+                        | "call-hierarchy"
+                        | "type-graph"
+                        | "dependency-graph"
+                        | "index"
+                )
+            ) =>
+            {
                 query_words.push(arg.to_string());
             }
             _ => {}
@@ -523,6 +757,15 @@ pub fn parse_args(args: &[String]) -> CliArgs {
     if matches!(subcommand, Some("ask")) {
         ask_opts.question = query_words.join(" ");
     }
+    if matches!(
+        subcommand,
+        Some("definition" | "references" | "call-hierarchy" | "type-graph" | "dependency-graph")
+    ) {
+        symbol_query_opts.symbol_name = query_words.join(" ");
+    }
+    if matches!(subcommand, Some("index")) && !query_words.is_empty() {
+        index_opts.action = query_words.join(" ");
+    }
 
     cli.command = match subcommand {
         Some("install") => Command::Install(install_opts),
@@ -538,6 +781,13 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         Some("ask") => Command::Ask(ask_opts),
         Some("hydrate") => Command::Hydrate(hydrate_opts),
         Some("repo-map") => Command::RepoMap(repo_map_opts),
+        Some("definition") => Command::Definition(symbol_query_opts),
+        Some("references") => Command::References(symbol_query_opts),
+        Some("call-hierarchy") => Command::CallHierarchy(symbol_query_opts),
+        Some("type-graph") => Command::TypeGraph(symbol_query_opts),
+        Some("dependency-graph") => Command::DependencyGraph(symbol_query_opts),
+        Some("index") => Command::Index(index_opts),
+        Some("capabilities") => Command::Capabilities(capabilities_opts),
         _ => Command::Run,
     };
 
@@ -553,35 +803,45 @@ fn parse_id_list(raw: &str) -> Vec<String> {
 }
 
 pub fn print_help() {
-    println!("code-intelligence-mcp-server");
+    println!("code-intel");
     println!();
-    println!("HTTP MCP daemon for local code intelligence (index + search + context).");
+    println!("Local code intelligence CLI backed by a resident on-device daemon.");
+    println!("MCP remains available as an optional compatibility adapter.");
     println!();
     println!("Usage:");
-    println!("  code-intelligence-mcp-server [run]                Start the HTTP daemon");
+    println!("  code-intel [run]                                  Start the local daemon");
     println!(
-        "  code-intelligence-mcp-server install [opts]       Register and start the launchd daemon"
+        "  code-intel install [opts]                         Register and start the launchd daemon"
     );
-    println!("  code-intelligence-mcp-server uninstall            Stop and unregister the launchd daemon");
-    println!("  code-intelligence-mcp-server start                Start the registered daemon");
-    println!("  code-intelligence-mcp-server stop                 Stop the registered daemon");
+    println!("  code-intel uninstall                              Stop and unregister the launchd daemon");
+    println!("  code-intel start                                  Start the registered daemon");
+    println!("  code-intel stop                                   Stop the registered daemon");
     println!(
-        "  code-intelligence-mcp-server status               Show daemon state, port, version"
-    );
-    println!("  code-intelligence-mcp-server migrate [--dry-run]  Rewrite v3 stdio MCP configs to v4 HTTP");
-    println!("  code-intelligence-mcp-server install-agent [opts] Install managed agent guidance");
-    println!("  code-intelligence-mcp-server uninstall-agent [opts] Remove managed agent guidance");
-    println!(
-        "  code-intelligence-mcp-server search [opts] QUERY  Search indexed code via the daemon"
+        "  code-intel status                                 Show daemon state, port, version"
     );
     println!(
-        "  code-intelligence-mcp-server investigate [opts] QUESTION  Run a multi-hop code investigation"
+        "  code-intel migrate [--dry-run]                    Rewrite v3 MCP configs to v4 HTTP"
     );
-    println!("  code-intelligence-mcp-server ask [opts] QUESTION  Retrieve grounded evidence for a question");
+    println!("  code-intel install-agent [opts]                   Install managed agent guidance");
+    println!("  code-intel uninstall-agent [opts]                 Remove managed agent guidance");
     println!(
-        "  code-intelligence-mcp-server hydrate [opts] --ids IDS  Fetch source bodies for symbol IDs"
+        "  code-intel search [opts] QUERY                    Search indexed code via the daemon"
     );
-    println!("  code-intelligence-mcp-server repo-map [opts]  Print a compact project map");
+    println!(
+        "  code-intel investigate [opts] QUESTION            Run a multi-hop code investigation"
+    );
+    println!("  code-intel ask [opts] QUESTION                    Retrieve grounded evidence");
+    println!(
+        "  code-intel hydrate [opts] --ids IDS                Fetch source bodies for symbol IDs"
+    );
+    println!("  code-intel repo-map [opts]                        Print a compact project map");
+    println!("  code-intel definition [opts] SYMBOL               Find symbol definitions");
+    println!("  code-intel references [opts] SYMBOL               Find symbol references");
+    println!("  code-intel call-hierarchy [opts] SYMBOL           Explore callers or callees");
+    println!("  code-intel type-graph [opts] SYMBOL               Explore type relationships");
+    println!("  code-intel dependency-graph [opts] SYMBOL         Explore dependencies");
+    println!("  code-intel index [status|approve|decline|refresh|jobs] [opts]");
+    println!("  code-intel capabilities [--json|--pretty]         Print CLI and tool schemas");
     println!();
     println!("Run-mode flags:");
     println!("  --host HOST             Override listen address (default: 127.0.0.1)");
@@ -606,7 +866,8 @@ pub fn print_help() {
     println!("  --dry-run               Print planned writes without changing files");
     println!("  --yes                   Reserved for non-interactive installs");
     println!("  --no-instructions       Skip instruction file updates");
-    println!("  --no-mcp                Skip MCP config/snippet output");
+    println!("  --mcp                   Include optional MCP config/snippet output");
+    println!("  --no-mcp                Explicitly skip MCP config/snippet output (default)");
     println!();
     println!("agent query flags:");
     println!("  --repo PATH             Workspace root (default: current directory)");
@@ -616,9 +877,16 @@ pub fn print_help() {
     println!("  --no-start              Fail if the daemon is not running");
     println!("  --limit N               search result limit");
     println!("  --context MODE          search context: none, snippets, or full");
+    println!("  --exported-only         search only exported/public symbols");
     println!("  --mode MODE             investigate mode: auto, discover, trace, data, impact, dependency, module");
     println!("  --target SYMBOL         investigate pivot symbol");
     println!("  --file-path PATH        investigate file disambiguation");
+    println!("  --file PATH             navigation symbol disambiguation");
+    println!(
+        "  --reference-type TYPE   references: call, import, reference, extends, implements, all"
+    );
+    println!("  --direction DIRECTION   graph traversal direction");
+    println!("  --depth N               graph traversal depth");
     println!("  --max-hops N            investigate hop limit");
     println!("  --max-evidence N        ask evidence limit");
     println!("  --quality MODE          ask quality: fast or balanced");
@@ -745,7 +1013,7 @@ mod tests {
                 assert!(!opts.print_config);
                 assert!(!opts.dry_run);
                 assert!(!opts.no_instructions);
-                assert!(!opts.no_mcp);
+                assert!(opts.no_mcp);
             }
             _ => panic!("expected install-agent command, got {:?}", cli.command),
         }
@@ -819,6 +1087,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_enables_optional_mcp_agent_config() {
+        let cli = parse_args(&["bin".into(), "install-agent".into(), "--mcp".into()]);
+        match cli.command {
+            Command::InstallAgent(opts) => assert!(!opts.no_mcp),
+            _ => panic!("expected install-agent command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
     fn parse_args_silently_accepts_legacy_standalone_flag() {
         let cli = parse_args(&["bin".into(), "--standalone".into()]);
         assert_eq!(cli.command, Command::Run);
@@ -847,6 +1124,7 @@ mod tests {
             "7".into(),
             "--context".into(),
             "snippets".into(),
+            "--exported-only".into(),
             "--json".into(),
             "FastAPI".into(),
             "auth".into(),
@@ -856,6 +1134,7 @@ mod tests {
                 assert_eq!(opts.repo.as_deref(), Some("."));
                 assert_eq!(opts.limit, Some(7));
                 assert_eq!(opts.context.as_deref(), Some("snippets"));
+                assert!(opts.exported_only);
                 assert!(opts.json);
                 assert_eq!(opts.query, "FastAPI auth");
             }
@@ -1000,6 +1279,83 @@ mod tests {
                 assert!(opts.json);
             }
             _ => panic!("expected search command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_symbol_navigation_commands() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "references".into(),
+            "--repo".into(),
+            ".".into(),
+            "--file".into(),
+            "src/auth.rs".into(),
+            "--reference-type".into(),
+            "call".into(),
+            "--limit".into(),
+            "25".into(),
+            "authenticate_request".into(),
+        ]);
+        match cli.command {
+            Command::References(opts) => {
+                assert_eq!(opts.repo.as_deref(), Some("."));
+                assert_eq!(opts.file.as_deref(), Some("src/auth.rs"));
+                assert_eq!(opts.reference_type.as_deref(), Some("call"));
+                assert_eq!(opts.limit, Some(25));
+                assert_eq!(opts.symbol_name, "authenticate_request");
+            }
+            _ => panic!("expected references command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_graph_controls() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "call-hierarchy".into(),
+            "--direction".into(),
+            "callers".into(),
+            "--depth".into(),
+            "3".into(),
+            "handle_request".into(),
+        ]);
+        match cli.command {
+            Command::CallHierarchy(opts) => {
+                assert_eq!(opts.direction.as_deref(), Some("callers"));
+                assert_eq!(opts.depth, Some(3));
+                assert_eq!(opts.symbol_name, "handle_request");
+            }
+            _ => panic!("expected call-hierarchy command, got {:?}", cli.command),
+        }
+    }
+
+    #[test]
+    fn parse_args_recognises_index_and_capabilities_commands() {
+        let index = parse_args(&[
+            "bin".into(),
+            "index".into(),
+            "approve".into(),
+            "--repo".into(),
+            ".".into(),
+            "--json".into(),
+        ]);
+        match index.command {
+            Command::Index(opts) => {
+                assert_eq!(opts.action, "approve");
+                assert_eq!(opts.repo.as_deref(), Some("."));
+                assert!(opts.json);
+            }
+            _ => panic!("expected index command, got {:?}", index.command),
+        }
+
+        let capabilities = parse_args(&["bin".into(), "capabilities".into(), "--pretty".into()]);
+        match capabilities.command {
+            Command::Capabilities(opts) => assert!(opts.pretty),
+            _ => panic!(
+                "expected capabilities command, got {:?}",
+                capabilities.command
+            ),
         }
     }
 }

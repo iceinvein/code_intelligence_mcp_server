@@ -23,7 +23,7 @@ pub fn handle_install_agent(opts: AgentInstallOpts) -> Result<()> {
     let mut printed_config = false;
 
     if opts.print_config {
-        print_agent_config(&targets, port, Some(&repo));
+        print_agent_config(&targets, port, Some(&repo), !opts.no_mcp);
         return Ok(());
     }
 
@@ -42,7 +42,7 @@ pub fn handle_install_agent(opts: AgentInstallOpts) -> Result<()> {
             println!(
                 "User-scope instruction writes are not automated yet; printing snippets instead."
             );
-            print_agent_config(&targets, port, Some(&repo));
+            print_agent_config(&targets, port, Some(&repo), !opts.no_mcp);
             printed_config = true;
         }
     }
@@ -65,7 +65,7 @@ pub fn handle_install_agent(opts: AgentInstallOpts) -> Result<()> {
                 }
             }
         } else if !printed_config {
-            print_agent_config(&targets, port, Some(&repo));
+            print_agent_config(&targets, port, Some(&repo), true);
         }
     }
 
@@ -112,16 +112,19 @@ fn render_instruction_block(port: u16) -> String {
 Use the local code-intelligence tools before broad text search when answering repository questions.
 
 Main session workflow:
-- Start with `code-intelligence-mcp-server repo-map --repo <repo>` to get a compact project map.
-- Use `code-intelligence-mcp-server search --repo <repo> "query"` for semantic code search.
-- Use `code-intelligence-mcp-server investigate --repo <repo> --mode impact "what breaks if this changes?"` for blast-radius work.
-- Use `code-intelligence-mcp-server hydrate --repo <repo> --ids <id1,id2>` before quoting or editing exact source bodies.
+- Run `code-intel capabilities --json` when you need the complete machine-readable command and tool schema.
+- Start with `code-intel repo-map --repo <repo>` to get a compact project map.
+- Use `code-intel search --repo <repo> "query"` for semantic code search.
+- Use `code-intel investigate --repo <repo> --mode impact "what breaks if this changes?"` for blast-radius work.
+- Use `code-intel definition`, `code-intel references`, and the graph commands for exact navigation.
+- Use `code-intel hydrate --repo <repo> --ids <id1,id2>` before quoting or editing exact source bodies.
+- If indexing approval is required, ask the user first, then run `code-intel index approve --repo <repo>` only after explicit approval.
 
 Exploration subagent workflow:
-- Use `code-intelligence-mcp-server ask --repo <repo> "question"` when a subagent needs a broader evidence pass.
-- Use `code-intelligence-mcp-server investigate --repo <repo> "question"` for open-ended trace, dependency, or module exploration.
+- Use `code-intel ask --repo <repo> "question"` when a subagent needs a broader evidence pass.
+- Use `code-intel investigate --repo <repo> "question"` for open-ended trace, dependency, or module exploration.
 
-- If an MCP client is available, connect it to `http://127.0.0.1:{port}/mcp` and add `?repo=/absolute/path` for clients that do not negotiate roots.
+- MCP is optional. If a client benefits from typed MCP tools, connect it to `http://127.0.0.1:{port}/mcp` and add `?repo=/absolute/path` for clients that do not negotiate roots.
 "#
     ))
 }
@@ -146,11 +149,13 @@ fn render_mcp_config(port: u16, repo: Option<&Path>) -> String {
     .expect("static MCP config should serialize")
 }
 
-fn print_agent_config(targets: &[String], port: u16, repo: Option<&Path>) {
+fn print_agent_config(targets: &[String], port: u16, repo: Option<&Path>, include_mcp: bool) {
     println!("Targets: {}", targets.join(", "));
-    println!();
-    println!("MCP config:");
-    println!("{}", render_mcp_config(port, repo));
+    if include_mcp {
+        println!();
+        println!("Optional MCP config:");
+        println!("{}", render_mcp_config(port, repo));
+    }
     println!();
     println!("Instruction block:");
     println!("{}", render_instruction_block(port));
@@ -313,9 +318,11 @@ mod tests {
         let block = render_instruction_block(20000);
 
         assert!(block.contains("<!-- code-intelligence-agent:start -->"));
-        assert!(block.contains("code-intelligence-mcp-server repo-map --repo"));
-        assert!(block.contains("code-intelligence-mcp-server ask --repo"));
-        assert!(block.contains("code-intelligence-mcp-server search --repo"));
+        assert!(block.contains("code-intel capabilities --json"));
+        assert!(block.contains("code-intel repo-map --repo"));
+        assert!(block.contains("code-intel ask --repo"));
+        assert!(block.contains("code-intel search --repo"));
+        assert!(block.contains("code-intel index approve --repo"));
         assert!(block.contains("http://127.0.0.1:20000/mcp"));
         assert!(block.contains("<!-- code-intelligence-agent:end -->"));
     }

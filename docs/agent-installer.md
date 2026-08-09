@@ -3,15 +3,15 @@
 `install-agent` installs the agent-facing guidance for Code Intelligence without owning a whole client config. It is meant to complement the daemon lifecycle commands:
 
 ```bash
-code-intelligence-mcp-server install
-code-intelligence-mcp-server install-agent --repo . --target codex
+code-intel install
+code-intel install-agent --repo . --target codex
 ```
 
 ## Commands
 
 ```bash
-code-intelligence-mcp-server install-agent [opts]
-code-intelligence-mcp-server uninstall-agent [opts]
+code-intel install-agent [opts]
+code-intel uninstall-agent [opts]
 ```
 
 Common options:
@@ -22,10 +22,11 @@ Common options:
 | `--scope SCOPE` | `project` or `user`. Default: `project`. |
 | `--repo PATH` | Project root for instruction files. Default: current directory. |
 | `--port PORT` | MCP endpoint port in generated snippets. Default: `17800`. |
-| `--print-config` | Print MCP config and instruction block without writing files. |
+| `--print-config` | Print the instruction block without writing files. Add `--mcp` to include MCP config. |
 | `--dry-run` | Print planned writes without changing files. |
 | `--no-instructions` | Skip instruction file updates. |
-| `--no-mcp` | Skip MCP config/snippet output. |
+| `--mcp` | Include optional MCP config/snippet output. |
+| `--no-mcp` | Explicitly skip MCP config/snippet output. This is the default. |
 
 ## Project Writes
 
@@ -59,29 +60,29 @@ The generated instruction block separates work into two modes:
 Preview everything:
 
 ```bash
-code-intelligence-mcp-server install-agent --repo . --target all --dry-run
+code-intel install-agent --repo . --target all --dry-run
 ```
 
 Install Codex guidance in the current project:
 
 ```bash
-code-intelligence-mcp-server install-agent --target codex --no-mcp
+code-intel install-agent --target codex
 ```
 
 Install Claude project guidance and print the MCP snippet:
 
 ```bash
-code-intelligence-mcp-server install-agent --target claude --repo .
+code-intel install-agent --target claude --repo . --mcp
 ```
 
 Patch user-level Claude MCP config without writing project instructions:
 
 ```bash
-code-intelligence-mcp-server install-agent --scope user --target claude --no-instructions
+code-intel install-agent --scope user --target claude --no-instructions --mcp
 ```
 
 Print config snippets for manual setup in agents with custom config shapes:
 
 ```bash
-code-intelligence-mcp-server install-agent --target cursor,opencode --print-config
+code-intel install-agent --target cursor,opencode --print-config --mcp
 ```

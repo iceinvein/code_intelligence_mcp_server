@@ -1,4 +1,4 @@
-# Interface Direction: Engine First, CLI First-Class, MCP Adapter
+# Interface Direction: Engine First, CLI Primary, MCP Adapter
 
 ## Decision
 
@@ -46,11 +46,12 @@ The daemon should provide stable internal request/response shapes that are indep
 The CLI should become the main programmable interface:
 
 ```bash
-code-intelligence-mcp-server ask --repo . "how does auth work?" --json
-code-intelligence-mcp-server search --repo . "FastAPI route auth" --context snippets --json
-code-intelligence-mcp-server investigate --repo . --mode impact --target authenticate_request --json "what breaks if this changes?"
-code-intelligence-mcp-server hydrate --repo . --ids sym_1,sym_2 --json
-code-intelligence-mcp-server repo-map --repo . --budget 4000
+code-intel ask --repo . "how does auth work?" --json
+code-intel search --repo . "FastAPI route auth" --context snippets --json
+code-intel investigate --repo . --mode impact --target authenticate_request --json "what breaks if this changes?"
+code-intel hydrate --repo . --ids sym_1,sym_2 --json
+code-intel repo-map --repo . --budget 4000
+code-intel capabilities --json
 ```
 
 CLI goals:
@@ -123,7 +124,7 @@ On failure:
   "error": {
     "code": "daemon_unavailable",
     "message": "Code Intelligence daemon is not running",
-    "hint": "Run `code-intelligence-mcp-server start` or retry without --no-start"
+    "hint": "Run `code-intel start` or retry without --no-start"
   }
 }
 ```

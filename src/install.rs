@@ -431,6 +431,15 @@ pub fn handle_uninstall() -> Result<()> {
 }
 
 pub fn handle_start() -> Result<()> {
+    start_daemon(true)
+}
+
+/// Start or kick the registered launchd daemon.
+///
+/// Query commands use the quiet form so automatic startup never corrupts
+/// their JSON output. The explicit `start` command keeps the user-facing
+/// confirmation message.
+pub fn start_daemon(announce: bool) -> Result<()> {
     require_macos_13_plus()?;
     let plist_p = plist_path()?;
     if !plist_p.exists() {
@@ -441,10 +450,14 @@ pub fn handle_start() -> Result<()> {
     }
     if launchctl_running().unwrap_or(false) {
         launchctl_kickstart()?;
-        println!("Kickstarted {LABEL}.");
+        if announce {
+            println!("Kickstarted {LABEL}.");
+        }
     } else {
         launchctl_bootstrap(&plist_p)?;
-        println!("Bootstrapped {LABEL}.");
+        if announce {
+            println!("Bootstrapped {LABEL}.");
+        }
     }
     Ok(())
 }
@@ -469,10 +482,7 @@ pub fn handle_status() -> Result<()> {
     let port_in_use = !port_is_free(DEFAULT_PORT);
     let state = determine_daemon_state(label_running, port_in_use);
 
-    println!(
-        "code-intelligence-mcp-server v{}",
-        env!("CARGO_PKG_VERSION")
-    );
+    println!("code-intel v{}", env!("CARGO_PKG_VERSION"));
     println!(
         "  plist:     {} ({})",
         plist_p.display(),

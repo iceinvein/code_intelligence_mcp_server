@@ -55,6 +55,11 @@ pub(crate) struct ConsentDecisionRequest {
     decision: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct IndexStatusRequest {
+    repo: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ConsentDecision {
     Approve,
@@ -69,6 +74,42 @@ fn parse_consent_decision(decision: &str) -> Result<ConsentDecision, String> {
             "decision must be \"approve\" or \"decline\", got: {other}"
         )),
     }
+}
+
+pub(crate) async fn handle_index_status(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<IndexStatusRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let repo_path = validate_repo_path(&req.repo).map_err(ApiError)?;
+    let repo_id = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
+    let access = state
+        .session_manager
+        .resolve_repo(repo_path.as_path())
+        .await
+        .map_err(|error| ApiError(format!("failed to resolve repo lifecycle: {error}")))?;
+
+    let mut payload = match access {
+        crate::session::RepoAccess::Ready(app_state) => json!({
+            "ok": true,
+            "status": "ready",
+            "result": crate::handlers::handle_get_index_stats(&app_state)
+                .map_err(|error| ApiError(format!("failed to read index status: {error}")))?,
+        }),
+        crate::session::RepoAccess::NeedsApproval => {
+            crate::server::consent::consent_required_payload(repo_path.as_str(), &repo_id)
+        }
+        crate::session::RepoAccess::Declined => {
+            crate::server::consent::declined_payload(repo_path.as_str(), &repo_id)
+        }
+        crate::session::RepoAccess::Indexing { job, started } => {
+            crate::server::consent::indexing_payload(&job, started)
+        }
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("repo".to_string(), json!(repo_path.as_str()));
+        object.insert("repo_id".to_string(), json!(repo_id));
+    }
+    Ok(Json(payload))
 }
 
 pub(crate) async fn handle_consent_post(
@@ -274,5 +315,26 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["status"], "indexing_started");
         assert!(value["job_id"].as_str().unwrap().starts_with("initial-"));
+    }
+
+    #[tokio::test]
+    async fn index_status_surfaces_first_index_consent() {
+        let (_data, state) = crate::server::api::test_api_state().await;
+        let repo = tempfile::tempdir().unwrap();
+        let requested = Utf8PathBuf::from_path_buf(repo.path().to_path_buf()).unwrap();
+        let path = crate::path::canonicalize_existing_dir(&requested).unwrap();
+
+        let Json(value) = handle_index_status(
+            State(state),
+            Json(IndexStatusRequest {
+                repo: path.to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(value["status"], "consent_required");
+        assert_eq!(value["repo"], path.as_str());
+        assert!(value["repo_id"].is_string());
     }
 }

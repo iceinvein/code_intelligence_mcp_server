@@ -1,4 +1,4 @@
-# Code Intelligence MCP Server
+# Code Intelligence
 
 > **Give your AI coding agent a deep understanding of your codebase.**
 
@@ -7,9 +7,9 @@
 [![MCP](https://img.shields.io/badge/MCP-Enabled-orange?style=flat-square)](https://modelcontextprotocol.io)
 [![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey?style=flat-square)]()
 
-A local code indexing engine that gives LLM agents like **Claude Code**, **Cursor**, **Trae**, and **OpenCode** semantic search, call graphs, type hierarchies, and impact analysis across your codebase. Written in Rust with Metal GPU acceleration.
+A local code indexing engine and CLI that gives coding agents semantic search, call graphs, type hierarchies, and impact analysis across your codebase. Written in Rust with Metal GPU acceleration.
 
-MCP is the current integration surface, but the durable product boundary is the local code intelligence engine. The next interface layer is a first-class CLI plus stable JSON contracts over the same daemon APIs; see [Interface Direction](docs/architecture/interface-direction.md).
+The `code-intel` CLI is the primary programmable interface. It uses stable JSON contracts over the resident local daemon. MCP remains available as an optional compatibility adapter for clients that benefit from native tool discovery; see [Interface Direction](docs/architecture/interface-direction.md).
 
 **Zero config. Runs via `npx`. Indexes in the background.**
 
@@ -29,7 +29,7 @@ brew install code-intelligence-mcp
 brew services start code-intelligence-mcp
 
 # Migrate existing ~/.claude.json entries (one-time, optional)
-code-intelligence-mcp-server migrate
+code-intel migrate
 ```
 
 **npm (or `npx`, if you prefer):**
@@ -80,27 +80,30 @@ For full per-client recipes (including the manual `bind_workspace` fallback), se
 ### Lifecycle commands
 
 ```bash
-code-intelligence-mcp-server install      # one-time setup
-code-intelligence-mcp-server status       # daemon state, PID, port
-code-intelligence-mcp-server start        # kickstart
-code-intelligence-mcp-server stop         # bootout
-code-intelligence-mcp-server uninstall    # remove plist + bootout
-code-intelligence-mcp-server migrate      # rewrite v3 stdio configs
+code-intel install      # one-time setup
+code-intel status       # daemon state, PID, port
+code-intel start        # kickstart
+code-intel stop         # bootout
+code-intel uninstall    # remove plist + bootout
+code-intel migrate      # rewrite v3 stdio configs
 ```
 
-### Agent query CLI
+### Code intelligence CLI
 
-The binary also exposes the first agent-query commands over the shared daemon API:
+The CLI exposes search, grounded investigation, exact navigation, and index lifecycle commands over the shared daemon API:
 
 ```bash
-code-intelligence-mcp-server ask --repo . --json "how does auth work?"
-code-intelligence-mcp-server search --repo . --context snippets --json "auth handler"
-code-intelligence-mcp-server investigate --repo . --mode impact --target authenticate_request --json "what breaks if this changes?"
-code-intelligence-mcp-server hydrate --repo . --ids sym_1,sym_2 --json
-code-intelligence-mcp-server repo-map --repo . --budget 4000 --json
+code-intel ask --repo . --json "how does auth work?"
+code-intel search --repo . --context snippets --json "auth handler"
+code-intel investigate --repo . --mode impact --target authenticate_request --json "what breaks if this changes?"
+code-intel definition --repo . --json authenticate_request
+code-intel references --repo . --reference-type call --json authenticate_request
+code-intel call-hierarchy --repo . --direction callers --depth 3 --json authenticate_request
+code-intel index status --repo . --json
+code-intel capabilities --json
 ```
 
-The CLI calls the loopback dashboard/API port (`mcp_port + 2`, default `17802`) and returns the same structured evidence contracts used by MCP handlers. The daemon must already be running. Use `--port` when targeting a daemon on a non-default MCP port.
+The CLI calls the loopback dashboard/API port (`mcp_port + 2`, default `17802`) and returns the same structured evidence contracts used by MCP handlers. Query commands start a registered launchd daemon automatically when needed. Use `--no-start` when scripts require it to be running already, and `--port` when targeting a daemon on a non-default port.
 
 Agent-query commands support `--timeout`, `--no-start`, stable JSON failure envelopes, and distinct exit codes for invalid arguments, daemon unavailable, workspace unavailable, no results, timeout, and internal errors. See [Agent Query CLI](docs/agent-query-cli.md).
 
@@ -108,16 +111,16 @@ Framework routes are surfaced as first-class context where available: `repo-map`
 
 ### Agent installer
 
-Use `install-agent` to add a managed Code Intelligence instruction block to agent-facing project files and print the MCP config snippet for the local daemon:
+Use `install-agent` to add a managed CLI-first Code Intelligence instruction block to agent-facing project files. Pass `--mcp` only when you also want MCP configuration:
 
 ```bash
-code-intelligence-mcp-server install-agent --repo . --target codex
-code-intelligence-mcp-server install-agent --repo . --target claude,cursor --dry-run
-code-intelligence-mcp-server install-agent --target all --print-config
-code-intelligence-mcp-server uninstall-agent --repo . --target all
+code-intel install-agent --repo . --target codex
+code-intel install-agent --repo . --target claude,cursor --dry-run
+code-intel install-agent --target all --print-config --mcp
+code-intel uninstall-agent --repo . --target all
 ```
 
-Project-scope targets write only a marked block that can be safely replaced or removed later: `AGENTS.md` for Codex/generic/OpenCode, `CLAUDE.md` for Claude, and `.cursor/rules/code-intelligence.mdc` for Cursor. User-scope config is intentionally conservative; `--scope user --target claude --no-instructions` patches `~/.claude.json` through the same HTTP MCP entry used by the daemon installer. See [Agent Installer](docs/agent-installer.md).
+Project-scope targets write only a marked block that can be safely replaced or removed later: `AGENTS.md` for Codex/generic/OpenCode, `CLAUDE.md` for Claude, and `.cursor/rules/code-intelligence.mdc` for Cursor. User-scope config is intentionally conservative; `--scope user --target claude --no-instructions --mcp` patches `~/.claude.json` through the same HTTP MCP entry used by the daemon installer. See [Agent Installer](docs/agent-installer.md).
 
 > First-time `install` downloads one model by default: the embedding model (Jina Code 1.5b, ~1.5 GB). Two more are off by default and download only when opted into: the description LLM (Qwen2.5-Coder-1.5B, ~1.0 GB) when `DESCRIPTIONS_ENABLED=1`, and the cross-encoder reranker (bge-reranker-v2-m3, ~600 MB) when `RERANKER_ENABLED=1`. Indexing then runs in the background. Models cache in `~/.code-intelligence/models/`. macOS 13+ required for the modern `launchctl bootstrap` API.
 
@@ -174,7 +177,7 @@ The agent relays the question and waits for explicit approval before calling `ap
 
 ![Consent](docs/consent.png)
 
-The dashboard's **Consent** tab lists repos awaiting a decision (and any you previously declined) with inline approve / decline buttons, mirroring the `GET` / `POST /api/consent` endpoint.
+The dashboard's **Consent** tab lists repos awaiting a decision (and any you previously declined) with inline approve / decline buttons, mirroring the `GET` / `POST /api/consent` endpoint. The CLI exposes the same lifecycle through `code-intel index status`, `approve`, and `decline`.
 
 ### JSON API
 
@@ -192,12 +195,18 @@ For scripting outside the dashboard, every UI surface has a structured endpoint 
 | `GET` | `/api/jobs` | running + recent (≤15 min) jobs |
 | `GET` | `/api/consent` | repos awaiting an indexing decision (+ previously declined) |
 | `POST` | `/api/consent` | approve or decline indexing for a repo |
+| `POST` | `/api/index/status` | resolve a repo and report ready, consent, declined, or indexing state |
 | `GET` | `/api/logs/stream` | SSE stream of log lines |
 | `POST` | `/api/query/ask` | CLI-facing `ask_code` wrapper with structured envelope |
 | `POST` | `/api/query/search` | CLI-facing `search_code` wrapper with structured envelope |
 | `POST` | `/api/query/investigate` | CLI-facing `investigate` wrapper with structured envelope |
 | `POST` | `/api/query/hydrate` | CLI-facing `hydrate_symbols` wrapper with structured envelope |
 | `POST` | `/api/query/repo-map` | CLI-facing compact project map with structured envelope |
+| `POST` | `/api/query/definition` | symbol definition lookup |
+| `POST` | `/api/query/references` | symbol reference lookup |
+| `POST` | `/api/query/call-hierarchy` | callers or callees graph |
+| `POST` | `/api/query/type-graph` | type relationship graph |
+| `POST` | `/api/query/dependency-graph` | dependency graph |
 
 ---
 

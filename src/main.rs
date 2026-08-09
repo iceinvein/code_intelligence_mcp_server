@@ -18,6 +18,7 @@ use code_intelligence_mcp_server::embeddings::{
     create_embedder, default_embedding_dim, ensure_native_llama_available, DeferredEmbedder,
     Embedder, SharedEmbedder, TruncatingEmbedder,
 };
+use code_intelligence_mcp_server::path::{Utf8Path, Utf8PathBuf};
 use code_intelligence_mcp_server::reranker::{
     create_reranker, deferred::DeferredReranker, Reranker,
 };
@@ -388,6 +389,7 @@ async fn handle_cli_symbol_query(
         "limit": opts.limit,
     });
     let value = post_cli_query(endpoint, body, port_override, &runtime).await?;
+    fail_on_empty_results(command, &value, &runtime)?;
     print_cli_query_response(&value, opts.json, opts.pretty)
 }
 
@@ -527,9 +529,23 @@ fn cli_capabilities_value() -> serde_json::Value {
 }
 
 fn cli_repo(repo: Option<String>) -> anyhow::Result<String> {
-    match repo {
-        Some(repo) => Ok(repo),
-        None => Ok(std::env::current_dir()?.to_string_lossy().into_owned()),
+    let current_dir = Utf8PathBuf::from_path_buf(std::env::current_dir()?).map_err(|path| {
+        anyhow::anyhow!(
+            "current directory contains non-UTF-8 characters: {}",
+            path.display()
+        )
+    })?;
+    Ok(resolve_cli_repo(repo, &current_dir).into_string())
+}
+
+fn resolve_cli_repo(repo: Option<String>, current_dir: &Utf8Path) -> Utf8PathBuf {
+    let requested = repo
+        .map(Utf8PathBuf::from)
+        .unwrap_or_else(|| current_dir.to_path_buf());
+    if requested.is_absolute() {
+        requested
+    } else {
+        current_dir.join(requested)
     }
 }
 
@@ -837,6 +853,16 @@ fn fail_on_empty_results(
             .pointer("/result/count")
             .and_then(|v| v.as_u64())
             .map(|count| count == 0)
+            .unwrap_or(false),
+        "definition" | "references" => value
+            .pointer("/result/count")
+            .and_then(|v| v.as_u64())
+            .map(|count| count == 0)
+            .unwrap_or(false),
+        "call-hierarchy" | "type-graph" | "dependency-graph" => value
+            .pointer("/result/nodes")
+            .and_then(|v| v.as_array())
+            .map(|nodes| nodes.is_empty())
             .unwrap_or(false),
         _ => false,
     };
@@ -1364,5 +1390,86 @@ mod cli_query_contract_tests {
         assert!(tool_names.contains(&"ask_code"));
         assert!(!tool_names.contains(&"bind_workspace"));
         assert!(!tool_names.contains(&"approve_indexing"));
+    }
+
+    #[test]
+    fn explicit_relative_cli_repo_is_resolved_against_client_directory() {
+        let current_dir = Utf8Path::new("/Users/example/project");
+
+        let resolved = resolve_cli_repo(Some(".".to_string()), current_dir);
+
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, current_dir.join("."));
+        assert_ne!(resolved, Utf8PathBuf::from("."));
+    }
+
+    #[test]
+    fn absolute_cli_repo_is_preserved() {
+        let current_dir = Utf8Path::new("/Users/example/project");
+        let absolute = "/Volumes/code/another-project";
+
+        assert_eq!(
+            resolve_cli_repo(Some(absolute.to_string()), current_dir),
+            Utf8PathBuf::from(absolute)
+        );
+        assert_eq!(resolve_cli_repo(None, current_dir), current_dir);
+    }
+
+    #[test]
+    fn empty_navigation_results_use_no_results_failure() {
+        let runtime = CliQueryRuntime {
+            timeout: std::time::Duration::from_secs(1),
+            no_start: true,
+            json: true,
+            pretty: false,
+        };
+        let cases = [
+            (
+                "definition",
+                serde_json::json!({ "result": { "count": 0 } }),
+            ),
+            (
+                "references",
+                serde_json::json!({ "result": { "count": 0 } }),
+            ),
+            (
+                "call-hierarchy",
+                serde_json::json!({ "result": { "nodes": [] } }),
+            ),
+            (
+                "type-graph",
+                serde_json::json!({ "result": { "nodes": [] } }),
+            ),
+            (
+                "dependency-graph",
+                serde_json::json!({ "result": { "nodes": [] } }),
+            ),
+        ];
+
+        for (command, value) in cases {
+            let failure = fail_on_empty_results(command, &value, &runtime)
+                .expect_err("empty navigation result should fail");
+            assert_eq!(failure.code, CliErrorCode::NoResults, "{command}");
+            assert_eq!(failure.exit_code(), 5, "{command}");
+        }
+    }
+
+    #[test]
+    fn graph_root_without_edges_is_still_a_result() {
+        let runtime = CliQueryRuntime {
+            timeout: std::time::Duration::from_secs(1),
+            no_start: true,
+            json: true,
+            pretty: false,
+        };
+        let value = serde_json::json!({
+            "result": {
+                "nodes": [{ "name": "LeafType" }],
+                "edges": []
+            }
+        });
+
+        fail_on_empty_results("type-graph", &value, &runtime)
+            .expect("a resolved graph root is a successful result");
     }
 }

@@ -334,6 +334,8 @@ fn language_for_module_path(file_path: &str) -> Option<&'static str> {
         Some("typescript")
     } else if file_path.ends_with(".js") || file_path.ends_with(".jsx") {
         Some("javascript")
+    } else if file_path.ends_with(".rs") {
+        Some("rust")
     } else {
         None
     }

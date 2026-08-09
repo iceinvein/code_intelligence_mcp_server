@@ -54,7 +54,11 @@ pub async fn handle_search_code(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let limit = clamp_limit(tool.limit, 5, 100);
     let exported_only = tool.exported_only.unwrap_or(false);
-    let context_mode = ContextMode::from_str(tool.context.as_deref());
+    let context_mode = match tool.context.unwrap_or(SearchContext::None) {
+        SearchContext::None => ContextMode::None,
+        SearchContext::Snippets => ContextMode::Snippets,
+        SearchContext::Full => ContextMode::Full,
+    };
 
     let result = retriever
         .search(&tool.query, limit, exported_only, context_mode)

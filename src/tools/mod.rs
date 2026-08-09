@@ -2,6 +2,261 @@
 
 use rust_mcp_sdk::macros;
 use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
+
+fn invalid_option(name: &str, value: &str, expected: &str) -> String {
+    format!("invalid {name} '{value}'; expected one of: {expected}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, macros::JsonSchema)]
+pub enum SearchContext {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "snippets")]
+    Snippets,
+    #[serde(rename = "full")]
+    Full,
+}
+
+impl SearchContext {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Snippets => "snippets",
+            Self::Full => "full",
+        }
+    }
+}
+
+impl fmt::Display for SearchContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SearchContext {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "snippets" => Ok(Self::Snippets),
+            "full" => Ok(Self::Full),
+            _ => Err(invalid_option("context", value, "none, snippets, full")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, macros::JsonSchema)]
+pub enum InvestigationMode {
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(rename = "discover")]
+    Discover,
+    #[serde(rename = "trace", alias = "call_trace")]
+    Trace,
+    #[serde(rename = "data", alias = "data_trace")]
+    Data,
+    #[serde(rename = "impact", alias = "impact_radius")]
+    Impact,
+    #[serde(rename = "dependency", alias = "dependency_walk")]
+    Dependency,
+    #[serde(rename = "module", alias = "module_survey")]
+    Module,
+}
+
+impl InvestigationMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Discover => "discover",
+            Self::Trace => "trace",
+            Self::Data => "data",
+            Self::Impact => "impact",
+            Self::Dependency => "dependency",
+            Self::Module => "module",
+        }
+    }
+}
+
+impl fmt::Display for InvestigationMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for InvestigationMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "discover" => Ok(Self::Discover),
+            "trace" | "call_trace" => Ok(Self::Trace),
+            "data" | "data_trace" => Ok(Self::Data),
+            "impact" | "impact_radius" => Ok(Self::Impact),
+            "dependency" | "dependency_walk" => Ok(Self::Dependency),
+            "module" | "module_survey" => Ok(Self::Module),
+            _ => Err(invalid_option(
+                "mode",
+                value,
+                "auto, discover, trace, data, impact, dependency, module",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, macros::JsonSchema)]
+pub enum AnswerQuality {
+    #[serde(rename = "fast")]
+    Fast,
+    #[serde(rename = "balanced")]
+    Balanced,
+}
+
+impl AnswerQuality {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+        }
+    }
+}
+
+impl fmt::Display for AnswerQuality {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AnswerQuality {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "fast" => Ok(Self::Fast),
+            "balanced" => Ok(Self::Balanced),
+            _ => Err(invalid_option("quality", value, "fast, balanced")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, macros::JsonSchema)]
+pub enum HydrateMode {
+    #[serde(rename = "full")]
+    Full,
+}
+
+impl HydrateMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+        }
+    }
+}
+
+impl fmt::Display for HydrateMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for HydrateMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "full" => Ok(Self::Full),
+            _ => Err(invalid_option("hydrate mode", value, "full")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, macros::JsonSchema)]
+pub enum CallHierarchyDirection {
+    #[serde(rename = "callees")]
+    Callees,
+    #[serde(rename = "callers")]
+    Callers,
+    #[serde(rename = "both")]
+    Both,
+}
+
+impl CallHierarchyDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Callees => "callees",
+            Self::Callers => "callers",
+            Self::Both => "both",
+        }
+    }
+}
+
+impl fmt::Display for CallHierarchyDirection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CallHierarchyDirection {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "callees" => Ok(Self::Callees),
+            "callers" => Ok(Self::Callers),
+            "both" => Ok(Self::Both),
+            _ => Err(invalid_option(
+                "call hierarchy direction",
+                value,
+                "callees, callers, both",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, macros::JsonSchema)]
+pub enum TraversalDirection {
+    #[serde(rename = "downstream")]
+    Downstream,
+    #[serde(rename = "upstream")]
+    Upstream,
+    #[serde(rename = "both")]
+    Both,
+}
+
+impl TraversalDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Downstream => "downstream",
+            Self::Upstream => "upstream",
+            Self::Both => "both",
+        }
+    }
+}
+
+impl fmt::Display for TraversalDirection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TraversalDirection {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "downstream" => Ok(Self::Downstream),
+            "upstream" => Ok(Self::Upstream),
+            "both" => Ok(Self::Both),
+            _ => Err(invalid_option(
+                "traversal direction",
+                value,
+                "downstream, upstream, both",
+            )),
+        }
+    }
+}
 
 #[macros::mcp_tool(
     name = "search_code",
@@ -13,7 +268,7 @@ pub struct SearchCodeTool {
     pub limit: Option<u32>,
     pub exported_only: Option<bool>,
     /// none (default), snippets (compact per-hit), or full (legacy markdown bundle).
-    pub context: Option<String>,
+    pub context: Option<SearchContext>,
 }
 
 #[macros::mcp_tool(
@@ -66,7 +321,8 @@ pub struct FindReferencesTool {
     pub symbol_name: String,
     /// Disambiguating file path.
     pub file: Option<String>,
-    /// call, import, reference, extends, implements, or all.
+    /// Optional edge-type filter. Common values are call, import, reference,
+    /// extends, implements, and all. External producers may add other types.
     pub reference_type: Option<String>,
     /// Default 200.
     pub limit: Option<u32>,
@@ -90,7 +346,7 @@ pub struct GetFileSymbolsTool {
 pub struct GetCallHierarchyTool {
     pub symbol_name: String,
     /// callees, callers, or both.
-    pub direction: Option<String>,
+    pub direction: Option<CallHierarchyDirection>,
     /// Default 3, max 10.
     pub depth: Option<u32>,
     /// Default 50.
@@ -107,7 +363,7 @@ pub struct GetCallHierarchyTool {
 pub struct GetTypeGraphTool {
     pub symbol_name: String,
     /// downstream, upstream, or both.
-    pub direction: Option<String>,
+    pub direction: Option<TraversalDirection>,
     pub depth: Option<u32>,
     pub limit: Option<u32>,
     /// Optional file to disambiguate the root among same-named symbols.
@@ -141,7 +397,7 @@ pub struct GetIndexStatsTool {}
 #[derive(Debug, Clone, Deserialize, Serialize, macros::JsonSchema)]
 pub struct ExploreDependencyGraphTool {
     pub symbol_name: String,
-    pub direction: Option<String>,
+    pub direction: Option<TraversalDirection>,
     pub depth: Option<u32>,
     pub limit: Option<u32>,
     /// Optional file to disambiguate the root among same-named symbols.
@@ -157,7 +413,7 @@ pub struct HydrateSymbolsTool {
     /// Symbol IDs.
     pub ids: Vec<String>,
     /// full for surrounding context.
-    pub mode: Option<String>,
+    pub mode: Option<HydrateMode>,
     /// Include per-symbol metadata (id, role, tokens, reasons).
     pub verbose: Option<bool>,
 }
@@ -175,7 +431,7 @@ pub struct InvestigateTool {
     /// Optional file path for disambiguation or module-survey shape.
     pub file_path: Option<String>,
     /// auto (default), discover, trace, data, impact, dependency, or module.
-    pub mode: Option<String>,
+    pub mode: Option<InvestigationMode>,
     /// Default 3, clamped 1..=5.
     pub max_hops: Option<u32>,
 }
@@ -193,11 +449,11 @@ pub struct AskCodeTool {
     /// Optional file path for disambiguation or module-survey shape.
     pub file_path: Option<String>,
     /// auto (default), discover, trace, data, impact, dependency, or module.
-    pub mode: Option<String>,
+    pub mode: Option<InvestigationMode>,
     /// Number of evidence entries to include in the prompt. Default 8, clamp 1..=15.
     pub max_evidence: Option<u32>,
     /// fast | balanced (default). 'deep' (Qwen 7B) reserved for a later version.
-    pub quality: Option<String>,
+    pub quality: Option<AnswerQuality>,
 }
 
 #[macros::mcp_tool(
@@ -341,6 +597,33 @@ pub struct FindTestsForSymbolTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finite_options_are_strict_and_advertised_in_tool_schemas() {
+        let invalid = serde_json::from_value::<SearchCodeTool>(serde_json::json!({
+            "query": "auth",
+            "context": "verbose"
+        }));
+        assert!(invalid.is_err());
+
+        let schema = serde_json::to_string(&SearchCodeTool::tool().input_schema).unwrap();
+        for expected in ["none", "snippets", "full"] {
+            assert!(
+                schema.contains(&format!("\"{expected}\"")),
+                "search_code schema must advertise {expected}: {schema}"
+            );
+        }
+    }
+
+    #[test]
+    fn investigation_mode_deserialization_keeps_legacy_aliases() {
+        let tool = serde_json::from_value::<InvestigateTool>(serde_json::json!({
+            "question": "trace the call path",
+            "mode": "call_trace"
+        }))
+        .unwrap();
+        assert_eq!(tool.mode, Some(InvestigationMode::Trace));
+    }
 
     #[test]
     fn search_code_description_routes_multi_hop_to_investigate() {

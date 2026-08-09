@@ -13,7 +13,6 @@
 //! `symbol_id` referenced there is guaranteed to exist in the index.
 
 use anyhow::Result;
-use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::llm::answer::{
@@ -22,7 +21,7 @@ use crate::llm::answer::{
 };
 use crate::llm::create_llm_generator_with_ctx;
 use crate::llm::LlmGenerator;
-use crate::tools::{AskCodeTool, InvestigateTool};
+use crate::tools::{AnswerQuality, AskCodeTool, InvestigateTool};
 
 use super::ask_code_cache::AskCodeCacheKey;
 use super::investigation::{handle_investigate, is_hook_callback_question};
@@ -39,31 +38,11 @@ const ANSWER_MAX_TOKENS_FAST: u32 = 256;
 
 /// Wall-clock parameter used in the response so callers can see what quality
 /// tier ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnswerQuality {
-    Fast,
-    Balanced,
-}
-
 impl AnswerQuality {
-    fn from_str(s: Option<&str>) -> Self {
-        match s.map(str::to_ascii_lowercase).as_deref() {
-            Some("fast") => Self::Fast,
-            // Default + any unknown value -> balanced.
-            _ => Self::Balanced,
-        }
-    }
     fn max_tokens(self) -> u32 {
         match self {
             Self::Fast => ANSWER_MAX_TOKENS_FAST,
             Self::Balanced => ANSWER_MAX_TOKENS_BALANCED,
-        }
-    }
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Fast => "fast",
-            Self::Balanced => "balanced",
         }
     }
 }
@@ -77,7 +56,7 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
         .max_evidence
         .unwrap_or(DEFAULT_MAX_EVIDENCE)
         .clamp(1, MAX_EVIDENCE_HARD_CAP);
-    let quality = AnswerQuality::from_str(tool.quality.as_deref());
+    let quality = tool.quality.unwrap_or(AnswerQuality::Balanced);
 
     // ---- Cache lookup (keyed on question + index version + response shape) ----
     let repo_index_version = state
@@ -92,7 +71,7 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
         quality,
         tool.target.as_deref(),
         tool.file_path.as_deref(),
-        tool.mode.as_deref(),
+        tool.mode.as_ref().map(|mode| mode.as_str()),
         max_evidence,
     );
     if let Some(mut cached) = state.ask_code_cache.get(&cache_key) {
@@ -107,7 +86,7 @@ pub async fn handle_ask_code(state: &AppState, tool: AskCodeTool) -> Result<Valu
         question: question.clone(),
         target: tool.target.clone(),
         file_path: tool.file_path.clone(),
-        mode: tool.mode.clone(),
+        mode: tool.mode,
         max_hops: None,
     };
     let investigate_response = handle_investigate(state, investigate_tool).await?;
@@ -706,22 +685,18 @@ mod tests {
     }
 
     #[test]
-    fn quality_default_is_balanced() {
-        assert_eq!(AnswerQuality::from_str(None), AnswerQuality::Balanced);
+    fn quality_balanced_parses_strictly() {
         assert_eq!(
-            AnswerQuality::from_str(Some("balanced")),
-            AnswerQuality::Balanced
+            "balanced".parse::<AnswerQuality>(),
+            Ok(AnswerQuality::Balanced)
         );
-        assert_eq!(
-            AnswerQuality::from_str(Some("garbage")),
-            AnswerQuality::Balanced
-        );
+        assert!("garbage".parse::<AnswerQuality>().is_err());
     }
 
     #[test]
     fn quality_fast_routed_explicitly() {
-        assert_eq!(AnswerQuality::from_str(Some("fast")), AnswerQuality::Fast);
-        assert_eq!(AnswerQuality::from_str(Some("FAST")), AnswerQuality::Fast);
+        assert_eq!("fast".parse::<AnswerQuality>(), Ok(AnswerQuality::Fast));
+        assert_eq!("FAST".parse::<AnswerQuality>(), Ok(AnswerQuality::Fast));
     }
 
     #[test]

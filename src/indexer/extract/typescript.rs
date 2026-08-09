@@ -204,7 +204,7 @@ fn extract_symbols_with_parser(
         imports,
         module_bindings,
         type_edges,
-        extends_edges: Vec::new(),
+        inheritance_relations: Vec::new(),
         dataflow_edges,
         todos,
         jsdoc_entries,

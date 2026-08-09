@@ -611,7 +611,11 @@ pub async fn handle_investigate(state: &AppState, tool: InvestigateTool) -> Resu
         .unwrap_or(DEFAULT_MAX_HOPS)
         .clamp(1, MAX_HOPS_HARD_CAP);
 
-    let shape = classify_shape(&question, file_path, tool.mode.as_deref());
+    let shape = classify_shape(
+        &question,
+        file_path,
+        tool.mode.as_ref().map(|mode| mode.as_str()),
+    );
 
     // Step 1: planner provides the recommended chain (always included so the
     // agent can audit our routing).
@@ -2222,14 +2226,14 @@ async fn run_primary_hop(
     target: Option<&str>,
     file_path: Option<&str>,
 ) -> Result<PrimaryHop> {
-    use crate::tools::SearchCodeTool;
+    use crate::tools::{SearchCodeTool, SearchContext};
 
     let query = target.unwrap_or(question).to_string();
     let tool = SearchCodeTool {
         query,
         limit: Some(5),
         exported_only: None,
-        context: Some("full".to_string()),
+        context: Some(SearchContext::Full),
     };
     let raw = super::search::handle_search_code(&state.retriever, tool).await?;
 
@@ -2325,11 +2329,11 @@ fn run_call_hierarchy_hop(
     pivot: &str,
     file_path: Option<&str>,
 ) -> Result<Option<SecondaryHop>> {
-    use crate::tools::GetCallHierarchyTool;
+    use crate::tools::{CallHierarchyDirection, GetCallHierarchyTool};
 
     let tool = GetCallHierarchyTool {
         symbol_name: pivot.to_string(),
-        direction: Some("both".to_string()),
+        direction: Some(CallHierarchyDirection::Both),
         // Depth 3 reaches typical pipeline chains like
         // handler -> dispatcher -> retriever -> specialist that the previous
         // depth=2 stopped short of. R006 q15's missing-merger rubric failure
@@ -2405,11 +2409,11 @@ async fn run_find_affected_hop(
 }
 
 fn run_dependency_graph_hop(state: &AppState, pivot: &str) -> Result<Option<SecondaryHop>> {
-    use crate::tools::ExploreDependencyGraphTool;
+    use crate::tools::{ExploreDependencyGraphTool, TraversalDirection};
 
     let tool = ExploreDependencyGraphTool {
         symbol_name: pivot.to_string(),
-        direction: Some("both".to_string()),
+        direction: Some(TraversalDirection::Both),
         depth: Some(2),
         limit: Some(50),
         file: None,

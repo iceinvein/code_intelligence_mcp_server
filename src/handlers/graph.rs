@@ -79,7 +79,8 @@ pub fn handle_explore_dependency_graph(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = clamp_depth(tool.depth, 2);
     let limit = clamp_limit(tool.limit, 200, MAX_GRAPH_LIMIT);
-    let direction = tool.direction.unwrap_or_else(|| "downstream".to_string());
+    let direction = tool.direction.unwrap_or(TraversalDirection::Downstream);
+    let direction = direction.as_str();
 
     let sqlite = &state.sqlite;
 
@@ -90,12 +91,12 @@ pub fn handle_explore_dependency_graph(
         Ok(root) => root,
         Err(response) => {
             return Ok(graph_resolution_failure(
-                response, &direction, depth, "nodes",
+                response, direction, depth, "nodes",
             ));
         }
     };
 
-    let mut graph = build_dependency_graph(sqlite, &root, &direction, depth, limit, None)?;
+    let mut graph = build_dependency_graph(sqlite, &root, direction, depth, limit, None)?;
     graph["resolution"] = json!("exact");
     Ok(graph)
 }
@@ -107,7 +108,8 @@ pub fn handle_get_call_hierarchy(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = clamp_depth(tool.depth, 2);
     let limit = clamp_limit(tool.limit, 200, MAX_GRAPH_LIMIT);
-    let direction = tool.direction.unwrap_or_else(|| "callees".to_string());
+    let direction = tool.direction.unwrap_or(CallHierarchyDirection::Callees);
+    let direction = direction.as_str();
 
     let sqlite = &state.sqlite;
 
@@ -118,12 +120,12 @@ pub fn handle_get_call_hierarchy(
         Ok(root) => root,
         Err(response) => {
             return Ok(graph_resolution_failure(
-                response, &direction, depth, "nodes",
+                response, direction, depth, "nodes",
             ));
         }
     };
 
-    let mut graph = build_call_hierarchy(sqlite, &root, &direction, depth, limit)?;
+    let mut graph = build_call_hierarchy(sqlite, &root, direction, depth, limit)?;
     graph["resolution"] = json!("exact");
     if direction == "callers" || direction == "both" {
         overlay_external_callers(sqlite, &mut graph, &root, limit)?;
@@ -257,7 +259,8 @@ pub fn handle_get_type_graph(
 ) -> Result<serde_json::Value, anyhow::Error> {
     let depth = clamp_depth(tool.depth, 2);
     let limit = clamp_limit(tool.limit, 200, MAX_GRAPH_LIMIT);
-    let direction = tool.direction.as_deref().unwrap_or("both");
+    let direction = tool.direction.unwrap_or(TraversalDirection::Both);
+    let direction = direction.as_str();
 
     let sqlite = &state.sqlite;
 

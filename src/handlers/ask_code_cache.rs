@@ -14,7 +14,7 @@ use lru::LruCache;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::ask_code::AnswerQuality;
+use crate::tools::AnswerQuality;
 
 /// Default LRU capacity. ~64 KB per response cap (set in handler) means
 /// ~16 MB worst-case footprint for the full cache.

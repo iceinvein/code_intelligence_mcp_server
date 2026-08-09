@@ -60,6 +60,18 @@ async fn main() -> SdkResult<()> {
         cli::print_version();
         return Ok(());
     }
+    if let Some(message) = cli_args.invalid_arguments.as_deref() {
+        let (json, pretty) = cli_args.command.output_flags();
+        let failure = CliFailure::new(
+            cli_args.command.name(),
+            CliErrorCode::InvalidArguments,
+            message,
+            json,
+            pretty,
+        );
+        failure.emit();
+        std::process::exit(failure.exit_code());
+    }
 
     // Lifecycle subcommands run synchronously without booting the daemon.
     if !matches!(
@@ -829,7 +841,12 @@ fn parse_cli_duration(raw: &str) -> Result<std::time::Duration, String> {
 
 fn classify_daemon_error(status: reqwest::StatusCode, message: &str) -> CliErrorCode {
     let lower = message.to_ascii_lowercase();
-    if lower.contains("workspace") || lower.contains("repo") {
+    if lower.contains("workspace")
+        || lower.contains("repo")
+        || lower.contains("consent_required")
+        || lower.contains("indexing_in_progress")
+        || lower.contains("declined")
+    {
         CliErrorCode::WorkspaceUnavailable
     } else if status.is_client_error() {
         CliErrorCode::InvalidArguments
@@ -1370,6 +1387,24 @@ mod cli_query_contract_tests {
         assert_eq!(CliErrorCode::WorkspaceUnavailable.exit_code(), 4);
         assert_eq!(CliErrorCode::NoResults.exit_code(), 5);
         assert_eq!(CliErrorCode::Timeout.exit_code(), 124);
+    }
+
+    #[test]
+    fn daemon_error_classification_distinguishes_lifecycle_conflicts_from_bad_options() {
+        assert_eq!(
+            classify_daemon_error(
+                reqwest::StatusCode::CONFLICT,
+                "indexing_in_progress: first full index is running"
+            ),
+            CliErrorCode::WorkspaceUnavailable
+        );
+        assert_eq!(
+            classify_daemon_error(
+                reqwest::StatusCode::BAD_REQUEST,
+                "invalid context 'verbose'; expected one of: none, snippets, full"
+            ),
+            CliErrorCode::InvalidArguments
+        );
     }
 
     #[test]

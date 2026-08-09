@@ -234,15 +234,43 @@ pub struct ModuleBinding {
     pub at_line: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InheritanceKind {
+    Extends,
+    Implements,
+}
+
+impl InheritanceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Extends => "extends",
+            Self::Implements => "implements",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtractedInheritanceRelation {
+    /// Symbol whose source text declares the relationship. This can differ
+    /// from `from_name`, as with a Rust `impl Trait for Type` item.
+    pub declaration_name: String,
+    pub from_name: String,
+    pub to_name: String,
+    pub kind: InheritanceKind,
+    /// One-based source line containing the relationship declaration.
+    pub at_line: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtractedFile {
     pub symbols: Vec<ExtractedSymbol>,
     pub imports: Vec<Import>,
     pub module_bindings: Vec<ModuleBinding>,
     pub type_edges: Vec<(String, String)>, // (parent_symbol_name, type_name)
-    /// Inheritance edges: (subclass_name, base_name). The base keeps its
-    /// dotted form ("models.Model") so edge resolution can use the import map.
-    pub extends_edges: Vec<(String, String)>,
+    /// Explicit inheritance and implementation relationships. Target names keep
+    /// their dotted form ("models.Model") so resolution can use the import map.
+    pub inheritance_relations: Vec<ExtractedInheritanceRelation>,
     pub dataflow_edges: Vec<DataFlowEdge>, // Data flow edges (reads/writes)
     /// TODO/FIXME comments extracted from this file (LANG-03)
     pub todos: Vec<TodoEntry>,

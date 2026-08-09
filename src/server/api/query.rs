@@ -6,7 +6,12 @@
 use axum::{extract::State, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
+
+use crate::tools::{
+    AnswerQuality, CallHierarchyDirection, HydrateMode, InvestigationMode, SearchContext,
+    TraversalDirection,
+};
 
 use super::{ApiError, ApiState};
 
@@ -103,23 +108,32 @@ pub(crate) struct QueryGraphRequest {
     limit: Option<u32>,
 }
 
+fn parse_query_option<T>(value: Option<String>) -> Result<Option<T>, ApiError>
+where
+    T: FromStr<Err = String>,
+{
+    value
+        .map(|raw| raw.parse::<T>().map_err(ApiError::bad_request))
+        .transpose()
+}
+
 pub(crate) async fn handle_query_search(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<QuerySearchRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.query.trim().is_empty() {
-        return Err(ApiError("query is required".to_string()));
+        return Err(ApiError::bad_request("query is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::SearchCodeTool {
         query: req.query,
         limit: req.limit,
         exported_only: req.exported_only,
-        context: req.context,
+        context: parse_query_option::<SearchContext>(req.context)?,
     };
     let result = crate::handlers::handle_search_code(&app_state.retriever, tool)
         .await
-        .map_err(|e| ApiError(format!("search failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("search failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "search",
@@ -135,19 +149,19 @@ pub(crate) async fn handle_query_investigate(
     Json(req): Json<QueryInvestigateRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.question.trim().is_empty() {
-        return Err(ApiError("question is required".to_string()));
+        return Err(ApiError::bad_request("question is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::InvestigateTool {
         question: req.question,
         target: req.target,
         file_path: req.file_path,
-        mode: req.mode,
+        mode: parse_query_option::<InvestigationMode>(req.mode)?,
         max_hops: req.max_hops,
     };
     let result = crate::handlers::handle_investigate(&app_state, tool)
         .await
-        .map_err(|e| ApiError(format!("investigate failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("investigate failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "investigate",
@@ -163,20 +177,20 @@ pub(crate) async fn handle_query_ask(
     Json(req): Json<QueryAskRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.question.trim().is_empty() {
-        return Err(ApiError("question is required".to_string()));
+        return Err(ApiError::bad_request("question is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::AskCodeTool {
         question: req.question,
         target: req.target,
         file_path: req.file_path,
-        mode: req.mode,
+        mode: parse_query_option::<InvestigationMode>(req.mode)?,
         max_evidence: req.max_evidence,
-        quality: req.quality,
+        quality: parse_query_option::<AnswerQuality>(req.quality)?,
     };
     let result = crate::handlers::handle_ask_code(&app_state, tool)
         .await
-        .map_err(|e| ApiError(format!("ask failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("ask failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "ask",
@@ -192,16 +206,16 @@ pub(crate) async fn handle_query_hydrate(
     Json(req): Json<QueryHydrateRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.ids.is_empty() {
-        return Err(ApiError("ids are required".to_string()));
+        return Err(ApiError::bad_request("ids are required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::HydrateSymbolsTool {
         ids: req.ids,
-        mode: req.mode,
+        mode: parse_query_option::<HydrateMode>(req.mode)?,
         verbose: req.verbose,
     };
     let result = crate::handlers::handle_hydrate_symbols(&app_state, tool)
-        .map_err(|e| ApiError(format!("hydrate failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("hydrate failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "hydrate",
@@ -225,7 +239,7 @@ pub(crate) async fn handle_query_repo_map(
             max_symbols_per_file: req.max_symbols_per_file,
         },
     )
-    .map_err(|e| ApiError(format!("repo-map failed: {e}")))?;
+    .map_err(|e| ApiError::internal(format!("repo-map failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "repo-map",
@@ -241,7 +255,7 @@ pub(crate) async fn handle_query_definition(
     Json(req): Json<QueryDefinitionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.symbol_name.trim().is_empty() {
-        return Err(ApiError("symbol_name is required".to_string()));
+        return Err(ApiError::bad_request("symbol_name is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::GetDefinitionTool {
@@ -251,7 +265,7 @@ pub(crate) async fn handle_query_definition(
     };
     let result = crate::handlers::handle_get_definition(&app_state, tool)
         .await
-        .map_err(|e| ApiError(format!("definition failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("definition failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "definition",
@@ -270,7 +284,7 @@ pub(crate) async fn handle_query_files(
     let rows = app_state
         .sqlite
         .list_indexed_files()
-        .map_err(|e| ApiError(format!("files failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("files failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "files",
@@ -286,7 +300,7 @@ pub(crate) async fn handle_query_file_symbols(
     Json(req): Json<QueryFileSymbolsRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.file_path.trim().is_empty() {
-        return Err(ApiError("file_path is required".to_string()));
+        return Err(ApiError::bad_request("file_path is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::GetFileSymbolsTool {
@@ -295,7 +309,7 @@ pub(crate) async fn handle_query_file_symbols(
     };
     // handle_get_file_symbols is synchronous.
     let result = crate::handlers::handle_get_file_symbols(&app_state, tool)
-        .map_err(|e| ApiError(format!("file_symbols failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("file_symbols failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "file-symbols",
@@ -311,7 +325,7 @@ pub(crate) async fn handle_query_usage_examples(
     Json(req): Json<QueryUsageExamplesRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.symbol_name.trim().is_empty() {
-        return Err(ApiError("symbol_name is required".to_string()));
+        return Err(ApiError::bad_request("symbol_name is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::GetUsageExamplesTool {
@@ -321,7 +335,7 @@ pub(crate) async fn handle_query_usage_examples(
     };
     // handle_get_usage_examples is synchronous.
     let result = crate::handlers::handle_get_usage_examples(&app_state, tool)
-        .map_err(|e| ApiError(format!("usage_examples failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("usage_examples failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "usage-examples",
@@ -337,7 +351,7 @@ pub(crate) async fn handle_query_references(
     Json(req): Json<QueryReferencesRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.symbol_name.trim().is_empty() {
-        return Err(ApiError("symbol_name is required".to_string()));
+        return Err(ApiError::bad_request("symbol_name is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::FindReferencesTool {
@@ -348,7 +362,7 @@ pub(crate) async fn handle_query_references(
     };
     // handle_find_references is synchronous (unlike handle_get_definition above), so no .await here.
     let result = crate::handlers::handle_find_references(&app_state, tool)
-        .map_err(|e| ApiError(format!("references failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("references failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "references",
@@ -364,18 +378,18 @@ pub(crate) async fn handle_query_call_hierarchy(
     Json(req): Json<QueryGraphRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.symbol_name.trim().is_empty() {
-        return Err(ApiError("symbol_name is required".to_string()));
+        return Err(ApiError::bad_request("symbol_name is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::GetCallHierarchyTool {
         symbol_name: req.symbol_name,
-        direction: req.direction,
+        direction: parse_query_option::<CallHierarchyDirection>(req.direction)?,
         depth: req.depth,
         limit: req.limit,
         file: req.file,
     };
     let result = crate::handlers::handle_get_call_hierarchy(&app_state, tool)
-        .map_err(|e| ApiError(format!("call_hierarchy failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("call_hierarchy failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "call-hierarchy",
@@ -391,18 +405,18 @@ pub(crate) async fn handle_query_type_graph(
     Json(req): Json<QueryGraphRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.symbol_name.trim().is_empty() {
-        return Err(ApiError("symbol_name is required".to_string()));
+        return Err(ApiError::bad_request("symbol_name is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::GetTypeGraphTool {
         symbol_name: req.symbol_name,
-        direction: req.direction,
+        direction: parse_query_option::<TraversalDirection>(req.direction)?,
         depth: req.depth,
         limit: req.limit,
         file: req.file,
     };
     let result = crate::handlers::handle_get_type_graph(&app_state, tool)
-        .map_err(|e| ApiError(format!("type_graph failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("type_graph failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "type-graph",
@@ -418,18 +432,18 @@ pub(crate) async fn handle_query_dependency_graph(
     Json(req): Json<QueryGraphRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.symbol_name.trim().is_empty() {
-        return Err(ApiError("symbol_name is required".to_string()));
+        return Err(ApiError::bad_request("symbol_name is required"));
     }
     let (repo_path, repo_id, app_state) = resolve_query_repo(&state, &req.repo).await?;
     let tool = crate::tools::ExploreDependencyGraphTool {
         symbol_name: req.symbol_name,
-        direction: req.direction,
+        direction: parse_query_option::<TraversalDirection>(req.direction)?,
         depth: req.depth,
         limit: req.limit,
         file: req.file,
     };
     let result = crate::handlers::handle_explore_dependency_graph(&app_state, tool)
-        .map_err(|e| ApiError(format!("dependency_graph failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("dependency_graph failed: {e}")))?;
     let index_version = app_state.sqlite.most_recent_symbol_update().ok().flatten();
     Ok(Json(query_envelope(
         "dependency-graph",
@@ -453,7 +467,7 @@ async fn resolve_query_repo(
 > {
     let raw = crate::path::Utf8PathBuf::from(repo);
     let repo_path = crate::path::canonicalize_existing_dir(&raw).map_err(|e| {
-        ApiError(format!(
+        ApiError::bad_request(format!(
             "workspace not found or not accessible: {repo}: {e}"
         ))
     })?;
@@ -463,21 +477,23 @@ async fn resolve_query_repo(
         .session_manager
         .resolve_repo(repo_path.as_path())
         .await
-        .map_err(|error| ApiError(format!("failed to resolve repo lifecycle: {error}")))?;
+        .map_err(|error| {
+            ApiError::internal(format!("failed to resolve repo lifecycle: {error}"))
+        })?;
     let app_state = match access {
         crate::session::RepoAccess::Ready(app_state) => app_state,
         crate::session::RepoAccess::NeedsApproval => {
-            return Err(ApiError(format!(
+            return Err(ApiError::conflict(format!(
                 "consent_required: workspace needs its first full index: {repo_path}"
             )));
         }
         crate::session::RepoAccess::Declined => {
-            return Err(ApiError(format!(
+            return Err(ApiError::conflict(format!(
                 "declined: workspace indexing was declined: {repo_path}"
             )));
         }
         crate::session::RepoAccess::Indexing { job, .. } => {
-            return Err(ApiError(format!(
+            return Err(ApiError::conflict(format!(
                 "indexing_in_progress: first full index job {} is running for {repo_path}",
                 job.id
             )));
@@ -539,7 +555,8 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error.0.contains("consent_required"));
+        assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+        assert!(error.message.contains("consent_required"));
         assert_eq!(state.session_manager.loaded_repo_count(), 0);
     }
 
@@ -585,5 +602,23 @@ mod tests {
         assert_eq!(files[0]["symbol_count"], 3);
         assert_eq!(files[1]["path"], "dir/b.rs");
         assert_eq!(files[1]["symbol_count"], 1);
+    }
+
+    #[test]
+    fn query_options_reject_unknown_values() {
+        let error = parse_query_option::<SearchContext>(Some("verbose".to_string()))
+            .expect_err("unknown context must fail");
+        assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(error
+            .message
+            .contains("expected one of: none, snippets, full"));
+    }
+
+    #[test]
+    fn investigation_mode_aliases_remain_compatible() {
+        let mode = parse_query_option::<InvestigationMode>(Some("call_trace".to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(mode, InvestigationMode::Trace);
     }
 }

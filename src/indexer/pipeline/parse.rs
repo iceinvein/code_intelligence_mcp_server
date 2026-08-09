@@ -1,5 +1,6 @@
 use crate::indexer::extract::symbol::{
-    DataFlowEdge, Import, JSDocEntry, ModuleBinding, ModuleBindingKind, TodoEntry,
+    DataFlowEdge, ExtractedInheritanceRelation, Import, JSDocEntry, ModuleBinding,
+    ModuleBindingKind, TodoEntry,
 };
 use crate::indexer::pipeline::utils::FileFingerprint;
 use crate::storage::sqlite::schema::{
@@ -73,7 +74,7 @@ pub struct ParsedFile {
     pub imports: Vec<Import>,
     pub module_bindings: Vec<ModuleBinding>,
     pub type_edges: Vec<(String, String)>,
-    pub extends_edges: Vec<(String, String)>,
+    pub inheritance_relations: Vec<ExtractedInheritanceRelation>,
     pub dataflow_edges: Vec<DataFlowEdge>,
 }
 
@@ -473,7 +474,7 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         imports: extracted.imports,
         module_bindings,
         type_edges: extracted.type_edges,
-        extends_edges: extracted.extends_edges,
+        inheritance_relations: extracted.inheritance_relations,
         dataflow_edges: extracted.dataflow_edges,
     }))
 }
@@ -518,7 +519,7 @@ pub fn extract_edges_for_parsed_file(parsed: &ParsedFile, conn: &Connection) -> 
             &id_to_symbol,
             &parsed.imports,
             &parsed.type_edges,
-            &parsed.extends_edges,
+            &parsed.inheritance_relations,
             &parsed.dataflow_edges,
             package_lookup_ref,
             Some(conn),

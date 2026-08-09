@@ -252,15 +252,37 @@ pub(crate) fn validate_repo_path(input: &str) -> Result<crate::path::Utf8PathBuf
 }
 
 #[derive(Debug)]
-pub(crate) struct ApiError(pub(crate) String);
+pub(crate) struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": self.0 })),
-        )
-            .into_response()
+        (self.status, Json(json!({ "error": self.message }))).into_response()
     }
 }
 

@@ -32,6 +32,52 @@ pub enum Command {
     Capabilities(OutputOpts),
 }
 
+impl Command {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Install(_) => "install",
+            Self::Uninstall => "uninstall",
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Status => "status",
+            Self::Migrate(_) => "migrate",
+            Self::InstallAgent(_) => "install-agent",
+            Self::UninstallAgent(_) => "uninstall-agent",
+            Self::Search(_) => "search",
+            Self::Investigate(_) => "investigate",
+            Self::Ask(_) => "ask",
+            Self::Hydrate(_) => "hydrate",
+            Self::RepoMap(_) => "repo-map",
+            Self::Definition(_) => "definition",
+            Self::References(_) => "references",
+            Self::CallHierarchy(_) => "call-hierarchy",
+            Self::TypeGraph(_) => "type-graph",
+            Self::DependencyGraph(_) => "dependency-graph",
+            Self::Index(_) => "index",
+            Self::Capabilities(_) => "capabilities",
+        }
+    }
+
+    pub fn output_flags(&self) -> (bool, bool) {
+        match self {
+            Self::Search(opts) => (opts.json, opts.pretty),
+            Self::Investigate(opts) => (opts.json, opts.pretty),
+            Self::Ask(opts) => (opts.json, opts.pretty),
+            Self::Hydrate(opts) => (opts.json, opts.pretty),
+            Self::RepoMap(opts) => (opts.json, opts.pretty),
+            Self::Definition(opts)
+            | Self::References(opts)
+            | Self::CallHierarchy(opts)
+            | Self::TypeGraph(opts)
+            | Self::DependencyGraph(opts) => (opts.json, opts.pretty),
+            Self::Index(opts) => (opts.json, opts.pretty),
+            Self::Capabilities(opts) => (opts.json, opts.pretty),
+            _ => (false, false),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InstallOpts {
     pub port: Option<u16>,
@@ -220,6 +266,7 @@ pub struct CliArgs {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub discovery_port: Option<u16>,
+    pub invalid_arguments: Option<String>,
 }
 
 impl Default for CliArgs {
@@ -231,6 +278,7 @@ impl Default for CliArgs {
             host: None,
             port: None,
             discovery_port: None,
+            invalid_arguments: None,
         }
     }
 }
@@ -249,6 +297,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
     let mut symbol_query_opts = SymbolQueryOpts::default();
     let mut index_opts = IndexOpts::default();
     let mut capabilities_opts = OutputOpts::default();
+    let mut invalid_arguments = None;
     let mut subcommand: Option<&str> = None;
     let mut query_words: Vec<String> = Vec::new();
 
@@ -726,6 +775,27 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                     _ => {}
                 }
             }
+            _ if arg.starts_with('-')
+                && matches!(
+                    subcommand,
+                    Some(
+                        "search"
+                            | "investigate"
+                            | "ask"
+                            | "hydrate"
+                            | "repo-map"
+                            | "definition"
+                            | "references"
+                            | "call-hierarchy"
+                            | "type-graph"
+                            | "dependency-graph"
+                            | "index"
+                            | "capabilities"
+                    )
+                ) =>
+            {
+                invalid_arguments.get_or_insert_with(|| format!("unknown option '{arg}'"));
+            }
             _ if matches!(
                 subcommand,
                 Some(
@@ -790,6 +860,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
         Some("capabilities") => Command::Capabilities(capabilities_opts),
         _ => Command::Run,
     };
+    cli.invalid_arguments = invalid_arguments;
 
     cli
 }
@@ -883,7 +954,7 @@ pub fn print_help() {
     println!("  --file-path PATH        investigate file disambiguation");
     println!("  --file PATH             navigation symbol disambiguation");
     println!(
-        "  --reference-type TYPE   references: call, import, reference, extends, implements, all"
+        "  --reference-type TYPE   references: edge type (common: call, import, reference, extends, implements, all; custom types allowed)"
     );
     println!("  --direction DIRECTION   graph traversal direction");
     println!("  --depth N               graph traversal depth");
@@ -1105,6 +1176,23 @@ mod tests {
     fn parse_args_ignores_unknown_args() {
         let cli = parse_args(&["bin".into(), "--unknown".into()]);
         assert_eq!(cli.command, Command::Run);
+        assert_eq!(cli.invalid_arguments, None);
+    }
+
+    #[test]
+    fn parse_args_rejects_unknown_query_options() {
+        let cli = parse_args(&[
+            "bin".into(),
+            "search".into(),
+            "--repo".into(),
+            ".".into(),
+            "--bogus".into(),
+            "auth".into(),
+        ]);
+        assert_eq!(
+            cli.invalid_arguments.as_deref(),
+            Some("unknown option '--bogus'")
+        );
     }
 
     #[test]

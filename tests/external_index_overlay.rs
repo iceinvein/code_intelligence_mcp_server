@@ -23,7 +23,7 @@ use code_intelligence_mcp_server::storage::{
     vector::LanceDbStore,
 };
 use code_intelligence_mcp_server::tools::{
-    FindAffectedCodeTool, GetCallHierarchyTool, RefreshIndexTool,
+    CallHierarchyDirection, FindAffectedCodeTool, GetCallHierarchyTool, RefreshIndexTool,
 };
 use sha2::{Digest, Sha256};
 
@@ -303,7 +303,7 @@ fn get_call_hierarchy_callers_includes_external_overlay() {
         &app_state,
         GetCallHierarchyTool {
             symbol_name: "target".to_string(),
-            direction: Some("callers".to_string()),
+            direction: Some(CallHierarchyDirection::Callers),
             depth: Some(1),
             limit: Some(20),
             file: Some("src/app.ts".to_string()),

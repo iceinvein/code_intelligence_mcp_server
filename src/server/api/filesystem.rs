@@ -114,7 +114,7 @@ pub(crate) async fn handle_fs_list(
     let path = Utf8PathBuf::from(raw);
     let result = tokio::task::spawn_blocking(move || list_directory(&path, show_hidden))
         .await
-        .map_err(|e| super::ApiError(format!("fs list task join error: {e}")))?;
+        .map_err(|e| super::ApiError::internal(format!("fs list task join error: {e}")))?;
 
     match result {
         Ok(listing) => Ok(Json(listing).into_response()),

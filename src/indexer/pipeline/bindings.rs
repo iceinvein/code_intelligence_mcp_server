@@ -463,7 +463,7 @@ mod tests {
             imports: vec![],
             module_bindings: vec![binding],
             type_edges: vec![],
-            extends_edges: vec![],
+            inheritance_relations: vec![],
             dataflow_edges: vec![],
         }
     }

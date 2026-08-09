@@ -561,9 +561,9 @@ pub fn handle_hydrate_symbols(
         }
     }
 
-    let mode = match tool.mode.as_deref() {
-        Some("full") => FormatMode::Full,
-        _ => FormatMode::Default,
+    let mode = match tool.mode {
+        Some(HydrateMode::Full) => FormatMode::Full,
+        None => FormatMode::Default,
     };
 
     let verbose = tool.verbose.unwrap_or(false);

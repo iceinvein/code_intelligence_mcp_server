@@ -5,8 +5,9 @@ use tree_sitter::{Node, Parser, TreeCursor};
 use super::django::extract_django_patterns;
 use super::fastapi::extract_fastapi_patterns;
 use super::symbol::{
-    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
-    ModuleBinding, ModuleBindingKind, SymbolKind,
+    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedInheritanceRelation,
+    ExtractedSymbol, Import, InheritanceKind, LineSpan, ModuleBinding, ModuleBindingKind,
+    SymbolKind,
 };
 
 pub fn extract_python_symbols(source: &str) -> Result<ExtractedFile> {
@@ -25,7 +26,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let mut imports = Vec::new();
     let mut module_bindings = Vec::new();
     let mut type_edges: Vec<(String, String)> = Vec::new();
-    let mut extends_edges: Vec<(String, String)> = Vec::new();
+    let mut inheritance_relations = Vec::new();
     let mut dataflow_edges: Vec<DataFlowEdge> = Vec::new();
 
     walk(cursor, &mut |node| match node.kind() {
@@ -83,7 +84,13 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
                     let mut sc_cursor = superclasses.walk();
                     for child in superclasses.children(&mut sc_cursor) {
                         if let Some(base) = extract_python_base_name(child, source) {
-                            extends_edges.push((name.clone(), base));
+                            inheritance_relations.push(ExtractedInheritanceRelation {
+                                declaration_name: name.clone(),
+                                from_name: name.clone(),
+                                to_name: base,
+                                kind: InheritanceKind::Extends,
+                                at_line: node.start_position().row as u32 + 1,
+                            });
                         }
                     }
                 }
@@ -193,7 +200,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         imports,
         module_bindings,
         type_edges,
-        extends_edges,
+        inheritance_relations,
         dataflow_edges,
         todos,
         jsdoc_entries: Vec::new(),
@@ -1346,27 +1353,31 @@ class Child(Parent, Mixin):
             extracted.type_edges
         );
 
-        // Inheritance now lives on the dedicated extends channel.
+        // Inheritance now lives on the dedicated relationship channel.
         assert!(
             extracted
-                .extends_edges
+                .inheritance_relations
                 .iter()
-                .any(|e| e.0 == "Child" && e.1 == "Parent"),
+                .any(|e| e.from_name == "Child"
+                    && e.to_name == "Parent"
+                    && e.kind == InheritanceKind::Extends),
             "Expected extends edge Child->Parent, got: {:?}",
-            extracted.extends_edges
+            extracted.inheritance_relations
         );
         assert!(
             extracted
-                .extends_edges
+                .inheritance_relations
                 .iter()
-                .any(|e| e.0 == "Child" && e.1 == "Mixin"),
+                .any(|e| e.from_name == "Child"
+                    && e.to_name == "Mixin"
+                    && e.kind == InheritanceKind::Extends),
             "Expected extends edge Child->Mixin, got: {:?}",
-            extracted.extends_edges
+            extracted.inheritance_relations
         );
     }
 
     #[test]
-    fn test_python_extends_edges() {
+    fn test_python_inheritance_relations() {
         let source = r#"
 class Child(Parent, Mixin):
     pass
@@ -1389,29 +1400,34 @@ class Legacy(object):
         ] {
             assert!(
                 extracted
-                    .extends_edges
+                    .inheritance_relations
                     .iter()
-                    .any(|e| e.0 == expected.0 && e.1 == expected.1),
+                    .any(|e| e.from_name == expected.0
+                        && e.to_name == expected.1
+                        && e.kind == InheritanceKind::Extends),
                 "Expected extends edge {:?}, got: {:?}",
                 expected,
-                extracted.extends_edges
+                extracted.inheritance_relations
             );
         }
 
         // metaclass= is a keyword argument, not a base
         assert!(
-            !extracted.extends_edges.iter().any(|e| e.1 == "ABCMeta"),
+            !extracted
+                .inheritance_relations
+                .iter()
+                .any(|e| e.to_name == "ABCMeta"),
             "metaclass keyword argument must not become a base: {:?}",
-            extracted.extends_edges
+            extracted.inheritance_relations
         );
         // no parens / object-only bases carry no structural information
         assert!(
             !extracted
-                .extends_edges
+                .inheritance_relations
                 .iter()
-                .any(|e| e.0 == "Plain" || e.0 == "Legacy"),
+                .any(|e| e.from_name == "Plain" || e.from_name == "Legacy"),
             "Plain/Legacy should have no extends edges: {:?}",
-            extracted.extends_edges
+            extracted.inheritance_relations
         );
         // bases no longer masquerade as type edges
         assert!(

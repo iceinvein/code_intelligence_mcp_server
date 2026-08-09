@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
-use crate::indexer::extract::symbol::{DataFlowEdge, DataFlowType, Import};
+use crate::indexer::extract::symbol::{
+    DataFlowEdge, DataFlowType, ExtractedInheritanceRelation, Import,
+};
 use crate::storage::sqlite::{EdgeEvidenceRow, EdgeRow, SymbolRow};
 
 use super::parsing::{
@@ -335,7 +337,7 @@ pub fn extract_edges_for_symbol(
     id_to_symbol: &HashMap<String, &SymbolRow>,
     imports: &[Import],
     type_edges: &[(String, String)],
-    extends_edges: &[(String, String)],
+    inheritance_relations: &[ExtractedInheritanceRelation],
     dataflow_edges: &[DataFlowEdge],
     get_package_fn: Option<&PackageLookupFn<'_>>,
     conn: Option<&Connection>,
@@ -611,75 +613,87 @@ pub fn extract_edges_for_symbol(
         }
     }
 
-    // Extractor-provided inheritance pairs (Python class bases). TS/Java
-    // reach the same edge type through parse_type_relations on the symbol
-    // text; `used_edges` dedups any overlap.
-    for (subclass_name, base_name) in extends_edges {
-        if subclass_name != &row.name {
+    // Extractor-provided inheritance relationships. TS/Java reach the same
+    // edge types through parse_type_relations on the symbol text;
+    // `used_edges` deduplicates any overlap.
+    for relation in inheritance_relations {
+        if relation.declaration_name != row.name {
             continue;
         }
-        let (to_id, was_import, evidence_name) =
-            if let Some((receiver, attr)) = base_name.rsplit_once('.') {
-                // Dotted base ("models.Model"): the import binding is the
-                // receiver module; resolve the class through its source. For
-                // Python's `from django.db import models`, the receiver is a
-                // submodule below the stated source, not a globally unique
-                // symbol name.
-                if let Some(imp) = import_map.get(receiver) {
-                    let source = if row.file_path.ends_with(".py")
-                        && imp.source != imp.name
-                        && !imp.source.ends_with(&format!(".{}", imp.name))
-                    {
-                        format!("{}.{}", imp.source, imp.name)
-                    } else {
-                        imp.source.clone()
-                    };
-                    let synthesized = Import {
-                        name: attr.to_string(),
-                        source,
-                        alias: None,
-                        at_line: imp.at_line,
-                    };
-                    (resolve_import(&row.file_path, &synthesized), true, attr)
+        let base_name = &relation.to_name;
+        let edge_type = relation.kind.as_str();
+        let from_id = if relation.from_name == row.name {
+            Some(row.id.clone())
+        } else if let Some(local_id) = name_to_id.get(&relation.from_name) {
+            Some(local_id.clone())
+        } else if let Some(imp) = import_map.get(relation.from_name.as_str()) {
+            resolve_import(&row.file_path, imp)
+        } else {
+            None
+        };
+        let Some(from_id) = from_id else {
+            continue;
+        };
+        let (to_id, was_import) = if let Some((receiver, attr)) = base_name.rsplit_once('.') {
+            // Dotted base ("models.Model"): the import binding is the
+            // receiver module; resolve the class through its source. For
+            // Python's `from django.db import models`, the receiver is a
+            // submodule below the stated source, not a globally unique
+            // symbol name.
+            if let Some(imp) = import_map.get(receiver) {
+                let source = if row.file_path.ends_with(".py")
+                    && imp.source != imp.name
+                    && !imp.source.ends_with(&format!(".{}", imp.name))
+                {
+                    format!("{}.{}", imp.source, imp.name)
                 } else {
-                    (None, false, attr)
-                }
-            } else if let Some(local_id) = name_to_id.get(base_name.as_str()) {
-                if local_id == &row.id {
-                    continue;
-                }
-                (Some(local_id.clone()), false, base_name.as_str())
-            } else if let Some(imp) = import_map.get(base_name.as_str()) {
-                (
-                    resolve_import(&row.file_path, imp),
-                    true,
-                    base_name.as_str(),
-                )
+                    imp.source.clone()
+                };
+                let synthesized = Import {
+                    name: attr.to_string(),
+                    source,
+                    alias: None,
+                    at_line: imp.at_line,
+                };
+                (resolve_import(&row.file_path, &synthesized), true)
             } else {
-                (None, false, base_name.as_str())
-            };
+                (None, false)
+            }
+        } else if let Some(local_id) = name_to_id.get(base_name.as_str()) {
+            if local_id == &row.id {
+                continue;
+            }
+            (Some(local_id.clone()), false)
+        } else if let Some(imp) = import_map.get(base_name.as_str()) {
+            (resolve_import(&row.file_path, imp), true)
+        } else {
+            (None, false)
+        };
 
         if let Some(id) = to_id {
-            if used_edges.insert(("extends".to_string(), id.clone())) {
+            if from_id == id {
+                continue;
+            }
+            if used_edges.insert((edge_type.to_string(), id.clone())) {
                 let resolution = compute_resolution_for_target(&resolution_ctx, &id, was_import);
-                let (count, at_line, evidence_rows) = evidence_for(evidence_name);
+                let evidence_rows = vec![(relation.at_line, 1)];
                 out.push((
                     EdgeRow {
-                        from_symbol_id: row.id.clone(),
+                        from_symbol_id: from_id.clone(),
                         to_symbol_id: id.clone(),
-                        edge_type: "extends".to_string(),
+                        edge_type: edge_type.to_string(),
                         at_file: Some(row.file_path.clone()),
-                        at_line: Some(at_line),
-                        confidence: confidence_for("extends"),
-                        evidence_count: count,
+                        at_line: Some(relation.at_line),
+                        confidence: confidence_for(edge_type),
+                        evidence_count: 1,
                         resolution,
                     },
                     evidence_rows
                         .into_iter()
                         .map(|(line, c)| EdgeEvidenceRow {
-                            from_symbol_id: row.id.clone(),
+                            from_symbol_id: from_id.clone(),
                             to_symbol_id: id.clone(),
-                            edge_type: "extends".to_string(),
+                            edge_type: edge_type.to_string(),
                             at_file: row.file_path.clone(),
                             at_line: line,
                             count: c,
@@ -937,7 +951,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &[],
-            &[], // extends_edges
+            &[], // inheritance_relations
             &[],
             None,
             Some(&conn),
@@ -1020,12 +1034,12 @@ mod tests {
             .any(|(edge, _)| edge.edge_type == "delegates_to"));
     }
 
-    /// Python inheritance: extractor-provided (subclass, base) pairs become
+    /// Python inheritance: extractor-provided relationships become
     /// "extends" edges. A plain base resolves through the file-local name
     /// map; a dotted base ("models.Model") resolves through the uniquely
     /// indexed module imported as the receiver.
     #[test]
-    fn python_extends_edges_resolve_local_and_imported_bases() {
+    fn python_inheritance_relations_resolve_local_and_imported_bases() {
         use crate::storage::sqlite::queries;
         use crate::storage::sqlite::schema::SCHEMA_SQL;
         use rusqlite::Connection;
@@ -1070,9 +1084,21 @@ mod tests {
             alias: None,
             at_line: 1,
         }];
-        let extends_edges = vec![
-            ("Article".to_string(), "models.Model".to_string()),
-            ("Article".to_string(), "Registry".to_string()),
+        let inheritance_relations = vec![
+            ExtractedInheritanceRelation {
+                declaration_name: "Article".to_string(),
+                from_name: "Article".to_string(),
+                to_name: "models.Model".to_string(),
+                kind: crate::indexer::extract::symbol::InheritanceKind::Extends,
+                at_line: 1,
+            },
+            ExtractedInheritanceRelation {
+                declaration_name: "Article".to_string(),
+                from_name: "Article".to_string(),
+                to_name: "Registry".to_string(),
+                kind: crate::indexer::extract::symbol::InheritanceKind::Extends,
+                at_line: 1,
+            },
         ];
 
         let edges = extract_edges_for_symbol(
@@ -1081,7 +1107,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &[],
-            &extends_edges,
+            &inheritance_relations,
             &[],
             None,
             Some(&conn),
@@ -1105,10 +1131,10 @@ mod tests {
         assert!(!extends.contains(&"unrelated_model_id".to_string()));
     }
 
-    /// Pairs belonging to a different symbol in the same file must not
+    /// Relationships belonging to a different symbol in the same file must not
     /// attach to this row.
     #[test]
-    fn extends_edges_only_attach_to_their_subclass() {
+    fn inheritance_relations_only_attach_to_their_subclass() {
         let row = symbol(
             "article_id",
             "Article",
@@ -1120,7 +1146,13 @@ mod tests {
         name_to_id.insert("Registry".to_string(), "registry_id".to_string());
         name_to_id.insert("Other".to_string(), "other_id".to_string());
         let id_to_symbol: HashMap<String, &SymbolRow> = HashMap::new();
-        let extends_edges = vec![("Comment".to_string(), "Other".to_string())];
+        let inheritance_relations = vec![ExtractedInheritanceRelation {
+            declaration_name: "Comment".to_string(),
+            from_name: "Comment".to_string(),
+            to_name: "Other".to_string(),
+            kind: crate::indexer::extract::symbol::InheritanceKind::Extends,
+            at_line: 1,
+        }];
 
         let edges = extract_edges_for_symbol(
             &row,
@@ -1128,7 +1160,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
-            &extends_edges,
+            &inheritance_relations,
             &[],
             None,
             None,
@@ -1142,6 +1174,112 @@ mod tests {
                 .map(|(e, _)| (e.edge_type.clone(), e.to_symbol_id.clone()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn rust_implementation_relationship_becomes_an_implements_edge() {
+        let row = symbol(
+            "impl_id",
+            "impl Render for Widget",
+            "impl",
+            "impl Render for Widget {}",
+            "src/widget.rs",
+        );
+        let mut name_to_id = HashMap::new();
+        name_to_id.insert("Widget".to_string(), "widget_id".to_string());
+        name_to_id.insert("Render".to_string(), "render_id".to_string());
+        let relationships = vec![ExtractedInheritanceRelation {
+            declaration_name: "impl Render for Widget".to_string(),
+            from_name: "Widget".to_string(),
+            to_name: "Render".to_string(),
+            kind: crate::indexer::extract::symbol::InheritanceKind::Implements,
+            at_line: 10,
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &HashMap::new(),
+            &[],
+            &[],
+            &relationships,
+            &[],
+            None,
+            None,
+        );
+
+        let (edge, evidence) = edges
+            .iter()
+            .find(|(edge, _)| edge.edge_type == "implements")
+            .expect("implements edge");
+        assert_eq!(edge.from_symbol_id, "widget_id");
+        assert_eq!(edge.to_symbol_id, "render_id");
+        assert_eq!(edge.at_line, Some(10));
+        assert_eq!(evidence[0].at_line, 10);
+    }
+
+    #[test]
+    fn rust_implementation_resolves_an_imported_concrete_type() {
+        use crate::storage::sqlite::queries;
+        use crate::storage::sqlite::schema::SCHEMA_SQL;
+        use rusqlite::Connection;
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        let mut widget = symbol(
+            "widget_id",
+            "Widget",
+            "struct",
+            "pub struct Widget;",
+            "src/widget.rs",
+        );
+        widget.language = "rust".to_string();
+        queries::symbols::batch_upsert_symbols(&conn, &[widget]).unwrap();
+
+        let mut row = symbol(
+            "impl_id",
+            "impl Render for Widget",
+            "impl",
+            "impl Render for Widget {}",
+            "src/implementations.rs",
+        );
+        row.language = "rust".to_string();
+        let mut name_to_id = HashMap::new();
+        name_to_id.insert("impl Render for Widget".to_string(), "impl_id".to_string());
+        name_to_id.insert("Render".to_string(), "render_id".to_string());
+        let imports = vec![Import {
+            name: "Widget".to_string(),
+            source: "crate::widget".to_string(),
+            alias: None,
+            at_line: 1,
+        }];
+        let relationships = vec![ExtractedInheritanceRelation {
+            declaration_name: "impl Render for Widget".to_string(),
+            from_name: "Widget".to_string(),
+            to_name: "Render".to_string(),
+            kind: crate::indexer::extract::symbol::InheritanceKind::Implements,
+            at_line: 3,
+        }];
+
+        let edges = extract_edges_for_symbol(
+            &row,
+            &name_to_id,
+            &HashMap::new(),
+            &imports,
+            &[],
+            &relationships,
+            &[],
+            None,
+            Some(&conn),
+        );
+
+        let edge = edges
+            .iter()
+            .find(|(edge, _)| edge.edge_type == "implements")
+            .map(|(edge, _)| edge)
+            .expect("implements edge for imported concrete type");
+        assert_eq!(edge.from_symbol_id, "widget_id");
+        assert_eq!(edge.to_symbol_id, "render_id");
     }
 
     #[test]
@@ -1175,7 +1313,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None,
             None, // No sqlite in tests
@@ -1225,7 +1363,7 @@ mod tests {
             &HashMap::new(),
             &imports,
             &[],
-            &[], // extends_edges
+            &[], // inheritance_relations
             &[],
             None,
             None,
@@ -1297,7 +1435,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             Some(&get_package_fn),
             None, // No sqlite in tests
@@ -1351,7 +1489,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None,
             None, // No sqlite in tests
@@ -1415,7 +1553,7 @@ mod tests {
             &id_to_symbol,
             &[], // no imports
             &[], // no type edges
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None, // no package lookup
             None, // no sqlite
@@ -1558,7 +1696,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None,
             None,
@@ -1620,7 +1758,7 @@ mod tests {
             &id_to_symbol,
             &imports,
             &type_edges,
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             Some(&get_package_fn),
             None, // No sqlite in tests
@@ -1673,7 +1811,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None,
             None,
@@ -1733,7 +1871,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None,
             None,
@@ -1793,7 +1931,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None,
             None,
@@ -1849,7 +1987,7 @@ mod tests {
             &id_to_symbol,
             &[],
             &[],
-            &[], // extends_edges
+            &[], // inheritance_relations
             &dataflow_edges,
             None,
             None,

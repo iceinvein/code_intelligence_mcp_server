@@ -544,7 +544,7 @@ fn server_toml_path() -> crate::path::Utf8PathBuf {
 
 pub(crate) async fn handle_settings_get() -> Result<Json<Value>, ApiError> {
     let cfg = StandaloneConfig::load(None, None, None)
-        .map_err(|e| ApiError(format!("failed to load config: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("failed to load config: {e}")))?;
     Ok(Json(build_settings_response(&cfg)))
 }
 
@@ -560,7 +560,7 @@ pub(crate) async fn handle_settings_put(
     match apply_settings(&path, &req.changes) {
         Ok(()) => {
             let cfg = StandaloneConfig::load(None, None, None)
-                .map_err(|e| ApiError(format!("failed to reload config: {e}")))?;
+                .map_err(|e| ApiError::internal(format!("failed to reload config: {e}")))?;
             Ok((
                 StatusCode::OK,
                 Json(json!({

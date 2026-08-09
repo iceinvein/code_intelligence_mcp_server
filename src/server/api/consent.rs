@@ -45,7 +45,7 @@ pub(crate) async fn handle_consent_get(
         .session_manager
         .registry
         .list_all()
-        .map_err(|e| ApiError(format!("failed to list repos: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("failed to list repos: {e}")))?;
     Ok(Json(build_consent_response(pending, repos)))
 }
 
@@ -80,20 +80,22 @@ pub(crate) async fn handle_index_status(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<IndexStatusRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let repo_path = validate_repo_path(&req.repo).map_err(ApiError)?;
+    let repo_path = validate_repo_path(&req.repo).map_err(ApiError::bad_request)?;
     let repo_id = crate::registry::RepoRegistry::path_hash(repo_path.as_str());
     let access = state
         .session_manager
         .resolve_repo(repo_path.as_path())
         .await
-        .map_err(|error| ApiError(format!("failed to resolve repo lifecycle: {error}")))?;
+        .map_err(|error| {
+            ApiError::internal(format!("failed to resolve repo lifecycle: {error}"))
+        })?;
 
     let mut payload = match access {
         crate::session::RepoAccess::Ready(app_state) => json!({
             "ok": true,
             "status": "ready",
             "result": crate::handlers::handle_get_index_stats(&app_state)
-                .map_err(|error| ApiError(format!("failed to read index status: {error}")))?,
+                .map_err(|error| ApiError::internal(format!("failed to read index status: {error}")))?,
         }),
         crate::session::RepoAccess::NeedsApproval => {
             crate::server::consent::consent_required_payload(repo_path.as_str(), &repo_id)
@@ -136,7 +138,7 @@ pub(crate) async fn handle_consent_post(
         .session_manager
         .registry
         .get(repo_path.as_str())
-        .map_err(|error| ApiError(format!("failed to read repo lifecycle: {error}")))?;
+        .map_err(|error| ApiError::internal(format!("failed to read repo lifecycle: {error}")))?;
     let is_declined = registered
         .as_ref()
         .is_some_and(|entry| entry.consent == crate::registry::IndexConsent::Declined);
@@ -159,7 +161,9 @@ pub(crate) async fn handle_consent_post(
                 .session_manager
                 .approve_and_start_initial_index(repo_path.as_path())
                 .await
-                .map_err(|error| ApiError(format!("failed to start indexing: {error}")))?;
+                .map_err(|error| {
+                    ApiError::internal(format!("failed to start indexing: {error}"))
+                })?;
             match access {
                 crate::session::RepoAccess::Ready(_) => Ok((
                     StatusCode::OK,
@@ -198,7 +202,9 @@ pub(crate) async fn handle_consent_post(
             state
                 .session_manager
                 .decline_initial_index(repo_path.as_path())
-                .map_err(|error| ApiError(format!("failed to record decline: {error}")))?;
+                .map_err(|error| {
+                    ApiError::internal(format!("failed to record decline: {error}"))
+                })?;
             Ok((
                 StatusCode::OK,
                 Json(json!({

@@ -23,7 +23,7 @@ pub(crate) async fn handle_repos(
         .session_manager
         .registry
         .list_all()
-        .map_err(|e| ApiError(format!("registry list_all failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("registry list_all failed: {e}")))?;
     let count = entries.len();
     let grace_days = state
         .session_manager
@@ -133,7 +133,7 @@ pub(crate) async fn handle_repo_detail(
         .session_manager
         .registry
         .get_by_hash(&id)
-        .map_err(|e| ApiError(format!("registry lookup failed: {e}")))?
+        .map_err(|e| ApiError::internal(format!("registry lookup failed: {e}")))?
     {
         Some(e) => e,
         None => {
@@ -275,7 +275,7 @@ pub(crate) async fn handle_repo_reindex(
         .session_manager
         .registry
         .get_by_hash(&id)
-        .map_err(|e| ApiError(format!("registry lookup failed: {e}")))?
+        .map_err(|e| ApiError::internal(format!("registry lookup failed: {e}")))?
     {
         Some(e) => e,
         None => {
@@ -289,37 +289,36 @@ pub(crate) async fn handle_repo_reindex(
 
     let path = crate::path::Utf8PathBuf::from(entry.path.clone());
     let sm = state.session_manager.clone();
-    let app_state = match sm
-        .resolve_repo(path.as_path())
-        .await
-        .map_err(|error| ApiError(format!("failed to resolve repo lifecycle: {error}")))?
-    {
-        crate::session::RepoAccess::Ready(app_state) => app_state,
-        crate::session::RepoAccess::NeedsApproval => {
-            return Ok((
-                StatusCode::CONFLICT,
-                Json(crate::server::consent::consent_required_payload(
-                    path.as_str(),
-                    &id,
-                )),
-            )
-                .into_response());
-        }
-        crate::session::RepoAccess::Declined => {
-            return Ok((
-                StatusCode::CONFLICT,
-                Json(crate::server::consent::declined_payload(path.as_str(), &id)),
-            )
-                .into_response());
-        }
-        crate::session::RepoAccess::Indexing { job, started } => {
-            return Ok((
-                StatusCode::CONFLICT,
-                Json(crate::server::consent::indexing_payload(&job, started)),
-            )
-                .into_response());
-        }
-    };
+    let app_state =
+        match sm.resolve_repo(path.as_path()).await.map_err(|error| {
+            ApiError::internal(format!("failed to resolve repo lifecycle: {error}"))
+        })? {
+            crate::session::RepoAccess::Ready(app_state) => app_state,
+            crate::session::RepoAccess::NeedsApproval => {
+                return Ok((
+                    StatusCode::CONFLICT,
+                    Json(crate::server::consent::consent_required_payload(
+                        path.as_str(),
+                        &id,
+                    )),
+                )
+                    .into_response());
+            }
+            crate::session::RepoAccess::Declined => {
+                return Ok((
+                    StatusCode::CONFLICT,
+                    Json(crate::server::consent::declined_payload(path.as_str(), &id)),
+                )
+                    .into_response());
+            }
+            crate::session::RepoAccess::Indexing { job, started } => {
+                return Ok((
+                    StatusCode::CONFLICT,
+                    Json(crate::server::consent::indexing_payload(&job, started)),
+                )
+                    .into_response());
+            }
+        };
 
     // Spawn the indexer in the background so the HTTP request returns
     // immediately. A full re-index can take minutes; the caller polls
@@ -411,7 +410,7 @@ pub(crate) async fn handle_repo_add(
         .session_manager
         .registry
         .register(repo_path.as_str())
-        .map_err(|e| ApiError(format!("register failed: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("register failed: {e}")))?;
     let id = crate::registry::RepoRegistry::path_hash(&entry.path);
     state.session_manager.record_pending(repo_path.as_path());
     Ok((
@@ -437,7 +436,7 @@ pub(crate) async fn handle_repo_delete(
         .session_manager
         .delete_repo_by_hash(&id)
         .await
-        .map_err(|e| ApiError(format!("delete failed: {e}")))?
+        .map_err(|e| ApiError::internal(format!("delete failed: {e}")))?
     {
         Some(entry) => {
             let body = Json(json!({

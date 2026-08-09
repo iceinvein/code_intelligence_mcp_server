@@ -107,7 +107,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         imports,
         module_bindings,
         type_edges: Vec::new(),
-        extends_edges: Vec::new(),
+        inheritance_relations: Vec::new(),
         dataflow_edges: Vec::new(),
         todos,
         jsdoc_entries: Vec::new(),

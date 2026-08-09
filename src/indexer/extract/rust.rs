@@ -5,8 +5,8 @@ use tree_sitter::{Node, Parser, TreeCursor};
 use super::actix::extract_actix_patterns;
 use super::axum::extract_axum_patterns;
 use super::symbol::{
-    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedSymbol, Import, LineSpan,
-    SymbolKind,
+    ByteSpan, DataFlowEdge, DataFlowType, ExtractedFile, ExtractedInheritanceRelation,
+    ExtractedSymbol, Import, InheritanceKind, LineSpan, SymbolKind,
 };
 
 pub fn extract_rust_symbols(source: &str) -> Result<ExtractedFile> {
@@ -23,6 +23,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let cursor = root.walk();
     let mut symbols = Vec::new();
     let mut type_edges = Vec::new();
+    let mut inheritance_relations = Vec::new();
     let mut imports = Vec::new();
     let mut dataflow_edges: Vec<DataFlowEdge> = Vec::new();
 
@@ -142,6 +143,19 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
             if let Some(ref tr) = trait_name {
                 type_edges.push((display_name.clone(), tr.clone()));
             }
+            if let (Some(tn), Some(tr)) = (type_name.as_deref(), trait_name.as_deref()) {
+                if let (Some(from_name), Some(to_name)) =
+                    (relation_type_name(tn), relation_type_name(tr))
+                {
+                    inheritance_relations.push(ExtractedInheritanceRelation {
+                        declaration_name: display_name.clone(),
+                        from_name,
+                        to_name,
+                        kind: InheritanceKind::Implements,
+                        at_line: node.start_position().row as u32 + 1,
+                    });
+                }
+            }
 
             // Extract methods with type-prefixed names
             let prefix = type_name.as_deref().unwrap_or("unknown");
@@ -229,13 +243,19 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
         imports,
         module_bindings: Vec::new(),
         type_edges,
-        extends_edges: Vec::new(),
+        inheritance_relations,
         dataflow_edges,
         todos,
         jsdoc_entries: Vec::new(),
         decorators: Vec::new(),
         framework_patterns,
     })
+}
+
+fn relation_type_name(type_text: &str) -> Option<String> {
+    let without_generics = type_text.trim().split('<').next()?.trim();
+    let leaf = without_generics.rsplit("::").next()?.trim();
+    (!leaf.is_empty()).then(|| leaf.to_string())
 }
 
 fn walk(mut cursor: TreeCursor<'_>, f: &mut impl FnMut(Node<'_>)) {
@@ -1036,6 +1056,20 @@ use super::symbol::*;
         assert!(has_edge("process", "Error"));
         assert!(has_edge("User::new", "String"));
         assert!(has_edge("User::new", "Self"));
+    }
+
+    #[test]
+    fn extracts_rust_trait_implementation_relationship() {
+        let source = "trait Render {}\nstruct Widget<T>(T);\n\nimpl<T> Render for Widget<T> {}\n";
+
+        let extracted = extract_rust_symbols(source).unwrap();
+        assert!(extracted.inheritance_relations.iter().any(|relation| {
+            relation.declaration_name == "impl Render for Widget<T>"
+                && relation.from_name == "Widget"
+                && relation.to_name == "Render"
+                && relation.kind == InheritanceKind::Implements
+                && relation.at_line == 4
+        }));
     }
 
     #[test]

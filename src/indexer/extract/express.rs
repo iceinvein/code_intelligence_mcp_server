@@ -229,18 +229,15 @@ fn detect_router_creation_recursive(
 /// Try to match `express.Router()` or `Router()` call expressions.
 fn try_extract_router_creation(node: Node, source: &str) -> Option<ExtractedFrameworkPattern> {
     let func_node = node.child_by_field_name("function")?;
-    let pos;
-    let router_name;
 
-    match func_node.kind() {
+    let (router_name, pos) = match func_node.kind() {
         "identifier" => {
             // Bare `Router()` call.
             let name = text_for_node(func_node, source);
             if name != "Router" {
                 return None;
             }
-            router_name = name;
-            pos = func_node.start_position();
+            (name, func_node.start_position())
         }
         "member_expression" => {
             // `express.Router()` call.
@@ -249,11 +246,10 @@ fn try_extract_router_creation(node: Node, source: &str) -> Option<ExtractedFram
             if prop_name != "Router" {
                 return None;
             }
-            router_name = prop_name;
-            pos = property.start_position();
+            (prop_name, property.start_position())
         }
         _ => return None,
-    }
+    };
 
     Some(ExtractedFrameworkPattern {
         line: pos.row as u32 + 1,

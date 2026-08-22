@@ -133,6 +133,16 @@ pub(crate) fn catalog() -> Vec<FieldSpec> {
             description: "Run the index-time LLM description backfill.",
         },
         FieldSpec {
+            key: "store_query_text",
+            group: "Telemetry",
+            toml_path: &["telemetry", "store_query_text"],
+            kind: FieldKind::Bool,
+            needs_reindex: false,
+            editable: true,
+            description:
+                "Record raw query text for new searches so the usage view can show what was searched. Off records sha256 prefixes only; text stored while on is kept.",
+        },
+        FieldSpec {
             key: "warm_ttl_seconds",
             group: "Lifecycle",
             toml_path: &["lifecycle", "warm_ttl_seconds"],
@@ -405,6 +415,7 @@ pub(crate) fn field_value(cfg: &StandaloneConfig, key: &str) -> Value {
         "consent_required" => json!(cfg.index_consent_required),
         "reranker_enabled" => json!(cfg.reranker_enabled),
         "descriptions_enabled" => json!(cfg.descriptions_enabled),
+        "store_query_text" => json!(cfg.store_query_text),
         "warm_ttl_seconds" => json!(cfg.warm_ttl_seconds),
         "missing_repo_grace_days" => json!(cfg.missing_repo_grace_days),
         "host" => json!(cfg.host),

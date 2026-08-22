@@ -206,6 +206,9 @@ pub struct SearchRunRow {
     pub vector_ms: u64,
     pub merge_ms: u64,
     pub query: String,
+    /// Raw query text when `telemetry.store_query_text` is enabled; `None`
+    /// keeps the default hash-only posture.
+    pub query_text: Option<String>,
     pub query_limit: u64,
     pub exported_only: bool,
     pub result_count: u64,
@@ -224,6 +227,26 @@ pub struct SearchRunRow {
     pub keyword_candidates: u64,
     pub vector_candidates: u64,
     pub fused_candidates: u64,
+}
+
+/// Whole-history usage counters behind the dashboard's usage view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageSummary {
+    pub search_run_count: u64,
+    pub cache_hit_count: u64,
+    /// Truncated mean of search `duration_ms` across all recorded runs.
+    pub avg_duration_ms: u64,
+    pub last_search_at_unix_s: Option<i64>,
+    pub index_run_count: u64,
+    pub last_index_at_unix_s: Option<i64>,
+}
+
+/// One UTC-day bucket of search counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DailyUsageRow {
+    /// `YYYY-MM-DD` in UTC.
+    pub day: String,
+    pub searches: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -713,6 +736,8 @@ CREATE TABLE IF NOT EXISTS search_runs (
   vector_ms INTEGER NOT NULL,
   merge_ms INTEGER NOT NULL,
   query TEXT NOT NULL,
+  -- Opt-in plaintext query text (telemetry.store_query_text); NULL when off.
+  query_text TEXT,
   query_limit INTEGER NOT NULL,
   exported_only INTEGER NOT NULL,
   result_count INTEGER NOT NULL,

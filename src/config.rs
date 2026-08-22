@@ -73,6 +73,7 @@ struct ServerToml {
     lifecycle: Option<ServerTomlLifecycle>,
     reranker: Option<ServerTomlReranker>,
     descriptions: Option<ServerTomlDescriptions>,
+    telemetry: Option<ServerTomlTelemetry>,
     indexing: Option<ServerTomlIndexing>,
     retrieval: Option<ServerTomlRetrieval>,
     ranking: Option<ServerTomlRanking>,
@@ -89,6 +90,11 @@ struct ServerTomlReranker {
 #[derive(Debug, Deserialize)]
 struct ServerTomlDescriptions {
     enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerTomlTelemetry {
+    store_query_text: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -202,6 +208,11 @@ pub struct StandaloneConfig {
     /// judge benefit (R005/R006). Enable via `DESCRIPTIONS_ENABLED=1` or a
     /// `[descriptions] enabled = true` block in server.toml.
     pub descriptions_enabled: bool,
+    /// Whether search telemetry stores raw query text alongside the hash.
+    /// Off by default: `search_runs.query` stays a sha256 prefix unless this
+    /// is on. Enable via `USAGE_STORE_QUERY_TEXT=1` or a
+    /// `[telemetry] store_query_text = true` block in server.toml.
+    pub store_query_text: bool,
     /// Whether every repository must be approved once before its first full
     /// index, regardless of which binding source selected it. Set
     /// `INDEX_CONSENT_REQUIRED=false` to skip the prompt while still starting
@@ -275,6 +286,7 @@ impl Default for StandaloneConfig {
             discovery_port: None,
             reranker_enabled: false,
             descriptions_enabled: false,
+            store_query_text: false,
             index_consent_required: true,
             hybrid_alpha: 0.7,
             max_context_bytes: 200_000,
@@ -373,6 +385,12 @@ impl StandaloneConfig {
         if let Some(descriptions) = parsed.descriptions {
             if let Some(enabled) = descriptions.enabled {
                 config.descriptions_enabled = enabled;
+            }
+        }
+
+        if let Some(telemetry) = parsed.telemetry {
+            if let Some(v) = telemetry.store_query_text {
+                config.store_query_text = v;
             }
         }
 
@@ -536,6 +554,16 @@ impl StandaloneConfig {
             config.descriptions_enabled = enabled;
         }
 
+        // Plaintext query telemetry (off by default; opt in with
+        // USAGE_STORE_QUERY_TEXT=1).
+        if let Some(enabled) = optional_env("USAGE_STORE_QUERY_TEXT")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+        {
+            config.store_query_text = enabled;
+        }
+
         // Consent gate (on by default; opt out with INDEX_CONSENT_REQUIRED=false).
         if let Some(enabled) = optional_env("INDEX_CONSENT_REQUIRED")
             .as_deref()
@@ -629,6 +657,7 @@ impl StandaloneConfig {
             repo_roots: vec![repo_path],
             reranker_enabled: self.reranker_enabled,
             descriptions_enabled: self.descriptions_enabled,
+            store_query_text: self.store_query_text,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: Some(global_dir.join("reranker-cache")),
@@ -769,6 +798,8 @@ pub struct Config {
     /// off by default because the backfill is a multi-hour index-time cost with
     /// no proven retrieval benefit. Set from `StandaloneConfig::descriptions_enabled`.
     pub descriptions_enabled: bool,
+    /// Store raw query text in search telemetry (see StandaloneConfig).
+    pub store_query_text: bool,
     pub llm_device: EmbeddingsDevice, // Reuse existing enum (Cpu/Metal)
     pub llm_model_dir: Option<Utf8PathBuf>,
     pub llm_max_tokens: u32,
@@ -1171,6 +1202,11 @@ impl Config {
             .map(parse_bool)
             .transpose()?
             .unwrap_or(false);
+        let store_query_text = optional_env("USAGE_STORE_QUERY_TEXT")
+            .as_deref()
+            .map(parse_bool)
+            .transpose()?
+            .unwrap_or(false);
         let llm_device = optional_env("LLM_DEVICE")
             .as_deref()
             .map(parse_embeddings_device)
@@ -1339,6 +1375,7 @@ impl Config {
             // LLM description generation
             llm_enabled,
             descriptions_enabled,
+            store_query_text,
             llm_device,
             llm_model_dir,
             llm_max_tokens,

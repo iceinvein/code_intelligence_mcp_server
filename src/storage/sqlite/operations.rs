@@ -134,6 +134,8 @@ impl SqliteStore {
             migrate_add_search_runs_stage_columns(&conn).with_context(|| {
                 "Failed to run migration: migrate_add_search_runs_stage_columns"
             })?;
+            migrate_add_search_runs_query_text(&conn)
+                .with_context(|| "Failed to run migration: migrate_add_search_runs_query_text")?;
             migrate_add_index_runs_stage_columns(&conn)
                 .with_context(|| "Failed to run migration: migrate_add_index_runs_stage_columns")?;
             migrate_external_reference_dedupe_columns(&conn).with_context(|| {
@@ -250,6 +252,14 @@ fn migrate_add_search_runs_stage_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE search_runs ADD COLUMN fused_candidates INTEGER NOT NULL DEFAULT 0",
     ] {
         let _ = conn.execute(sql, []);
+    }
+    Ok(())
+}
+
+/// Adds the nullable `query_text` column (opt-in plaintext query storage).
+fn migrate_add_search_runs_query_text(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "search_runs", "query_text")? {
+        conn.execute("ALTER TABLE search_runs ADD COLUMN query_text TEXT", [])?;
     }
     Ok(())
 }
@@ -521,6 +531,7 @@ CREATE TABLE search_runs (
             "search_path",
             "cache_status",
             "fused_candidates",
+            "query_text",
         ] {
             assert!(column_exists(&conn, "search_runs", column).unwrap());
         }

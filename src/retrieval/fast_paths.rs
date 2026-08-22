@@ -1,7 +1,9 @@
 //! Fast-path early exits for ID lookup and Callers intent queries.
 
-use super::query::{trim_query, QueryControls};
-use super::{RankedHit, Retriever, SearchResponse, SearchResponseWithSignals};
+use super::query::QueryControls;
+use super::{
+    redact_query_for_telemetry, RankedHit, Retriever, SearchResponse, SearchResponseWithSignals,
+};
 use crate::storage::sqlite::SqliteStore;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -70,7 +72,8 @@ pub(super) fn handle_id_lookup(
         keyword_ms: 0,
         vector_ms: 0,
         merge_ms: 0,
-        query: trim_query(query, 200),
+        query: redact_query_for_telemetry(query),
+        query_text: retriever.telemetry_query_text(query),
         query_limit: limit as u64,
         exported_only,
         result_count: hits.len() as u64,
@@ -177,7 +180,8 @@ pub(super) fn handle_callers_intent(
         keyword_ms: 0,
         vector_ms: 0,
         merge_ms: 0,
-        query: trim_query(query, 200),
+        query: redact_query_for_telemetry(query),
+        query_text: retriever.telemetry_query_text(query),
         query_limit: limit as u64,
         exported_only,
         result_count: hits.len() as u64,

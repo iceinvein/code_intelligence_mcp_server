@@ -1668,6 +1668,7 @@ fn test_app_state_with_external_index(
         external_index_min_interval_ms: 60_000,
         llm_enabled: false,
         descriptions_enabled: false,
+        store_query_text: false,
         llm_device: EmbeddingsDevice::Cpu,
         llm_model_dir: None,
         llm_max_tokens: 30,

@@ -450,6 +450,21 @@ impl SqliteStore {
         queries::stats::latest_search_run(&conn)
     }
 
+    pub fn usage_summary(&self) -> Result<UsageSummary> {
+        let conn = self.read()?;
+        queries::stats::usage_summary(&conn)
+    }
+
+    pub fn recent_search_runs(&self, limit: u32) -> Result<Vec<SearchRunRow>> {
+        let conn = self.read()?;
+        queries::stats::recent_search_runs(&conn, limit)
+    }
+
+    pub fn usage_daily(&self, days: u32, now_unix_s: i64) -> Result<Vec<DailyUsageRow>> {
+        let conn = self.read()?;
+        queries::stats::usage_daily(&conn, days, now_unix_s)
+    }
+
     pub fn upsert_similarity_cluster(&self, row: &SimilarityClusterRow) -> Result<()> {
         let conn = self.write()?;
         queries::misc::upsert_similarity_cluster(&conn, row)

@@ -14,6 +14,7 @@
 //! - `DELETE /api/repos/{id}`            -> drop the index, registry entry, and data dir
 //! - `GET /api/fs/list?path=&show_hidden=` -> subdirectories of a path (folder picker)
 //! - `GET /api/jobs`                     -> recent background jobs (running + last 15m finished)
+//! - `GET /api/usage`                    -> cross-repo search/index usage aggregates
 //!
 //! All routes bind 127.0.0.1 only and reject requests whose `Origin` header is
 //! not `http://localhost:<port>` or `http://127.0.0.1:<port>`. The check is a
@@ -46,6 +47,7 @@ mod filesystem;
 mod query;
 mod repos;
 mod settings;
+mod usage;
 
 use activity::{handle_jobs, handle_logs_stream, handle_sessions};
 use consent::{handle_consent_get, handle_consent_post, handle_index_status};
@@ -60,6 +62,7 @@ use repos::{
     handle_repo_add, handle_repo_delete, handle_repo_detail, handle_repo_reindex, handle_repos,
 };
 use settings::{handle_settings_get, handle_settings_put};
+use usage::handle_usage;
 
 #[derive(Clone)]
 pub(crate) struct ApiState {
@@ -170,6 +173,7 @@ pub async fn spawn_api_server(
         )
         .route("/api/jobs", get(handle_jobs))
         .route("/api/sessions", get(handle_sessions))
+        .route("/api/usage", get(handle_usage))
         .route("/api/logs/stream", get(handle_logs_stream))
         .fallback(crate::server::assets::serve_spa)
         .layer(middleware::from_fn(crate::server::origin::check_origin))

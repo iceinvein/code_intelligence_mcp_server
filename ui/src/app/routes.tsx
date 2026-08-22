@@ -9,6 +9,7 @@ import { LogsView } from "@/features/logs/LogsView";
 import { SearchView } from "@/features/search/SearchView";
 import { SettingsView } from "@/features/settings/SettingsView";
 import { SymbolsView } from "@/features/symbols/SymbolsView";
+import { UsageView } from "@/features/usage/UsageView";
 
 const GraphView = lazy(() =>
   import("@/features/graph/GraphView").then((m) => ({ default: m.GraphView })),
@@ -35,6 +36,7 @@ export const router = createBrowserRouter([
       { path: "consent", element: <ConsentView /> },
       { path: "logs", element: <LogsView /> },
       { path: "activity", element: <ActivityView /> },
+      { path: "usage", element: <UsageView /> },
       { path: "*", element: <Navigate to="/" replace /> },
     ],
   },

@@ -2,6 +2,7 @@ import { NavLink } from "react-router";
 import {
   Activity,
   Boxes,
+  Gauge,
   Hash,
   LayoutDashboard,
   ScrollText,
@@ -25,6 +26,7 @@ const NAV: NavItem[] = [
   { to: "/consent", label: "consent", icon: ShieldCheck },
   { to: "/logs", label: "logs", icon: ScrollText },
   { to: "/activity", label: "jobs · sessions", icon: Activity },
+  { to: "/usage", label: "usage", icon: Gauge },
   { to: "/settings", label: "settings", icon: Settings },
 ];
 

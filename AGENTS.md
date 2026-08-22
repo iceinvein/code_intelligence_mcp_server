@@ -114,7 +114,7 @@ Unbound tool calls return an actionable JSON-RPC error pointing at all four opti
 
 ### Dashboard and JSON API
 
-Open `http://127.0.0.1:17802/` to see repos (expandable for per-repo stats), MCP sessions (connected + bound counts), background jobs (running + finished, 15-minute retention), and a live log stream. The same data is available via JSON at `/api/repos`, `/api/repos/:id`, `/api/sessions`, `/api/jobs`, `/api/status`. Reindex with `POST /api/repos/:id/reindex`; drop a repo entirely with `DELETE /api/repos/:id` (removes the registry entry and the on-disk data directory).
+Open `http://127.0.0.1:17802/` to see repos (expandable for per-repo stats), MCP sessions (connected + bound counts), background jobs (running + finished, 15-minute retention), usage (search totals, per-day volume, recent queries), and a live log stream. The same data is available via JSON at `/api/repos`, `/api/repos/:id`, `/api/sessions`, `/api/jobs`, `/api/usage`, `/api/status`. Reindex with `POST /api/repos/:id/reindex`; drop a repo entirely with `DELETE /api/repos/:id` (removes the registry entry and the on-disk data directory).
 
 ## Build & Run Commands
 
@@ -261,6 +261,7 @@ The server reads configuration from environment variables. Key ones below; the f
 | `MAX_CONTEXT_BYTES` | `200000` | Context window size limit |
 | `RERANKER_ENABLED` | `false` | Load the bge-reranker-v2-m3 cross-encoder (~600 MB) and apply a query-time reorder on top of RRF results. Off by default (unproven quality benefit, GPU-resident). Loads in the background when enabled. |
 | `DESCRIPTIONS_ENABLED` | `false` | Spawn the index-time LLM description worker (Qwen2.5-Coder-1.5B) that backfills natural-language descriptions into the Tantivy index. Off by default: a multi-hour index-time backfill with no proven judge benefit (R005/R006). |
+| `USAGE_STORE_QUERY_TEXT` | `false` | Store raw query text in the `search_runs` telemetry table so the dashboard's usage view can show what was searched. Off by default: queries are recorded as sha256 prefixes only. Also editable as `[telemetry] store_query_text` in `server.toml`. |
 | `INDEX_CONSENT_REQUIRED` | `true` | Ask once before the first full index for every binding source, including `?repo=` and `bind_workspace`. Approval starts a background `InitialBind` job immediately. `false` skips the prompt for CI and benchmarks but still starts the first index immediately. |
 | `[lifecycle] missing_repo_grace_days` | `7` | Days a non-seeded repository's index survives after its folder is deleted. `0` never automatically deletes a registered repo's index this way, leaving detection and the dashboard countdown in place; it does not govern the separate orphan sweep, which collects data directories no registry entry claims under its own guards. `server.toml` only; there is no environment variable. |
 | `LEARNING_ENABLED` | `true` | Enable selection/affinity learning |

@@ -89,6 +89,49 @@ export type SessionsResponse = {
   sessions: Session[];
 };
 
+export type DailyUsage = {
+  day: string;
+  searches: number;
+};
+
+export type RepoUsage = {
+  id: string;
+  name: string;
+  path: string;
+  search_total: number;
+  cache_hit_count: number;
+  avg_duration_ms: number;
+  last_search_at_unix_s: number | null;
+  index_run_count: number;
+  last_index_at_unix_s: number | null;
+  daily: DailyUsage[];
+};
+
+export type RecentSearchRun = {
+  repo_id: string;
+  repo_name: string;
+  started_at_unix_s: number;
+  duration_ms: number;
+  query_text: string | null;
+  query_limit: number;
+  exported_only: boolean;
+  result_count: number;
+  search_path: string;
+  cache_status: string;
+};
+
+export type UsageResponse = {
+  generated_at_unix_s: number;
+  window_days: number;
+  totals: {
+    searches: number;
+    cache_hits: number;
+  };
+  repos: RepoUsage[];
+  recent_runs: RecentSearchRun[];
+};
+
+
 export type RepoStats = {
   symbols: number | null;
   edges: number | null;

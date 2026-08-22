@@ -315,6 +315,7 @@ mod tests {
             repo_roots: vec![],
             reranker_enabled: false,
             descriptions_enabled: false,
+            store_query_text: false,
             reranker_model_path: None,
             reranker_top_k: 20,
             reranker_cache_dir: None,

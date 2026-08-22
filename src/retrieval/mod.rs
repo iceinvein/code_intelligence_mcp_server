@@ -50,6 +50,19 @@ fn redact_query_for_telemetry(query: &str) -> String {
     format!("sha256:{}:len={}", &hash[..16], trimmed.len())
 }
 
+impl Retriever {
+    /// Raw query text for telemetry rows when `telemetry.store_query_text` is
+    /// on; `None` keeps the default hash-only posture. Capped to keep rows
+    /// bounded (mirrors the old fast-path cap).
+    pub(super) fn telemetry_query_text(&self, query: &str) -> Option<String> {
+        if self.config.store_query_text {
+            Some(crate::retrieval::query::trim_query(query, 200))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedHit {
     pub id: String,
@@ -420,6 +433,7 @@ impl Retriever {
                 vector_ms: 0,
                 merge_ms: 0,
                 query: redact_query_for_telemetry(query),
+                query_text: self.telemetry_query_text(query),
                 query_limit: limit as u64,
                 exported_only,
                 result_count,
@@ -1251,6 +1265,7 @@ impl Retriever {
             vector_ms,
             merge_ms,
             query: redact_query_for_telemetry(query),
+            query_text: self.telemetry_query_text(query),
             query_limit: limit as u64,
             exported_only,
             result_count: hits.len() as u64,

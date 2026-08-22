@@ -1,6 +1,6 @@
 {
 	"name": "@iceinvein/code-intelligence-mcp",
-	"version": "4.12.0",
+	"version": "4.13.0",
 	"description": "Local code intelligence CLI with optional MCP compatibility",
 	"bin": {
 		"code-intel": "bin/run.js",

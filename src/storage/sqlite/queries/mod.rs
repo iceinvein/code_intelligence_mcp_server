@@ -5,6 +5,7 @@ pub mod cross_repo;
 pub mod data_flow;
 pub mod decorators;
 pub mod descriptions;
+pub mod docs;
 pub mod docstrings;
 pub mod edges;
 pub mod external;

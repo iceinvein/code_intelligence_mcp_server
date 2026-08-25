@@ -90,6 +90,7 @@ pub fn test_config_for_dir(tmp_dir: PathBuf) -> Config {
         hash_embedding_dim: 32,
         vector_search_limit: 20,
         vector_guaranteed_results: 3,
+        docs_max_hits: 4,
         hybrid_alpha: 0.7,
         rank_vector_weight: 0.7,
         rank_keyword_weight: 0.3,

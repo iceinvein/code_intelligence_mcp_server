@@ -113,6 +113,9 @@ pub struct HitSignals {
     pub affinity_boost: f32,
     pub docstring_boost: f32,
     pub package_boost: f32,
+    /// Multiplicative demotion applied to documents with superseded/deprecated
+    /// front-matter status (docs-indexing design, Phase 3). 0.0 = no penalty.
+    pub doc_status_penalty: f32,
 }
 
 /// Controls whether `Retriever::search` assembles a `context` string alongside
@@ -636,6 +639,27 @@ impl Retriever {
         // to promote cross-file results without destroying same-file clusters.
         let mut hits = diversify_by_file(hits, limit);
         hits = diversify_by_kind(hits, limit);
+
+        // Document cap (docs-indexing design, Phase 2): unless the intent is
+        // Documentation, keep at most `docs_max_hits` document sections so
+        // prose cannot crowd code out of the final window. Applied before the
+        // truncate so demoted docs free slots for code hits.
+        {
+            let is_doc_intent = matches!(intent, Some(Intent::Documentation));
+            let max_docs = self.config.docs_max_hits;
+            if !is_doc_intent && max_docs < hits.len() {
+                let mut doc_count = 0usize;
+                hits.retain(|h| {
+                    if h.kind == "document" {
+                        doc_count += 1;
+                        doc_count <= max_docs
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+
         hits.truncate(limit);
 
         // Promote top vector results AFTER diversity + truncation.

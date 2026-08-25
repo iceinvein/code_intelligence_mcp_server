@@ -417,6 +417,30 @@ pub enum TodoKind {
     Fixme,
 }
 
+/// Compact documentation summary for the repo-map header (docs-indexing
+/// design, Phase 2): counts by doc type plus superseded/deprecated statuses.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct DocSummary {
+    pub total: usize,
+    pub by_type: std::collections::BTreeMap<String, usize>,
+    pub superseded: usize,
+    /// Backtick references in documents that resolve to no indexed symbol
+    /// (docs-indexing design, Phase 3). Computed live at report time.
+    pub stale_links: usize,
+}
+
+/// Documentation metadata for one markdown file (docs-indexing design,
+/// Phase 2). One row per indexed document file; sections inherit it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocMetaRow {
+    pub file_path: String,
+    pub doc_type: String,
+    pub status: Option<String>,
+    pub date: Option<String>,
+    pub number: Option<i64>,
+    pub labels: Vec<String>,
+}
+
 /// TODO/FIXME comment entry extracted from source code (LANG-03)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoEntry {
@@ -845,6 +869,17 @@ CREATE TABLE IF NOT EXISTS todos (
 CREATE INDEX IF NOT EXISTS idx_todos_file ON todos(file_path);
 CREATE INDEX IF NOT EXISTS idx_todos_kind ON todos(kind);
 CREATE INDEX IF NOT EXISTS idx_todos_symbol ON todos(associated_symbol);
+
+-- Documentation metadata for indexed markdown files (docs-indexing design)
+CREATE TABLE IF NOT EXISTS doc_metadata (
+  file_path TEXT PRIMARY KEY NOT NULL,
+  doc_type TEXT NOT NULL,
+  status TEXT,
+  date TEXT,
+  number INTEGER,
+  labels_json TEXT NOT NULL DEFAULT '[]',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 
 -- Test-to-source file links for test coverage awareness (LANG-04)
 CREATE TABLE IF NOT EXISTS test_links (

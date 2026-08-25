@@ -89,6 +89,7 @@ pub fn apply_selection_boost_with_signals(
                     affinity_boost: 0.0,
                     docstring_boost: 0.0,
                     package_boost: 0.0,
+                    doc_status_penalty: 0.0,
                 });
         }
     }
@@ -186,6 +187,7 @@ pub fn apply_file_affinity_boost_with_signals(
                     affinity_boost: final_boost,
                     docstring_boost: 0.0,
                     package_boost: 0.0,
+                    doc_status_penalty: 0.0,
                 });
         }
     }
@@ -278,6 +280,7 @@ pub fn rank_hits_with_signals(
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
                 package_boost: 0.0,
+                doc_status_penalty: 0.0,
             },
         );
 
@@ -332,6 +335,7 @@ pub fn rank_hits_with_signals(
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
                 package_boost: 0.0,
+                doc_status_penalty: 0.0,
             },
         );
 
@@ -456,6 +460,7 @@ pub fn apply_popularity_boost_with_signals(
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
                 package_boost: 0.0,
+                doc_status_penalty: 0.0,
                 symbol_importance: 0.0,
                 test_symbol_penalty: 0.0,
             });
@@ -509,6 +514,7 @@ pub fn apply_docstring_boost_with_signals(
                     affinity_boost: 0.0,
                     docstring_boost: DOCSTRING_BOOST,
                     package_boost: 0.0,
+                    doc_status_penalty: 0.0,
                     symbol_importance: 0.0,
                     test_symbol_penalty: 0.0,
                 });
@@ -1094,8 +1100,25 @@ pub(crate) fn intent_adjustment(
     }
 
     let Some(intent) = intent else {
+        // No detected intent: mild document suppression keeps prose from
+        // competing with code on structural queries, without hiding docs.
+        if kind == "document" {
+            return 0.7;
+        }
         return 1.0;
     };
+
+    // Document-kind gating (docs-indexing design, Phase 2): documents are
+    // boosted for Documentation intent, hard-suppressed for navigation
+    // intents (never compete with definitions or reference walks), and
+    // mildly suppressed elsewhere.
+    if kind == "document" {
+        return match intent {
+            Intent::Documentation => 2.0,
+            Intent::Definition | Intent::Callers(_) => 0.01,
+            _ => 0.7,
+        };
+    }
 
     match intent {
         Intent::Definition => {
@@ -1244,6 +1267,10 @@ pub(crate) fn intent_adjustment(
                 0.5
             }
         }
+        Intent::Documentation => {
+            // Documents were already handled above; code hits stay neutral.
+            1.0
+        }
     }
 }
 
@@ -1272,6 +1299,7 @@ mod tests {
             hash_embedding_dim: 64,
             vector_search_limit: 20,
             vector_guaranteed_results: 3,
+            docs_max_hits: 4,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.5,
             rank_keyword_weight: 0.5,
@@ -1365,6 +1393,86 @@ mod tests {
             exported: true,
             language: "rust".to_string(),
         }
+    }
+
+    #[test]
+    fn document_kind_gating_follows_intent() {
+        let doc = "document";
+        let none: Option<Intent> = None;
+        // Neutral-to-mild suppression without intent.
+        let base = intent_adjustment(&none, doc, "README.md", false, "Architecture");
+        assert!((base - 0.7).abs() < 1e-6);
+        // Documentation intent boosts documents.
+        let doc_intent = Some(Intent::Documentation);
+        let boosted = intent_adjustment(&doc_intent, doc, "docs/adr/0001.md", false, "Decision");
+        assert!((boosted - 2.0).abs() < 1e-6);
+        // Definition/navigation intents hard-suppress documents.
+        let def = intent_adjustment(&Some(Intent::Definition), doc, "README.md", false, "x");
+        assert!(
+            def < 0.05,
+            "definition intent should suppress documents, got {def}"
+        );
+        let callers = intent_adjustment(
+            &Some(Intent::Callers("f".into())),
+            doc,
+            "README.md",
+            false,
+            "x",
+        );
+        assert!(callers < 0.05);
+        // Other intents mildly suppress.
+        let other = intent_adjustment(&Some(Intent::Config), doc, "README.md", false, "x");
+        assert!((other - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn superseded_documents_are_demoted() {
+        use crate::storage::sqlite::schema::DocMetaRow;
+        let db_path_buf = std::env::temp_dir().join("test_doc_status_demotion.db");
+        let db_path = Utf8PathBuf::from_path_buf(db_path_buf).unwrap();
+        let _ = std::fs::remove_file(&db_path);
+        {
+            let sqlite = SqliteStore::open(&db_path).unwrap();
+            sqlite.init().unwrap();
+            for (path, status) in [
+                ("docs/adr/current.md", Some("accepted")),
+                ("docs/adr/old.md", Some("superseded")),
+            ] {
+                sqlite
+                    .upsert_doc_meta(&DocMetaRow {
+                        file_path: path.into(),
+                        doc_type: "adr".into(),
+                        status: status.map(str::to_string),
+                        date: None,
+                        number: None,
+                        labels: vec![],
+                    })
+                    .unwrap();
+            }
+        }
+        let sqlite = SqliteStore::open(&db_path).unwrap();
+        let hit = |id: &str, path: &str| super::RankedHit {
+            id: id.into(),
+            score: 1.0,
+            name: "Decision".into(),
+            kind: "document".into(),
+            file_path: path.into(),
+            exported: false,
+            language: "markdown".into(),
+        };
+        let hits = vec![hit("a", "docs/adr/current.md"), hit("b", "docs/adr/old.md")];
+        let mut signals = HashMap::new();
+        let out = crate::retrieval::ranking::apply_doc_status_demotion_with_signals(
+            &sqlite,
+            hits,
+            &mut signals,
+        )
+        .unwrap();
+        let current = out.iter().find(|h| h.id == "a").unwrap().score;
+        let old = out.iter().find(|h| h.id == "b").unwrap().score;
+        assert!((current - 1.0).abs() < 1e-6, "accepted doc untouched");
+        assert!((old - 0.5).abs() < 1e-6, "superseded doc halved, got {old}");
+        assert!((signals["b"].doc_status_penalty - 0.5).abs() < 1e-6);
     }
 
     #[test]

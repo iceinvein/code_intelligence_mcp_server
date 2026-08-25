@@ -4,7 +4,8 @@ use crate::indexer::extract::symbol::{
 };
 use crate::indexer::pipeline::utils::FileFingerprint;
 use crate::storage::sqlite::schema::{
-    DecoratorRow, EdgeEvidenceRow, EdgeRow, FrameworkPatternRow, ModuleBindingRow, UsageExampleRow,
+    DecoratorRow, DocMetaRow, EdgeEvidenceRow, EdgeRow, FrameworkPatternRow, ModuleBindingRow,
+    UsageExampleRow,
 };
 use crate::storage::sqlite::{SymbolIdentityRow, SymbolRow};
 
@@ -16,6 +17,7 @@ use crate::{
         extract::java::extract_java_symbols,
         extract::javascript::extract_javascript_symbols,
         extract::kotlin::extract_kotlin_symbols,
+        extract::markdown::extract_markdown_symbols,
         extract::python::extract_python_symbols,
         extract::ruby::extract_ruby_symbols,
         extract::rust::extract_rust_symbols,
@@ -24,6 +26,7 @@ use crate::{
         extract::{c::extract_c_symbols, cpp::extract_cpp_symbols},
         parser::{language_id_for_path, LanguageId},
         pipeline::{
+            doc_links,
             edges::{extract_edges_for_symbol, upsert_name_mapping, PackageLookupFn},
             identity::build_symbol_occurrences,
             usage::extract_usage_examples_for_file,
@@ -76,6 +79,9 @@ pub struct ParsedFile {
     pub type_edges: Vec<(String, String)>,
     pub inheritance_relations: Vec<ExtractedInheritanceRelation>,
     pub dataflow_edges: Vec<DataFlowEdge>,
+    /// Documentation metadata (front-matter + path classification) for
+    /// markdown files; `None` for code files.
+    pub doc_meta: Option<DocMetaRow>,
 }
 
 /// Result of parsing a single file
@@ -212,9 +218,10 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         LanguageId::Kotlin => extract_kotlin_symbols(&source),
         LanguageId::CSharp => extract_csharp_symbols(&source),
         LanguageId::Swift => extract_swift_symbols(&source),
+        LanguageId::Markdown => extract_markdown_symbols(&source),
     };
 
-    let extracted = match extracted {
+    let mut extracted = match extracted {
         Ok(syms) => syms,
         Err(e) => {
             return ParseResult::Skipped {
@@ -228,6 +235,14 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
     // one file-level symbol). The canonical occurrence keeps the legacy
     // location-independent id; overloads/partials receive distinct ids.
     let language = language_string(language_id).to_string();
+    // Some extractors emit TODO/FIXME rows without a file path (e.g. the Rust
+    // extractor passes ""); stamp the parse-time relative path here so todo
+    // consumers (issue tracking, debt views) always have provenance.
+    for todo in &mut extracted.todos {
+        if todo.file_path.is_empty() {
+            todo.file_path = rel.clone();
+        }
+    }
     let (mut symbol_rows, mut symbol_identities) =
         match build_symbol_occurrences(&rel, &language, &source, &extracted.symbols) {
             Ok(rows) => rows,
@@ -455,6 +470,7 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         .collect();
 
     // 15. Return Parsed(ParsedFile { ... })
+    let doc_meta = build_doc_meta(&rel, &source);
     ParseResult::Parsed(Box::new(ParsedFile {
         rel_path: rel,
         fingerprint: fp,
@@ -476,7 +492,26 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
         type_edges: extracted.type_edges,
         inheritance_relations: extracted.inheritance_relations,
         dataflow_edges: extracted.dataflow_edges,
+        doc_meta,
     }))
+}
+
+/// Build documentation metadata for a markdown file: path classification
+/// refined by YAML front-matter. Returns `None` for non-markdown files.
+fn build_doc_meta(rel_path: &str, source: &str) -> Option<DocMetaRow> {
+    use crate::indexer::extract::markdown::{classify_doc_path, parse_front_matter};
+    if !rel_path.to_lowercase().ends_with(".md") {
+        return None;
+    }
+    let fm = parse_front_matter(source).unwrap_or_default();
+    Some(DocMetaRow {
+        file_path: rel_path.to_string(),
+        doc_type: classify_doc_path(rel_path).as_str().to_string(),
+        status: fm.status,
+        date: fm.date,
+        number: fm.number,
+        labels: fm.labels,
+    })
 }
 
 /// One file's edge bundle: each entry is an edge row plus its evidence rows.
@@ -513,6 +548,23 @@ pub fn extract_edges_for_parsed_file(parsed: &ParsedFile, conn: &Connection) -> 
 
     let mut all_edges: Vec<(EdgeRow, Vec<EdgeEvidenceRow>)> = Vec::new();
     for row in &parsed.symbol_rows {
+        // Document sections contribute `documents` cross-link edges instead of
+        // call/type/dataflow edges (docs-indexing design, Phase 3): backtick
+        // refs resolve to code symbols, TODO/issue numbers produce `tracks`
+        // edges. Prose never resolves as spurious calls.
+        if row.kind == "document" {
+            let issue_number = parsed.doc_meta.as_ref().and_then(|m| m.number);
+            match doc_links::extract_doc_link_edges(row, issue_number, conn) {
+                Ok((doc_edges, _stale)) => all_edges.extend(doc_edges),
+                Err(error) => tracing::warn!(
+                    file = %row.file_path,
+                    section = %row.name,
+                    %error,
+                    "Failed to extract document cross-links"
+                ),
+            }
+            continue;
+        }
         let edges = extract_edges_for_symbol(
             row,
             &name_to_id,
@@ -682,6 +734,7 @@ mod tests {
             hash_embedding_dim: 8,
             vector_search_limit: 10,
             vector_guaranteed_results: 3,
+            docs_max_hits: 4,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.7,
             rank_keyword_weight: 0.3,
@@ -1041,6 +1094,7 @@ mod tests {
             hash_embedding_dim: 8,
             vector_search_limit: 10,
             vector_guaranteed_results: 3,
+            docs_max_hits: 4,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.7,
             rank_keyword_weight: 0.3,

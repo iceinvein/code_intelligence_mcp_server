@@ -168,6 +168,13 @@ impl SqliteStore {
         queries::symbols::list_repo_map_symbols(&conn, limit)
     }
 
+    /// Aggregate documentation counts for the repo-map header (docs-indexing
+    /// design, Phase 2).
+    pub fn list_doc_metadata_summary(&self) -> Result<crate::storage::sqlite::schema::DocSummary> {
+        let conn = self.read()?;
+        queries::docs::doc_metadata_summary(&conn)
+    }
+
     pub fn search_symbols_by_name_prefix(
         &self,
         prefix: &str,
@@ -648,6 +655,19 @@ impl SqliteStore {
     pub fn has_docstring(&self, symbol_id: &str) -> Result<bool> {
         let conn = self.read()?;
         queries::docstrings::has_docstring(&conn, symbol_id)
+    }
+
+    pub fn get_doc_meta_for_paths(
+        &self,
+        file_paths: &[String],
+    ) -> Result<std::collections::HashMap<String, schema::DocMetaRow>> {
+        let conn = self.read()?;
+        queries::docs::get_doc_meta_for_paths(&conn, file_paths)
+    }
+
+    pub fn upsert_doc_meta(&self, row: &schema::DocMetaRow) -> Result<()> {
+        let conn = self.write()?;
+        queries::docs::upsert_doc_meta(&conn, row)
     }
 
     pub fn get_docstring_by_symbol(&self, symbol_id: &str) -> Result<Option<schema::DocstringRow>> {

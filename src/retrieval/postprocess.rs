@@ -2,9 +2,9 @@
 
 use super::query::{Intent, QueryControls};
 use super::ranking::{
-    apply_docstring_boost_with_signals, apply_file_affinity_boost_with_signals,
-    apply_package_boost_with_signals, apply_popularity_boost_with_signals,
-    apply_selection_boost_with_signals,
+    apply_doc_status_demotion_with_signals, apply_docstring_boost_with_signals,
+    apply_file_affinity_boost_with_signals, apply_package_boost_with_signals,
+    apply_popularity_boost_with_signals, apply_selection_boost_with_signals,
 };
 use super::{HitSignals, RankedHit};
 use crate::classify::is_generated_output_path;
@@ -36,6 +36,7 @@ pub(super) fn filter_and_boost(
     };
 
     let hits = apply_popularity_boost_with_signals(sqlite, hits, hit_signals, config)?;
+    let hits = apply_doc_status_demotion_with_signals(sqlite, hits, hit_signals)?;
     let hits = apply_docstring_boost_with_signals(sqlite, hits, hit_signals)?;
     let hits =
         apply_selection_boost_with_signals(sqlite, hits, hit_signals, original_query, config)?;

@@ -19,6 +19,10 @@ pub enum SymbolKind {
     /// "where is onBeforeToolUse defined" land on the precise file:line
     /// of the property, not just the enclosing object's const symbol.
     Property,
+    /// Documentation section (markdown heading chunk) from ADRs, guides,
+    /// issues, and other repository prose. Excluded from graph navigation
+    /// tools; searchable through the normal hybrid pipeline.
+    Document,
 }
 
 // TodoKind, TodoEntry, JSDocEntry, JSDocParam moved to crate::storage::sqlite::schema

@@ -17,6 +17,9 @@ pub enum LanguageId {
     Kotlin,
     CSharp,
     Swift,
+    /// Markdown documentation. Parsed by the hand-written extractor in
+    /// `extract/markdown.rs`, not by tree-sitter.
+    Markdown,
 }
 
 pub fn language_id_for_path(path: &Path) -> Option<LanguageId> {
@@ -34,6 +37,7 @@ pub fn language_id_for_path(path: &Path) -> Option<LanguageId> {
         Some("kt") | Some("kts") => Some(LanguageId::Kotlin),
         Some("cs") => Some(LanguageId::CSharp),
         Some("swift") => Some(LanguageId::Swift),
+        Some("md") | Some("markdown") => Some(LanguageId::Markdown),
         _ => None,
     }
 }
@@ -53,6 +57,10 @@ pub fn language_for_id(id: LanguageId) -> Language {
         LanguageId::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
         LanguageId::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         LanguageId::Swift => tree_sitter_swift::LANGUAGE.into(),
+        // Markdown never reaches tree-sitter; the extractor is hand-written.
+        LanguageId::Markdown => {
+            unreachable!("markdown is parsed by extract::markdown, not tree-sitter")
+        }
     }
 }
 

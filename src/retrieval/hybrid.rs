@@ -637,6 +637,7 @@ fn apply_structural_scoring(
                 affinity_boost: 0.0,
                 docstring_boost: 0.0,
                 package_boost: 0.0,
+                doc_status_penalty: 0.0,
             },
         );
     }

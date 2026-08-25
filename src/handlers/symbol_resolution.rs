@@ -101,6 +101,10 @@ pub fn resolve_symbol(
     if rows.is_empty() {
         rows = sqlite.search_symbols_by_qualified_name(symbol_name, file, internal_limit)?;
     }
+    // Navigation invariant (docs-indexing design): document symbols are
+    // retrievable through search but never resolve as graph/navigation
+    // targets, so call hierarchy / type graph / references stay code-only.
+    rows.retain(|row| row.kind != "document");
     if rows.is_empty() {
         return Ok(SymbolResolution::Unresolved);
     }

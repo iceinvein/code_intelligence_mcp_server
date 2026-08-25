@@ -111,6 +111,7 @@ pub fn apply_package_boost_with_signals(
                         affinity_boost: 0.0,
                         docstring_boost: 0.0,
                         package_boost: boost_amount,
+                        doc_status_penalty: 0.0,
                         symbol_importance: 0.0,
                         test_symbol_penalty: 0.0,
                     });
@@ -177,6 +178,7 @@ mod tests {
             hash_embedding_dim: 64,
             vector_search_limit: 20,
             vector_guaranteed_results: 3,
+            docs_max_hits: 4,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.5,
             rank_keyword_weight: 0.5,

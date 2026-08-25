@@ -126,6 +126,7 @@ pub fn language_string(language_id: LanguageId) -> &'static str {
         LanguageId::Kotlin => "kotlin",
         LanguageId::CSharp => "csharp",
         LanguageId::Swift => "swift",
+        LanguageId::Markdown => "markdown",
     }
 }
 
@@ -590,6 +591,7 @@ mod tests {
             hash_embedding_dim: 8,
             vector_search_limit: 10,
             vector_guaranteed_results: 3,
+            docs_max_hits: 4,
             hybrid_alpha: 0.7,
             rank_vector_weight: 0.7,
             rank_keyword_weight: 0.3,

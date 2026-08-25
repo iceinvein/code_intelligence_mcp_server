@@ -28,6 +28,9 @@ pub enum Intent {
     Hook,           // "useEffect", "hook", "lifecycle"
     Middleware,     // "middleware", "interceptor"
     Migration,      // "migration", "schema change", "migrate"
+    /// Rationale/decision/issue-shaped questions (docs-indexing design).
+    /// Boosts document sections; suppressed for definition-style intents.
+    Documentation,
 }
 
 /// Normalize query text for better search results
@@ -64,6 +67,21 @@ pub fn detect_intent(query: &str) -> Option<Intent> {
     // Test Detection (existing)
     if q.contains("test") || q.contains("spec") || q.contains("verify") {
         return Some(Intent::Test);
+    }
+
+    // Documentation intent (docs-indexing design): rationale, decisions,
+    // ADRs and issue-shaped questions route toward document sections.
+    // Checked early so "why does X do Y" is not swallowed by Implementation.
+    if q.starts_with("why")
+        || q.contains(" why ")
+        || q.contains("what is the reason")
+        || q.contains("decision")
+        || q.contains("rationale")
+        || q.split_whitespace().any(|w| w == "adr")
+        || q.contains("known bug")
+        || (q.contains("issue") && q.contains('#'))
+    {
+        return Some(Intent::Documentation);
     }
 
     // NEW: Migration intent - check before Schema since "migration" is more specific
@@ -460,6 +478,43 @@ mod tests {
     fn detect_intent_recognizes_definition() {
         let intent = detect_intent("definition of MyClass");
         assert!(matches!(intent, Some(Intent::Definition)));
+    }
+
+    #[test]
+    fn detect_intent_recognizes_documentation() {
+        for q in [
+            "why do we debounce index updates",
+            "what is the reason for the retry limit",
+            "decision to use SQLite",
+            "ADR for embeddings model",
+            "rationale behind the proxy design",
+            "known bug in retry path",
+            "issue #42 search miss",
+        ] {
+            let intent = detect_intent(q);
+            assert!(
+                matches!(intent, Some(Intent::Documentation)),
+                "query '{q}' should detect Documentation intent, got {intent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn documentation_intent_does_not_shadow_code_intents() {
+        // Definition-style and test queries keep their intents.
+        assert!(matches!(
+            detect_intent("class User"),
+            Some(Intent::Definition)
+        ));
+        assert!(matches!(
+            detect_intent("test the parser"),
+            Some(Intent::Test)
+        ));
+        // Structural questions stay Implementation even with 'how'.
+        assert!(matches!(
+            detect_intent("how does auth work"),
+            Some(Intent::Implementation)
+        ));
     }
 
     #[test]

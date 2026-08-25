@@ -17,6 +17,7 @@ pub mod hono;
 pub mod java;
 pub mod javascript;
 pub mod kotlin;
+pub mod markdown;
 pub mod nestjs;
 pub mod nextjs;
 pub mod python;

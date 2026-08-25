@@ -115,6 +115,9 @@ pub fn write_batch(
             )?;
             queries::todos::delete_todos_by_file(&tx, &file.rel_path)
                 .with_context(|| format!("Failed to delete todos for file: {}", file.rel_path))?;
+            queries::docs::delete_doc_meta_by_file(&tx, &file.rel_path).with_context(|| {
+                format!("Failed to delete doc metadata for file: {}", file.rel_path)
+            })?;
             queries::docstrings::delete_docstrings_by_file(&tx, &file.rel_path).with_context(
                 || format!("Failed to delete docstrings for file: {}", file.rel_path),
             )?;
@@ -167,6 +170,12 @@ pub fn write_batch(
             if !file.todos.is_empty() {
                 queries::todos::batch_upsert_todos(&tx, &file.todos).with_context(|| {
                     format!("Failed to batch upsert todos for file: {}", file.rel_path)
+                })?;
+            }
+
+            if let Some(meta) = &file.doc_meta {
+                queries::docs::upsert_doc_meta(&tx, meta).with_context(|| {
+                    format!("Failed to upsert doc metadata for file: {}", file.rel_path)
                 })?;
             }
 
@@ -535,6 +544,7 @@ mod tests {
             type_edges: vec![],
             inheritance_relations: vec![],
             dataflow_edges: vec![],
+            doc_meta: None,
         };
 
         // Call write_batch
@@ -630,6 +640,7 @@ mod tests {
                 type_edges: vec![],
                 inheritance_relations: vec![],
                 dataflow_edges: vec![],
+                doc_meta: None,
             });
         }
 
@@ -743,6 +754,7 @@ mod tests {
             type_edges: vec![],
             inheritance_relations: vec![],
             dataflow_edges: vec![],
+            doc_meta: None,
         };
 
         write_batch(&[parsed_file_v1], &conn, &tantivy).unwrap();
@@ -805,6 +817,7 @@ mod tests {
             type_edges: vec![],
             inheritance_relations: vec![],
             dataflow_edges: vec![],
+            doc_meta: None,
         };
 
         write_batch(&[parsed_file_v2], &conn, &tantivy).unwrap();

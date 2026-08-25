@@ -269,6 +269,16 @@ impl Default for StandaloneConfig {
                 "**/*.cc".to_string(),
                 "**/*.cxx".to_string(),
                 "**/*.hpp".to_string(),
+                // Documentation Tier 1 (docs-indexing design): conventional
+                // knowledge locations, always indexed when DOCS are on.
+                "**/README.md".to_string(),
+                "**/CONTRIBUTING.md".to_string(),
+                "**/CHANGELOG.md".to_string(),
+                "**/AGENTS.md".to_string(),
+                "**/CLAUDE.md".to_string(),
+                "docs/**/*.md".to_string(),
+                "adr/**/*.md".to_string(),
+                "decisions/**/*.md".to_string(),
             ],
             default_exclude_patterns: vec![
                 "**/node_modules/**".to_string(),
@@ -639,6 +649,7 @@ impl StandaloneConfig {
             hash_embedding_dim: self.hash_embedding_dim,
             vector_search_limit: 20,
             vector_guaranteed_results: 3,
+            docs_max_hits: 4,
             hybrid_alpha: self.hybrid_alpha,
             rank_vector_weight: self.rank_vector_weight,
             rank_keyword_weight: self.rank_keyword_weight,
@@ -721,6 +732,9 @@ pub struct Config {
     pub hash_embedding_dim: usize,
     pub vector_search_limit: usize,
     pub vector_guaranteed_results: usize,
+    /// Maximum document-kind hits allowed in fused search results unless the
+    /// intent is Documentation (docs-indexing design, Phase 2).
+    pub docs_max_hits: usize,
     pub hybrid_alpha: f32,
     pub rank_vector_weight: f32,
     pub rank_keyword_weight: f32,
@@ -914,6 +928,12 @@ impl Config {
             .transpose()?
             .unwrap_or(3);
 
+        let docs_max_hits = optional_env("DOCS_MAX_HITS")
+            .as_deref()
+            .map(parse_usize)
+            .transpose()?
+            .unwrap_or(4);
+
         let hybrid_alpha = optional_env("HYBRID_ALPHA")
             .as_deref()
             .map(parse_f32)
@@ -973,6 +993,15 @@ impl Config {
                 "**/*.cc",
                 "**/*.cxx",
                 "**/*.hpp",
+                // Documentation Tier 1 (docs-indexing design).
+                "**/README.md",
+                "**/CONTRIBUTING.md",
+                "**/CHANGELOG.md",
+                "**/AGENTS.md",
+                "**/CLAUDE.md",
+                "docs/**/*.md",
+                "adr/**/*.md",
+                "decisions/**/*.md",
             ],
         );
 
@@ -1310,6 +1339,7 @@ impl Config {
             rank_test_penalty,
             rank_popularity_weight,
             rank_popularity_cap,
+            docs_max_hits,
             index_patterns,
             exclude_patterns,
             watch_mode,
@@ -2171,6 +2201,14 @@ consent_required = false
             "ts", "tsx", "js", "jsx", "rs", "py", "go", "java", "c", "h", "cpp", "cc", "cxx", "hpp",
         ];
 
+        /// Markdown is covered by Tier-1 doc globs rather than a single
+        /// `**/*.md` pattern (docs-indexing design, Phase 1).
+        fn patterns_cover_markdown(patterns: &[String]) -> bool {
+            ["**/README.md", "docs/**/*.md", "**/AGENTS.md"]
+                .iter()
+                .all(|p| patterns.iter().any(|q| q == p))
+        }
+
         // ── Config::from_env defaults ────────────────────────────────────────
         let env_defaults = parse_csv_or_default(None, &["**/*.ts", "**/*.tsx", "**/*.rs"]);
         // (We read the actual default by calling parse_csv_or_default with None
@@ -2191,6 +2229,10 @@ consent_required = false
                  (extension .{ext} is supported by language_id_for_path but not indexed by default)"
             );
         }
+        assert!(
+            patterns_cover_markdown(&from_env_defaults),
+            "Config::from_env default index_patterns is missing the markdown Tier-1 globs"
+        );
         drop(env_defaults); // silence unused-variable warning
 
         // ── StandaloneConfig::default patterns ──────────────────────────────
@@ -2203,6 +2245,10 @@ consent_required = false
                  (extension .{ext} is supported by language_id_for_path but not indexed by default)"
             );
         }
+        assert!(
+            patterns_cover_markdown(&standalone_defaults),
+            "StandaloneConfig::default().default_index_patterns is missing the markdown Tier-1 globs"
+        );
     }
 
     /// Regression: committed test files and committed generated source must be

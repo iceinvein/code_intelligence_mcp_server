@@ -133,6 +133,7 @@ pub fn should_index_file(config: &Config, root: &Path, path: &Path) -> bool {
                 | LanguageId::Kotlin
                 | LanguageId::CSharp
                 | LanguageId::Swift
+                | LanguageId::Markdown
         )
     ) {
         return false;
@@ -172,6 +173,38 @@ fn pattern_matches_file(path: &str, pattern: &str) -> bool {
     if let Some(dir) = core.strip_suffix("/**") {
         let needle = format!("/{dir}/");
         return path.contains(&needle);
+    }
+
+    // Directory-scoped pattern like `docs/**/*.md`: the directory prefix
+    // must appear as a path segment, and the trailing glob must match the
+    // file's basename (the `**` spans any depth of subdirectories).
+    if let Some((dir, tail)) = core.split_once("/**/") {
+        let needle = format!("/{dir}/");
+        let Some(start) = path.find(&needle) else {
+            return false;
+        };
+        let rest = &path[start + needle.len()..];
+        // Match the tail against the basename when it has no interior slash
+        // wildcards; otherwise fall back to ordered substring matching over
+        // the remaining relative path.
+        let target = if tail.contains("**") {
+            rest
+        } else {
+            rest.rsplit('/').next().unwrap_or(rest)
+        };
+        let parts: Vec<&str> = tail.split('*').collect();
+        let mut pos = 0;
+        for part in parts {
+            if part.is_empty() {
+                continue;
+            }
+            if let Some(idx) = target[pos..].find(part) {
+                pos += idx + part.len();
+            } else {
+                return false;
+            }
+        }
+        return true;
     }
 
     // Pattern with wildcards in filename (e.g. `*.test.*`, `*.gen.*`, `*.min.*`)
@@ -215,6 +248,37 @@ mod tests {
             Utf8PathBuf::from("/tmp/repo"),
             &Utf8PathBuf::from("/tmp/data"),
         )
+    }
+
+    #[test]
+    fn directory_scoped_doublestar_pattern_matches_nested_and_direct() {
+        let mut config = test_config();
+        config.index_patterns = vec!["docs/**/*.md".to_string()];
+        let root = Path::new("/tmp/repo");
+
+        // Direct child of docs/ and deeply nested both match.
+        assert!(should_index_file(
+            &config,
+            root,
+            Path::new("/tmp/repo/docs/adr-001.md")
+        ));
+        assert!(should_index_file(
+            &config,
+            root,
+            Path::new("/tmp/repo/docs/architecture/deep/notes.md")
+        ));
+        // Outside docs/ does not match, even with the same basename.
+        assert!(!should_index_file(
+            &config,
+            root,
+            Path::new("/tmp/repo/src/adr-001.md")
+        ));
+        // Different extension under docs/ does not match.
+        assert!(!should_index_file(
+            &config,
+            root,
+            Path::new("/tmp/repo/docs/adr-001.txt")
+        ));
     }
 
     #[test]

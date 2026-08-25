@@ -36,12 +36,18 @@ pub fn handle_repo_map(state: &AppState, options: RepoMapOptions) -> Result<Valu
     let routes = state
         .sqlite
         .search_framework_patterns(None, None, None, None, None, None, 2_000)?;
-    Ok(build_repo_map(rows, routes, options))
+    let doc_summary = state.sqlite.list_doc_metadata_summary()?;
+    Ok(build_repo_map(rows, routes, doc_summary, options))
 }
+
+/// Compact documentation summary for the repo-map header (docs-indexing
+/// design, Phase 2): counts by doc type plus superseded/deprecated statuses.
+pub use crate::storage::sqlite::schema::DocSummary;
 
 fn build_repo_map(
     rows: Vec<RepoMapSymbolRow>,
     framework_patterns: Vec<FrameworkPatternRow>,
+    doc_summary: DocSummary,
     options: RepoMapOptions,
 ) -> Value {
     let budget_tokens = options
@@ -127,6 +133,12 @@ fn build_repo_map(
         "total_symbols": total_symbols,
         "returned_files": selected.len(),
         "truncated": truncated,
+        "docs": {
+            "total": doc_summary.total,
+            "by_type": doc_summary.by_type,
+            "superseded": doc_summary.superseded,
+            "stale_links": doc_summary.stale_links,
+        },
         "files": selected,
     })
 }
@@ -260,6 +272,7 @@ mod tests {
                 row("b2", "src/b.rs", "hidden", false, 0.2),
             ],
             vec![],
+            DocSummary::default(),
             RepoMapOptions {
                 budget_tokens: Some(10_000),
                 max_files: Some(1),
@@ -297,6 +310,7 @@ mod tests {
         let value = build_repo_map(
             vec![row("sym_list", "src/routes.rs", "list_users", true, 0.9)],
             vec![route("src/routes.rs", "list_users")],
+            DocSummary::default(),
             RepoMapOptions {
                 budget_tokens: Some(10_000),
                 max_files: Some(5),

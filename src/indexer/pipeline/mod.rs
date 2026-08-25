@@ -1,6 +1,7 @@
 pub mod bindings;
 pub mod data_flow;
 pub mod describe;
+pub mod doc_links;
 pub mod edges;
 pub mod identity;
 pub mod parallel;

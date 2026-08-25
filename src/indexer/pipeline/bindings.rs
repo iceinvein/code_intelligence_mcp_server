@@ -465,6 +465,7 @@ mod tests {
             type_edges: vec![],
             inheritance_relations: vec![],
             dataflow_edges: vec![],
+            doc_meta: None,
         }
     }
 

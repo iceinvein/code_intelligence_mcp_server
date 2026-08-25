@@ -14,6 +14,7 @@ pub fn symbol_kind_to_string(kind: SymbolKind) -> String {
         SymbolKind::Impl => "impl",
         SymbolKind::Module => "module",
         SymbolKind::Property => "property",
+        SymbolKind::Document => "document",
     }
     .to_string()
 }

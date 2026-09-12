@@ -652,27 +652,26 @@ async fn cli_api_request(
             )
         })?;
     let mut response = send_cli_api_request(&client, method.clone(), &url, body.as_ref()).await;
+    // Why the auto-start outcome is carried rather than returned: a failed
+    // start says nothing about why the daemon was unreachable, and returning it
+    // here used to discard the transport error that did.
+    let mut autostart_note: Option<String> = None;
     if response
         .as_ref()
-        .is_err_and(|error| !error.is_timeout() && !runtime.no_start)
+        .is_err_and(|error| should_autostart(error.is_timeout(), runtime.no_start, port_override))
     {
-        code_intelligence_mcp_server::install::start_daemon(false).map_err(|error| {
-            CliFailure::new(
-                command,
-                CliErrorCode::DaemonUnavailable,
-                format!("automatic daemon start failed: {error}"),
-                runtime.json,
-                runtime.pretty,
-            )
-            .with_hint(
-                "Run `code-intel install`, or start the Homebrew service with `brew services start code-intelligence-mcp`",
-            )
-        })?;
-        wait_for_cli_api(command, &client, &api_base, runtime).await?;
-        response = send_cli_api_request(&client, method, &url, body.as_ref()).await;
+        match code_intelligence_mcp_server::install::autostart_daemon(api_port) {
+            Ok(code_intelligence_mcp_server::install::AutoStart::Started) => {
+                wait_for_cli_api(command, &client, &api_base, runtime).await?;
+                response = send_cli_api_request(&client, method, &url, body.as_ref()).await;
+            }
+            Ok(code_intelligence_mcp_server::install::AutoStart::AlreadyServing) => {}
+            Err(error) => autostart_note = Some(error.to_string()),
+        }
     }
-    let response =
-        response.map_err(|error| cli_transport_failure(command, &url, error, runtime))?;
+    let response = response.map_err(|error| {
+        cli_transport_failure(command, &url, error, runtime, autostart_note.as_deref())
+    })?;
     let status = response.status();
     let value = response
         .json::<serde_json::Value>()
@@ -756,25 +755,75 @@ fn cli_transport_failure(
     url: &str,
     error: reqwest::Error,
     runtime: &CliQueryRuntime,
+    autostart: Option<&str>,
 ) -> CliFailure {
-    let code = if error.is_timeout() {
+    let is_timeout = error.is_timeout();
+    let code = if is_timeout {
         CliErrorCode::Timeout
     } else {
         CliErrorCode::DaemonUnavailable
     };
-    let hint = if runtime.no_start {
-        "Start the daemon manually or retry without --no-start"
-    } else {
-        "Run `code-intel start` or `code-intel install` first"
-    };
     CliFailure::new(
         command,
         code,
-        format!("failed to reach Code Intelligence daemon at {url}: {error}"),
+        transport_message(url, &error_chain(&error), autostart),
         runtime.json,
         runtime.pretty,
     )
-    .with_hint(hint)
+    .with_hint(transport_hint(is_timeout, runtime.no_start))
+}
+
+/// Flatten an error and its causes into one line.
+///
+/// reqwest reports "error sending request for url (...)" and keeps the reason
+/// (connection refused, DNS failure, TLS) in the source chain, so a message
+/// built from Display alone never says what actually went wrong.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !parts.iter().any(|part| part == &text) {
+            parts.push(text);
+        }
+        source = cause.source();
+    }
+    parts.join(": ")
+}
+
+/// Whether a failed request should try to bring the daemon up.
+///
+/// An explicit `--port` names one specific daemon, while launchd only ever
+/// starts the registered one. Auto-starting there would restart a daemon the
+/// caller never asked about and still leave the request unserved.
+fn should_autostart(is_timeout: bool, no_start: bool, port_override: Option<u16>) -> bool {
+    !is_timeout && !no_start && port_override.is_none()
+}
+
+/// The reason the daemon could not be reached, plus why starting it did not
+/// help. The transport error leads because it is the one that says what broke.
+fn transport_message(url: &str, error: &str, autostart: Option<&str>) -> String {
+    match autostart {
+        Some(note) => {
+            format!(
+                "failed to reach Code Intelligence daemon at {url}: {error}                  (could not start it automatically: {note})"
+            )
+        }
+        None => format!("failed to reach Code Intelligence daemon at {url}: {error}"),
+    }
+}
+
+/// A timeout and an absent daemon need opposite advice. Reinstalling was once
+/// suggested for both, which sent agents to `code-intel install` on machines
+/// where the daemon was up and merely busy indexing.
+fn transport_hint(is_timeout: bool, no_start: bool) -> &'static str {
+    if is_timeout {
+        "The daemon did not answer in time; it may be busy indexing. Retry, or raise the          bound with `--timeout 120s`."
+    } else if no_start {
+        "Start the daemon manually, or retry without --no-start"
+    } else {
+        code_intelligence_mcp_server::install::daemon_recovery_hint()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1377,6 +1426,89 @@ mod cli_query_contract_tests {
             "Run `code-intelligence-mcp-server start` first"
         );
         assert_eq!(failure.exit_code(), 3);
+    }
+
+    #[test]
+    fn auto_start_is_skipped_when_the_caller_named_a_port() {
+        // launchd only ever starts the registered daemon on its own port, so a
+        // request to some other port that fails must not kickstart it: that
+        // restarts a daemon nobody asked about and still does not serve the
+        // request.
+        assert!(!should_autostart(false, false, Some(19000)));
+        assert!(should_autostart(false, false, None));
+    }
+
+    #[test]
+    fn auto_start_is_skipped_for_timeouts_and_when_no_start_was_asked_for() {
+        assert!(!should_autostart(true, false, None));
+        assert!(!should_autostart(false, true, None));
+    }
+
+    #[test]
+    fn transport_message_carries_the_underlying_cause() {
+        // reqwest's own Display stops at "error sending request for url (...)".
+        // The cause that says *why* lives in the source chain, and it is the
+        // part that tells a dead daemon apart from a busy one.
+        #[derive(Debug)]
+        struct Layered(std::io::Error);
+        impl std::fmt::Display for Layered {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "error sending request for url (http://127.0.0.1:17802/x)"
+                )
+            }
+        }
+        impl std::error::Error for Layered {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let error = Layered(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "Connection refused (os error 61)",
+        ));
+
+        let chain = error_chain(&error);
+
+        assert!(chain.contains("error sending request"), "{chain}");
+        assert!(
+            chain.contains("Connection refused (os error 61)"),
+            "{chain}"
+        );
+    }
+
+    #[test]
+    fn transport_message_keeps_the_daemon_error_when_auto_start_could_not_run() {
+        // The auto-start attempt used to replace the transport error outright,
+        // so an unreachable daemon reported "No plist ... Run `install` first"
+        // and the reason it was unreachable never surfaced.
+        let message = transport_message(
+            "http://127.0.0.1:17802/api/search",
+            "error trying to connect: tcp connect error: Connection refused (os error 61)",
+            Some("no launchd service to start"),
+        );
+
+        assert!(message.contains("Connection refused"), "{message}");
+        assert!(message.contains("no launchd service to start"), "{message}");
+    }
+
+    #[test]
+    fn transport_message_is_the_bare_error_when_auto_start_was_not_attempted() {
+        let message = transport_message("http://127.0.0.1:17802/api/search", "boom", None);
+
+        assert_eq!(
+            message,
+            "failed to reach Code Intelligence daemon at http://127.0.0.1:17802/api/search: boom"
+        );
+    }
+
+    #[test]
+    fn timeout_hint_names_the_timeout_rather_than_reinstalling() {
+        let hint = transport_hint(true, false);
+
+        assert!(hint.contains("--timeout"), "{hint}");
+        assert!(!hint.contains("install"), "{hint}");
     }
 
     #[test]

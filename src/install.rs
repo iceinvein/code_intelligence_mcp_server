@@ -16,6 +16,9 @@ use crate::cli::{InstallOpts, MigrateOpts};
 use crate::config::StandaloneConfig;
 
 pub const LABEL: &str = "com.iceinvein.code-intelligence";
+/// Homebrew supervises the same binary under its own label, so nothing we
+/// write ever appears at `plist_path()` on a `brew install`.
+pub const BREW_LABEL: &str = "sh.brew.code-intelligence-mcp";
 pub const DEFAULT_PORT: u16 = 17800;
 pub const MCP_SERVER_NAME: &str = "code-intelligence";
 
@@ -54,8 +57,8 @@ fn current_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
-fn service_target() -> String {
-    format!("gui/{}/{LABEL}", current_uid())
+fn service_target(label: &str) -> String {
+    format!("gui/{}/{label}", current_uid())
 }
 
 fn domain_target() -> String {
@@ -118,9 +121,8 @@ enum DaemonState {
     /// Running under our launchd label (`com.iceinvein.code-intelligence`).
     Running,
     /// A daemon is serving the port, but not via our launchd label, e.g.
-    /// Homebrew services (`homebrew.mxcl.code-intelligence-mcp`) or a process
-    /// started by hand. Reported so `status` never claims "stopped" while the
-    /// port is plainly in use.
+    /// Homebrew services (`BREW_LABEL`) or a process started by hand. Reported
+    /// so `status` never claims "stopped" while the port is plainly in use.
     RunningUnmanaged,
 }
 
@@ -138,6 +140,35 @@ fn determine_daemon_state(label_running: bool, port_in_use: bool) -> DaemonState
         DaemonState::RunningUnmanaged
     } else {
         DaemonState::Stopped
+    }
+}
+
+/// Which launchd service a start should act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartTarget {
+    /// Restart an already-registered service under this label.
+    Kickstart(&'static str),
+    /// Load our own plist for the first time.
+    Bootstrap,
+    /// Neither service is registered, so there is nothing launchd can start.
+    Nothing,
+}
+
+/// Pick the service to start from what is actually registered.
+///
+/// Our own label comes first when it is loaded, then our plist, then
+/// Homebrew's. The Homebrew arm is the one that was missing: `brew install`
+/// registers `sh.brew.code-intelligence-mcp` and never writes our plist, so
+/// starting used to fail outright on every Homebrew machine.
+fn start_target(own_plist: bool, own_loaded: bool, brew_loaded: bool) -> StartTarget {
+    if own_loaded {
+        StartTarget::Kickstart(LABEL)
+    } else if own_plist {
+        StartTarget::Bootstrap
+    } else if brew_loaded {
+        StartTarget::Kickstart(BREW_LABEL)
+    } else {
+        StartTarget::Nothing
     }
 }
 
@@ -280,9 +311,9 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 // ---------- launchctl wrappers ----------
 
-fn launchctl_running() -> Result<bool> {
+fn launchctl_running(label: &str) -> Result<bool> {
     let out = Command::new("launchctl")
-        .args(["print", &service_target()])
+        .args(["print", &service_target(label)])
         .output()
         .context("invoking launchctl print")?;
     Ok(out.status.success())
@@ -302,7 +333,7 @@ fn launchctl_bootstrap(plist: &Path) -> Result<()> {
 
 fn launchctl_bootout() -> Result<()> {
     let status = Command::new("launchctl")
-        .args(["bootout", &service_target()])
+        .args(["bootout", &service_target(LABEL)])
         .status()
         .context("invoking launchctl bootout")?;
     if !status.success() {
@@ -311,9 +342,9 @@ fn launchctl_bootout() -> Result<()> {
     Ok(())
 }
 
-fn launchctl_kickstart() -> Result<()> {
+fn launchctl_kickstart(label: &str) -> Result<()> {
     let status = Command::new("launchctl")
-        .args(["kickstart", "-k", &service_target()])
+        .args(["kickstart", "-k", &service_target(label)])
         .status()
         .context("invoking launchctl kickstart")?;
     if !status.success() {
@@ -332,7 +363,7 @@ pub fn handle_install(opts: InstallOpts) -> Result<()> {
 
     // If the service is already running, tear it down before re-bootstrapping
     // so the new plist takes effect.
-    if launchctl_running().unwrap_or(false) {
+    if launchctl_running(LABEL).unwrap_or(false) {
         eprintln!("Existing daemon detected; stopping it first...");
         let _ = launchctl_bootout();
     }
@@ -412,7 +443,7 @@ pub fn handle_install(opts: InstallOpts) -> Result<()> {
 
 pub fn handle_uninstall() -> Result<()> {
     let plist_p = plist_path()?;
-    if launchctl_running().unwrap_or(false) {
+    if launchctl_running(LABEL).unwrap_or(false) {
         match launchctl_bootout() {
             Ok(()) => println!("Stopped and unregistered the daemon."),
             Err(e) => eprintln!("Warning: launchctl bootout failed: {e}"),
@@ -442,28 +473,87 @@ pub fn handle_start() -> Result<()> {
 pub fn start_daemon(announce: bool) -> Result<()> {
     require_macos_13_plus()?;
     let plist_p = plist_path()?;
-    if !plist_p.exists() {
-        return Err(anyhow!(
-            "No plist at {}. Run `install` first.",
-            plist_p.display()
-        ));
-    }
-    if launchctl_running().unwrap_or(false) {
-        launchctl_kickstart()?;
-        if announce {
-            println!("Kickstarted {LABEL}.");
+    let target = start_target(
+        plist_p.exists(),
+        launchctl_running(LABEL).unwrap_or(false),
+        launchctl_running(BREW_LABEL).unwrap_or(false),
+    );
+    match target {
+        StartTarget::Kickstart(label) => {
+            launchctl_kickstart(label)?;
+            if announce {
+                println!("Kickstarted {label}.");
+            }
         }
-    } else {
-        launchctl_bootstrap(&plist_p)?;
-        if announce {
-            println!("Bootstrapped {LABEL}.");
+        StartTarget::Bootstrap => {
+            launchctl_bootstrap(&plist_p)?;
+            if announce {
+                println!("Bootstrapped {LABEL}.");
+            }
+        }
+        StartTarget::Nothing => {
+            return Err(anyhow!(
+                "no launchd service to start: no plist at {}, and the Homebrew \
+                 service {BREW_LABEL} is not registered either",
+                plist_p.display()
+            ))
         }
     }
     Ok(())
 }
 
+/// Start the daemon on behalf of a query command, refusing to touch one that
+/// is already serving.
+///
+/// The distinction matters because `launchctl kickstart -k` kills the running
+/// process first. A daemon that is merely slow (mid-index, several repos
+/// contending) still answers the port, and restarting it there would abort an
+/// in-flight index run to fix a problem that was never a dead daemon.
+pub fn autostart_daemon(api_port: u16) -> Result<AutoStart> {
+    if !port_is_free(api_port) {
+        return Ok(AutoStart::AlreadyServing);
+    }
+    start_daemon(false)?;
+    Ok(AutoStart::Started)
+}
+
+/// Outcome of an auto-start attempt made by a query command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoStart {
+    /// launchd was asked to start the daemon; the caller should wait for it.
+    Started,
+    /// Something already holds the port, so the call failed for another reason.
+    AlreadyServing,
+}
+
+/// How to recover a daemon this machine cannot reach, matched to whoever
+/// supervises it.
+///
+/// Telling a Homebrew user to run `code-intel install` is worse than unhelpful:
+/// it writes a second launchd service that fights Homebrew's for port 17800.
+pub fn daemon_recovery_hint() -> &'static str {
+    recovery_hint(
+        plist_path().map(|path| path.exists()).unwrap_or(false),
+        launchctl_running(BREW_LABEL).unwrap_or(false),
+    )
+}
+
+fn recovery_hint(own_plist: bool, brew_loaded: bool) -> &'static str {
+    match (own_plist, brew_loaded) {
+        (true, _) => "Run `code-intel start`, then `code-intel status` to confirm it came up",
+        (false, true) => {
+            "Run `brew services start code-intelligence-mcp`, then `code-intel status` to \
+             confirm it came up"
+        }
+        (false, false) => {
+            "No daemon is installed. Run `code-intel install`, or \
+             `brew install code-intelligence-mcp` if you use Homebrew"
+        }
+    }
+}
+
 pub fn handle_stop() -> Result<()> {
-    if launchctl_running().unwrap_or(false) {
+    if launchctl_running(LABEL).unwrap_or(false) {
         launchctl_bootout()?;
         println!("Stopped {LABEL}.");
     } else {
@@ -475,7 +565,7 @@ pub fn handle_stop() -> Result<()> {
 pub fn handle_status() -> Result<()> {
     let plist_p = plist_path()?;
     let installed = plist_p.exists();
-    let label_running = launchctl_running().unwrap_or(false);
+    let label_running = launchctl_running(LABEL).unwrap_or(false);
     // Probe the port too: `launchctl print` only knows about our own label, so
     // a daemon supervised by Homebrew or started by hand would otherwise read
     // as "stopped" while it is plainly serving requests.
@@ -501,7 +591,7 @@ pub fn handle_status() -> Result<()> {
     // PID via `launchctl print` is only meaningful when our own label is loaded.
     if state == DaemonState::Running {
         let out = Command::new("launchctl")
-            .args(["print", &service_target()])
+            .args(["print", &service_target(LABEL)])
             .output()
             .context("invoking launchctl print")?;
         let text = String::from_utf8_lossy(&out.stdout);
@@ -836,7 +926,7 @@ mod tests {
     #[test]
     fn daemon_state_unmanaged_when_port_busy_but_label_absent() {
         // Regression: a daemon supervised by a *different* launchd label
-        // (Homebrew's `homebrew.mxcl.code-intelligence-mcp`) or started bare
+        // (Homebrew's `sh.brew.code-intelligence-mcp`) or started bare
         // must never be reported as "stopped" while it is plainly serving the
         // port. This is the false-"stopped" bug `status` used to print.
         assert_eq!(
@@ -848,6 +938,60 @@ mod tests {
     #[test]
     fn daemon_state_stopped_only_when_nothing_listens() {
         assert_eq!(determine_daemon_state(false, false), DaemonState::Stopped);
+    }
+
+    #[test]
+    fn start_kickstarts_our_service_when_our_label_is_loaded() {
+        assert_eq!(
+            start_target(true, true, false),
+            StartTarget::Kickstart(LABEL)
+        );
+        assert_eq!(
+            start_target(true, true, true),
+            StartTarget::Kickstart(LABEL)
+        );
+    }
+
+    #[test]
+    fn start_bootstraps_our_plist_when_our_label_is_not_loaded() {
+        assert_eq!(start_target(true, false, false), StartTarget::Bootstrap);
+    }
+
+    #[test]
+    fn start_kickstarts_the_homebrew_service_when_we_own_no_plist() {
+        // A Homebrew install registers `sh.brew.code-intelligence-mcp` and our
+        // own plist never exists, so starting used to refuse with "Run
+        // `install` first" — advice that lays down a second launchd service
+        // fighting Homebrew's for port 17800.
+        assert_eq!(
+            start_target(false, false, true),
+            StartTarget::Kickstart(BREW_LABEL)
+        );
+    }
+
+    #[test]
+    fn start_has_nothing_to_start_when_no_service_is_registered() {
+        assert_eq!(start_target(false, false, false), StartTarget::Nothing);
+    }
+
+    #[test]
+    fn recovery_hint_points_at_homebrew_instead_of_install_when_brew_owns_the_service() {
+        let hint = recovery_hint(false, true);
+        assert!(
+            hint.contains("brew services start code-intelligence-mcp"),
+            "{hint}"
+        );
+        assert!(!hint.contains("code-intel install"), "{hint}");
+    }
+
+    #[test]
+    fn recovery_hint_prefers_our_own_service_when_both_are_registered() {
+        assert!(recovery_hint(true, true).contains("code-intel start"));
+    }
+
+    #[test]
+    fn recovery_hint_points_at_install_only_when_no_service_is_registered() {
+        assert!(recovery_hint(false, false).contains("code-intel install"));
     }
 
     #[test]

@@ -61,11 +61,23 @@ Failure:
   "command": "search",
   "error": {
     "code": "daemon_unavailable",
-    "message": "failed to reach Code Intelligence daemon",
-    "hint": "Run `code-intel start` or `code-intel install` first"
+    "message": "failed to reach Code Intelligence daemon at http://127.0.0.1:17802/api/query/search: error sending request: client error (Connect): tcp connect error: Connection refused (os error 61)",
+    "hint": "Run `brew services start code-intelligence-mcp`, then `code-intel status` to confirm it came up"
   }
 }
 ```
+
+The `message` always leads with the transport error and its underlying cause,
+so a busy daemon reads differently from an absent one. The `hint` names
+whichever launchd service actually supervises this machine's daemon: our own
+label, Homebrew's, or `code-intel install` when neither is registered.
+Reinstalling over a Homebrew service would write a second service fighting it
+for the port, so the hint never suggests it there.
+
+A query command auto-starts a stopped daemon, with two exceptions: it never
+restarts one that already holds the port (a slow daemon is not a dead one, and
+`launchctl kickstart -k` would abort its in-flight index run), and it never
+starts anything when `--port` names a daemon other than the registered one.
 
 ## Exit Codes
 

@@ -215,3 +215,41 @@ test("ReposView floors an already-past deadline at 0d", async () => {
   const { findByText } = renderWithClient(<ReposView />);
   expect(await findByText("stale · deletes in 0d")).toBeDefined();
 });
+
+test("ReposView warns that a gone worktree is about to be deleted", async () => {
+  // A worktree is reclaimed on the two-sweep rule, so it carries neither a
+  // missing_since stamp nor an auto_delete_at deadline. Without a branch of its
+  // own the row read "Checkout no longer exists on disk", promising nothing was
+  // scheduled about a minute before the index was gone.
+  const payload = {
+    count: 1,
+    repos: [
+      {
+        id: "abc",
+        name: "agent-worktree",
+        path: "/repo/base/.claude/worktrees/agent-a04",
+        data_dir: "/data/agent",
+        created_at: "x",
+        last_accessed: "x",
+        path_exists: false,
+        seeded_from: null,
+        worktree_of: "basehash12345678",
+        missing_since: null,
+        auto_delete_at: null,
+        activity: {
+          running: false,
+          current: null,
+          last_finished: null,
+          latest_index_run: null,
+          latest_search_run: null,
+          last_updated_unix_s: null,
+        },
+      },
+    ],
+  };
+  globalThis.fetch = mock(async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
+
+  const { findByText } = renderWithClient(<ReposView />);
+  const badge = await findByText("stale · deleting");
+  expect(badge.getAttribute("title")).toContain("two minutes");
+});

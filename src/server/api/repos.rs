@@ -48,6 +48,7 @@ pub(crate) async fn handle_repos(
                 // through missing_repo_grace_days.
                 "path_exists": std::path::Path::new(&e.path).exists(),
                 "seeded_from": e.seeded_from,
+                "worktree_of": e.worktree_of,
                 // When we first noticed the folder was gone, and when the index
                 // is deleted if it stays gone. Both null when there is no
                 // countdown (see auto_delete_at).
@@ -65,11 +66,11 @@ pub(crate) async fn handle_repos(
 ///
 /// `None` covers four distinct cases the dashboard renders the same way: the
 /// path is present (so nothing is stamped), grace is disabled, the entry is a
-/// seeded worktree index (which uses a two-sweep rule with no meaningful date),
-/// or `grace_days` is so large the deadline falls outside the range a date can
+/// worktree index (which uses a two-sweep rule with no meaningful date), or
+/// `grace_days` is so large the deadline falls outside the range a date can
 /// represent.
 fn auto_delete_at(entry: &crate::registry::RepoEntry, grace_days: u32) -> Option<String> {
-    if grace_days == 0 || entry.seeded_from.is_some() {
+    if grace_days == 0 || entry.worktree_of.is_some() || entry.seeded_from.is_some() {
         return None;
     }
     let stamped = chrono::DateTime::parse_from_rfc3339(entry.missing_since.as_deref()?).ok()?;
@@ -586,6 +587,7 @@ mod tests {
             initial_index_approved_at: None,
             initial_index_completed_at: None,
             seeded_from: None,
+            worktree_of: None,
             missing_since: None,
         };
 
@@ -633,7 +635,7 @@ mod tests {
 
     #[test]
     fn auto_delete_at_covers_every_null_case_and_the_normal_deadline() {
-        let entry = |seeded_from: Option<&str>, missing_since: Option<&str>| RepoEntry {
+        let entry = |worktree_of: Option<&str>, missing_since: Option<&str>| RepoEntry {
             path: "/repo".to_string(),
             name: "repo".to_string(),
             data_dir: Utf8PathBuf::from("/dummy"),
@@ -642,7 +644,8 @@ mod tests {
             consent: crate::registry::IndexConsent::Approved,
             initial_index_approved_at: None,
             initial_index_completed_at: None,
-            seeded_from: seeded_from.map(str::to_string),
+            seeded_from: None,
+            worktree_of: worktree_of.map(str::to_string),
             missing_since: missing_since.map(str::to_string),
         };
         let stamped = Some("2026-08-01T00:00:00+00:00");
@@ -650,8 +653,18 @@ mod tests {
         // Grace disabled.
         assert_eq!(auto_delete_at(&entry(None, stamped), 0), None);
 
-        // Seeded entry, even when stamped: the two-sweep rule has no meaningful date.
+        // Worktree entry, even when stamped: the two-sweep rule has no
+        // meaningful date. True whether or not its index was ever seeded.
         assert_eq!(auto_delete_at(&entry(Some("basehash"), stamped), 7), None);
+
+        // A legacy entry written before worktree_of existed carries seeded_from
+        // alone, and keeps the same countdown-free treatment.
+        let legacy = RepoEntry {
+            seeded_from: Some("basehash".to_string()),
+            worktree_of: None,
+            ..entry(None, stamped)
+        };
+        assert_eq!(auto_delete_at(&legacy, 7), None);
 
         // Not stamped at all (path present, nothing to count down from).
         assert_eq!(auto_delete_at(&entry(None, None), 7), None);

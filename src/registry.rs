@@ -1,6 +1,6 @@
 //! Repo registry for standalone mode — tracks registered repos and their storage locations
 
-use crate::path::Utf8PathBuf;
+use crate::path::{Utf8Path, Utf8PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -72,6 +72,15 @@ fn repo_name_from_path(repo_path: &str) -> String {
         .to_string()
 }
 
+/// Registry id of the base repository `repo_path` is a linked git worktree of.
+///
+/// Asked while the checkout still exists, because by the time the idle sweep
+/// needs the answer the directory is gone and git cannot be asked at all.
+fn worktree_base_id(repo_path: &str) -> Option<String> {
+    crate::indexer::package::git::resolve_base_repo(Utf8Path::new(repo_path))
+        .map(|base| RepoRegistry::path_hash(base.as_str()))
+}
+
 /// Information about a registered repository
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoEntry {
@@ -91,12 +100,24 @@ pub struct RepoEntry {
     /// entries carrying this are eligible for automatic pruning.
     #[serde(default)]
     pub seeded_from: Option<String>,
+    /// Repo id of the base repository this path is a linked git worktree of,
+    /// recorded at registration whether or not seeding then happened.
+    ///
+    /// Distinct from `seeded_from`, which says where the *data* came from. This
+    /// says what the *checkout* is, and it is what the lifecycle needs: a
+    /// removed worktree path never comes back, so its index goes on the
+    /// two-sweep rule even when a full index pass built it. By the time the
+    /// sweep runs the checkout is gone and git can no longer be asked, so the
+    /// answer has to be persisted here at registration time.
+    #[serde(default)]
+    pub worktree_of: Option<String>,
     /// RFC3339 timestamp of the first sweep that found this repo's path absent,
     /// cleared as soon as the path comes back. Drives grace-period deletion of
-    /// non-seeded indexes.
+    /// indexes that are not worktrees.
     ///
-    /// A seeded entry never carries this: its two-sweep in-memory rule reaches a
-    /// decision in about two minutes, well before a persisted stamp would matter.
+    /// A worktree entry never carries this: its two-sweep in-memory rule reaches
+    /// a decision in about two minutes, well before a persisted stamp would
+    /// matter.
     #[serde(default)]
     pub missing_since: Option<String>,
 }
@@ -165,6 +186,16 @@ impl RepoRegistry {
         if let Some(existing) = registry.repos.get_mut(&hash) {
             // Touch last_accessed
             existing.last_accessed = now;
+            // Backfill for rows written before `worktree_of` existed, and for
+            // rows some other path inserted. Without this the lifecycle fix
+            // would reach only repositories registered for the first time after
+            // the upgrade, which is none of the ones already filling the disk.
+            // A repository that is not a worktree keeps answering None and pays
+            // one `Repository::open` per cold bind; `register` is only reached
+            // on a session-cache miss, so that is not a per-request cost.
+            if existing.worktree_of.is_none() && existing.seeded_from.is_none() {
+                existing.worktree_of = worktree_base_id(&existing.path);
+            }
             let entry = existing.clone();
             self.save(&registry)?;
             return Ok(entry);
@@ -180,6 +211,8 @@ impl RepoRegistry {
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("Failed to create data directory: {}", data_dir))?;
 
+        let worktree_of = worktree_base_id(repo_path);
+
         let entry = RepoEntry {
             path: repo_path.to_string(),
             name,
@@ -190,6 +223,7 @@ impl RepoRegistry {
             initial_index_approved_at: None,
             initial_index_completed_at: None,
             seeded_from: None,
+            worktree_of,
             missing_since: None,
         };
 
@@ -321,6 +355,9 @@ impl RepoRegistry {
             initial_index_approved_at: None,
             initial_index_completed_at: None,
             seeded_from: None,
+            // Resolved here too, because a declined repo is inserted by this
+            // branch and never passes through `register`.
+            worktree_of: worktree_base_id(repo_path),
             missing_since: None,
         };
         registry.repos.insert(hash, entry.clone());
@@ -369,10 +406,11 @@ impl RepoRegistry {
 
     /// Record that this repo's index was seeded from `base_repo_id`.
     ///
-    /// The sole writer of `RepoEntry::seeded_from`, and therefore the only way
-    /// an entry takes the two-sweep in-memory path in
-    /// `SessionManager::prune_vanished_indexes` instead of the persisted
-    /// grace-period path that every other entry `list_missing` returns takes.
+    /// The sole writer of `RepoEntry::seeded_from`, which records where an
+    /// index's data came from. What puts an entry on the two-sweep path in
+    /// `SessionManager::prune_vanished_indexes` is `worktree_of`; this field
+    /// still counts there only so entries written before that field existed
+    /// keep the treatment they already had.
     pub fn mark_seeded_from(&self, repo_path: &str, base_repo_id: &str) -> Result<RepoEntry> {
         let hash = Self::path_hash(repo_path);
         let mut registry = self.load()?;
@@ -385,12 +423,22 @@ impl RepoRegistry {
         Ok(updated)
     }
 
+    /// Blank `worktree_of` the way a registry written before the field existed
+    /// would have left it. Test-only; nothing in the daemon clears this.
+    #[cfg(test)]
+    fn clear_worktree_of_for_test(&self, repo_path: &str) {
+        let hash = Self::path_hash(repo_path);
+        let mut registry = self.load().unwrap();
+        registry.repos.get_mut(&hash).unwrap().worktree_of = None;
+        self.save(&registry).unwrap();
+    }
+
     /// Every registered repository whose path no longer exists on disk, seeded
     /// or not.
     ///
     /// Read-only; the caller classifies and deletes. Wider than the
     /// `list_seeded_missing` it replaces, because the grace sweep needs
-    /// hand-registered entries too and branches on `seeded_from` itself.
+    /// hand-registered entries too and branches on `worktree_of` itself.
     pub fn list_missing(&self) -> Result<Vec<RepoEntry>> {
         let registry = self.load()?;
         Ok(registry
@@ -1049,6 +1097,90 @@ mod tests {
 
         // Nothing to clear on a second pass, and therefore no write.
         assert_eq!(registry.clear_missing_since_for_present_paths().unwrap(), 0);
+    }
+
+    #[test]
+    fn register_records_the_base_a_linked_worktree_belongs_to() {
+        // Recorded for every worktree, not only one whose index was seeded:
+        // the idle sweep needs it after the checkout is gone, and by then git
+        // can no longer be asked.
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let base = root.join("base");
+        std::fs::create_dir_all(base.as_std_path()).unwrap();
+        let repo = crate::indexer::package::git::init_repo_with_commit(&base);
+        let worktree = base.join(".claude/worktrees/agent-a0435b72f991f1a7f");
+        std::fs::create_dir_all(worktree.parent().unwrap().as_std_path()).unwrap();
+        repo.worktree("agent-a0435b72f991f1a7f", worktree.as_std_path(), None)
+            .unwrap();
+
+        let registry = RepoRegistry::new(root.join("registry.json"), root.join("repos"));
+        let entry = registry.register(worktree.as_str()).unwrap();
+
+        // The recorded id is the base's registry key, which is how a reader of
+        // this field looks the base up.
+        let canonical_base = crate::path::canonicalize_existing_dir(&base).unwrap();
+        let base_id = RepoRegistry::path_hash(
+            registry
+                .register(canonical_base.as_str())
+                .unwrap()
+                .path
+                .as_str(),
+        );
+        assert_eq!(entry.worktree_of, Some(base_id));
+        assert_eq!(entry.seeded_from, None, "nothing was cloned");
+    }
+
+    #[test]
+    fn register_backfills_worktree_of_on_an_entry_that_predates_the_field() {
+        // Every worktree already in a user's registry.json was written before
+        // worktree_of existed. register() returns early for an entry it already
+        // knows, so without a backfill those rows keep a null worktree_of for
+        // life and the lifecycle fix never reaches the repos that motivated it.
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let base = root.join("base");
+        std::fs::create_dir_all(base.as_std_path()).unwrap();
+        let repo = crate::indexer::package::git::init_repo_with_commit(&base);
+        let worktree = root.join("feature");
+        repo.worktree("feature", worktree.as_std_path(), None)
+            .unwrap();
+
+        let registry = RepoRegistry::new(root.join("registry.json"), root.join("repos"));
+        registry.register(worktree.as_str()).unwrap();
+        // Rewrite the row the way a pre-upgrade daemon left it.
+        registry.clear_worktree_of_for_test(worktree.as_str());
+        assert_eq!(
+            registry
+                .get(worktree.as_str())
+                .unwrap()
+                .unwrap()
+                .worktree_of,
+            None
+        );
+
+        let refreshed = registry.register(worktree.as_str()).unwrap();
+
+        // Compared against the base's own registry key, which is what a reader
+        // of worktree_of looks the base up by. Registered through the canonical
+        // path because that is what the daemon binds repositories under.
+        let canonical_base = crate::path::canonicalize_existing_dir(&base).unwrap();
+        let base_entry = registry.register(canonical_base.as_str()).unwrap();
+        let base_id = RepoRegistry::path_hash(&base_entry.path);
+        assert_eq!(refreshed.worktree_of, Some(base_id));
+    }
+
+    #[test]
+    fn register_leaves_worktree_of_unset_for_an_ordinary_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let base = root.join("base");
+        std::fs::create_dir_all(base.as_std_path()).unwrap();
+        crate::indexer::package::git::init_repo_with_commit(&base);
+
+        let registry = RepoRegistry::new(root.join("registry.json"), root.join("repos"));
+
+        assert_eq!(registry.register(base.as_str()).unwrap().worktree_of, None);
     }
 
     #[test]

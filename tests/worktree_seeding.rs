@@ -504,8 +504,9 @@ async fn deleting_a_seeded_worktree_prunes_its_index() {
         .is_some());
 }
 
-/// A repo a user registered by hand is never auto-pruned, however stale its
-/// path: only entries the daemon seeded carry `seeded_from`.
+/// A plain repository a user registered by hand waits out the full grace
+/// period, however stale its path. Only a worktree takes the two-sweep rule,
+/// and this path is not one.
 #[tokio::test]
 async fn hand_registered_missing_repo_survives_the_prune_sweep() {
     let data_temp = tempfile::tempdir().unwrap();
@@ -643,10 +644,17 @@ async fn zero_ttl_never_prunes_a_seeded_index() {
     assert!(seeded_data.as_std_path().exists());
 }
 
-/// Seeding an entry the user registered by hand must not enroll it for pruning:
-/// `seeded_from` is what makes an index one the daemon may delete on its own.
+/// A worktree the user registered by hand is still a worktree, so the sweep
+/// reclaims it on the two-sweep rule like any other.
+///
+/// The seed leaves `seeded_from` unset on an entry it did not create, and the
+/// lifecycle used to key on exactly that, which spared this row the fast rule
+/// and gave it the full grace period meant for ordinary repositories. It now
+/// keys on `worktree_of`, recorded at registration for every worktree however
+/// its row was created, because a removed `git worktree` path does not come
+/// back and its index is unusable without the checkout.
 #[tokio::test]
-async fn seeding_a_hand_registered_worktree_leaves_it_out_of_the_prune_sweep() {
+async fn a_hand_registered_worktree_is_still_reclaimed_by_the_prune_sweep() {
     let data_temp = tempfile::tempdir().unwrap();
     let work_temp = tempfile::tempdir().unwrap();
     let data_dir = utf8(data_temp.path());
@@ -693,16 +701,27 @@ async fn seeding_a_hand_registered_worktree_leaves_it_out_of_the_prune_sweep() {
         entry.seeded_from.is_none(),
         "an entry the seed did not create must not be stamped as seeded"
     );
+    assert!(
+        entry.worktree_of.is_some(),
+        "but registration still recorded the base it is a worktree of"
+    );
 
     std::fs::remove_dir_all(wt.as_std_path()).unwrap();
-    for _ in 0..3 {
-        manager.evict_idle_repos().await;
-    }
+
+    // First sighting arms, second deletes. No grace stamp is ever written.
+    manager.evict_idle_repos().await;
+    let armed = manager.registry.get(&wt_key).unwrap().unwrap();
     assert!(
-        manager.registry.get(&wt_key).unwrap().is_some(),
-        "the user's entry must survive the sweep"
+        armed.missing_since.is_none(),
+        "a worktree is never stamped for the grace period"
     );
-    assert!(entry.data_dir.as_std_path().exists());
+
+    manager.evict_idle_repos().await;
+    assert!(
+        manager.registry.get(&wt_key).unwrap().is_none(),
+        "a worktree whose checkout is gone is reclaimed, hand-registered or not"
+    );
+    assert!(!entry.data_dir.as_std_path().exists());
 }
 
 /// A cloned store that will not open must not fail the bind either.

@@ -22,6 +22,8 @@ export type Repo = {
   path_exists: boolean;
   /** Base repo id when this index was cloned from another repo, else null. */
   seeded_from: string | null;
+  /** Base repo id when this path is a linked git worktree, else null. */
+  worktree_of: string | null;
   /** RFC3339 time the daemon first found the path absent, else null. */
   missing_since: string | null;
   /** RFC3339 deadline after which the daemon deletes this index, else null. */

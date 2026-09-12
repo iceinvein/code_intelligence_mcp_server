@@ -248,6 +248,7 @@ mod tests {
                 initial_index_approved_at: None,
                 initial_index_completed_at: None,
                 seeded_from: None,
+                worktree_of: None,
                 missing_since: None,
             },
             RepoEntry {
@@ -260,6 +261,7 @@ mod tests {
                 initial_index_approved_at: None,
                 initial_index_completed_at: None,
                 seeded_from: None,
+                worktree_of: None,
                 missing_since: None,
             },
         ];

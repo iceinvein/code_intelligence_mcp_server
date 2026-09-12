@@ -74,21 +74,39 @@ impl SessionManager {
         &self,
         worktree: &Utf8PathBuf,
     ) -> Result<Option<crate::session::worktree::SeedPlan>> {
-        let Some(base_path) = crate::session::worktree::resolve_base_repo(worktree.as_path())
+        let Some(base_path) = crate::indexer::package::git::resolve_base_repo(worktree.as_path())
         else {
             return Ok(None);
         };
 
+        // Every skip below logs at INFO, because the cost of one is a full GPU
+        // index pass where a clone would have taken seconds. At DEBUG, which is
+        // not the level the daemon runs at, that trade happened invisibly and
+        // the reason was unrecoverable afterwards.
         let Some(base_entry) = self.registry.get(base_path.as_str())? else {
-            tracing::debug!(base = %base_path, "worktree base is not registered, not seeding");
+            tracing::info!(
+                worktree = %worktree,
+                base = %base_path,
+                "worktree base is not registered, indexing the worktree in full instead of seeding"
+            );
             return Ok(None);
         };
         if base_entry.initial_index_completed_at.is_none() {
-            tracing::debug!(base = %base_path, "worktree base has no completed index, not seeding");
+            tracing::info!(
+                worktree = %worktree,
+                base = %base_path,
+                "worktree base has no completed index, indexing the worktree in full instead of seeding"
+            );
             return Ok(None);
         }
         let base_db = base_entry.data_dir.join("code-intelligence.db");
         if !base_db.as_std_path().is_file() {
+            tracing::info!(
+                worktree = %worktree,
+                base = %base_path,
+                base_db = %base_db,
+                "worktree base has no database on disk, indexing the worktree in full instead of seeding"
+            );
             return Ok(None);
         }
 
@@ -110,7 +128,8 @@ impl SessionManager {
                 base = %base_path,
                 base_version = ?base_version,
                 current_version = %crate::indexer::pipeline::GRAPH_INDEX_VERSION,
-                "worktree base index predates the current graph format, not seeding"
+                "worktree base index predates the current graph format, indexing the \
+                 worktree in full instead of seeding"
             );
             return Ok(None);
         }

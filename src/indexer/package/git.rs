@@ -3,7 +3,7 @@
 //! This module provides functionality to discover git repository roots
 //! and extract repository metadata including remote URLs.
 
-use crate::path::Utf8PathBuf;
+use crate::path::{Utf8Path, Utf8PathBuf};
 use anyhow::{Context, Result};
 use git2::Repository;
 use sha2::{Digest, Sha256};
@@ -45,6 +45,90 @@ impl RepositoryInfo {
             remote_url,
         }
     }
+}
+
+/// Return the main repository root when `path` is a linked git worktree.
+///
+/// Returns `None` when `path` is not a git repository, is the main repository
+/// itself, or when the resolved base is not a readable directory distinct from
+/// `path`.
+/// A git repo with one commit at `root`.
+///
+/// Test-only, and shared: the registry, session and git modules all need a real
+/// repository to hang a linked worktree off.
+#[cfg(test)]
+pub(crate) fn init_repo_with_commit(root: &Utf8Path) -> git2::Repository {
+    let repo = git2::Repository::init(root.as_std_path()).unwrap();
+    std::fs::write(root.join("lib.rs").as_std_path(), "pub fn probe() {}\n").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("lib.rs")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+    drop(tree);
+    drop(index);
+    repo
+}
+
+pub fn resolve_base_repo(path: &Utf8Path) -> Option<Utf8PathBuf> {
+    let repo = git2::Repository::open(path.as_std_path()).ok()?;
+
+    // Authoritative predicate: libgit2 knows whether this is a linked worktree.
+    if !repo.is_worktree() {
+        return None;
+    }
+
+    // For a linked worktree, `path()` is the worktree's own private git dir
+    // (`<base>/.git/worktrees/<name>`), which contains a `commondir` file
+    // holding the path to the shared git dir, normally the relative `../..`.
+    // This is git's documented plumbing; `Repository::commondir()` would give
+    // the same answer but only landed in git2 0.20, and this project pins 0.19.
+    let git_dir = repo.path();
+    let pointer = std::fs::read_to_string(git_dir.join("commondir")).ok()?;
+    let pointer = pointer.trim();
+    if pointer.is_empty() {
+        return None;
+    }
+    let common = if std::path::Path::new(pointer).is_absolute() {
+        std::path::PathBuf::from(pointer)
+    } else {
+        git_dir.join(pointer)
+    };
+
+    // Canonicalize to collapse the `../..` before taking the parent, otherwise
+    // `parent()` would just strip one `..` component. Through the project's own
+    // helper rather than `std::fs::canonicalize`, because the base this resolves
+    // to is looked up by exact string match against a registry key, and registry
+    // keys are produced by that helper: a future change to it would otherwise
+    // turn seeding off silently.
+    let common =
+        crate::path::canonicalize_existing_dir(&Utf8PathBuf::from_path_buf(common).ok()?).ok()?;
+
+    // Only for a repository with a working tree is `common` the `<base>/.git`
+    // whose parent is the base root. A bare repository's common dir is the bare
+    // directory itself, so the parent would be whatever folder happens to
+    // contain it. That layout also has no main working tree at all, which makes
+    // every checkout under it a primary one rather than a disposable worktree.
+    if git2::Repository::open(common.as_std_path()).ok()?.is_bare() {
+        return None;
+    }
+
+    // `common` is `<base>/.git`, so the base root is its parent.
+    let base_root = common.parent()?;
+    if !base_root.as_std_path().is_dir() {
+        return None;
+    }
+
+    // Guard against a degenerate layout resolving back to the worktree itself.
+    let canonical_self = crate::path::canonicalize_existing_dir(path).ok()?;
+    if base_root == canonical_self {
+        return None;
+    }
+
+    Some(base_root.to_path_buf())
 }
 
 /// Discover git repositories by analyzing manifest paths.
@@ -176,6 +260,108 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;
+
+    fn utf8(p: &std::path::Path) -> Utf8PathBuf {
+        Utf8PathBuf::from_path_buf(p.to_path_buf()).unwrap()
+    }
+
+    #[test]
+    fn resolves_linked_worktree_to_its_main_repo() {
+        let base_temp = tempfile::tempdir().unwrap();
+        let base = utf8(base_temp.path());
+        let repo = super::init_repo_with_commit(&base);
+
+        let wt_temp = tempfile::tempdir().unwrap();
+        let wt = utf8(wt_temp.path()).join("feature");
+        repo.worktree("feature", wt.as_std_path(), None).unwrap();
+
+        let resolved = crate::indexer::package::git::resolve_base_repo(&wt)
+            .expect("worktree must resolve to a base");
+        assert_eq!(
+            std::fs::canonicalize(resolved.as_std_path()).unwrap(),
+            std::fs::canonicalize(base.as_std_path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn resolves_a_worktree_nested_inside_its_own_base_repo() {
+        // The shape agent tooling produces: `<base>/.claude/worktrees/<name>`,
+        // which lives under the base's own root rather than beside it.
+        let base_temp = tempfile::tempdir().unwrap();
+        let base = utf8(base_temp.path());
+        let repo = super::init_repo_with_commit(&base);
+
+        let nested = base.join(".claude/worktrees/agent-a0435b72f991f1a7f");
+        std::fs::create_dir_all(nested.parent().unwrap().as_std_path()).unwrap();
+        repo.worktree("agent-a0435b72f991f1a7f", nested.as_std_path(), None)
+            .unwrap();
+
+        let resolved = crate::indexer::package::git::resolve_base_repo(&nested)
+            .expect("a nested worktree still has a base");
+        assert_eq!(
+            std::fs::canonicalize(resolved.as_std_path()).unwrap(),
+            std::fs::canonicalize(base.as_std_path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_worktree_of_a_bare_repository_resolves_to_none() {
+        // A bare repo's commondir IS the bare directory, not `<base>/.git`, so
+        // taking its parent yields whatever directory happens to contain the
+        // bare repo. Returning that would name an unrelated folder as the base
+        // and, worse, class a long-lived primary checkout as a disposable
+        // worktree: in the bare-plus-worktrees layout there is no main working
+        // tree, so `work/main` is the user's real checkout.
+        let temp = tempfile::tempdir().unwrap();
+        let work = utf8(temp.path());
+        let bare = work.join("proj.git");
+        let seed = work.join("seed");
+        std::fs::create_dir_all(seed.as_std_path()).unwrap();
+        super::init_repo_with_commit(&seed);
+        git2::Repository::init_bare(bare.as_std_path()).unwrap();
+        let seed_repo = git2::Repository::open(seed.as_std_path()).unwrap();
+        let mut origin = seed_repo.remote("origin", bare.as_str()).unwrap();
+        origin
+            .push(&["refs/heads/master:refs/heads/master"], None)
+            .or_else(|_| origin.push(&["refs/heads/main:refs/heads/main"], None))
+            .unwrap();
+        drop(origin);
+        drop(seed_repo);
+
+        let bare_repo = git2::Repository::open(bare.as_std_path()).unwrap();
+        let checkout = work.join("main");
+        bare_repo
+            .worktree("main", checkout.as_std_path(), None)
+            .unwrap();
+
+        assert_eq!(resolve_base_repo(&checkout), None);
+    }
+
+    #[test]
+    fn main_repo_resolves_to_none() {
+        let base_temp = tempfile::tempdir().unwrap();
+        let base = utf8(base_temp.path());
+        super::init_repo_with_commit(&base);
+        assert_eq!(crate::indexer::package::git::resolve_base_repo(&base), None);
+    }
+
+    #[test]
+    fn non_git_directory_resolves_to_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = utf8(temp.path());
+        std::fs::write(dir.join("Cargo.toml").as_std_path(), b"[package]\n").unwrap();
+        assert_eq!(crate::indexer::package::git::resolve_base_repo(&dir), None);
+    }
+
+    #[test]
+    fn missing_path_resolves_to_none() {
+        assert_eq!(
+            crate::indexer::package::git::resolve_base_repo(Utf8Path::new(
+                "/nonexistent/definitely/not/here"
+            )),
+            None
+        );
+    }
 
     /// Initialize a git repository in the given directory.
     fn init_git_repo(dir: &PathBuf) -> Result<()> {

@@ -259,14 +259,14 @@ pub struct SessionManager {
     initial_index_locks: DashMap<String, Arc<Mutex<()>>>,
     /// Tracks the last time each repo was accessed, for TTL-based eviction
     last_accessed: DashMap<String, Instant>,
-    /// Seeded worktree indexes whose checkout was missing on the last prune sweep,
-    /// keyed by canonical repo path. Deletion needs two consecutive sightings, so
-    /// a checkout that is briefly unreachable is not destroyed. The `Instant` is
-    /// diagnostic only. Non-seeded entries use the persisted `missing_since`
-    /// stamp instead; nothing writes both for the same repo.
-    seeded_absent_once: DashMap<String, Instant>,
+    /// Worktree indexes whose checkout was missing on the last prune sweep, keyed
+    /// by canonical repo path. Deletion needs two consecutive sightings, so a
+    /// checkout that is briefly unreachable is not destroyed. The `Instant` is
+    /// diagnostic only. Entries that are not worktrees use the persisted
+    /// `missing_since` stamp instead; nothing writes both for the same repo.
+    worktree_absent_once: DashMap<String, Instant>,
     /// Data directories under `repos/` that no registry entry claimed on the last
-    /// sweep, keyed by directory name. Like `seeded_absent_once`, deletion needs
+    /// sweep, keyed by directory name. Like `worktree_absent_once`, deletion needs
     /// two consecutive sightings.
     orphan_dir_seen_once: DashMap<String, Instant>,
     /// Repositories awaiting a user decision about their first full index.
@@ -333,7 +333,7 @@ impl SessionManager {
             init_locks: DashMap::new(),
             initial_index_locks: DashMap::new(),
             last_accessed: DashMap::new(),
-            seeded_absent_once: DashMap::new(),
+            worktree_absent_once: DashMap::new(),
             orphan_dir_seen_once: DashMap::new(),
             pending_consent: DashMap::new(),
             metrics,
@@ -520,11 +520,12 @@ impl SessionManager {
 
     /// Delete indexes whose repository folder is gone.
     ///
-    /// Two policies, split by what a mistake costs. A seeded worktree index is
-    /// seconds to rebuild, so it goes after two consecutive sweeps find the
-    /// checkout absent. A full index is a complete GPU pass, so it waits out
+    /// Two policies, split by whether the folder can come back. A worktree goes
+    /// after two consecutive sweeps find the checkout absent, because a removed
+    /// `git worktree` path does not return. Anything else waits out
     /// `missing_repo_grace_days` measured from a stamp persisted in
-    /// `registry.json`, which survives daemon restarts.
+    /// `registry.json`, which survives daemon restarts, because a repository
+    /// folder may yet be restored and rebuilding it is a full GPU pass.
     ///
     /// Guards shared by both paths:
     ///
@@ -536,7 +537,7 @@ impl SessionManager {
     ///   again;
     /// - `delete_repo_by_hash` refuses any data dir outside the managed tree.
     ///
-    /// The seeded path's absence observations live in memory only. A restart
+    /// The worktree path's absence observations live in memory only. A restart
     /// forgets them, which costs one extra sweep before a dead worktree is
     /// collected.
     async fn prune_vanished_indexes(&self) {
@@ -561,7 +562,7 @@ impl SessionManager {
         // no longer registered at all, and for volumes that went away.
         let still_missing: std::collections::HashSet<&str> =
             actionable.iter().map(|entry| entry.path.as_str()).collect();
-        self.seeded_absent_once
+        self.worktree_absent_once
             .retain(|path, _| still_missing.contains(path.as_str()));
 
         let now = chrono::Utc::now();
@@ -578,16 +579,22 @@ impl SessionManager {
                 continue;
             }
 
-            let doomed = if entry.seeded_from.is_some() {
+            // Keyed on what the checkout is, not on how its index was built: a
+            // removed worktree path never returns, so rebuilding is moot whether
+            // the index was cloned in seconds or built by a full pass. Legacy
+            // entries registered before `worktree_of` existed carry only
+            // `seeded_from`, and keep the fast path they already had.
+            let is_worktree = entry.worktree_of.is_some() || entry.seeded_from.is_some();
+            let doomed = if is_worktree {
                 // First sighting only arms the deletion; the next sweep performs it.
                 let armed = self
-                    .seeded_absent_once
+                    .worktree_absent_once
                     .insert(entry.path.clone(), Instant::now())
                     .is_some();
                 if !armed {
                     tracing::debug!(
                         repo = %entry.path,
-                        "seeded worktree checkout is missing, pruning it if it is still missing next sweep"
+                        "worktree checkout is missing, pruning it if it is still missing next sweep"
                     );
                 }
                 armed
@@ -620,16 +627,17 @@ impl SessionManager {
 
             match self.delete_repo_by_hash(&hash).await {
                 Ok(Some(_)) => {
-                    self.seeded_absent_once.remove(&entry.path);
+                    self.worktree_absent_once.remove(&entry.path);
                     tracing::info!(
                         repo = %entry.path,
                         data_dir = %entry.data_dir,
+                        worktree = is_worktree,
                         seeded = entry.seeded_from.is_some(),
                         "deleted the index of a repository whose folder was removed"
                     );
                 }
                 Ok(None) => {
-                    self.seeded_absent_once.remove(&entry.path);
+                    self.worktree_absent_once.remove(&entry.path);
                 }
                 Err(error) => tracing::warn!(
                     repo = %entry.path,
@@ -2091,6 +2099,50 @@ mod tests {
         assert!(entry.data_dir.as_std_path().exists());
     }
 
+    /// A base repo with one commit, plus a linked worktree in its own tempdir
+    /// so the checkout can be removed without taking the base with it.
+    fn temp_worktree(name: &str) -> (tempfile::TempDir, tempfile::TempDir, Utf8PathBuf) {
+        let base_dir = tempfile::tempdir().unwrap();
+        let base = Utf8PathBuf::from_path_buf(base_dir.path().to_path_buf()).unwrap();
+        let repo = crate::indexer::package::git::init_repo_with_commit(&base);
+
+        let wt_dir = tempfile::tempdir().unwrap();
+        let worktree = Utf8PathBuf::from_path_buf(wt_dir.path().to_path_buf())
+            .unwrap()
+            .join(name);
+        repo.worktree(name, worktree.as_std_path(), None).unwrap();
+        (base_dir, wt_dir, worktree)
+    }
+
+    #[tokio::test]
+    async fn sweep_puts_a_worktree_that_was_never_seeded_on_the_two_sweep_rule() {
+        // The lifecycle used to key on seeded_from, which records how an index
+        // was built rather than what it is. A worktree whose seed was skipped
+        // (stale base format, base not registered) therefore served out the
+        // full grace period meant for real repositories, parking about a
+        // gigabyte per dead agent checkout that was never coming back.
+        let (_data, data_dir) = temp_data_dir();
+        let manager = SessionManager::new_for_test(data_dir).await;
+        let (_base, wt_dir, worktree) = temp_worktree("agent-a0435b72f991f1a7f");
+
+        let entry = manager.registry.register(worktree.as_str()).unwrap();
+        assert_eq!(entry.seeded_from, None, "its index was never cloned");
+        assert!(entry.worktree_of.is_some(), "but it is still a worktree");
+        let hash = crate::registry::RepoRegistry::path_hash(worktree.as_str());
+
+        drop(wt_dir);
+
+        manager.evict_idle_repos().await;
+        let armed = manager.registry.get_by_hash(&hash).unwrap().unwrap();
+        assert!(
+            armed.missing_since.is_none(),
+            "a worktree is never stamped for the grace period"
+        );
+
+        manager.evict_idle_repos().await;
+        assert!(manager.registry.get_by_hash(&hash).unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn sweep_leaves_seeded_entries_on_the_two_sweep_rule() {
         let (_data, data_dir) = temp_data_dir();
@@ -2864,6 +2916,7 @@ mod tests {
             initial_index_approved_at: None,
             initial_index_completed_at: None,
             seeded_from: None,
+            worktree_of: None,
             missing_since: None,
         }
     }

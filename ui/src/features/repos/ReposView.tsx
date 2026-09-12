@@ -84,12 +84,21 @@ function daysUntil(iso: string | null): number | null {
   return Math.max(0, Math.ceil(ms / 86_400_000));
 }
 
+/** A worktree is reclaimed on the two-sweep rule, which has no deadline to show. */
+function isWorktree(repo: Repo): boolean {
+  return Boolean(repo.worktree_of ?? repo.seeded_from);
+}
+
 function staleLabel(repo: Repo): string {
+  if (isWorktree(repo)) return "stale · deleting";
   const days = daysUntil(repo.auto_delete_at);
   return days === null ? "stale" : `stale · deletes in ${days}d`;
 }
 
 function staleTitle(repo: Repo): string {
+  if (isWorktree(repo)) {
+    return "Worktree checkout is gone. This index is deleted within about two minutes.";
+  }
   if (repo.auto_delete_at && daysUntil(repo.auto_delete_at) !== null) {
     return `Checkout is gone. This index is deleted on ${new Date(repo.auto_delete_at).toLocaleString()}.`;
   }

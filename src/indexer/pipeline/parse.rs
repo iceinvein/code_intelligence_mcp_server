@@ -49,6 +49,13 @@ use std::{
 
 pub const MAX_SOURCE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Stack for each parser worker. The extractors recurse once per AST level, so
+/// this is the budget `parser::MAX_AST_DEPTH` is measured against: at roughly a
+/// kilobyte per level a 4,000-level tree needs about 4 MiB, and the rest is
+/// headroom. The 2 MiB default left none, which is how one generated file with
+/// an 18,000-member union type aborted the whole daemon.
+pub(crate) const PARSER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 /// Full output of parsing one file — everything needed to write.
 ///
 /// `edges` is empty after parsing. Edge extraction is deferred to a separate
@@ -224,6 +231,10 @@ pub fn parse_single_file(file: &Path, config: &Config, conn: &Connection) -> Par
     let mut extracted = match extracted {
         Ok(syms) => syms,
         Err(e) => {
+            // Skips are logged at debug, which would bury this one. A file the
+            // extractors could not read is a hole in the index, so say it once
+            // here at a level that is on by default.
+            tracing::warn!(file = %rel, error = %e, "symbol extraction failed, file left out of the index");
             return ParseResult::Skipped {
                 reason: format!("Failed to extract symbols: {}", e),
                 file_path: rel,
@@ -598,6 +609,7 @@ pub fn parse_files(
     let rayon_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.parallel_workers)
         .thread_name(|i| format!("parser-{}", i))
+        .stack_size(PARSER_STACK_BYTES)
         .build()
         .context("Failed to build Rayon thread pool for parsing")?;
 
@@ -1279,5 +1291,35 @@ mod tests {
             parse_single_file(file.as_std_path(), &config, &conn),
             ParseResult::Parsed(_)
         ));
+    }
+
+    #[test]
+    fn skips_a_file_whose_ast_nests_past_the_depth_limit() {
+        use crate::indexer::parser::MAX_AST_DEPTH;
+
+        let tmp_dir = temp_dir();
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let base_dir = Utf8PathBuf::from_path_buf(tmp_dir.clone()).unwrap();
+        let conn = Connection::open(base_dir.join("test.db").as_str()).unwrap();
+
+        let mut source = String::from("export type Deep =\n");
+        for i in 0..(MAX_AST_DEPTH + 50) {
+            source.push_str(&format!("  | \"v{i}\"\n"));
+        }
+        source.push_str("  | (string & {});\n");
+        let test_file = tmp_dir.join("generated.ts");
+        std::fs::write(&test_file, &source).unwrap();
+
+        let result = parse_single_file(&test_file, &test_config(base_dir.as_path()), &conn);
+
+        match result {
+            ParseResult::Skipped { reason, file_path } => {
+                assert!(file_path.ends_with("generated.ts"), "{file_path}");
+                assert!(reason.contains(&MAX_AST_DEPTH.to_string()), "{reason}");
+            }
+            other => panic!("deeply nested file should be skipped, got {other:?}"),
+        }
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
     }
 }

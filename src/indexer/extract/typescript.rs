@@ -1,4 +1,4 @@
-use crate::indexer::parser::{parser_for_id, LanguageId};
+use crate::indexer::parser::{ensure_walkable_depth, parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
@@ -42,6 +42,7 @@ fn extract_symbols_with_parser(
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| anyhow!("Failed to parse source"))?;
+    ensure_walkable_depth(&tree)?;
     let root = tree.root_node();
 
     let cursor = root.walk();
@@ -2426,5 +2427,65 @@ namespace Config {
             names.contains(&"TIMEOUT"),
             "namespace const should be extracted"
         );
+    }
+
+    #[test]
+    fn refuses_a_file_whose_ast_nests_deeper_than_extractors_can_walk() {
+        use crate::indexer::parser::MAX_AST_DEPTH;
+
+        // Parser workers get a bounded stack, so reproduce that here: without a
+        // depth guard this aborts the whole process instead of failing.
+        use crate::indexer::pipeline::parse::PARSER_STACK_BYTES;
+
+        let mut source = String::from("export type Deep =\n");
+        for i in 0..20_000 {
+            source.push_str(&format!("  | \"v{i}\"\n"));
+        }
+        source.push_str("  | (string & {});\n");
+
+        let extracted = std::thread::Builder::new()
+            .stack_size(PARSER_STACK_BYTES)
+            .spawn(move || {
+                extract_typescript_symbols_with_path(LanguageId::Typescript, &source, "deep.ts")
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let error = extracted
+            .expect_err("a 20,000-level AST is past what the extractors can walk")
+            .to_string();
+        assert!(
+            error.contains(&MAX_AST_DEPTH.to_string()),
+            "the refusal should name the depth limit: {error}"
+        );
+    }
+
+    #[test]
+    fn extracts_from_a_file_that_nests_just_under_the_limit() {
+        use crate::indexer::parser::MAX_AST_DEPTH;
+        use crate::indexer::pipeline::parse::PARSER_STACK_BYTES;
+
+        // Run it on the stack a real parser worker gets: the limit is only
+        // sound relative to that size, so raising one without the other aborts
+        // this test instead of shipping.
+        let mut source = String::from("export type Deep =\n");
+        for i in 0..(MAX_AST_DEPTH - 100) {
+            source.push_str(&format!("  | \"v{i}\"\n"));
+        }
+        source.push_str("  | (string & {});\n");
+
+        let extracted = std::thread::Builder::new()
+            .stack_size(PARSER_STACK_BYTES)
+            .spawn(move || {
+                extract_typescript_symbols_with_path(LanguageId::Typescript, &source, "deep.ts")
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+            .expect("a tree under the limit should extract");
+
+        let names: Vec<&str> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Deep"), "got {names:?}");
     }
 }

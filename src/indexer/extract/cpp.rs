@@ -1,4 +1,4 @@
-use crate::indexer::parser::{parser_for_id, LanguageId};
+use crate::indexer::parser::{ensure_walkable_depth, parser_for_id, LanguageId};
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser, TreeCursor};
 
@@ -13,6 +13,7 @@ fn extract_symbols_with_parser(parser: &mut Parser, source: &str) -> Result<Extr
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| anyhow!("Failed to parse source"))?;
+    ensure_walkable_depth(&tree)?;
     let root = tree.root_node();
 
     let cursor = root.walk();
